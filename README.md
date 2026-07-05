@@ -47,6 +47,11 @@ domínio** são aplicados de forma centralizada em `checks/base.py`.
 
 ```
 klarim/
+├── claude.md               # guia de onboarding para agentes Claude
+├── claude/                 # governança: session summaries + task reports
+│   ├── README.md
+│   ├── sessions/           # resumos de sessão do chat planejador
+│   └── reports/            # relatórios por tarefa (KL-xxx)
 ├── docker-compose.yml      # PostgreSQL + Redis + API + Worker
 ├── Dockerfile              # imagem compartilhada (API/Worker)
 ├── .env.example            # variáveis de ambiente (sem segredos)
@@ -158,6 +163,19 @@ varredura passiva. Ainda assim:
 
 Consulte um advogado de direito digital antes de qualquer uso comercial e inclua
 disclaimer claro em todos os relatórios.
+
+---
+
+## Governança e documentação
+
+- **[`claude.md`](./claude.md)** — guia do projeto e onboarding obrigatório para
+  qualquer agente Claude (regras, stack, convenções, fluxo de trabalho). **Leia
+  antes de tocar no código.**
+- **[`claude/`](./claude/)** — rastro de trabalho gerado pelo Claude:
+  - `claude/sessions/` — resumos das sessões de planejamento (Claude chat).
+  - `claude/reports/` — um relatório por tarefa executada (card `KL-xxx`).
+- **[`klarim_mvp_spec.md`](./klarim_mvp_spec.md)** — especificação de produto
+  (fonte da verdade).
 
 ---
 

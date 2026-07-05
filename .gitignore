@@ -32,10 +32,12 @@ htmlcov/
 .mypy_cache/
 .ruff_cache/
 
-# --- Reports / scan artifacts ---
-reports/
+# --- Reports / scan artifacts (root-level only; NOT claude/reports/) ---
+/reports/
 *.pdf
 scan_output/
+# Governance reports under claude/ are tracked on purpose.
+!claude/reports/
 
 # --- OS / editor ---
 .DS_Store
