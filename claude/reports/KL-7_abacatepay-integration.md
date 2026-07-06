@@ -82,7 +82,29 @@ registrada (evita rejeitar webhooks legítimos).
 
 ## Validação em produção (klarim.net)
 
-Ver adendo (preenchido após deploy + configuração da chave na VM).
+Chave `abc_dev_` + `ABACATEPAY_WEBHOOK_SECRET` + `KLARIM_DEV_MODE=false` no `.env`
+da VM; deploy pelo CI. Fluxo completo testado ao vivo:
+
+| Passo | Resultado |
+|-------|-----------|
+| `GET /api/` | `payments_enabled: true, dev_mode: false` |
+| `GET /report/executive` sem `charge_id` | **402** |
+| `POST /payment/create` | cobrança PIX (`br_code`, `qr_code_base64` data-URI, R$ 29,00) |
+| `POST /transparents/simulate-payment` (sandbox) | `PAID` |
+| `GET /payment/status` | `{"status":"PAID","paid":true}` |
+| `GET /report/executive?...&charge_id=` (pago) | **200** `application/pdf` |
+| Postgres | linha `payments` com `status=PAID`, `paid_at` preenchido |
+| Webhook | registrado (`webh_dev_…`); ao pagar, AbacatePay faz `POST /api/webhooks/abacatepay?webhookSecret=…` → **200** |
+| Página `/pay` (navegador) | QR code renderiza sob a CSP (`img-src data:`), copia-e-cola + polling |
+
+### Correção — persistência Postgres (commit `252db44`)
+
+A primeira validação revelou que a tabela `payments` não era criada: o store caía
+para memória com `OperationalError: invalid integer value ... for "port"`. Causa:
+a **senha do Postgres (base64) contém `/`**, o que quebra o parsing da
+`DATABASE_URL` (bug que eu já havia sinalizado no KL-3). Corrigido conectando por
+**parâmetros `POSTGRES_*` individuais** (imunes a caracteres especiais na senha).
+Após o redeploy, a tabela é criada e as cobranças persistem. ✅
 
 ## Critérios de aceite
 
@@ -102,6 +124,11 @@ Ver adendo (preenchido após deploy + configuração da chave na VM).
 
 ## Follow-ups
 
+- **`DATABASE_URL` malformada na VM:** a senha base64 contém `/`, então a
+  `DATABASE_URL` do compose fica inválida. O payments store contorna via
+  `POSTGRES_*`, mas qualquer código futuro que parseie `DATABASE_URL` vai quebrar.
+  Recomendo regenerar a senha do Postgres em formato **URL-safe** (ou
+  percent-encode) e alinhar o compose — dívida herdada do KL-3.
 - **Cartão (Stripe)** como segunda opção de pagamento.
 - Confirmar empiricamente o esquema exato do HMAC do webhook e, se for o secret,
   ativar `ABACATEPAY_HMAC_STRICT=true`.
