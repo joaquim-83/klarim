@@ -109,8 +109,10 @@ confirmado via 8.8.8.8). Emissão: `sudo bash deploy/setup-https.sh klarim.net`
 **Self-scan (o Klarim contra si mesmo):** primeira passada **95/100 🟢** — mas o
 próprio scanner reprovou o **check 08 (Server header)**: o Nginx expunha
 `Server: nginx/1.31.2`. Corrigido com **`server_tokens off;`** nas duas configs.
-Após redeploy, re-scan → **100/100 🟢** (13 PASS, 1 INCONCLUSO no check 04 de TLS
-legado, que é neutro; 0 FAIL). O Klarim passa nos próprios checks. 🎯
+Após redeploy, re-scan → **100/100 🟢** (14 PASS, 0 FAIL, 1 INCONCLUSO no check
+04 de TLS legado, que é neutro). Também confirmado no navegador: a landing e a
+SPA renderizam sobre HTTPS (a CSP restritiva **não quebra** o app). O Klarim
+passa nos próprios checks. 🎯
 
 > Ironia proposital do card ("praticar o que prega") validada na prática: o
 > self-scan pegou uma exposição real de versão na nossa própria stack.
