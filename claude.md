@@ -337,6 +337,29 @@ Frontend **React + Vite + Tailwind v4**, servido como build estático pelo
   npm run dev          # dev server (proxy /api → localhost:8000)
   npm run build        # build de produção → dist/
   ```
-- **Docker:** serviço `web` no `docker-compose.yml` (build `./frontend`, porta
-  **80**). A API foi rebaixada para `127.0.0.1:8000` (só o Nginx é público).
-  O deploy na VM constrói a imagem do frontend (Vite) durante `docker compose up`.
+- **Docker:** serviço `web` no `docker-compose.yml` (build `./frontend`, portas
+  **80** e **443**). A API foi rebaixada para `127.0.0.1:8000` (só o Nginx é
+  público). O deploy na VM constrói a imagem do frontend (Vite) durante
+  `docker compose up`.
+
+### HTTPS (Let's Encrypt) — KL-6
+
+O Nginx é **self-healing** quanto a TLS: o entrypoint
+(`frontend/docker-entrypoint.d/40-klarim-tls.sh`) escolhe a config em runtime —
+**`DOMAIN` vazio ou sem certificado ⇒ HTTP** (`nginx/http.conf`); **`DOMAIN`
+definido + certificado presente ⇒ HTTPS** (`nginx/https.conf.template` via
+envsubst), com redirect 80→443 e os security headers (HSTS, CSP, X-Frame-Options,
+X-Content-Type-Options, Referrer-Policy). Assim o deploy **nunca quebra** por
+falta de certificado.
+
+**Emitir o certificado (uma vez, na VM, após o DNS apontar para o IP):**
+```bash
+sudo bash /opt/klarim/deploy/setup-https.sh <dominio>   # ex.: klarim.com.br
+```
+O script usa **webroot** (sem downtime), grava `DOMAIN=<dominio>` no `.env` da VM
+e recria o `web` em HTTPS.
+
+**Renovação:** automática — o `deploy.sh` roda `certbot renew` a cada deploy
+(deploy-hook recria o `web`); o pacote `certbot` também instala um timer.
+Volumes: `/etc/letsencrypt` e `/var/www/certbot` (host) montados no `web` (ro).
+Firewall GCP: `klarim-allow-http` (80) + `klarim-allow-https` (443), tag `http-server`.

@@ -273,10 +273,18 @@ npm run dev      # dev (proxy /api → localhost:8000)
 npm run build    # build de produção → dist/
 ```
 
-Em produção, o serviço **`web`** do `docker-compose.yml` (porta **80**) constrói o
-frontend e serve tudo via Nginx; a API fica em `127.0.0.1:8000` (só o Nginx é
-público). Suba a stack completa com `docker compose up --build` e acesse
+Em produção, o serviço **`web`** do `docker-compose.yml` (portas **80/443**)
+constrói o frontend e serve tudo via Nginx; a API fica em `127.0.0.1:8000` (só o
+Nginx é público). Suba a stack completa com `docker compose up --build` e acesse
 `http://localhost`.
+
+**HTTPS (Let's Encrypt):** o Nginx serve HTTP até existir um certificado e passa
+a HTTPS automaticamente depois (entrypoint self-healing — o deploy nunca quebra
+por falta de cert). Com o DNS apontando para o IP da VM, emita o certificado uma
+vez: `sudo bash /opt/klarim/deploy/setup-https.sh <dominio>`. O HTTPS inclui os
+security headers (HSTS, CSP, X-Frame-Options, X-Content-Type-Options,
+Referrer-Policy) — o Klarim pratica o que prega. Renovação automática via
+`certbot renew` no `deploy.sh`.
 
 ---
 

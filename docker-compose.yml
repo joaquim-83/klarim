@@ -61,11 +61,20 @@ services:
         condition: service_healthy
 
   # Frontend React (build estático) + Nginx como reverse proxy para a API.
+  # Serve HTTP até existir o certificado; depois HTTPS (ver frontend/entrypoint).
   web:
     build: ./frontend
     restart: unless-stopped
+    environment:
+      # Vazio => modo HTTP. Definido (no .env da VM) + cert presente => HTTPS.
+      DOMAIN: ${DOMAIN:-}
     ports:
       - "80:80"
+      - "443:443"
+    volumes:
+      # Certificados Let's Encrypt (host) e webroot do ACME challenge.
+      - /etc/letsencrypt:/etc/letsencrypt:ro
+      - /var/www/certbot:/var/www/certbot:ro
     depends_on:
       - api
 

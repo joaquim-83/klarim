@@ -65,4 +65,13 @@ if [[ "$health_ok" -ne 1 ]]; then
   exit 1
 fi
 
+# 6) Renova o certificado Let's Encrypt se estiver perto de expirar (no-op se
+#    ainda não é hora ou se o Certbot não está instalado). O deploy-hook recria
+#    o container web para carregar o novo certificado.
+if command -v certbot >/dev/null 2>&1; then
+  echo "==> certbot renew (silencioso)"
+  certbot renew --quiet \
+    --deploy-hook "docker compose -f $APP_DIR/docker-compose.yml up -d --force-recreate web" || true
+fi
+
 echo "==> Deploy concluído: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
