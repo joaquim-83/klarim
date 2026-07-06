@@ -18,6 +18,14 @@ cd "$APP_DIR"
 
 echo "==> Klarim deploy iniciado: $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
+# 0) Trust the repo dir. Under CI this script runs as root (sudo) while
+#    /opt/klarim is owned by the provisioning user, which trips git's
+#    "dubious ownership" guard. Mark it safe for whoever runs the script
+#    (idempotent — only added once).
+if ! git config --global --get-all safe.directory 2>/dev/null | grep -qx "$APP_DIR"; then
+  git config --global --add safe.directory "$APP_DIR"
+fi
+
 # 1) Fetch the latest code (fast-forward to origin/main).
 echo "==> git pull origin main"
 git pull --ff-only origin main
