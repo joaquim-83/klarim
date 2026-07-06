@@ -44,12 +44,31 @@ A especificação completa de produto vive em [`klarim_mvp_spec.md`](./klarim_mv
 | Frontend | **React + Tailwind** (futuro) |
 | PDF | **WeasyPrint** |
 | Infra | **GCP Compute Engine `e2-small`**, **Docker Compose** |
-| Deploy | Docker (`Dockerfile` compartilhado por API e Worker) |
+| Deploy | Docker (`Dockerfile` compartilhado por API e Worker) + GitHub Actions |
 
 **Links do projeto:**
 
 - **Repositório:** https://github.com/joaquim-83/klarim.git
 - **Jira (board KL):** https://igoove.atlassian.net/jira/software/c/projects/KL/boards/265/backlog
+
+**VM de produção (GCP):**
+
+| Campo | Valor |
+|-------|-------|
+| Instância | `instance-20260706-112125` |
+| Zona | `us-central1-a` |
+| Projeto | `project-b08050df-fa4e-49ac-919` |
+| Diretório de deploy | `/opt/klarim` |
+
+Acesso SSH:
+
+```bash
+gcloud compute ssh --zone "us-central1-a" "instance-20260706-112125" \
+  --project "project-b08050df-fa4e-49ac-919"
+```
+
+O `.env` de produção vive **apenas na VM** (`/opt/klarim/.env`), nunca no git.
+Detalhes de provisionamento e deploy: seção **8** e `claude/reports/KL-3_gcp-deploy-cicd.md`.
 
 ---
 
@@ -203,3 +222,43 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py   # inclui scan real
 5. Escreva o relatório em `claude/reports/KL-xxx_<slug>.md`.
 6. Atualize a documentação afetada (README, este arquivo, spec).
 7. Commit em inglês no formato `tipo(KL-xxx): descrição` e push.
+
+---
+
+## 8. Deploy e CI/CD (GCP)
+
+### Provisionamento (uma vez)
+
+Na VM (ver dados na seção 2), instalar Docker + plugin Compose, criar
+`/opt/klarim` e clonar o repositório. Passo a passo completo em
+`claude/reports/KL-3_gcp-deploy-cicd.md` (Partes 1–2).
+
+### Deploy manual
+
+```bash
+gcloud compute ssh --zone "us-central1-a" "instance-20260706-112125" \
+  --project "project-b08050df-fa4e-49ac-919"
+# na VM:
+bash /opt/klarim/deploy/deploy.sh
+```
+
+`deploy/deploy.sh` faz `git pull` → `docker compose down` → `up -d --build` →
+`docker compose ps` → health check em `http://localhost:8000/health`.
+
+### CI/CD automático
+
+`.github/workflows/deploy.yml` roda a **todo push para `main`**:
+
+1. **Job `test`** — Python 3.12, `pip install -r requirements.txt`, `pytest`.
+   Se falhar, **bloqueia o deploy** (`deploy` tem `needs: test`).
+2. **Job `deploy`** — autentica no GCP (`google-github-actions/auth` com o secret
+   `GCP_SA_KEY`), conecta na VM via `gcloud compute ssh` e executa
+   `deploy/deploy.sh`.
+
+**Secrets no GitHub** (configurar manualmente — o repo nunca guarda credenciais):
+`GCP_SA_KEY`, `GCP_PROJECT_ID`, `GCP_INSTANCE`, `GCP_ZONE` (e opcionalmente
+`SSH_PRIVATE_KEY`). A service account deve ter apenas `compute.instances.get` +
+`compute.instances.setMetadata` na VM (privilégio mínimo).
+
+**Regra de segurança:** nunca commitar chaves SSH, service account keys ou o
+`.env` de produção. Tudo sensível vive em GitHub Secrets ou na VM.

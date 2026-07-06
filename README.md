@@ -77,6 +77,10 @@ klarim/
 │   ├── README.md
 │   ├── sessions/           # resumos de sessão do chat planejador
 │   └── reports/            # relatórios por tarefa (KL-xxx)
+├── .github/workflows/
+│   └── deploy.yml          # CI/CD: push main → test → deploy (GCP)
+├── deploy/
+│   └── deploy.sh           # script de deploy executado na VM
 ├── docker-compose.yml      # PostgreSQL + Redis + API + Worker
 ├── Dockerfile              # imagem compartilhada (API/Worker)
 ├── .env.example            # variáveis de ambiente (sem segredos)
@@ -158,6 +162,38 @@ redis-cli GET  "klarim:report:https://www.example.com"
 pytest                                   # unit tests offline
 KLARIM_ONLINE=1 pytest tests/test_checks.py   # inclui scan real
 ```
+
+---
+
+## Deploy e infraestrutura
+
+Produção roda em uma **VM GCP Compute Engine** (`e2-small`, Debian) com Docker
+Compose, em `/opt/klarim`. O `.env` de produção vive **apenas na VM** (nunca no
+git).
+
+**Provisionamento (uma vez):** instalar Docker + plugin Compose, criar
+`/opt/klarim`, clonar o repo e criar o `.env`. Passo a passo em
+[`claude/reports/KL-3_gcp-deploy-cicd.md`](./claude/reports/KL-3_gcp-deploy-cicd.md).
+
+**Deploy manual:**
+
+```bash
+gcloud compute ssh --zone "us-central1-a" "instance-20260706-112125" \
+  --project "project-b08050df-fa4e-49ac-919"
+# na VM:
+bash /opt/klarim/deploy/deploy.sh
+```
+
+**CI/CD (`.github/workflows/deploy.yml`)** — a cada push para `main`:
+
+1. **`test`** — Python 3.12, `pip install -r requirements.txt`, `pytest`. Falhou,
+   não faz deploy.
+2. **`deploy`** (`needs: test`) — autentica no GCP, faz SSH na VM e roda
+   `deploy/deploy.sh` (`git pull` → `docker compose up -d --build` → health check).
+
+Secrets necessários no GitHub (configurados **manualmente**, nunca no repo):
+`GCP_SA_KEY`, `GCP_PROJECT_ID`, `GCP_INSTANCE`, `GCP_ZONE`. A service account usa
+privilégio mínimo (`compute.instances.get` + `compute.instances.setMetadata`).
 
 ---
 

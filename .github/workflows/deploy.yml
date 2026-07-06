@@ -1,0 +1,94 @@
+name: Deploy Klarim
+
+# CI/CD: every push to main runs the test suite; if it passes, the change is
+# deployed to the GCP VM over SSH. The deploy job never runs if tests fail
+# (it `needs: test`).
+#
+# Required GitHub secrets (Settings > Secrets and variables > Actions) — set
+# these MANUALLY; this repo never stores credentials:
+#   GCP_SA_KEY       JSON key of a service account with, at minimum,
+#                    compute.instances.get and compute.instances.setMetadata
+#                    on the target VM (setMetadata lets `gcloud compute ssh`
+#                    inject its ephemeral SSH key). Add roles/compute.osLogin
+#                    instead if the project uses OS Login.
+#   GCP_PROJECT_ID   e.g. project-b08050df-fa4e-49ac-919
+#   GCP_INSTANCE     e.g. instance-20260706-112125
+#   GCP_ZONE         e.g. us-central1-a
+#   SSH_PRIVATE_KEY  (optional) private key for a direct SSH path, if you
+#                    prefer not to use `gcloud compute ssh`. Not used by the
+#                    default job below.
+
+on:
+  push:
+    branches: [main]
+  # Allow manual re-runs from the Actions tab.
+  workflow_dispatch:
+
+# Avoid overlapping deploys if pushes land back-to-back.
+concurrency:
+  group: deploy-main
+  cancel-in-progress: false
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      # WeasyPrint (a declared dependency) links against these at import time.
+      # The current test suite does not import it, but installing the libs keeps
+      # the job green if a future test does.
+      - name: Install WeasyPrint system libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libpango-1.0-0 libpangocairo-1.0-0 libgdk-pixbuf-2.0-0 \
+            libcairo2 shared-mime-info
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        run: pytest -q
+
+  deploy:
+    name: Deploy to GCP VM
+    needs: test
+    runs-on: ubuntu-latest
+    # Only deploy the real branch, never a fork PR or other ref.
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Deploy over SSH
+        # `gcloud compute ssh` generates an ephemeral key pair and injects the
+        # public key via instance metadata (needs compute.instances.setMetadata),
+        # then runs the deploy script on the VM. --quiet disables interactive
+        # prompts (host-key, key generation) so it works headless in CI.
+        #
+        # Connectivity: this connects to the VM's external IP on port 22 — the
+        # firewall must allow it. For a no-public-port-22 setup, add
+        #   --tunnel-through-iap
+        # and grant the SA roles/iap.tunnelResourceAccessor.
+        run: |
+          gcloud compute ssh "${{ secrets.GCP_INSTANCE }}" \
+            --zone "${{ secrets.GCP_ZONE }}" \
+            --project "${{ secrets.GCP_PROJECT_ID }}" \
+            --quiet \
+            --command "bash /opt/klarim/deploy/deploy.sh"
