@@ -92,10 +92,15 @@ klarim/
 │   └── checks/
 │       ├── base.py         # CheckResult, rate limit, HTTP helper, HTML parse
 │       └── check_*.py      # os checks (descobertos dinamicamente)
+├── reporter/               # geração de PDF (WeasyPrint + Jinja2)
+│   ├── generator.py        # generate_executive_pdf / generate_technical_pdf
+│   ├── templates/          # executive.html + technical.html
+│   └── assets/logo.svg
 ├── api/
-│   └── main.py             # FastAPI (semáforo grátis + relatório)
+│   └── main.py             # FastAPI (semáforo + relatório + PDFs)
 └── tests/
-    └── test_checks.py      # unit tests + teste online opt-in
+    ├── test_checks.py      # unit tests dos checks + teste online opt-in
+    └── test_reporter.py    # geração de PDF (offline)
 ```
 
 ---
@@ -117,6 +122,9 @@ python -m scanner.main https://www.example.com
 
 # JSON (para pipelines)
 python -m scanner.main https://www.example.com --json
+
+# Gera os PDFs executivo + técnico no diretório atual
+python -m scanner.main https://www.example.com --pdf
 ```
 
 Exit code `0` se o score ≥ 50, `1` caso contrário (útil em CI/cron).
@@ -140,6 +148,8 @@ uvicorn api.main:app --reload --port 8000
 
 - `GET /scan?url=…` — relatório técnico completo (JSON).
 - `GET /scan/summary?url=…` — semáforo executivo gratuito (score + contagens).
+- `GET /report/executive?url=…` — relatório executivo em **PDF**.
+- `GET /report/technical?url=…` — relatório técnico em **PDF**.
 
 ### 5. Stack completa (Docker)
 
@@ -213,6 +223,35 @@ Semáforo: **🟢 verde** ≥ 80 · **🟡 amarelo** 50–79 · **🔴 vermelho*
 
 ---
 
+## Relatórios PDF
+
+O módulo [`reporter/`](./reporter/) transforma um `ScanReport` em dois PDFs
+(**Jinja2 → WeasyPrint**), na identidade visual do Klarim (dark + laranja/verde):
+
+- **Executivo** (1-2 páginas) — para o dono do negócio: semáforo, linguagem
+  acessível, bloco de risco **LGPD**, lista de problemas em linguagem humana.
+- **Técnico** (3-5 páginas) — para dev/agência: tabela de todos os checks,
+  detalhamento de cada falha (evidência + impacto + correção com exemplo) e
+  inventário (domínios externos, scripts sem SRI, fontes arriscadas, headers).
+
+```python
+import asyncio
+from scanner import run_scan
+from reporter import generate_executive_pdf, generate_technical_pdf
+
+report = asyncio.run(run_scan("https://www.example.com"))
+pdf = asyncio.run(generate_executive_pdf(report, "https://www.example.com"))  # -> bytes
+```
+
+Ou via CLI (`--pdf`) e API (`/report/executive`, `/report/technical`). Exemplos
+reais gerados para os 3 hotéis Duda estão em
+[`claude/reports/`](./claude/reports/) (`klarim_*_*.pdf`).
+
+> **WeasyPrint** precisa de bibliotecas nativas (pango/cairo) — já incluídas no
+> `Dockerfile` e no job de teste do CI. Em macOS local: `brew install pango`.
+
+---
+
 ## Framework legal
 
 O Klarim se enquadra como serviço de *Security Rating* / *Monitoramento de
@@ -247,7 +286,7 @@ disclaimer claro em todos os relatórios.
 - [x] Scanner engine com checks passivos + score (conjunto em expansão)
 - [x] CLI de scan manual
 - [x] API com semáforo + relatório
-- [ ] Geração de PDF (executivo + técnico) — WeasyPrint
+- [x] Geração de PDF (executivo + técnico) — WeasyPrint
 - [ ] Discovery Worker (Google Dorks por plataforma)
 - [ ] Dashboard React + pagamento (Pix + Stripe)
 

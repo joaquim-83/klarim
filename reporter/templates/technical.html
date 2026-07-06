@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<style>
+  @page {
+    size: A4;
+    margin: 1.4cm 1.5cm 1.2cm 1.5cm;
+    @bottom-right { content: "Klarim — Relatório Técnico  ·  página " counter(page) " de " counter(pages); font-size: 7.5pt; color: #8B949E; }
+  }
+  html { background: #0D1117; }
+  body {
+    color: #E6EDF3;
+    font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 10pt;
+    line-height: 1.5;
+    margin: 0;
+  }
+  .mono { font-family: "SF Mono", "DejaVu Sans Mono", Consolas, monospace; }
+  .muted { color: #8B949E; }
+
+  .header { width: 100%; border-collapse: collapse; border-bottom: 2px solid #30363D; margin-bottom: 16px; }
+  .header td { padding-bottom: 10px; vertical-align: middle; }
+  .header .logo-cell { width: 40px; }
+  .header .logo-cell svg { width: 32px; height: 32px; display: block; }
+  .header .brand-cell { padding-left: 9px; }
+  .header .brand-cell .name { font-size: 17pt; font-weight: 800; letter-spacing: 2px; }
+  .header .brand-cell .name .alert { color: #FF6B35; }
+  .header .doc-cell { text-align: right; }
+  .header .doc-cell .title { font-size: 11pt; font-weight: 700; }
+
+  .target { background: #161B22; border: 1px solid #30363D; border-radius: 8px; padding: 10px 14px; margin-bottom: 14px; }
+  .target .site { font-size: 13pt; font-weight: 700; display: inline-block; }
+  .target .score-badge { float: right; font-weight: 800; font-size: 15pt; }
+  .target .url { font-size: 9pt; }
+
+  h2 { font-size: 13pt; border-bottom: 1px solid #30363D; padding-bottom: 5px; margin: 18px 0 12px 0; }
+  .page-break { page-break-before: always; }
+
+  /* Summary table */
+  table.summary { width: 100%; border-collapse: collapse; font-size: 9.5pt; }
+  table.summary th { text-align: left; color: #8B949E; font-weight: 600; border-bottom: 1px solid #30363D; padding: 5px 6px; text-transform: uppercase; font-size: 8pt; letter-spacing: 1px; }
+  table.summary td { padding: 5px 6px; border-bottom: 1px solid #21262D; vertical-align: top; }
+  .badge { display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 8pt; font-weight: 700; }
+
+  /* Finding cards */
+  .finding { border: 1px solid #30363D; border-left-width: 4px; border-radius: 8px; padding: 12px 14px; margin-bottom: 14px; background: #161B22; page-break-inside: avoid; }
+  .finding .fname { font-size: 11.5pt; font-weight: 700; display: inline-block; }
+  .finding .fsev { float: right; font-size: 8.5pt; font-weight: 700; text-transform: uppercase; letter-spacing: 1px; }
+  .finding .lbl { font-size: 8pt; color: #8B949E; text-transform: uppercase; letter-spacing: 1px; margin-top: 10px; }
+  .finding .val { margin-top: 2px; }
+  pre.code { background: #0D1117; border: 1px solid #30363D; border-radius: 6px; padding: 9px 11px; font-family: "SF Mono", "DejaVu Sans Mono", Consolas, monospace; font-size: 8.5pt; white-space: pre-wrap; word-break: break-word; color: #E6EDF3; margin: 4px 0 0 0; }
+
+  /* Inventory */
+  .inv { font-size: 9.5pt; }
+  .inv .k { font-family: "SF Mono", "DejaVu Sans Mono", Consolas, monospace; font-size: 8.5pt; word-break: break-all; padding: 3px 0; border-bottom: 1px solid #21262D; }
+  .inv .empty { color: #8B949E; font-style: italic; }
+  .inv h3 { font-size: 10.5pt; margin: 14px 0 6px 0; color: #E6EDF3; }
+
+  .footer { border-top: 1px solid #30363D; padding-top: 10px; margin-top: 20px; font-size: 8pt; color: #8B949E; }
+  .footer .id { float: right; }
+</style>
+</head>
+<body>
+
+  <!-- ===================== PÁGINA 1 — SUMÁRIO ===================== -->
+  <table class="header"><tr>
+    <td class="logo-cell">{{ logo_svg | safe }}</td>
+    <td class="brand-cell"><span class="name">KLA<span class="alert">R</span>IM</span></td>
+    <td class="doc-cell">
+      <div class="title">Relatório Técnico</div>
+      <div class="muted" style="font-size:8.5pt;">Detalhamento e correções</div>
+    </td>
+  </tr></table>
+
+  <div class="target">
+    <span class="score-badge" style="color: {{ score_color }};">{{ score }}/100 · {{ semaphore_label }}</span>
+    <span class="site">{{ site_name }}</span>
+    <div class="url mono muted">{{ target_url }}</div>
+    <div class="muted" style="font-size:8.5pt; margin-top:3px;">
+      Varredura em {{ scan_date }} · PASS {{ counts.passed }} · FAIL {{ counts.failed }} · INCONCLUSO {{ counts.inconclusive }}
+    </div>
+  </div>
+
+  <h2>Resumo das verificações</h2>
+  <table class="summary">
+    <thead>
+      <tr><th style="width:26px;">#</th><th>Verificação</th><th style="width:90px;">Severidade</th><th style="width:100px;">Status</th></tr>
+    </thead>
+    <tbody>
+      {% for c in all_checks %}
+      <tr>
+        <td class="muted">{{ "%02d"|format(c.num) }}</td>
+        <td>{{ c.name }}</td>
+        <td style="color: {{ c.severity_color }};">{{ c.severity_label }}</td>
+        <td><span class="badge" style="background: {{ c.status_color }}22; color: {{ c.status_color }};">{{ c.status_label }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <!-- ===================== PÁGINAS 2+ — DETALHES ===================== -->
+  <div class="page-break"></div>
+  <h2>Detalhamento das falhas ({{ n_problems }})</h2>
+
+  {% if not fails %}
+    <p class="muted">Nenhuma falha detectada nesta varredura.</p>
+  {% endif %}
+
+  {% for f in fails %}
+  <div class="finding" style="border-left-color: {{ f.severity_color }};">
+    <span class="fname">{{ f.name }}</span>
+    <span class="fsev" style="color: {{ f.severity_color }};">{{ f.severity_label }}</span>
+    <div class="lbl">Evidência</div>
+    <div class="val mono" style="font-size:9pt;">{{ f.evidence }}</div>
+    {% if f.impact %}
+    <div class="lbl">Impacto</div>
+    <div class="val">{{ f.impact }}</div>
+    {% endif %}
+    {% if f.fix %}
+    <div class="lbl">Correção</div>
+    <div class="val">{{ f.fix }}</div>
+    {% endif %}
+    {% if f.fix_code %}
+    <pre class="code">{{ f.fix_code }}</pre>
+    {% endif %}
+  </div>
+  {% endfor %}
+
+  <!-- ===================== INVENTÁRIO ===================== -->
+  <div class="page-break"></div>
+  <h2>Inventário técnico</h2>
+  <div class="inv">
+
+    <h3>Domínios externos carregando scripts ({{ inventory.external_domains|length }})</h3>
+    {% if inventory.external_domains %}
+      {% for d in inventory.external_domains %}<div class="k">{{ d }}</div>{% endfor %}
+    {% else %}<div class="empty">Nenhum.</div>{% endif %}
+
+    <h3>Scripts externos sem SRI ({{ inventory.without_sri|length }})</h3>
+    {% if inventory.without_sri %}
+      {% for u in inventory.without_sri %}<div class="k">{{ u }}</div>{% endfor %}
+    {% else %}<div class="empty">Nenhum.</div>{% endif %}
+
+    <h3>Scripts de fontes arriscadas ({{ inventory.risky_scripts|length }})</h3>
+    {% if inventory.risky_scripts %}
+      {% for r in inventory.risky_scripts %}<div class="k">{{ r.url }} — {{ r.reason }}</div>{% endfor %}
+    {% else %}<div class="empty">Nenhum.</div>{% endif %}
+
+    <h3>Headers HTTP capturados ({{ inventory.headers|length }})</h3>
+    {% if inventory.headers %}
+      {% for h in inventory.headers %}<div class="k">{{ h.name }}: {{ h.value }}</div>{% endfor %}
+    {% else %}<div class="empty">Nenhum header de segurança relevante capturado.</div>{% endif %}
+
+  </div>
+
+  <div class="footer">
+    <span class="id mono">{{ report_id }}</span>
+    Varredura 100% passiva, sem testes intrusivos. Klarim Scanner {{ scanner_version }}.<br>
+    Gerado em {{ scan_date }}.
+  </div>
+
+</body>
+</html>

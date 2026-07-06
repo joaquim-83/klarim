@@ -62,6 +62,7 @@ async def check(url: str) -> CheckResult:
     ratio = missing / total
 
     affected_domains = sorted({s.host for s in without_sri})
+    without_sri_urls = [s.src for s in without_sri]
 
     if ratio > MISSING_SRI_THRESHOLD:
         status = Status.FAIL
@@ -90,5 +91,6 @@ async def check(url: str) -> CheckResult:
             "without_sri": missing,
             "ratio_without_sri": round(ratio, 3),
             "affected_domains": affected_domains,
+            "without_sri_urls": without_sri_urls,
         },
     )

@@ -94,10 +94,15 @@ klarim/
 │   └── checks/             # um módulo por check
 │       ├── base.py         # CheckResult, rate limit, helper HTTP, parse HTML
 │       └── check_*.py      # os checks (descobertos dinamicamente)
+├── reporter/               # geração de PDF (WeasyPrint + Jinja2)
+│   ├── generator.py        # generate_executive_pdf() / generate_technical_pdf()
+│   ├── templates/          # executive.html + technical.html
+│   └── assets/logo.svg     # logo Klarim (beacon)
 ├── api/                    # API HTTP (FastAPI)
-│   └── main.py             # semáforo grátis + relatório técnico
+│   └── main.py             # semáforo grátis + relatório técnico + PDFs
 └── tests/                  # pytest
-    └── test_checks.py      # unit tests + teste online opt-in
+    ├── test_checks.py      # unit tests dos checks + teste online opt-in
+    └── test_reporter.py    # geração de PDF (offline, guardado por libs nativas)
 ```
 
 ---
@@ -203,6 +208,9 @@ pip install -r requirements.txt
 python -m scanner.main https://www.example.com
 python -m scanner.main https://www.example.com --json
 
+# Scan + gerar PDFs (executivo + técnico) no diretório atual
+python -m scanner.main https://www.example.com --pdf
+
 # Stack completa (Postgres + Redis + API + Worker)
 docker-compose up --build
 
@@ -272,3 +280,31 @@ nenhuma credencial de longa duração. Recursos criados (KL-3):
 
 **Regra de segurança:** nunca commitar chaves SSH, service account keys ou o
 `.env` de produção. Tudo sensível vive em GitHub Secrets ou na VM.
+
+---
+
+## 9. Relatórios PDF (`reporter/`)
+
+O relatório PDF é **o produto que o Klarim vende**. O módulo `reporter/` converte
+um `ScanReport` em dois PDFs via **Jinja2 (HTML) → WeasyPrint (PDF)**:
+
+- **Executivo** (`generate_executive_pdf`) — 1-2 páginas, dono do negócio:
+  semáforo grande, linguagem acessível, bloco LGPD, lista de problemas em
+  linguagem humana, referral.
+- **Técnico** (`generate_technical_pdf`) — 3-5 páginas, dev/agência: tabela de
+  todos os checks, detalhamento de cada FALHA (evidência + impacto + correção com
+  exemplo de código) e inventário (domínios externos, scripts sem SRI, fontes
+  arriscadas, headers HTTP).
+
+Ambas são `async` (renderização roda em `asyncio.to_thread`) e retornam `bytes`.
+
+- **Conteúdo por check:** `ACCESSIBLE` (frases de negócio) e `TECHNICAL`
+  (impacto + correção) em `reporter/generator.py`, indexados por `check_id`. Ao
+  adicionar um check novo, acrescente a entrada nos dois dicionários.
+- **Identidade visual:** paleta dark (`#0D1117` fundo, `#FF6B35` alerta,
+  `#00D26A` ok, `#E6EDF3` texto). CSS embutido nos templates.
+- **WeasyPrint** precisa de libs nativas (pango/cairo) — já no `Dockerfile` e no
+  job `test` do CI. Localmente, em macOS: `brew install pango`.
+
+Uso: CLI `--pdf`, ou endpoints `GET /report/executive?url=` e
+`GET /report/technical?url=` (retornam `application/pdf`).

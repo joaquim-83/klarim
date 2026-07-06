@@ -1,0 +1,367 @@
+"""Geração de relatórios PDF (executivo + técnico) a partir de um ScanReport.
+
+Fluxo: ``ScanReport`` -> contexto -> template Jinja2 (HTML) -> WeasyPrint -> PDF.
+
+Duas funções públicas:
+
+* :func:`generate_executive_pdf` — 1-2 páginas, para o dono do negócio.
+* :func:`generate_technical_pdf` — 3-5 páginas, para dev/agência.
+
+Ambas são ``async``: a renderização (CPU-bound) roda em thread separada via
+``asyncio.to_thread`` para não bloquear o event loop da API.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
+
+from jinja2 import Environment, FileSystemLoader, select_autoescape
+from weasyprint import HTML
+
+from scanner import __version__ as scanner_version
+from scanner.runner import ScanReport
+from scanner.checks.base import Status, Severity
+
+_HERE = Path(__file__).resolve().parent
+_TEMPLATES = _HERE / "templates"
+_ASSETS = _HERE / "assets"
+
+_env = Environment(
+    loader=FileSystemLoader(str(_TEMPLATES)),
+    autoescape=select_autoescape(["html", "xml"]),
+    trim_blocks=True,
+    lstrip_blocks=True,
+)
+
+
+# --------------------------------------------------------------------------- #
+# Paleta e rótulos
+# --------------------------------------------------------------------------- #
+
+COLORS = {
+    "bg": "#0D1117",
+    "text": "#E6EDF3",
+    "alert": "#FF6B35",   # laranja — alarme
+    "ok": "#00D26A",      # verde — segurança
+    "muted": "#8B949E",
+    "panel": "#161B22",
+    "border": "#30363D",
+}
+
+# Cor do semáforo por faixa de score.
+SEMAPHORE_COLOR = {"verde": "#00D26A", "amarelo": "#F2C744", "vermelho": "#FF4D4D"}
+SEMAPHORE_LABEL = {"verde": "VERDE", "amarelo": "AMARELO", "vermelho": "VERMELHO"}
+
+SEVERITY_LABEL = {
+    Severity.CRITICA: "Crítica",
+    Severity.ALTA: "Alta",
+    Severity.MEDIA: "Média",
+    Severity.BAIXA: "Baixa",
+}
+SEVERITY_COLOR = {
+    Severity.CRITICA: "#FF4D4D",
+    Severity.ALTA: "#FF6B35",
+    Severity.MEDIA: "#F2C744",
+    Severity.BAIXA: "#58A6FF",
+}
+
+STATUS_LABEL = {Status.PASS: "PASS", Status.FAIL: "FAIL", Status.INCONCLUSO: "INCONCLUSO"}
+STATUS_COLOR = {Status.PASS: "#00D26A", Status.FAIL: "#FF4D4D", Status.INCONCLUSO: "#F2C744"}
+
+
+# --------------------------------------------------------------------------- #
+# Traduções acessíveis (executivo) — o que significa cada FALHA em linguagem
+# de negócio, sem jargão.
+# --------------------------------------------------------------------------- #
+
+ACCESSIBLE: Dict[str, str] = {
+    "check_01_https": "Seu site não redireciona automaticamente para uma conexão segura (HTTPS).",
+    "check_02_hsts": "Seu site não força conexão segura em todas as visitas (HSTS ausente).",
+    "check_03_ssl": "O certificado de segurança (SSL) do seu site apresenta problemas.",
+    "check_04_tls": "Seu site aceita protocolos de criptografia antigos e inseguros.",
+    "check_05_csp": "Seu site não tem proteção contra a injeção de scripts maliciosos.",
+    "check_06_xfo": "Seu site pode ser incorporado em páginas falsas para aplicar golpes (clickjacking).",
+    "check_07_xcto": "O navegador pode interpretar arquivos do seu site de forma insegura.",
+    "check_08_server": "Seu site revela a versão do software do servidor, o que facilita ataques.",
+    "check_09_sourcemaps": "O código-fonte do seu site está exposto publicamente.",
+    "check_10_sensitive": "Arquivos sensíveis do seu site estão acessíveis publicamente.",
+    "check_11_dirlist": "As pastas do seu site permitem que qualquer um liste todos os arquivos.",
+    "check_12_metatags": "Seu site expõe qual tecnologia foi usada para construí-lo.",
+    "check_13_sri": "Scripts de terceiros são carregados sem verificação de integridade.",
+    "check_14_risky_sources": "Seu site carrega código de fontes não confiáveis.",
+    "check_15_external_domains": "Seu site carrega scripts de um número elevado de domínios externos.",
+}
+
+
+# --------------------------------------------------------------------------- #
+# Conteúdo técnico — impacto + recomendação de correção (com exemplo).
+# --------------------------------------------------------------------------- #
+
+TECHNICAL: Dict[str, Dict[str, str]] = {
+    "check_01_https": {
+        "impact": "Tráfego servido em HTTP pode ser interceptado ou alterado por um atacante na rede (man-in-the-middle).",
+        "fix": "Redirecione todo HTTP (porta 80) para HTTPS com 301 e sirva o site exclusivamente por TLS.",
+        "fix_code": "# nginx\nserver {\n    listen 80;\n    return 301 https://$host$request_uri;\n}",
+    },
+    "check_02_hsts": {
+        "impact": "Sem HSTS, o primeiro acesso pode ser forçado a HTTP e sofrer downgrade/interceptação.",
+        "fix": "Envie o header HSTS em todas as respostas HTTPS.",
+        "fix_code": "Strict-Transport-Security: max-age=31536000; includeSubDomains",
+    },
+    "check_03_ssl": {
+        "impact": "Certificado expirado, não confiável ou com domínio incorreto quebra a confiança e permite MITM.",
+        "fix": "Emita/renove o certificado por uma CA confiável (ex.: Let's Encrypt) cobrindo todos os domínios usados.",
+        "fix_code": "certbot --nginx -d exemplo.com.br -d www.exemplo.com.br",
+    },
+    "check_04_tls": {
+        "impact": "TLS 1.0/1.1 têm vulnerabilidades conhecidas (BEAST, POODLE) e não devem ser aceitos.",
+        "fix": "Aceite apenas TLS 1.2+.",
+        "fix_code": "# nginx\nssl_protocols TLSv1.2 TLSv1.3;",
+    },
+    "check_05_csp": {
+        "impact": "Sem CSP, uma falha de XSS pode executar scripts arbitrários no contexto do site.",
+        "fix": "Defina uma Content-Security-Policy restritiva e vá ajustando as origens confiáveis.",
+        "fix_code": "Content-Security-Policy: default-src 'self'; script-src 'self' cdn.exemplo.com",
+    },
+    "check_06_xfo": {
+        "impact": "Sem proteção, a página pode ser embutida em um iframe invisível para clickjacking.",
+        "fix": "Envie X-Frame-Options (ou a diretiva CSP frame-ancestors).",
+        "fix_code": "X-Frame-Options: DENY\n# ou\nContent-Security-Policy: frame-ancestors 'none'",
+    },
+    "check_07_xcto": {
+        "impact": "Sem nosniff, o navegador pode adivinhar o tipo de um arquivo e executá-lo como algo perigoso.",
+        "fix": "Envie o header X-Content-Type-Options.",
+        "fix_code": "X-Content-Type-Options: nosniff",
+    },
+    "check_08_server": {
+        "impact": "Expor a versão exata do servidor facilita ao atacante buscar exploits conhecidos.",
+        "fix": "Oculte a versão do servidor e do stack.",
+        "fix_code": "# nginx\nserver_tokens off;",
+    },
+    "check_09_sourcemaps": {
+        "impact": "Source maps (.js.map) revelam o código-fonte original, comentários e lógica interna da aplicação.",
+        "fix": "Não publique arquivos .map em produção; desative a geração de source maps no build.",
+        "fix_code": "# Create React App\nGENERATE_SOURCEMAP=false npm run build",
+    },
+    "check_10_sensitive": {
+        "impact": "Arquivos como .env, .git/config e backups podem conter segredos, credenciais e chaves.",
+        "fix": "Remova esses arquivos do webroot e bloqueie o acesso a caminhos sensíveis.",
+        "fix_code": "# nginx\nlocation ~ /\\.(env|git) { deny all; return 404; }",
+    },
+    "check_11_dirlist": {
+        "impact": "A listagem de diretório expõe todos os arquivos de uma pasta, inclusive os não intencionais.",
+        "fix": "Desative o autoindex do servidor.",
+        "fix_code": "# nginx\nautoindex off;",
+    },
+    "check_12_metatags": {
+        "impact": "Fingerprints de framework em meta tags ajudam o atacante a escolher exploits específicos.",
+        "fix": "Remova as meta tags default do framework na build de produção.",
+        "fix_code": "<!-- remova: <meta name=\"generator\" content=\"...\"> -->",
+    },
+    "check_13_sri": {
+        "impact": "Se um CDN de terceiros for comprometido, um script alterado executa sem qualquer detecção.",
+        "fix": "Adicione Subresource Integrity (SRI) e crossorigin a cada script externo.",
+        "fix_code": "<script src=\"https://cdn.exemplo.com/lib.js\"\n        integrity=\"sha384-...\"\n        crossorigin=\"anonymous\"></script>",
+    },
+    "check_14_risky_sources": {
+        "impact": "Código servido de GitHub Pages pessoal, buckets S3 públicos ou paste sites pode ser alterado por terceiros a qualquer momento — vetor direto de supply chain.",
+        "fix": "Hospede o script em infraestrutura própria ou CDN confiável e aplique SRI.",
+        "fix_code": "<!-- evite: https://usuario.github.io/... , https://bucket.s3.amazonaws.com/... -->",
+    },
+    "check_15_external_domains": {
+        "impact": "Cada domínio externo que carrega script é mais um elo na cadeia de suprimentos e mais uma superfície de ataque.",
+        "fix": "Reduza dependências de terceiros, consolide provedores e audite periodicamente os scripts carregados.",
+        "fix_code": "",
+    },
+}
+
+LGPD_TEXT = (
+    "Se o seu site coleta dados pessoais (nome, CPF, e-mail, cartão de crédito), "
+    "você está sujeito à Lei Geral de Proteção de Dados (LGPD). Falhas de segurança "
+    "podem resultar em sanções de até R$ 50 milhões por infração (Art. 52)."
+)
+
+
+# --------------------------------------------------------------------------- #
+# Helpers
+# --------------------------------------------------------------------------- #
+
+def site_name(url: str) -> str:
+    host = (urlparse(url).hostname or url).lower()
+    return host[4:] if host.startswith("www.") else host
+
+
+def report_id(url: str, started_at: str) -> str:
+    """ID estável por scan (mesmo alvo + mesmo instante -> mesmo ID)."""
+    digest = hashlib.sha256(f"{url}|{started_at}".encode()).hexdigest()[:8].upper()
+    return f"KLR-{digest}"
+
+
+def _fmt_date(iso: str) -> str:
+    try:
+        dt = datetime.fromisoformat(iso)
+        return dt.strftime("%d/%m/%Y %H:%M UTC")
+    except (ValueError, TypeError):
+        return iso
+
+
+def _date_for_filename(iso: str) -> str:
+    try:
+        return datetime.fromisoformat(iso).strftime("%Y-%m-%d")
+    except (ValueError, TypeError):
+        return "sem-data"
+
+
+def _logo_svg() -> str:
+    return (_ASSETS / "logo.svg").read_text(encoding="utf-8")
+
+
+def _collect_headers(report: ScanReport) -> List[Dict[str, str]]:
+    """Reúne os headers HTTP notáveis capturados pelos checks de header."""
+    by_id = {r.check_id: r for r in report.results}
+    out: List[Dict[str, str]] = []
+
+    def add(name: str, value: Optional[str]) -> None:
+        if value:
+            out.append({"name": name, "value": str(value)})
+
+    if "check_02_hsts" in by_id:
+        add("Strict-Transport-Security", by_id["check_02_hsts"].details.get("header"))
+    if "check_05_csp" in by_id:
+        add("Content-Security-Policy", by_id["check_05_csp"].details.get("header"))
+    if "check_06_xfo" in by_id:
+        d = by_id["check_06_xfo"].details
+        add("X-Frame-Options", d.get("header"))
+    if "check_07_xcto" in by_id:
+        add("X-Content-Type-Options", by_id["check_07_xcto"].details.get("header"))
+    if "check_08_server" in by_id:
+        d = by_id["check_08_server"].details
+        add("Server", d.get("server"))
+        add("X-Powered-By", d.get("x_powered_by"))
+    return out
+
+
+def _build_context(report: ScanReport, target_url: str) -> Dict[str, Any]:
+    s = report.score
+    sev = s.fails_by_severity if s else {}
+    by_id = {r.check_id: r for r in report.results}
+
+    fails = []
+    for r in report.results:
+        if r.status != Status.FAIL:
+            continue
+        tech = TECHNICAL.get(r.check_id, {})
+        fails.append({
+            "check_id": r.check_id,
+            "name": r.name,
+            "severity": r.severity,
+            "severity_label": SEVERITY_LABEL.get(r.severity, r.severity),
+            "severity_color": SEVERITY_COLOR.get(r.severity, COLORS["muted"]),
+            "evidence": r.evidence,
+            "accessible": ACCESSIBLE.get(r.check_id, r.name),
+            "impact": tech.get("impact", ""),
+            "fix": tech.get("fix", ""),
+            "fix_code": tech.get("fix_code", ""),
+        })
+
+    all_checks = []
+    for i, r in enumerate(report.results, start=1):
+        all_checks.append({
+            "num": i,
+            "name": r.name,
+            "status": r.status,
+            "status_label": STATUS_LABEL.get(r.status, r.status),
+            "status_color": STATUS_COLOR.get(r.status, COLORS["muted"]),
+            "severity_label": SEVERITY_LABEL.get(r.severity, r.severity),
+            "severity_color": SEVERITY_COLOR.get(r.severity, COLORS["muted"]),
+            "evidence": r.evidence,
+        })
+
+    # Inventário (supply chain) a partir dos details dos checks.
+    inv_external = by_id.get("check_15_external_domains")
+    inv_sri = by_id.get("check_13_sri")
+    inv_risky = by_id.get("check_14_risky_sources")
+
+    inventory = {
+        "external_domains": (inv_external.details.get("external_domains", []) if inv_external else []),
+        "without_sri": (inv_sri.details.get("without_sri_urls", []) if inv_sri else []),
+        "risky_scripts": (inv_risky.details.get("risky_scripts", []) if inv_risky else []),
+        "headers": _collect_headers(report),
+    }
+
+    n = s.failed if s else 0
+    if n == 0:
+        problem_line = "Nenhum problema de segurança foi encontrado no seu site."
+    elif n == 1:
+        problem_line = "Encontramos 1 problema de segurança no seu site."
+    else:
+        problem_line = f"Encontramos {n} problemas de segurança no seu site."
+
+    return {
+        "colors": COLORS,
+        "logo_svg": _logo_svg(),
+        "site_name": site_name(target_url),
+        "target_url": target_url,
+        "scan_date": _fmt_date(report.started_at),
+        "report_id": report_id(target_url, report.started_at),
+        "scanner_version": scanner_version,
+        "score": s.score if s else 0,
+        "semaphore": s.semaphore if s else "vermelho",
+        "semaphore_label": SEMAPHORE_LABEL.get(s.semaphore if s else "vermelho", ""),
+        "score_color": SEMAPHORE_COLOR.get(s.semaphore if s else "vermelho", "#FF4D4D"),
+        "counts": {
+            "passed": s.passed if s else 0,
+            "failed": s.failed if s else 0,
+            "inconclusive": s.inconclusive if s else 0,
+        },
+        "sev_counts": {
+            "critica": sev.get(Severity.CRITICA, 0),
+            "alta": sev.get(Severity.ALTA, 0),
+            "media": sev.get(Severity.MEDIA, 0),
+            "baixa": sev.get(Severity.BAIXA, 0),
+        },
+        "sev_colors": {
+            "critica": SEVERITY_COLOR[Severity.CRITICA],
+            "alta": SEVERITY_COLOR[Severity.ALTA],
+            "media": SEVERITY_COLOR[Severity.MEDIA],
+            "baixa": SEVERITY_COLOR[Severity.BAIXA],
+        },
+        "problem_line": problem_line,
+        "n_problems": n,
+        "fails": fails,
+        "all_checks": all_checks,
+        "inventory": inventory,
+        "lgpd_text": LGPD_TEXT,
+    }
+
+
+def _render_pdf(html_str: str) -> bytes:
+    return HTML(string=html_str, base_url=str(_HERE)).write_pdf()
+
+
+# --------------------------------------------------------------------------- #
+# API pública
+# --------------------------------------------------------------------------- #
+
+async def generate_executive_pdf(scan_report: ScanReport, target_url: str) -> bytes:
+    """Gera o PDF executivo (semáforo) a partir de um ScanReport."""
+    ctx = _build_context(scan_report, target_url)
+    html_str = _env.get_template("executive.html").render(**ctx)
+    return await asyncio.to_thread(_render_pdf, html_str)
+
+
+async def generate_technical_pdf(scan_report: ScanReport, target_url: str) -> bytes:
+    """Gera o PDF técnico (detalhado) a partir de um ScanReport."""
+    ctx = _build_context(scan_report, target_url)
+    html_str = _env.get_template("technical.html").render(**ctx)
+    return await asyncio.to_thread(_render_pdf, html_str)
+
+
+def pdf_filename(kind: str, target_url: str, started_at: str) -> str:
+    """Nome de arquivo padrão: klarim_<kind>_<host>_<data>.pdf."""
+    return f"klarim_{kind}_{site_name(target_url)}_{_date_for_filename(started_at)}.pdf"

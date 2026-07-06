@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" role="img" aria-label="Klarim">
+  <!-- Beacon / alarme: um farol de alerta cortando a névoa. -->
+  <!-- linhas radiantes de alerta -->
+  <g stroke="#FF6B35" stroke-width="3.5" stroke-linecap="round">
+    <line x1="32" y1="4" x2="32" y2="13"/>
+    <line x1="12" y1="12" x2="18" y2="18"/>
+    <line x1="52" y1="12" x2="46" y2="18"/>
+    <line x1="6" y1="30" x2="15" y2="30"/>
+    <line x1="58" y1="30" x2="49" y2="30"/>
+  </g>
+  <!-- corpo do farol -->
+  <circle cx="32" cy="38" r="17" fill="#FF6B35"/>
+  <circle cx="32" cy="38" r="7.5" fill="#0D1117"/>
+</svg>

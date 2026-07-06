@@ -18,10 +18,15 @@ Then:
 from __future__ import annotations
 
 from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 
 from scanner import run_scan, summarize_fails
 from scanner import __version__ as scanner_version
+from reporter import (
+    generate_executive_pdf,
+    generate_technical_pdf,
+    pdf_filename,
+)
 
 app = FastAPI(
     title="Klarim API",
@@ -35,7 +40,13 @@ async def root() -> dict:
     return {
         "name": "Klarim API",
         "scanner_version": scanner_version,
-        "endpoints": ["/health", "/scan?url=", "/scan/summary?url="],
+        "endpoints": [
+            "/health",
+            "/scan?url=",
+            "/scan/summary?url=",
+            "/report/executive?url=",
+            "/report/technical?url=",
+        ],
         "disclaimer": (
             "Varredura passiva (GET/HEAD a URLs públicas). Não realiza ataques, "
             "brute-force ou acesso autenticado."
@@ -73,6 +84,30 @@ async def scan_summary(url: str = Query(..., description="URL alvo.")) -> dict:
     }
 
 
+@app.get("/report/executive")
+async def report_executive(url: str = Query(..., description="URL alvo.")) -> Response:
+    """Relatório executivo em PDF (semáforo + linguagem de negócio)."""
+    report = await _safe_scan(url)
+    pdf = await _safe_pdf(generate_executive_pdf, report, url)
+    return _pdf_response(pdf, pdf_filename("executive", url, report.started_at))
+
+
+@app.get("/report/technical")
+async def report_technical(url: str = Query(..., description="URL alvo.")) -> Response:
+    """Relatório técnico em PDF (checks detalhados + correções + inventário)."""
+    report = await _safe_scan(url)
+    pdf = await _safe_pdf(generate_technical_pdf, report, url)
+    return _pdf_response(pdf, pdf_filename("technical", url, report.started_at))
+
+
+def _pdf_response(pdf: bytes, filename: str) -> Response:
+    return Response(
+        content=pdf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'inline; filename="{filename}"'},
+    )
+
+
 async def _safe_scan(url: str):
     try:
         return await run_scan(url)
@@ -80,3 +115,10 @@ async def _safe_scan(url: str):
         raise HTTPException(status_code=400, detail=f"URL inválida: {exc}") from exc
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=502, detail=f"Falha na varredura: {exc!r}") from exc
+
+
+async def _safe_pdf(fn, report, url: str) -> bytes:
+    try:
+        return await fn(report, url)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"Falha ao gerar PDF: {exc!r}") from exc

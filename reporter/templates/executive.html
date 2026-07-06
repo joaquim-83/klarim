@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<style>
+  @page {
+    size: A4;
+    margin: 1.4cm 1.5cm 1.2cm 1.5cm;
+  }
+  html { background: #0D1117; }
+  body {
+    color: #E6EDF3;
+    font-family: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    font-size: 11pt;
+    line-height: 1.5;
+    margin: 0;
+  }
+  .mono { font-family: "SF Mono", "DejaVu Sans Mono", Consolas, monospace; }
+  .muted { color: #8B949E; }
+
+  /* Header */
+  .header { width: 100%; border-collapse: collapse; border-bottom: 2px solid #30363D; margin-bottom: 18px; }
+  .header td { padding-bottom: 10px; vertical-align: middle; }
+  .header .logo-cell { width: 44px; }
+  .header .logo-cell svg { width: 36px; height: 36px; display: block; }
+  .header .brand-cell { padding-left: 10px; }
+  .header .brand-cell .name { font-size: 20pt; font-weight: 800; letter-spacing: 2px; }
+  .header .brand-cell .name .alert { color: #FF6B35; }
+  .header .brand-cell .tag { font-size: 9pt; color: #8B949E; letter-spacing: 1px; }
+  .header .doc-cell { text-align: right; }
+  .header .doc-cell .title { font-size: 12pt; font-weight: 700; }
+
+  /* Target */
+  .target { background: #161B22; border: 1px solid #30363D; border-radius: 8px; padding: 12px 16px; margin-bottom: 20px; }
+  .target .site { font-size: 15pt; font-weight: 700; }
+  .target .url { font-size: 10pt; }
+
+  /* Score / semáforo */
+  .scoreblock { margin: 8px 0 18px 0; }
+  .scoreblock .cell { display: table-cell; vertical-align: middle; }
+  .semaphore-outer { width: 168px; height: 168px; border-radius: 50%; border: 11px solid #444; display: table; }
+  .semaphore-inner { display: table-cell; vertical-align: middle; text-align: center; }
+  .semaphore-inner .score { font-size: 46pt; font-weight: 800; line-height: 1; }
+  .semaphore-inner .of { font-size: 13pt; color: #8B949E; }
+  .semaphore-label { padding-left: 26px; }
+  .semaphore-label .cls { font-size: 26pt; font-weight: 800; letter-spacing: 1px; }
+  .semaphore-label .lead { font-size: 12pt; margin-top: 6px; max-width: 320px; }
+
+  /* Severity chips */
+  .sev-row { margin: 6px 0 20px 0; }
+  .chip { display: inline-block; border: 1px solid #30363D; border-radius: 6px; padding: 6px 12px; margin-right: 8px; background: #161B22; }
+  .chip .n { font-size: 16pt; font-weight: 800; }
+  .chip .l { font-size: 8.5pt; color: #8B949E; text-transform: uppercase; letter-spacing: 1px; }
+
+  /* LGPD */
+  .lgpd { border-left: 4px solid #FF6B35; background: #161B22; padding: 12px 16px; border-radius: 4px; margin-top: 6px; }
+  .lgpd .h { font-weight: 700; color: #FF6B35; margin-bottom: 4px; }
+
+  /* Page 2 */
+  .page-break { page-break-before: always; }
+  h2 { font-size: 14pt; border-bottom: 1px solid #30363D; padding-bottom: 6px; margin: 4px 0 14px 0; }
+  .reco { background: #161B22; border: 1px solid #30363D; border-radius: 8px; padding: 14px 16px; margin-bottom: 18px; }
+  .reco .big { font-size: 12.5pt; font-weight: 700; color: #00D26A; }
+  .problem { padding: 9px 0; border-bottom: 1px solid #21262D; }
+  .problem .dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%; margin-right: 8px; vertical-align: middle; }
+  .problem .txt { display: inline; }
+  .problem .sev { font-size: 8pt; color: #8B949E; text-transform: uppercase; letter-spacing: 1px; margin-left: 4px; }
+  .referral { text-align: center; background: #161B22; border: 1px dashed #FF6B35; border-radius: 8px; padding: 14px; margin: 20px 0; }
+  .referral .q { font-weight: 700; }
+  .referral .u { color: #FF6B35; font-weight: 700; }
+  .footer { border-top: 1px solid #30363D; padding-top: 10px; margin-top: 22px; font-size: 8.5pt; color: #8B949E; }
+  .footer .id { float: right; }
+</style>
+</head>
+<body>
+
+  <!-- ===================== PÁGINA 1 — RESULTADO ===================== -->
+  <table class="header"><tr>
+    <td class="logo-cell">{{ logo_svg | safe }}</td>
+    <td class="brand-cell">
+      <div class="name">KLA<span class="alert">R</span>IM</div>
+      <div class="tag">O ALARME QUE TOCA ANTES DO ATAQUE</div>
+    </td>
+    <td class="doc-cell">
+      <div class="title">Relatório de Segurança</div>
+      <div class="muted" style="font-size:9pt;">Versão Executiva</div>
+    </td>
+  </tr></table>
+
+  <div class="target">
+    <div class="site">{{ site_name }}</div>
+    <div class="url mono muted">{{ target_url }}</div>
+    <div class="muted" style="font-size:9pt; margin-top:4px;">Varredura em {{ scan_date }}</div>
+  </div>
+
+  <div class="scoreblock">
+    <div class="cell">
+      <div class="semaphore-outer" style="border-color: {{ score_color }};">
+        <div class="semaphore-inner">
+          <div class="score" style="color: {{ score_color }};">{{ score }}</div>
+          <div class="of">/ 100</div>
+        </div>
+      </div>
+    </div>
+    <div class="cell semaphore-label">
+      <div class="cls" style="color: {{ score_color }};">{{ semaphore_label }}</div>
+      <div class="lead">{{ problem_line }}</div>
+    </div>
+  </div>
+
+  <div class="sev-row">
+    <span class="chip"><span class="n" style="color:{{ sev_colors.critica }};">{{ sev_counts.critica }}</span> <span class="l">Críticos</span></span>
+    <span class="chip"><span class="n" style="color:{{ sev_colors.alta }};">{{ sev_counts.alta }}</span> <span class="l">Altos</span></span>
+    <span class="chip"><span class="n" style="color:{{ sev_colors.media }};">{{ sev_counts.media }}</span> <span class="l">Médios</span></span>
+    <span class="chip"><span class="n" style="color:{{ sev_colors.baixa }};">{{ sev_counts.baixa }}</span> <span class="l">Baixos</span></span>
+  </div>
+
+  <div class="lgpd">
+    <div class="h">⚠ Atenção — LGPD</div>
+    <div>{{ lgpd_text }}</div>
+  </div>
+
+  <!-- ===================== PÁGINA 2 — AÇÃO ===================== -->
+  <div class="page-break"></div>
+
+  <h2>O que fazer agora</h2>
+  <div class="reco">
+    <div class="big">Encaminhe este relatório ao responsável pelo seu site</div>
+    <div class="muted" style="margin-top:4px;">
+      (agência, desenvolvedor ou equipe de TI). Eles saberão aplicar as correções
+      descritas na versão técnica deste relatório.
+    </div>
+  </div>
+
+  {% if fails %}
+  <h2>Problemas encontrados ({{ n_problems }})</h2>
+  {% for f in fails %}
+  <div class="problem">
+    <span class="dot" style="background: {{ f.severity_color }};"></span>
+    <span class="txt">{{ f.accessible }}</span>
+    <span class="sev">{{ f.severity_label }}</span>
+  </div>
+  {% endfor %}
+  {% else %}
+  <h2>Problemas encontrados</h2>
+  <div class="problem"><span class="dot" style="background:#00D26A;"></span>
+    Nenhuma falha de segurança foi detectada nesta varredura. Continue monitorando.</div>
+  {% endif %}
+
+  <div class="referral">
+    <div class="q">Precisa de ajuda para corrigir?</div>
+    <div class="u">klarim.com.br/parceiros</div>
+  </div>
+
+  <div class="footer">
+    <span class="id mono">{{ report_id }}</span>
+    Klarim Scanner {{ scanner_version }} — Varredura 100% passiva. Nenhum dado foi acessado.<br>
+    Gerado em {{ scan_date }}.
+  </div>
+
+</body>
+</html>

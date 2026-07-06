@@ -38,6 +38,8 @@ htmlcov/
 scan_output/
 # Governance reports under claude/ are tracked on purpose.
 !claude/reports/
+# Reference PDFs kept under claude/reports/ are tracked (KL-4 visual samples).
+!claude/reports/*.pdf
 
 # --- OS / editor ---
 .DS_Store

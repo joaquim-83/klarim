@@ -29,14 +29,38 @@ SCAN_QUEUE = os.environ.get("KLARIM_SCAN_QUEUE", "klarim:scan_queue")
 REPORT_PREFIX = os.environ.get("KLARIM_REPORT_PREFIX", "klarim:report:")
 
 
-async def _scan_and_print(url: str, as_json: bool) -> int:
+async def _scan_and_print(url: str, as_json: bool, as_pdf: bool) -> int:
     report = await run_scan(url)
     if as_json:
         print(json.dumps(report.to_dict(), ensure_ascii=False, indent=2))
     else:
         print(format_report(report))
+
+    if as_pdf:
+        await _write_pdfs(report, url)
+
     # Exit non-zero when the target is in the red, so CI/cron can react.
     return 0 if (report.score and report.score.score >= 50) else 1
+
+
+async def _write_pdfs(report, url: str) -> None:
+    """Generate the executive + technical PDFs into the current directory."""
+    # Imported lazily: pulls in weasyprint/jinja2 only when --pdf is used.
+    from reporter import (
+        generate_executive_pdf,
+        generate_technical_pdf,
+        pdf_filename,
+    )
+
+    exec_bytes = await generate_executive_pdf(report, url)
+    tech_bytes = await generate_technical_pdf(report, url)
+    exec_name = pdf_filename("executive", url, report.started_at)
+    tech_name = pdf_filename("technical", url, report.started_at)
+    with open(exec_name, "wb") as fh:
+        fh.write(exec_bytes)
+    with open(tech_name, "wb") as fh:
+        fh.write(tech_bytes)
+    print(f"\nPDFs gerados:\n  - {exec_name} ({len(exec_bytes)} bytes)\n  - {tech_name} ({len(tech_bytes)} bytes)")
 
 
 def _run_worker() -> int:
@@ -93,6 +117,11 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Emit the report as JSON (single-scan mode).",
     )
+    parser.add_argument(
+        "--pdf",
+        action="store_true",
+        help="Also write executive + technical PDF reports to the current directory.",
+    )
     args = parser.parse_args(argv)
 
     if args.worker:
@@ -101,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
     if not args.url:
         parser.error("provide a URL to scan, or use --worker")
 
-    return asyncio.run(_scan_and_print(args.url, args.json))
+    return asyncio.run(_scan_and_print(args.url, args.json, args.pdf))
 
 
 if __name__ == "__main__":
