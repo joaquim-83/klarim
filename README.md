@@ -288,6 +288,26 @@ Referrer-Policy) — o Klarim pratica o que prega. Renovação automática via
 
 ---
 
+## Pagamento (PIX via AbacatePay)
+
+O relatório completo é liberado após pagamento **PIX** (módulo
+[`payments/`](./payments/), integração AbacatePay). Fluxo: semáforo grátis →
+"Ver relatório completo — R$ 29" → **QR code PIX inline** → polling do status →
+pago → download dos PDFs. Um **webhook** confirma o pagamento server-side.
+
+- `POST /api/payment/create` → cria a cobrança e retorna `br_code` + `qr_code_base64`.
+- `GET /api/payment/status?charge_id=` → polling (`{status, paid}`).
+- `POST /api/webhooks/abacatepay?webhookSecret=…` → confirmação server-side.
+- `GET /api/report/{executive,technical}?url=…&charge_id=…` → **402** sem cobrança paga.
+
+**Modo livre:** com `KLARIM_DEV_MODE=true` **ou** sem `ABACATEPAY_API_KEY`
+configurada, os PDFs ficam liberados (o site funciona antes de configurar o
+pagamento). Variáveis (no `.env` da VM, **nunca commitadas**):
+`ABACATEPAY_API_KEY`, `ABACATEPAY_WEBHOOK_SECRET`, `KLARIM_DEV_MODE`. Chave
+`abc_dev_…` = sandbox (permite simular pagamento).
+
+---
+
 ## Framework legal
 
 O Klarim se enquadra como serviço de *Security Rating* / *Monitoramento de
@@ -325,6 +345,7 @@ disclaimer claro em todos os relatórios.
 - [x] Geração de PDF (executivo + técnico) — WeasyPrint
 - [ ] Discovery Worker (Google Dorks por plataforma)
 - [x] Interface web (React + Vite + Tailwind + Nginx) — scan self-service
-- [ ] Pagamento (Pix + Stripe) para liberar o relatório completo
+- [x] Pagamento PIX (AbacatePay) para liberar o relatório completo
+- [ ] Pagamento por cartão (Stripe)
 
 Ver `klarim_mvp_spec.md` para a especificação completa do produto.

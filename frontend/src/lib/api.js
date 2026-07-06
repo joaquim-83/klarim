@@ -13,14 +13,39 @@ export async function fetchSummary(url) {
   return resp.json()
 }
 
+// Cria uma cobrança PIX para a URL escaneada. Retorna { charge_id, br_code,
+// qr_code_base64, amount_display, expires_at, ... }.
+export async function createPayment(url) {
+  const resp = await fetch(`${BASE}/payment/create`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  })
+  if (!resp.ok) {
+    const detail = await resp.text().catch(() => '')
+    throw new Error(`Falha ao criar cobrança (${resp.status}). ${detail}`)
+  }
+  return resp.json()
+}
+
+// Consulta o status do pagamento. Retorna { status, paid }.
+export async function getPaymentStatus(chargeId) {
+  const resp = await fetch(`${BASE}/payment/status?charge_id=${encodeURIComponent(chargeId)}`)
+  if (!resp.ok) throw new Error(`Falha ao consultar pagamento (${resp.status}).`)
+  return resp.json()
+}
+
 // URL absoluta de um relatório PDF (kind = "executive" | "technical").
-export function reportUrl(kind, url) {
-  return `${BASE}/report/${kind}?url=${encodeURIComponent(url)}`
+export function reportUrl(kind, url, chargeId) {
+  let u = `${BASE}/report/${kind}?url=${encodeURIComponent(url)}`
+  if (chargeId) u += `&charge_id=${encodeURIComponent(chargeId)}`
+  return u
 }
 
 // Baixa um PDF de relatório: busca o blob e dispara o download no navegador.
-export async function downloadReport(kind, url) {
-  const resp = await fetch(reportUrl(kind, url))
+export async function downloadReport(kind, url, chargeId) {
+  const resp = await fetch(reportUrl(kind, url, chargeId))
+  if (resp.status === 402) throw new Error('Pagamento necessário para baixar o relatório.')
   if (!resp.ok) throw new Error(`Falha ao gerar o PDF (${resp.status}).`)
   const blob = await resp.blob()
   const objectUrl = URL.createObjectURL(blob)

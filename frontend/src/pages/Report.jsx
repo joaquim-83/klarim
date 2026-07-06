@@ -5,7 +5,7 @@ import Semaphore from '../components/Semaphore'
 import { useSummary } from '../lib/useSummary'
 import { downloadReport } from '../lib/api'
 
-function DownloadButton({ kind, url, label, hint }) {
+function DownloadButton({ kind, url, chargeId, label, hint }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
 
@@ -13,7 +13,7 @@ function DownloadButton({ kind, url, label, hint }) {
     setBusy(true)
     setErr('')
     try {
-      await downloadReport(kind, url)
+      await downloadReport(kind, url, chargeId)
     } catch (e) {
       setErr(e.message || 'Falha no download.')
     } finally {
@@ -45,6 +45,7 @@ function DownloadButton({ kind, url, label, hint }) {
 export default function Report() {
   const [params] = useSearchParams()
   const url = params.get('url') || ''
+  const chargeId = params.get('charge_id') || ''
   const { summary, loading, error } = useSummary(url)
 
   if (loading) {
@@ -90,12 +91,14 @@ export default function Report() {
           <DownloadButton
             kind="executive"
             url={url}
+            chargeId={chargeId}
             label="Baixar Relatório Executivo (PDF)"
             hint="Para o dono do negócio — semáforo e linguagem acessível."
           />
           <DownloadButton
             kind="technical"
             url={url}
+            chargeId={chargeId}
             label="Baixar Relatório Técnico (PDF)"
             hint="Para o dev/agência — detalhes e correções."
           />

@@ -70,9 +70,7 @@ export default function Result() {
         {/* CTA principal */}
         <div className="mt-8">
           <button
-            onClick={() =>
-              navigate(`/report?url=${encodeURIComponent(url)}`, { state: { summary } })
-            }
+            onClick={() => navigate(`/pay?url=${encodeURIComponent(url)}`)}
             className="w-full rounded-lg bg-klarim-alert px-6 py-4 text-lg font-bold text-klarim-bg transition hover:opacity-90 sm:w-auto"
           >
             Ver relatório completo — R$ 29

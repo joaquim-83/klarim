@@ -103,11 +103,16 @@ klarim/
 │   ├── src/components/     # Logo, Semaphore, Header, Footer, ...
 │   ├── nginx.conf          # serve estático + proxy /api → api:8000
 │   └── Dockerfile          # build Vite → Nginx (serviço web no compose)
+├── payments/               # pagamento AbacatePay PIX (KL-7)
+│   ├── abacatepay.py       # client v2 + verify_webhook_signature
+│   ├── models.py           # Charge, PaymentStatus, PRICING
+│   └── store.py            # persistência (Postgres + fallback memória)
 ├── api/                    # API HTTP (FastAPI)
-│   └── main.py             # semáforo grátis + relatório técnico + PDFs
+│   └── main.py             # semáforo + PDFs + fluxo de pagamento PIX
 └── tests/                  # pytest
     ├── test_checks.py      # unit tests dos checks + teste online opt-in
-    └── test_reporter.py    # geração de PDF (offline, guardado por libs nativas)
+    ├── test_reporter.py    # geração de PDF (offline, guardado por libs nativas)
+    └── test_payments.py    # client/store/gating de pagamento (offline)
 ```
 
 ---
@@ -363,3 +368,36 @@ e recria o `web` em HTTPS.
 (deploy-hook recria o `web`); o pacote `certbot` também instala um timer.
 Volumes: `/etc/letsencrypt` e `/var/www/certbot` (host) montados no `web` (ro).
 Firewall GCP: `klarim-allow-http` (80) + `klarim-allow-https` (443), tag `http-server`.
+
+---
+
+## 11. Pagamento — AbacatePay PIX (`payments/`)
+
+Fluxo: semáforo grátis → CTA → cria cobrança PIX → QR code inline → polling do
+status → PAID → libera o download dos PDFs. Webhook confirma server-side (redundância).
+
+- **`payments/abacatepay.py`** — client httpx da AbacatePay v2 (`create_pix_charge`,
+  `check_payment`, `create_webhook`, `simulate_payment` [dev], `verify_webhook_signature`).
+  Timeout 15s, retry/backoff em 5xx. Valores em **centavos**.
+- **`payments/store.py`** — persistência de cobranças em **PostgreSQL** (tabela
+  `payments`, psycopg2 em thread) com **fallback em memória** se não houver DB.
+- **`payments/models.py`** — `Charge`, `PaymentStatus`, `PRICING` (MVP usa
+  `standard` = R$ 29).
+
+**Endpoints** (`api/main.py`): `POST /payment/create` (retorna QR), `GET
+/payment/status?charge_id=` (polling), `POST /webhooks/abacatepay` (query-secret
+obrigatório + HMAC defense-in-depth). Os `/report/*` exigem `charge_id` **pago**
+senão **402** — exceto em modo livre.
+
+**Modo livre (PDFs sem pagamento):** `KLARIM_DEV_MODE=true` **ou**
+`ABACATEPAY_API_KEY` vazia (sem chave não há como cobrar → não bloqueia). Com a
+chave configurada e dev mode off, o pagamento é exigido.
+
+**Variáveis de ambiente** (no `.env` da VM, **nunca commitadas**):
+`ABACATEPAY_API_KEY`, `ABACATEPAY_WEBHOOK_SECRET`, `KLARIM_DEV_MODE`
+(opcional `ABACATEPAY_HMAC_STRICT`). Chave `abc_dev_...` = sandbox;
+`simulate_payment` só funciona com chave dev.
+
+**Webhook:** registrar o endpoint como
+`https://klarim.net/api/webhooks/abacatepay?webhookSecret=<secret>` (o mesmo
+valor de `ABACATEPAY_WEBHOOK_SECRET`).
