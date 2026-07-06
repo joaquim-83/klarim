@@ -39,7 +39,7 @@ class ScoreBreakdown:
     grade_icon: str                  # 🟢 | 🟡 | 🔴
     earned_weight: int
     considered_weight: int           # denominator (excludes INCONCLUSO)
-    total_weight: int                # weight of all 12 checks
+    total_weight: int                # weight of all registered checks
     passed: int
     failed: int
     inconclusive: int

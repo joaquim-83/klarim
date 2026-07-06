@@ -80,7 +80,7 @@ def _run_worker() -> int:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="klarim-scanner",
-        description="Klarim passive web-security scanner (12 checks).",
+        description="Klarim passive web-security scanner (passive checks, in continuous expansion).",
     )
     parser.add_argument("url", nargs="?", help="Target URL to scan.")
     parser.add_argument(

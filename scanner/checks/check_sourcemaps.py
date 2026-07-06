@@ -31,6 +31,8 @@ from .base import (
     looks_like_html,
 )
 
+ORDER = 9
+CHECK_ID = "check_09_sourcemaps"
 NAME = "Source maps expostos"
 
 # Extract src="..."/src='...' from <script> tags pointing at .js files.

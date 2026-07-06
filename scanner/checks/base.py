@@ -22,8 +22,9 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass, field, asdict
-from typing import Any, Dict, Optional
-from urllib.parse import urlparse, urlunparse
+from html.parser import HTMLParser
+from typing import Any, Dict, List, Optional
+from urllib.parse import urljoin, urlparse, urlunparse
 
 import httpx
 
@@ -242,3 +243,108 @@ def looks_like_html(response: httpx.Response) -> bool:
         return True
     body_head = response.text[:512].lstrip().lower()
     return body_head.startswith(("<!doctype html", "<html"))
+
+
+# --------------------------------------------------------------------------- #
+# Registrable-domain helper (lightweight public-suffix approximation)
+# --------------------------------------------------------------------------- #
+
+# A small set of multi-label public suffixes so that e.g. "www.foo.com.br" and
+# "cdn.foo.com.br" resolve to the same registrable domain "foo.com.br". This is
+# a pragmatic, dependency-free approximation of the Public Suffix List — good
+# enough to tell "same site" from "third party" for the supply-chain checks.
+_TWO_LABEL_SUFFIXES = {
+    # ccTLD second levels
+    "com.br", "net.br", "org.br", "gov.br", "edu.br", "art.br", "blog.br",
+    "co.uk", "org.uk", "gov.uk", "ac.uk",
+    "com.au", "net.au", "org.au",
+    "co.jp", "com.mx", "com.ar", "com.co", "co.in", "com.pt", "co.za",
+    # private suffixes where each subdomain is a distinct owner (PSL "private")
+    "github.io",
+}
+
+
+def registrable_domain(host: str) -> str:
+    """Return the registrable domain (eTLD+1) of ``host``.
+
+    ``www.verdegreen.com.br`` -> ``verdegreen.com.br``;
+    ``bigspotteddog.github.io`` -> ``bigspotteddog.github.io`` (``github.io`` is a
+    public suffix, so each GitHub Pages account is its own registrable domain —
+    exactly what the supply-chain checks want).
+    """
+    host = (host or "").lower().strip(".")
+    parts = host.split(".")
+    if len(parts) <= 2:
+        return host
+    last2 = ".".join(parts[-2:])
+    if last2 in _TWO_LABEL_SUFFIXES:
+        return ".".join(parts[-3:])
+    return last2
+
+
+# --------------------------------------------------------------------------- #
+# HTML <script> extraction (stdlib parser; no BeautifulSoup dependency)
+# --------------------------------------------------------------------------- #
+
+@dataclass
+class ScriptRef:
+    """A ``<script src=...>`` reference found in a page."""
+
+    src: str                     # absolute URL of the script
+    host: str                    # hostname of the script URL
+    registrable: str             # registrable domain of the script host
+    integrity: Optional[str]     # value of the integrity attribute, if any
+    is_external: bool            # True if a different registrable domain than the page
+
+    @property
+    def has_sri(self) -> bool:
+        return bool(self.integrity)
+
+
+class _ScriptSrcExtractor(HTMLParser):
+    """Collect (src, integrity) for every <script> tag carrying a ``src``."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.found: List[tuple[str, Optional[str]]] = []
+
+    def handle_starttag(self, tag: str, attrs) -> None:
+        if tag.lower() != "script":
+            return
+        adict = {k.lower(): v for k, v in attrs}
+        src = adict.get("src")
+        if src:
+            integrity = adict.get("integrity") or None
+            self.found.append((src.strip(), integrity))
+
+
+def extract_script_refs(html: str, page_url: str) -> List[ScriptRef]:
+    """Parse ``html`` and return every external/internal script reference.
+
+    ``page_url`` is used to resolve relative ``src`` values to absolute URLs and
+    to decide whether each script is same-site or third-party.
+    """
+    parser = _ScriptSrcExtractor()
+    try:
+        parser.feed(html)
+    except Exception:  # noqa: BLE001 - malformed HTML must not crash a check
+        pass
+
+    page_reg = registrable_domain(domain_of(page_url))
+    refs: List[ScriptRef] = []
+    for src, integrity in parser.found:
+        abs_src = urljoin(page_url, src)
+        host = (urlparse(abs_src).hostname or "").lower()
+        if not host:
+            continue  # e.g. data: URIs
+        reg = registrable_domain(host)
+        refs.append(
+            ScriptRef(
+                src=abs_src,
+                host=host,
+                registrable=reg,
+                integrity=integrity,
+                is_external=(reg != page_reg),
+            )
+        )
+    return refs

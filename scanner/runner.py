@@ -1,10 +1,11 @@
 """Scan orchestration.
 
-``run_scan(url)`` executes the 12 checks (in the canonical order defined by
-``scanner.checks.ALL_CHECKS``) against a single target and returns a
+``run_scan(url)`` executes every registered check (discovered dynamically and
+ordered by ``scanner.checks.ALL_CHECKS``) against a single target and returns a
 :class:`ScanReport` bundling every :class:`CheckResult` plus the computed score.
+The number of checks is dynamic and grows as new ``check_*`` modules are added.
 
-The checks run **in sequence** (spec: "executar os 12 checks em sequência"),
+The checks run **in sequence** (spec: "executar os checks em sequência"),
 which also keeps the per-domain rate limit trivially satisfied.
 """
 
@@ -41,7 +42,7 @@ class ScanReport:
 
 
 async def run_scan(url: str) -> ScanReport:
-    """Run all 12 checks against ``url`` sequentially and score the result."""
+    """Run all registered checks against ``url`` sequentially and score them."""
     target = normalize_url(url)
     loop = asyncio.get_event_loop()
     started_at = datetime.now(timezone.utc)

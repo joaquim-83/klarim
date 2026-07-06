@@ -25,6 +25,8 @@ from .base import (
     looks_like_html,
 )
 
+ORDER = 10
+CHECK_ID = "check_10_sensitive"
 NAME = "Arquivos sensíveis expostos"
 
 

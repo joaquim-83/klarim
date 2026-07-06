@@ -11,14 +11,15 @@
 Criado o **scaffold inicial** do Klarim a partir da especificação
 (`klarim_mvp_spec.md`):
 
-- **12 checks passivos** de segurança, cada um seguindo a interface
-  `async def check(url) -> CheckResult` e registrados em ordem em
-  `scanner/checks/__init__.py`:
+- **Checks passivos** de segurança (12 nesta sessão de scaffold; o conjunto é
+  dinâmico e cresceu depois — ver [KL-2](../reports/KL-2_checks-13-15-supply-chain.md)),
+  cada um seguindo a interface `async def check(url) -> CheckResult` e
+  registrados em ordem em `scanner/checks/__init__.py`:
   1. HTTPS ativo · 2. HSTS · 3. Certificado SSL válido · 4. TLS 1.2+ only ·
   5. CSP · 6. X-Frame-Options · 7. X-Content-Type-Options · 8. Server header ·
   9. Source maps expostos · 10. Arquivos sensíveis · 11. Directory listing ·
   12. Meta tags default.
-- **Engine:** `runner.py` (orquestra os 12 checks em sequência + score),
+- **Engine:** `runner.py` (orquestra os checks em sequência + score),
   `scoring.py` (score 0–100 ponderado por severidade, semáforo 🔴🟡🟢),
   `checks/base.py` (`CheckResult`, rate limit 1 req/s por domínio, timeout 10s,
   User-Agent honesto).
@@ -43,7 +44,7 @@ Criado o **scaffold inicial** do Klarim a partir da especificação
 
 ## Gaps de cobertura identificados
 
-O caso dos hotéis Duda mostra que os 12 checks atuais **não cobrem** os achados
+O caso dos hotéis Duda mostra que os checks então existentes **não cobrem** os achados
 mais graves daquele padrão. Faltam checks **13–15** (candidatos a próximos cards):
 
 - **13 — Subresource Integrity (SRI):** scripts externos sem atributo `integrity`.

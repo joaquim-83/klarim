@@ -11,6 +11,8 @@ import httpx
 
 from .base import CheckResult, Status, Severity, fetch, with_scheme
 
+ORDER = 5
+CHECK_ID = "check_05_csp"
 NAME = "Content-Security-Policy"
 
 

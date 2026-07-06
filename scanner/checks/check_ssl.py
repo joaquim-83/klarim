@@ -30,6 +30,8 @@ from .base import (
     _rate_limiter,
 )
 
+ORDER = 3
+CHECK_ID = "check_03_ssl"
 NAME = "Certificado SSL válido"
 
 # Warn (but still PASS) when the certificate expires within this many days.

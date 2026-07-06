@@ -3,8 +3,9 @@
 **"O alarme que toca antes do ataque."**
 
 Scanner passivo de superfície de ataque para PMEs e desenvolvedores. O Klarim
-executa **12 verificações de segurança** comprováveis — sem invasão — contra um
-site público, calcula um **score de 0 a 100** e gera um relatório acionável.
+executa **verificações passivas de segurança** comprováveis — sem invasão —
+contra um site público, calcula um **score de 0 a 100** e gera um relatório
+acionável. O conjunto de checks é **dinâmico e cresce continuamente** (hoje 15).
 
 > ⚖️ **Passivo e legal por design.** O Klarim faz apenas requisições HTTP
 > `GET`/`HEAD` a URLs públicas e lê certificados TLS públicos. Ele **nunca**
@@ -13,7 +14,11 @@ site público, calcula um **score de 0 a 100** e gera um relatório acionável.
 
 ---
 
-## As 12 verificações
+## As verificações
+
+O número de checks **não é fixo** — novos módulos `check_*.py` são descobertos
+automaticamente (ver [Como adicionar um check](#como-adicionar-um-check)).
+Conjunto atual (15):
 
 | # | Check | Módulo | Severidade |
 |---|-------|--------|-----------|
@@ -29,6 +34,14 @@ site público, calcula um **score de 0 a 100** e gera um relatório acionável.
 | 10 | Arquivos sensíveis (`.env`, `.git/config`, …) | `check_sensitive.py` | 🔴 Crítica |
 | 11 | Directory listing desativado | `check_dirlist.py` | 🟠 Alta |
 | 12 | Meta tags sem fingerprint de framework | `check_metatags.py` | 🔵 Baixa |
+| 13 | SRI ausente em scripts externos (>50%) | `check_sri.py` | 🟠 Alta |
+| 14 | Scripts de fontes arriscadas (GitHub Pages, S3, paste) | `check_risky_sources.py` | 🟠 Alta |
+| 15 | Domínios externos em excesso carregando scripts | `check_external_domains.py` | 🟡 Média / 🟠 Alta |
+
+Os checks 13–15 cobrem **supply chain / third-party risk** (KL-2). Eles fazem um
+parse **passivo do HTML servido** (via `html.parser` da stdlib) — scripts
+injetados dinamicamente por JavaScript em runtime não são vistos por uma
+requisição HTTP simples.
 
 Cada check implementa a mesma interface:
 
@@ -40,6 +53,18 @@ onde `CheckResult` carrega `name`, `status` (`PASS`/`FAIL`/`INCONCLUSO`),
 `severity` (`CRITICA`/`ALTA`/`MEDIA`/`BAIXA`) e `evidence` (string com o detalhe
 concreto observado). Timeout de **10s por request** e **rate limit de 1 req/s por
 domínio** são aplicados de forma centralizada em `checks/base.py`.
+
+### Como adicionar um check
+
+Não há lista hardcoded — o runner descobre os checks dinamicamente. Para
+adicionar um:
+
+1. Crie `scanner/checks/check_<slug>.py`.
+2. Defina três constantes de módulo: `ORDER` (int, posição na suíte),
+   `CHECK_ID` (str, ex.: `"check_16_cookies"`) e `NAME`.
+3. Implemente `async def check(url: str) -> CheckResult`.
+4. Pronto — `scanner.checks.discover_checks()` já o inclui, ordenado por `ORDER`.
+   O score em `scoring.py` funciona com qualquer número de checks.
 
 ---
 
@@ -58,11 +83,11 @@ klarim/
 ├── requirements.txt
 ├── scanner/
 │   ├── main.py             # entry point do worker + CLI
-│   ├── runner.py           # orquestra os 12 checks + score
+│   ├── runner.py           # orquestra todos os checks registrados + score
 │   ├── scoring.py          # cálculo do score 0-100 + semáforo
 │   └── checks/
-│       ├── base.py         # CheckResult, rate limit, HTTP helper
-│       └── check_*.py      # os 12 checks
+│       ├── base.py         # CheckResult, rate limit, HTTP helper, HTML parse
+│       └── check_*.py      # os checks (descobertos dinamicamente)
 ├── api/
 │   └── main.py             # FastAPI (semáforo grátis + relatório)
 └── tests/
@@ -181,7 +206,7 @@ disclaimer claro em todos os relatórios.
 
 ## Roadmap (MVP)
 
-- [x] Scanner engine com os 12 checks + score
+- [x] Scanner engine com checks passivos + score (conjunto em expansão)
 - [x] CLI de scan manual
 - [x] API com semáforo + relatório
 - [ ] Geração de PDF (executivo + técnico) — WeasyPrint

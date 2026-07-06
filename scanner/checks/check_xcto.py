@@ -11,6 +11,8 @@ import httpx
 
 from .base import CheckResult, Status, Severity, fetch, with_scheme
 
+ORDER = 7
+CHECK_ID = "check_07_xcto"
 NAME = "X-Content-Type-Options"
 
 

@@ -18,6 +18,8 @@ import httpx
 
 from .base import CheckResult, Status, Severity, fetch, base_url
 
+ORDER = 11
+CHECK_ID = "check_11_dirlist"
 NAME = "Directory listing ativo"
 
 _DIRS = ["/static/", "/uploads/", "/backup/", "/images/", "/assets/", "/files/"]

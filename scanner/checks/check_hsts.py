@@ -12,6 +12,8 @@ import httpx
 
 from .base import CheckResult, Status, Severity, fetch, with_scheme
 
+ORDER = 2
+CHECK_ID = "check_02_hsts"
 NAME = "HSTS presente"
 
 

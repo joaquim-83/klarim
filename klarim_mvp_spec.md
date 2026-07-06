@@ -10,7 +10,7 @@ Ferramenta de varredura passiva de segurança web para PMEs e desenvolvedores in
 
 Klarim é um scanner de superfície de ataque que descobre vulnerabilidades comprovadas em sites e sistemas web, gera relatórios acionáveis, e alerta os responsáveis — tudo de forma passiva, legal e automatizada.
 
-O Klarim opera por **fingerprinting de plataforma**: identifica a tecnologia base de um site (Duda, WordPress, Wix, CRA, etc.), aplica os 12 checks de segurança, e gera um relatório calibrado ao setor do negócio. Uma vulnerabilidade num site de hotel que processa dados de hóspedes (LGPD) tem peso diferente da mesma vulnerabilidade num blog pessoal.
+O Klarim opera por **fingerprinting de plataforma**: identifica a tecnologia base de um site (Duda, WordPress, Wix, CRA, etc.), aplica seus checks de segurança, e gera um relatório calibrado ao setor do negócio. Uma vulnerabilidade num site de hotel que processa dados de hóspedes (LGPD) tem peso diferente da mesma vulnerabilidade num blog pessoal.
 
 **Público-alvo primário:** PMEs brasileiras de qualquer setor que tenham sistema web exposto e não tenham equipe de segurança — hotéis, clínicas, escolas, e-commerces, condomínios, escritórios de contabilidade, etc.
 
@@ -20,9 +20,14 @@ O Klarim opera por **fingerprinting de plataforma**: identifica a tecnologia bas
 
 ---
 
-## 2. As 12 Verificações do MVP
+## 2. As Verificações do MVP
 
 Cada check é binário (PASS/FAIL), comprovável sem invasão, e mapeado para uma severidade.
+
+> **Nota (KL-2):** o MVP nasceu com as 12 verificações abaixo, mas o número de
+> checks é **dinâmico e cresce com o projeto** — não é a identidade do produto.
+> Os checks 13–15 (supply chain: SRI, fontes arriscadas, domínios externos) já
+> foram adicionados; ver `README.md`/`claude.md` para o conjunto atual.
 
 ### Bloco 1 — Transporte e Criptografia
 
@@ -110,7 +115,7 @@ Combinando fingerprint de plataforma + palavras-chave de setor, o Discovery Work
 
 **Discovery Worker** — Alimenta a fila com alvos via fingerprinting de plataforma. Fontes: Google Custom Search API com dorks por plataforma + setor, input manual (self-service), Certificate Transparency logs. Classifica cada alvo por setor (turismo, saúde, educação, varejo, etc.) para calibrar severidade e pricing.
 
-**Scanner Engine** — Consome a fila e executa os 12 checks contra cada alvo. Implementado em Python (httpx + ssl + dns.resolver). Cada check é um módulo independente. Timeout de 10s por request. Rate limit de 1 req/s por domínio. Registra também: plataforma detectada, domínios externos, uso de SRI, scripts de fontes arriscadas (GitHub Pages, S3 público), e bibliotecas desatualizadas.
+**Scanner Engine** — Consome a fila e executa os checks registrados contra cada alvo. Implementado em Python (httpx + ssl + dns.resolver). Cada check é um módulo independente. Timeout de 10s por request. Rate limit de 1 req/s por domínio. Registra também: plataforma detectada, domínios externos, uso de SRI, scripts de fontes arriscadas (GitHub Pages, S3 público), e bibliotecas desatualizadas.
 
 **Reporter Engine** — Gera dois formatos de relatório:
 - **Relatório Executivo (semáforo)** — para o dono do negócio. Vermelho/amarelo/verde, linguagem acessível, foco em risco de negócio e LGPD. Ex: "Seu site pode expor dados de clientes."
@@ -223,7 +228,7 @@ Quando múltiplos clientes de uma mesma agência encaminham relatórios Klarim, 
 
 ### Fase 1 — MVP (4-6 semanas)
 
-- [ ] Scanner engine com os 12 checks
+- [ ] Scanner engine com os checks passivos (conjunto em expansão)
 - [ ] CLI para scan manual (`klarim scan https://example.com`)
 - [ ] Geração de relatório PDF (versão executiva + técnica)
 - [ ] Landing page com scan self-service (semáforo gratuito)

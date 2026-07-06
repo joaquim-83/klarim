@@ -14,6 +14,8 @@ import httpx
 
 from .base import CheckResult, Status, Severity, fetch, with_scheme
 
+ORDER = 8
+CHECK_ID = "check_08_server"
 NAME = "Server header exposto"
 
 # A version number: "Apache/2.4.41", "nginx/1.18.0", "Microsoft-IIS/10.0".

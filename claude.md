@@ -73,8 +73,8 @@ klarim/
 │   ├── runner.py           # orquestra os checks em sequência + score
 │   ├── scoring.py          # cálculo de score 0–100 + semáforo
 │   └── checks/             # um módulo por check
-│       ├── base.py         # CheckResult, rate limit, helper HTTP
-│       └── check_*.py      # os checks (hoje: 12)
+│       ├── base.py         # CheckResult, rate limit, helper HTTP, parse HTML
+│       └── check_*.py      # os checks (descobertos dinamicamente)
 ├── api/                    # API HTTP (FastAPI)
 │   └── main.py             # semáforo grátis + relatório técnico
 └── tests/                  # pytest
@@ -111,9 +111,37 @@ async def check(url: str) -> CheckResult
 - `CheckResult` (ver `scanner/checks/base.py`) carrega:
   `name`, `status` (`PASS` / `FAIL` / `INCONCLUSO`),
   `severity` (`CRITICA` / `ALTA` / `MEDIA` / `BAIXA`), `evidence` (string).
-- Registre o novo check em `scanner/checks/__init__.py` (`ALL_CHECKS`), em ordem.
+- **Descoberta dinâmica:** os checks são descobertos automaticamente por
+  `scanner/checks/__init__.py` (`discover_checks()`). Para adicionar um, crie
+  `check_<slug>.py` com as constantes de módulo `ORDER` (int), `CHECK_ID` (str) e
+  `NAME`, e a coroutine `check`. **Não existe lista hardcoded** e o score em
+  `scoring.py` funciona com qualquer número de checks.
 - Um check que não conseguiu avaliar retorna **`INCONCLUSO`** — nunca finge um
   `PASS`. `INCONCLUSO` é neutro no score.
+
+**O número de checks é dinâmico e cresce com o projeto** — nunca trate um número
+específico como identidade do produto. Conjunto atual (**15**):
+
+| # | Check | Módulo | Severidade |
+|---|-------|--------|-----------|
+| 01 | HTTPS ativo | `check_https.py` | Crítica |
+| 02 | HSTS presente | `check_hsts.py` | Alta |
+| 03 | Certificado SSL válido | `check_ssl.py` | Crítica |
+| 04 | TLS 1.2+ only | `check_tls.py` | Alta |
+| 05 | Content-Security-Policy | `check_csp.py` | Alta |
+| 06 | X-Frame-Options | `check_xfo.py` | Média |
+| 07 | X-Content-Type-Options | `check_xcto.py` | Média |
+| 08 | Server header exposto | `check_server.py` | Média |
+| 09 | Source maps expostos | `check_sourcemaps.py` | Crítica |
+| 10 | Arquivos sensíveis | `check_sensitive.py` | Crítica |
+| 11 | Directory listing | `check_dirlist.py` | Alta |
+| 12 | Meta tags default | `check_metatags.py` | Baixa |
+| 13 | SRI ausente em scripts externos | `check_sri.py` | Alta |
+| 14 | Scripts de fontes arriscadas | `check_risky_sources.py` | Alta |
+| 15 | Domínios externos em excesso | `check_external_domains.py` | Média/Alta |
+
+Checks 13–15 (supply chain, KL-2) fazem parse **passivo do HTML servido**;
+scripts injetados por JavaScript em runtime não são vistos por um GET simples.
 
 ### 4.3 Rede
 

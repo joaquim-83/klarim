@@ -4,7 +4,7 @@ Public surface:
 
     from scanner import run_scan, scan, ScanReport, compute_score
 
-* :func:`run_scan`  — async, runs the 12 checks against a URL.
+* :func:`run_scan`  — async, runs all registered checks against a URL.
 * :func:`scan`      — synchronous convenience wrapper.
 * :class:`ScanReport` — the bundled results + score.
 """

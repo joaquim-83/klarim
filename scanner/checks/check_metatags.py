@@ -16,6 +16,8 @@ import httpx
 
 from .base import CheckResult, Status, Severity, fetch, with_scheme
 
+ORDER = 12
+CHECK_ID = "check_12_metatags"
 NAME = "Meta tags default"
 
 # Framework/platform fingerprints commonly left in default templates.

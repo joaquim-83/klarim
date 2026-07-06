@@ -11,6 +11,8 @@ import httpx
 
 from .base import CheckResult, Status, Severity, fetch, with_scheme
 
+ORDER = 6
+CHECK_ID = "check_06_xfo"
 NAME = "X-Frame-Options"
 
 _VALID_XFO = {"deny", "sameorigin"}

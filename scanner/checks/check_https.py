@@ -17,6 +17,8 @@ import httpx
 
 from .base import CheckResult, Status, Severity, with_scheme
 
+ORDER = 1
+CHECK_ID = "check_01_https"
 NAME = "HTTPS ativo"
 
 

@@ -31,6 +31,8 @@ from .base import (
     _rate_limiter,
 )
 
+ORDER = 4
+CHECK_ID = "check_04_tls"
 NAME = "TLS 1.2+ only"
 
 _LEGACY_VERSIONS = [
