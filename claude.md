@@ -251,14 +251,22 @@ bash /opt/klarim/deploy/deploy.sh
 
 1. **Job `test`** — Python 3.12, `pip install -r requirements.txt`, `pytest`.
    Se falhar, **bloqueia o deploy** (`deploy` tem `needs: test`).
-2. **Job `deploy`** — autentica no GCP (`google-github-actions/auth` com o secret
-   `GCP_SA_KEY`), conecta na VM via `gcloud compute ssh` e executa
-   `deploy/deploy.sh`.
+2. **Job `deploy`** — autentica no GCP via **Workload Identity Federation**
+   (`google-github-actions/auth`, sem chave), conecta na VM via
+   `gcloud compute ssh` e executa `deploy/deploy.sh`.
+
+**Autenticação keyless (WIF).** O projeto proíbe chaves de service account (org
+policy `iam.disableServiceAccountKeyCreation`), então o CI autentica por OIDC —
+nenhuma credencial de longa duração. Recursos criados (KL-3):
+
+- SA `klarim-deploy@project-b08050df-fa4e-49ac-919.iam.gserviceaccount.com`
+  (papel `roles/compute.instanceAdmin.v1`).
+- Pool `github-pool` + provider `github-provider` (issuer GitHub), com condição
+  travada no repo `joaquim-83/klarim`.
+- Binding `roles/iam.workloadIdentityUser` da SA só para esse repo.
 
 **Secrets no GitHub** (configurar manualmente — o repo nunca guarda credenciais):
-`GCP_SA_KEY`, `GCP_PROJECT_ID`, `GCP_INSTANCE`, `GCP_ZONE` (e opcionalmente
-`SSH_PRIVATE_KEY`). A service account deve ter apenas `compute.instances.get` +
-`compute.instances.setMetadata` na VM (privilégio mínimo).
+`GCP_WIF_PROVIDER`, `GCP_SA_EMAIL`, `GCP_PROJECT_ID`, `GCP_INSTANCE`, `GCP_ZONE`.
 
 **Regra de segurança:** nunca commitar chaves SSH, service account keys ou o
 `.env` de produção. Tudo sensível vive em GitHub Secrets ou na VM.

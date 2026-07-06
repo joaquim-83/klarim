@@ -62,13 +62,16 @@ externo (porta 22 liberada). Para setup sem porta 22 pública, usar
 
 ### Secrets no GitHub (configurar manualmente)
 
-| Secret | Valor / descrição |
-|--------|-------------------|
-| `GCP_SA_KEY` | JSON da service account (mín.: `compute.instances.get` + `compute.instances.setMetadata`) |
+Autenticação **keyless via Workload Identity Federation** (ver adendo abaixo — o
+projeto proíbe chaves de SA):
+
+| Secret | Valor |
+|--------|-------|
+| `GCP_WIF_PROVIDER` | `projects/10946387758/locations/global/workloadIdentityPools/github-pool/providers/github-provider` |
+| `GCP_SA_EMAIL` | `klarim-deploy@project-b08050df-fa4e-49ac-919.iam.gserviceaccount.com` |
 | `GCP_PROJECT_ID` | `project-b08050df-fa4e-49ac-919` |
 | `GCP_INSTANCE` | `instance-20260706-112125` |
 | `GCP_ZONE` | `us-central1-a` |
-| `SSH_PRIVATE_KEY` | (opcional) caminho SSH direto, alternativa ao `gcloud compute ssh` |
 
 O repositório **não gera nem armazena** chaves/credenciais.
 
@@ -168,7 +171,49 @@ ou manuais via `bash /opt/klarim/deploy/deploy.sh`.
 
 1. Rodar os runbooks das Partes 1–2 na VM (ou conceder acesso a uma conta GCP
    para que o CLI os execute).
-2. Configurar os GitHub Secrets da tabela acima.
-3. Criar a service account de deploy com privilégio mínimo e baixar o JSON para
-   `GCP_SA_KEY`.
-4. Garantir conectividade SSH do runner à VM (firewall porta 22 ou IAP).
+2. Configurar os GitHub Secrets da tabela acima (`GCP_WIF_PROVIDER`,
+   `GCP_SA_EMAIL`, `GCP_PROJECT_ID`, `GCP_INSTANCE`, `GCP_ZONE`).
+3. Garantir conectividade SSH do runner à VM (firewall porta 22 ou IAP) e que a
+   SA `klarim-deploy` consiga fazer `gcloud compute ssh` (metadata SSH key).
+
+---
+
+## Adendo — Service account + Workload Identity Federation (executado)
+
+Após login interativo com `klarimscan@gmail.com` (Owner do projeto), a infra de
+autenticação foi criada **a partir do CLI**:
+
+| Passo | Comando | Resultado |
+|-------|---------|-----------|
+| Criar SA | `gcloud iam service-accounts create klarim-deploy` | ✅ criada |
+| Papel | `add-iam-policy-binding … roles/compute.instanceAdmin.v1` | ✅ concedido |
+| Chave JSON | `keys create` | ❌ **bloqueado** por org policy |
+
+**Por que não há chave JSON:** o projeto **impõe** a org policy
+`constraints/iam.disableServiceAccountKeyCreation` (`enforced: true`). Chaves de
+SA baixáveis são proibidas — uma boa prática de segurança. Migramos para
+**Workload Identity Federation** (keyless), que é a recomendação do Google para
+GitHub Actions e funciona dentro da policy.
+
+**Recursos WIF criados:**
+
+- Pool: `github-pool` (global).
+- Provider OIDC: `github-provider`, issuer `https://token.actions.githubusercontent.com`,
+  attribute-mapping `google.subject`/`attribute.repository`/`attribute.repository_owner`,
+  **attribute-condition** `assertion.repository=='joaquim-83/klarim'`.
+- Binding `roles/iam.workloadIdentityUser` na SA `klarim-deploy` para
+  `principalSet://…/attribute.repository/joaquim-83/klarim` (só este repo pode
+  impersonar a SA).
+- APIs habilitadas: `iam`, `iamcredentials`, `sts`, `cloudresourcemanager`.
+
+**Mudança no workflow:** o job `deploy` agora usa
+`permissions: id-token: write` + `google-github-actions/auth` com
+`workload_identity_provider` + `service_account` (em vez de `credentials_json`).
+
+**Nota de privilégio:** `roles/compute.instanceAdmin.v1` é mais amplo que o
+mínimo do card (`compute.instances.get` + `setMetadata`). Foi o papel pedido pelo
+operador; para least-privilege estrito, criar um custom role com apenas essas
+duas permissões e trocar o binding.
+
+**Pendente do operador:** apenas configurar os 5 GitHub Secrets acima. A infra
+GCP de autenticação já está pronta.

@@ -4,19 +4,22 @@ name: Deploy Klarim
 # deployed to the GCP VM over SSH. The deploy job never runs if tests fail
 # (it `needs: test`).
 #
+# Auth uses Workload Identity Federation (keyless, OIDC) — no service-account
+# JSON key. The project enforces the org policy
+# iam.disableServiceAccountKeyCreation, so downloadable keys are not an option;
+# WIF is also the Google-recommended approach for GitHub Actions.
+#
 # Required GitHub secrets (Settings > Secrets and variables > Actions) — set
 # these MANUALLY; this repo never stores credentials:
-#   GCP_SA_KEY       JSON key of a service account with, at minimum,
-#                    compute.instances.get and compute.instances.setMetadata
-#                    on the target VM (setMetadata lets `gcloud compute ssh`
-#                    inject its ephemeral SSH key). Add roles/compute.osLogin
-#                    instead if the project uses OS Login.
-#   GCP_PROJECT_ID   e.g. project-b08050df-fa4e-49ac-919
-#   GCP_INSTANCE     e.g. instance-20260706-112125
-#   GCP_ZONE         e.g. us-central1-a
-#   SSH_PRIVATE_KEY  (optional) private key for a direct SSH path, if you
-#                    prefer not to use `gcloud compute ssh`. Not used by the
-#                    default job below.
+#   GCP_WIF_PROVIDER  Workload Identity provider resource name, e.g.
+#     projects/10946387758/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+#   GCP_SA_EMAIL      klarim-deploy@project-b08050df-fa4e-49ac-919.iam.gserviceaccount.com
+#   GCP_PROJECT_ID    e.g. project-b08050df-fa4e-49ac-919
+#   GCP_INSTANCE      e.g. instance-20260706-112125
+#   GCP_ZONE          e.g. us-central1-a
+#
+# The provider is locked to the repo joaquim-83/klarim (attribute condition), and
+# the SA klarim-deploy has roles/iam.workloadIdentityUser only for that repo.
 
 on:
   push:
@@ -65,11 +68,17 @@ jobs:
     runs-on: ubuntu-latest
     # Only deploy the real branch, never a fork PR or other ref.
     if: github.ref == 'refs/heads/main'
+    # Required for Workload Identity Federation: the job must be allowed to mint
+    # an OIDC token that GCP exchanges for short-lived credentials.
+    permissions:
+      contents: read
+      id-token: write
     steps:
-      - name: Authenticate to Google Cloud
+      - name: Authenticate to Google Cloud (Workload Identity Federation)
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_SA_EMAIL }}
 
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2

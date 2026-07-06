@@ -191,9 +191,11 @@ bash /opt/klarim/deploy/deploy.sh
 2. **`deploy`** (`needs: test`) — autentica no GCP, faz SSH na VM e roda
    `deploy/deploy.sh` (`git pull` → `docker compose up -d --build` → health check).
 
-Secrets necessários no GitHub (configurados **manualmente**, nunca no repo):
-`GCP_SA_KEY`, `GCP_PROJECT_ID`, `GCP_INSTANCE`, `GCP_ZONE`. A service account usa
-privilégio mínimo (`compute.instances.get` + `compute.instances.setMetadata`).
+Autenticação **keyless via Workload Identity Federation** (OIDC) — o projeto
+proíbe chaves de service account. Secrets necessários no GitHub (configurados
+**manualmente**, nunca no repo): `GCP_WIF_PROVIDER`, `GCP_SA_EMAIL`,
+`GCP_PROJECT_ID`, `GCP_INSTANCE`, `GCP_ZONE`. O provider é travado no repo
+`joaquim-83/klarim` e a SA `klarim-deploy` só pode ser impersonada por ele.
 
 ---
 
