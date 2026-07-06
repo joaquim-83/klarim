@@ -19,14 +19,11 @@
 | 4. `deploy/setup-https.sh` | ✅ |
 | 5. Firewall GCP 443 | ✅ (`klarim-allow-https`) |
 | 6. Renovação no `deploy.sh` | ✅ |
-| 7. Validação HTTPS + self-scan | ⏳ **depende do domínio** |
+| 7. Validação HTTPS + self-scan | ✅ (domínio **klarim.net**) |
 | 8. Documentação | ✅ |
 
-> **Bloqueio real:** Let's Encrypt não emite certificado para IP — exige um
-> domínio com registro A apontando para `35.238.72.10`. O domínio não foi
-> informado neste prompt. **Todo o setup está pronto e parametrizado por
-> `DOMAIN`**; falta só emitir o certificado (1 comando) quando o domínio existir.
-> O site **continua no ar em HTTP** — nada foi quebrado.
+> **Domínio:** `klarim.net` (registro A apex + www → `35.238.72.10`, propagado).
+> Certificado Let's Encrypt emitido, HTTPS no ar, site validado (ver adendo).
 
 ---
 
@@ -79,19 +76,48 @@ recriar o `web`, ele passa a HTTPS sozinho. **Zero downtime, à prova de deploy.
 
 ## Critérios de aceite
 
-- [x] Nginx configurado com HTTPS (443 + redirect 80→443) — via template, ativa com cert.
-- [ ] Certificado Let's Encrypt válido — **pendente do domínio**.
-- [x] Security headers (HSTS, CSP, XFO, XCTO, Referrer-Policy) — na config HTTPS.
-- [x] Renovação automática (certbot renew no deploy.sh + timer do pacote).
+- [x] Nginx configurado com HTTPS (443 + redirect 80→443).
+- [x] Certificado Let's Encrypt válido (`klarim.net` + `www`, expira 2026-10-04).
+- [x] Security headers (HSTS, CSP, XFO, XCTO, Referrer-Policy).
+- [x] Renovação automática (certbot.timer + certbot renew no deploy.sh).
 - [x] Firewall GCP 443 aberto.
-- [ ] Endpoints via HTTPS — **pendente do domínio**.
-- [ ] Self-scan do Klarim passa — **pendente do domínio**.
+- [x] Endpoints via HTTPS (landing, /api/health).
+- [x] Self-scan do Klarim passa (95→**100** após `server_tokens off`).
 - [x] Documentação atualizada.
 - [x] Relatório em PT-BR.
 - [x] Commit e push.
 
+---
+
+## Adendo — Emissão e validação (2026-07-06)
+
+**Domínio:** `klarim.net` — `dig +short klarim.net` → `35.238.72.10` (apex e www,
+confirmado via 8.8.8.8). Emissão: `sudo bash deploy/setup-https.sh klarim.net`
+(webroot, sem downtime). Cert para `klarim.net` + `www.klarim.net`, expira
+**2026-10-04**. `certbot.timer` ativo. `DOMAIN=klarim.net` gravado no `.env` e
+`web` recriado em HTTPS (entrypoint detectou o cert).
+
+**Validação (Parte 7):**
+
+| Teste | Resultado |
+|-------|-----------|
+| `http://klarim.net` | `301 → https://klarim.net/` |
+| `https://klarim.net` | `HTTP/2 200` + HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy, CSP |
+| `https://klarim.net/api/health` | `{"status":"ok"}` |
+| Certificado | `CN=klarim.net`, issuer Let's Encrypt, TLS 1.2/1.3, HTTP/2 |
+
+**Self-scan (o Klarim contra si mesmo):** primeira passada **95/100 🟢** — mas o
+próprio scanner reprovou o **check 08 (Server header)**: o Nginx expunha
+`Server: nginx/1.31.2`. Corrigido com **`server_tokens off;`** nas duas configs.
+Após redeploy, re-scan → **100/100 🟢** (13 PASS, 1 INCONCLUSO no check 04 de TLS
+legado, que é neutro; 0 FAIL). O Klarim passa nos próprios checks. 🎯
+
+> Ironia proposital do card ("praticar o que prega") validada na prática: o
+> self-scan pegou uma exposição real de versão na nossa própria stack.
+
 ## Follow-ups
 
-- Assim que o domínio existir, emitir o cert e preencher a Parte 7 (adendo).
-- Considerar o header `Permissions-Policy` e refinar a CSP (hoje com
-  `'unsafe-inline'` para script/style por causa da SPA).
+- Refinar a CSP (hoje com `'unsafe-inline'` para script/style por causa da SPA) e
+  avaliar `Permissions-Policy`.
+- O redirect 80→443 usa `$host`; acesso por IP puro redireciona para
+  `https://35.238.72.10` (sem cert) → erro de TLS. Esperado: acessar por domínio.
