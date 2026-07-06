@@ -56,11 +56,24 @@ class PostgresStore:
 
     backend = "postgres"
 
-    def __init__(self, dsn: str) -> None:
+    def __init__(self, dsn: Optional[str] = None) -> None:
         self._dsn = dsn
 
     def _connect(self):
         import psycopg2  # import tardio: só necessário no backend Postgres
+
+        # Preferir os POSTGRES_* individuais: a senha pode conter '/'/'+' (base64),
+        # o que quebra o parsing de uma DATABASE_URL. Conectar por parâmetros
+        # separados é imune a caracteres especiais na senha.
+        host = os.environ.get("POSTGRES_HOST")
+        if host:
+            return psycopg2.connect(
+                host=host,
+                port=os.environ.get("POSTGRES_PORT", "5432"),
+                user=os.environ.get("POSTGRES_USER"),
+                password=os.environ.get("POSTGRES_PASSWORD"),
+                dbname=os.environ.get("POSTGRES_DB"),
+            )
         return psycopg2.connect(self._dsn)
 
     async def ensure_schema(self) -> None:
@@ -148,7 +161,8 @@ def get_store():
     global _store
     if _store is None:
         dsn = os.environ.get("DATABASE_URL")
-        _store = PostgresStore(dsn) if dsn else MemoryStore()
+        has_pg = bool(os.environ.get("POSTGRES_HOST") or dsn)
+        _store = PostgresStore(dsn) if has_pg else MemoryStore()
     return _store
 
 
