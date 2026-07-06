@@ -63,8 +63,7 @@ Mobile-first (o dono do hotel abre pelo WhatsApp no celular): inputs/botões
 - **Build local:** `npm run build` OK — 45 módulos, `dist/` com `index.html` +
   assets (JS 182 kB / 59 kB gzip, CSS 13 kB). `package-lock.json` commitado
   (necessário para o `npm ci` do Dockerfile).
-- **Deploy + navegador:** ver adendo "Validação no deploy" (preenchido após o
-  push → CI → VM).
+- **Deploy + navegador:** validado na VM (ver adendo abaixo).
 
 ## Parte 6 — Documentação
 
@@ -92,10 +91,41 @@ Mobile-first (o dono do hotel abre pelo WhatsApp no celular): inputs/botões
 - [x] Serviço `web` no Docker Compose.
 - [x] Responsivo (desktop + mobile).
 - [x] Build sem erros.
-- [ ] Funcional na VM via Docker Compose — ver adendo.
+- [x] Funcional na VM via Docker Compose (ver adendo).
 - [x] Documentação atualizada.
 - [x] Relatório em PT-BR.
 - [x] Commit e push.
+
+## Adendo — Validação no deploy (2026-07-06)
+
+Push `2e8c4aa` → CI **verde** (Test 25s + Deploy 1m27s; o frontend é buildado na
+VM durante o `docker compose up --build`).
+
+**Na VM** (`docker compose ps`): `klarim-web-1` no ar publicando `0.0.0.0:80`;
+`api`/`db`/`redis` agora em `127.0.0.1` (só o Nginx é público). Landing servida,
+proxy `GET /api/health` → `{"status":"ok"}`.
+
+**Firewall:** criada a regra `klarim-allow-http` (tcp:80, `0.0.0.0/0`, target-tag
+`http-server`) e a VM recebeu a tag `http-server`. Site público em
+**http://35.238.72.10**.
+
+**Fluxo end-to-end no navegador (Chrome, produção):**
+
+1. **Landing** — logo, hero, input, "Como funciona", cards. ✓
+2. **Scan** (`www.verdegreen.com.br`) — spinner + mensagens rotativas. ✓
+3. **Result** — semáforo **verde 86/100**, "2 problemas", chip **2 ALTOS**, bloco
+   LGPD, CTA "R$ 29", ações secundárias, footer. Dados reais vindos da API via
+   proxy. ✓
+4. **Report** — dois botões de download + referral (render instantâneo, sem
+   re-scan, via `state`). ✓
+5. **Download do PDF pelo proxy** — `GET /api/report/executive` externo devolveu
+   `HTTP 200`, `application/pdf`, `%PDF-` (21.935 bytes). ✓
+
+> **Nota (mobile):** as classes responsivas são Tailwind mobile-first padrão
+> (`flex-col sm:flex-row`, `grid sm:grid-cols-3`, `w-full sm:w-auto`). A captura
+> do navegador automatizado ficou presa numa resolução larga fixa e não
+> reavaliou as media queries para viewport estreito; o layout mobile está correto
+> por construção, mas não pôde ser fotografado aqui.
 
 ## Follow-ups
 
@@ -103,3 +133,6 @@ Mobile-first (o dono do hotel abre pelo WhatsApp no celular): inputs/botões
   exigir confirmação de pagamento.
 - **Cache de scan:** `/result` e `/report` refazem o scan quando abertos por link
   direto. Persistir o `ScanReport` (Redis/Postgres) evitaria re-scans.
+- **HTTPS:** o site está em HTTP (porta 80). Colocar TLS (Let's Encrypt/Caddy ou
+  proxy gerenciado) antes de divulgar — irônico um scanner de segurança rodar em
+  HTTP. Bom candidato a próximo card.
