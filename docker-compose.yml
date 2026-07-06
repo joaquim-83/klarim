@@ -51,12 +51,23 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-klarim}:${POSTGRES_PASSWORD:-change-me}@db:5432/${POSTGRES_DB:-klarim}
       REDIS_URL: redis://redis:6379/0
     ports:
-      - "8000:8000"
+      # Bind to localhost only — o público acessa via Nginx (serviço web, :80).
+      # Continua acessível na VM para debug (curl localhost:8000).
+      - "127.0.0.1:8000:8000"
     depends_on:
       db:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  # Frontend React (build estático) + Nginx como reverse proxy para a API.
+  web:
+    build: ./frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - api
 
   worker:
     build: .

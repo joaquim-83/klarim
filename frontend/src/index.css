@@ -1,0 +1,36 @@
+@import "tailwindcss";
+
+/* Paleta Klarim (Tailwind v4 — cores viram utilitários bg-/text-/border-klarim-*) */
+@theme {
+  --color-klarim-bg: #0D1117;
+  --color-klarim-surface: #161B22;
+  --color-klarim-border: #30363D;
+  --color-klarim-text: #E6EDF3;
+  --color-klarim-muted: #8B949E;
+  --color-klarim-alert: #FF6B35;
+  --color-klarim-ok: #00D26A;
+  --color-klarim-warn: #F0C000;
+  --color-klarim-fail: #F85149;
+
+  --font-sans: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "SF Mono", "DejaVu Sans Mono", Consolas, monospace;
+}
+
+html { background-color: #0D1117; }
+
+body {
+  margin: 0;
+  background-color: #0D1117;
+  color: #E6EDF3;
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Spinner de loading */
+@keyframes klarim-spin { to { transform: rotate(360deg); } }
+.klarim-spinner {
+  border-radius: 9999px;
+  border: 4px solid rgba(255, 107, 53, 0.2);
+  border-top-color: #FF6B35;
+  animation: klarim-spin 0.9s linear infinite;
+}

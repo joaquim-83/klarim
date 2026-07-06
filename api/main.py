@@ -20,7 +20,7 @@ from __future__ import annotations
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import JSONResponse, Response
 
-from scanner import run_scan, summarize_fails
+from scanner import run_scan, summarize_fails, Severity
 from scanner import __version__ as scanner_version
 from reporter import (
     generate_executive_pdf,
@@ -71,12 +71,23 @@ async def scan_summary(url: str = Query(..., description="URL alvo.")) -> dict:
     """Free executive semaphore — score + counts, no per-check detail."""
     report = await _safe_scan(url)
     score = report.score
+    sev = score.fails_by_severity if score else {}
     return {
         "url": report.url,
         "score": score.score if score else None,
         "semaphore": score.semaphore if score else None,
         "grade_icon": score.grade_icon if score else None,
         "summary": summarize_fails(report.results),
+        # Contagens estruturadas para o frontend (chips por severidade).
+        "problems": score.failed if score else 0,
+        "passed": score.passed if score else 0,
+        "inconclusive": score.inconclusive if score else 0,
+        "severity_counts": {
+            "critica": sev.get(Severity.CRITICA, 0),
+            "alta": sev.get(Severity.ALTA, 0),
+            "media": sev.get(Severity.MEDIA, 0),
+            "baixa": sev.get(Severity.BAIXA, 0),
+        },
         "message": (
             "Encaminhe este resumo ao responsável pelo seu site. "
             "Relatório técnico completo disponível na versão paga."

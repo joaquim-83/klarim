@@ -96,6 +96,10 @@ klarim/
 │   ├── generator.py        # generate_executive_pdf / generate_technical_pdf
 │   ├── templates/          # executive.html + technical.html
 │   └── assets/logo.svg
+├── frontend/               # interface web (React + Vite + Tailwind v4 + Nginx)
+│   ├── src/                # pages/ + components/ + lib/
+│   ├── nginx.conf          # estático + proxy /api → api:8000
+│   └── Dockerfile
 ├── api/
 │   └── main.py             # FastAPI (semáforo + relatório + PDFs)
 └── tests/
@@ -252,6 +256,30 @@ reais gerados para os 3 hotéis Duda estão em
 
 ---
 
+## Interface web
+
+Frontend **React + Vite + Tailwind v4** em [`frontend/`](./frontend/), servido
+como build estático pelo **Nginx** (que também faz proxy de `/api` → API). Telas:
+
+- **Landing** (`/`) — input de scan self-service + seções informativas.
+- **Scan** (`/scan?url=`) — loading com feedback enquanto a varredura roda (~30s).
+- **Result** (`/result?url=`) — semáforo, contagem por severidade, LGPD e CTA.
+- **Report** (`/report?url=`) — download dos relatórios executivo e técnico (PDF).
+
+```bash
+cd frontend
+npm install
+npm run dev      # dev (proxy /api → localhost:8000)
+npm run build    # build de produção → dist/
+```
+
+Em produção, o serviço **`web`** do `docker-compose.yml` (porta **80**) constrói o
+frontend e serve tudo via Nginx; a API fica em `127.0.0.1:8000` (só o Nginx é
+público). Suba a stack completa com `docker compose up --build` e acesse
+`http://localhost`.
+
+---
+
 ## Framework legal
 
 O Klarim se enquadra como serviço de *Security Rating* / *Monitoramento de
@@ -288,6 +316,7 @@ disclaimer claro em todos os relatórios.
 - [x] API com semáforo + relatório
 - [x] Geração de PDF (executivo + técnico) — WeasyPrint
 - [ ] Discovery Worker (Google Dorks por plataforma)
-- [ ] Dashboard React + pagamento (Pix + Stripe)
+- [x] Interface web (React + Vite + Tailwind + Nginx) — scan self-service
+- [ ] Pagamento (Pix + Stripe) para liberar o relatório completo
 
 Ver `klarim_mvp_spec.md` para a especificação completa do produto.

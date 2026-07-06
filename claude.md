@@ -98,6 +98,11 @@ klarim/
 │   ├── generator.py        # generate_executive_pdf() / generate_technical_pdf()
 │   ├── templates/          # executive.html + technical.html
 │   └── assets/logo.svg     # logo Klarim (beacon)
+├── frontend/               # interface web (React + Vite + Tailwind v4)
+│   ├── src/pages/          # Landing, Scan, Result, Report
+│   ├── src/components/     # Logo, Semaphore, Header, Footer, ...
+│   ├── nginx.conf          # serve estático + proxy /api → api:8000
+│   └── Dockerfile          # build Vite → Nginx (serviço web no compose)
 ├── api/                    # API HTTP (FastAPI)
 │   └── main.py             # semáforo grátis + relatório técnico + PDFs
 └── tests/                  # pytest
@@ -308,3 +313,30 @@ Ambas são `async` (renderização roda em `asyncio.to_thread`) e retornam `byte
 
 Uso: CLI `--pdf`, ou endpoints `GET /report/executive?url=` e
 `GET /report/technical?url=` (retornam `application/pdf`).
+
+---
+
+## 10. Interface web (`frontend/`)
+
+Frontend **React + Vite + Tailwind v4**, servido como build estático pelo
+**Nginx**, que também faz proxy de `/api` para a API FastAPI.
+
+- **Telas:** `Landing` (`/`, input de scan), `Scan` (`/scan?url=`, loading com
+  mensagens rotativas), `Result` (`/result?url=`, semáforo + severidades + LGPD +
+  CTA), `Report` (`/report?url=`, download dos dois PDFs). Roteamento client-side
+  com `react-router-dom`; SPA fallback no Nginx (`try_files … /index.html`).
+- **API:** todas as chamadas vão para `/api/...`. Em produção o Nginx encaminha
+  para `http://api:8000/`; em dev o proxy do Vite faz o mesmo (`vite.config.js`).
+- **Paleta:** definida em `src/index.css` via `@theme` do Tailwind v4 (gera
+  utilitários `bg-klarim-*`, `text-klarim-*`). **Não há `tailwind.config.js`** —
+  v4 é CSS-first.
+- **Como rodar:**
+  ```bash
+  cd frontend
+  npm install          # gera/atualiza o package-lock.json (necessário p/ npm ci)
+  npm run dev          # dev server (proxy /api → localhost:8000)
+  npm run build        # build de produção → dist/
+  ```
+- **Docker:** serviço `web` no `docker-compose.yml` (build `./frontend`, porta
+  **80**). A API foi rebaixada para `127.0.0.1:8000` (só o Nginx é público).
+  O deploy na VM constrói a imagem do frontend (Vite) durante `docker compose up`.
