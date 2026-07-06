@@ -191,7 +191,8 @@ autenticação foi criada **a partir do CLI**:
 | Passo | Comando | Resultado |
 |-------|---------|-----------|
 | Criar SA | `gcloud iam service-accounts create klarim-deploy` | ✅ criada |
-| Papel | `add-iam-policy-binding … roles/compute.instanceAdmin.v1` | ✅ concedido |
+| Papel (projeto) | `add-iam-policy-binding … roles/compute.instanceAdmin.v1` | ✅ concedido |
+| Papel (SA da VM) | `roles/iam.serviceAccountUser` na SA `…-compute@developer` | ✅ concedido (exigido p/ SSH) |
 | Chave JSON | `keys create` | ❌ **bloqueado** por org policy |
 
 **Por que não há chave JSON:** o projeto **impõe** a org policy
@@ -267,18 +268,34 @@ $ docker compose exec -T worker python -m scanner.main https://www.verdegreen.co
 
 Score idêntico ao medido no ambiente local (KL-2) — os 15 checks rodam igual na VM.
 
-### Correção do caminho de deploy do CI (cross-user)
+### CI/CD validado end-to-end (e os 2 blockers reais que apareceram)
 
-O CI faz login como o **usuário Linux derivado da service account**, que **não é
-dono de `/opt/klarim` nem está no grupo `docker`**. Rodar `deploy.sh` sem `sudo`
-falharia (git pull sem permissão de escrita; socket do docker inacessível).
+Rodar o pipeline de verdade (push → Actions) expôs dois problemas que só
+aparecem quando o CI faz login como o **usuário Linux derivado da service
+account** (≠ dono de `/opt/klarim`, fora do grupo `docker`):
 
-Testei o comando exato do CI na VM — `sudo bash /opt/klarim/deploy/deploy.sh` —
-e ele rodou **fim a fim** (git pull → `compose down`/`up --build` → `ps` →
-health check "API respondeu OK" → "Deploy concluído"). Como o GCE concede sudo
-sem senha aos usuários SSH, o workflow foi ajustado para invocar
-`sudo bash /opt/klarim/deploy/deploy.sh`. Operador logado como o usuário dono
-pode rodar sem `sudo`.
+1. **SSH bloqueado por IAM.** `gcloud compute ssh` falhou ao injetar a chave:
+   *"does not have access to service account `10946387758-compute@developer…`"*.
+   Para entrar numa instância que tem uma SA anexada, o principal precisa de
+   **`roles/iam.serviceAccountUser` na SA da VM**. Concedido à `klarim-deploy`.
+2. **git "dubious ownership".** Com `sudo`, o `deploy.sh` roda como root, mas
+   `/opt/klarim` é do usuário de provisionamento → `git pull` abortava. Corrigido
+   marcando o diretório como seguro dentro do `deploy.sh`
+   (`git config --global --add safe.directory /opt/klarim`, idempotente).
+
+   > Nota: um teste anterior de `sudo bash deploy.sh` "passou" apenas porque eu
+   > estava logado como o **usuário dono** (exceção `SUDO_UID` do git). O CI, com
+   > outro usuário, não tem essa exceção — daí a correção via `safe.directory`.
+
+**Modelo adotado:** deploys são operações **root** (`sudo bash deploy.sh`), tanto
+no CI quanto manualmente — root escreve no `.git`/volumes independentemente do
+dono, e `safe.directory` resolve o guard do git. O workflow usa
+`--command "sudo bash /opt/klarim/deploy/deploy.sh"`.
+
+**Resultado (run `28813890221`):** ✅ **Test 25s + Deploy to GCP VM 57s**, ambos
+verdes. Log do deploy: containers `Up`, `db`/`redis` healthy, `API respondeu OK`,
+`Deploy concluído`. **Pipeline completo funcionando: push em `main` → testes →
+deploy automático na VM.**
 
 ### Observação de segurança de rede
 

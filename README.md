@@ -180,8 +180,8 @@ git).
 ```bash
 gcloud compute ssh --zone "us-central1-a" "instance-20260706-112125" \
   --project "project-b08050df-fa4e-49ac-919"
-# na VM:
-bash /opt/klarim/deploy/deploy.sh
+# na VM (deploys rodam como root, igual ao CI):
+sudo bash /opt/klarim/deploy/deploy.sh
 ```
 
 **CI/CD (`.github/workflows/deploy.yml`)** — a cada push para `main`:
