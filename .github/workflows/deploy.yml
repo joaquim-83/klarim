@@ -91,6 +91,12 @@ jobs:
         # then runs the deploy script on the VM. --quiet disables interactive
         # prompts (host-key, key generation) so it works headless in CI.
         #
+        # Runs the script with `sudo`: CI logs in as the service-account-derived
+        # Linux user, which does NOT own /opt/klarim nor belong to the docker
+        # group. GCE grants that user passwordless sudo, so `sudo bash …` is the
+        # portable way to git-pull and drive docker regardless of login user.
+        # (An interactive operator logged in as the owning user can drop `sudo`.)
+        #
         # Connectivity: this connects to the VM's external IP on port 22 — the
         # firewall must allow it. For a no-public-port-22 setup, add
         #   --tunnel-through-iap
@@ -100,4 +106,4 @@ jobs:
             --zone "${{ secrets.GCP_ZONE }}" \
             --project "${{ secrets.GCP_PROJECT_ID }}" \
             --quiet \
-            --command "bash /opt/klarim/deploy/deploy.sh"
+            --command "sudo bash /opt/klarim/deploy/deploy.sh"

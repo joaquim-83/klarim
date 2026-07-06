@@ -12,11 +12,16 @@
 
 | Parte | Status | Observação |
 |-------|--------|------------|
-| 1. Provisionar a VM | ⏳ **Handoff ao operador** | Sem acesso ao projeto GCP a partir do ambiente do CLI (ver abaixo). Runbook pronto. |
-| 2. Deploy manual | ⏳ **Handoff ao operador** | Idem — requer a VM provisionada. Runbook pronto. |
-| 3. GitHub Actions CI/CD | ✅ **Feito** | `.github/workflows/deploy.yml` |
+| 1. Provisionar a VM | ✅ **Feito** (2026-07-06) | Docker 29.6.1 + Compose v5.3.0 na VM. Ver adendo "Execução Partes 1–2". |
+| 2. Deploy manual | ✅ **Feito** (2026-07-06) | Stack no ar, scanner e API validados. Ver adendo. |
+| 3. GitHub Actions CI/CD | ✅ **Feito** | `.github/workflows/deploy.yml` (WIF; `sudo bash deploy.sh`) |
 | 4. Script de deploy | ✅ **Feito** | `deploy/deploy.sh` (executável) |
 | 5. Documentação | ✅ **Feito** | `claude.md`, `README.md`, este relatório |
+
+> As Partes 1–2 estavam pendentes de acesso GCP; após login com
+> `klarimscan@gmail.com` (Owner) elas **foram executadas a partir do CLI**. Os
+> runbooks abaixo permanecem como referência; os resultados reais estão no
+> adendo final.
 
 ### Por que as Partes 1–2 não foram executadas aqui
 
@@ -158,9 +163,9 @@ ou manuais via `bash /opt/klarim/deploy/deploy.sh`.
 
 ## Critérios de aceite
 
-- [ ] VM provisionada com Docker/Compose — **pendente do operador** (runbook Parte 1).
-- [ ] Projeto rodando na VM via Compose — **pendente do operador** (runbook Parte 2).
-- [ ] Scanner e API testados na VM — **pendente do operador** (comandos na Parte 2).
+- [x] VM provisionada com Docker/Compose (Docker 29.6.1, Compose v5.3.0).
+- [x] Projeto rodando na VM via Compose (4 containers no ar).
+- [x] Scanner e API testados na VM (score 86, `/health` ok, `/scan/summary` ok).
 - [x] `.github/workflows/deploy.yml` criado e commitado.
 - [x] `deploy/deploy.sh` criado e commitado.
 - [x] `claude.md` e `README.md` atualizados.
@@ -217,3 +222,67 @@ duas permissões e trocar o binding.
 
 **Pendente do operador:** apenas configurar os 5 GitHub Secrets acima. A infra
 GCP de autenticação já está pronta.
+
+---
+
+## Adendo — Execução das Partes 1–2 na VM (2026-07-06)
+
+Executado via `gcloud compute ssh` como `cidineisilva` (usuário Linux da VM),
+conta `klarimscan@gmail.com`.
+
+### Provisionamento (Parte 1)
+
+- SO da VM: **Debian 13 (trixie)**; usuário `cidineisilva`; sudo sem senha.
+- `apt update && upgrade` + instalação do Docker pelo repo oficial. O Docker
+  **publica para trixie** (pacotes `~debian.13~trixie`), então o fallback para
+  bookworm no script de provisionamento não foi necessário.
+- Versões instaladas: **Docker 29.6.1**, **Docker Compose v5.3.0**.
+- `docker` habilitado no boot (`systemctl enable --now docker`).
+- `/opt/klarim` criado (owner `cidineisilva`); usuário adicionado ao grupo
+  `docker` (login seguinte já acessa o socket sem `sudo`).
+
+### Primeiro deploy (Parte 2)
+
+- Repositório clonado em `/opt/klarim`.
+- `.env` de produção gerado **na VM** (senha do Postgres via `openssl rand`,
+  **não commitada**; verificado que nenhum `change-me` restou).
+- `docker compose up -d --build` — imagem construída, 4 containers no ar.
+
+### Validação
+
+```
+$ docker compose ps
+NAME              SERVICE   STATUS
+klarim-api-1      api       Up
+klarim-db-1       db        Up (healthy)
+klarim-redis-1    redis     Up (healthy)
+klarim-worker-1   worker    Up
+
+$ curl /health                    -> {"status":"ok"}
+$ curl /scan/summary?url=verdegreen ->
+  {"score":86,"semaphore":"verde","summary":"0 crítico(s), 2 alto(s), 0 médio(s), 0 baixo(s)"}
+$ docker compose exec -T worker python -m scanner.main https://www.verdegreen.com.br
+  SCORE: 86/100  🟢 (VERDE)   PASS: 12  FAIL: 2  INCONCLUSO: 1
+```
+
+Score idêntico ao medido no ambiente local (KL-2) — os 15 checks rodam igual na VM.
+
+### Correção do caminho de deploy do CI (cross-user)
+
+O CI faz login como o **usuário Linux derivado da service account**, que **não é
+dono de `/opt/klarim` nem está no grupo `docker`**. Rodar `deploy.sh` sem `sudo`
+falharia (git pull sem permissão de escrita; socket do docker inacessível).
+
+Testei o comando exato do CI na VM — `sudo bash /opt/klarim/deploy/deploy.sh` —
+e ele rodou **fim a fim** (git pull → `compose down`/`up --build` → `ps` →
+health check "API respondeu OK" → "Deploy concluído"). Como o GCE concede sudo
+sem senha aos usuários SSH, o workflow foi ajustado para invocar
+`sudo bash /opt/klarim/deploy/deploy.sh`. Operador logado como o usuário dono
+pode rodar sem `sudo`.
+
+### Observação de segurança de rede
+
+`docker compose` publica `5432` (Postgres) e `6379` (Redis) em `0.0.0.0` na VM.
+Se a VM tiver IP público com firewall aberto nessas portas, ficam expostos.
+Recomendação (follow-up): restringir esses `ports:` a `127.0.0.1:` no compose de
+produção ou fechar as portas no firewall do GCP — API só precisa expor `8000`.
