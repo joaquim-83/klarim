@@ -28,7 +28,9 @@ SEVERITY_WEIGHT: Dict[str, int] = {
 }
 
 # Traffic-light thresholds (inclusive lower bounds).
-GREEN_THRESHOLD = 80
+# Verde exige score alto E nenhuma FALHA de severidade Alta/Crítica — verde para
+# o cliente significa "está tudo bem", então não pode conviver com falhas sérias.
+GREEN_THRESHOLD = 90
 YELLOW_THRESHOLD = 50
 
 
@@ -75,12 +77,18 @@ class ScoreBreakdown:
         )
 
 
-def _semaphore(score: int) -> tuple[str, str]:
-    if score >= GREEN_THRESHOLD:
+def _semaphore(score: int, has_high_fail: bool) -> tuple[str, str]:
+    """Semáforo combinando score E severidade das falhas.
+
+    - 🟢 Verde:    score >= 90 E nenhuma FALHA de severidade Alta/Crítica
+    - 🟡 Amarelo:  score >= 50 (ou score >= 90 mas com FALHA Alta/Crítica)
+    - 🔴 Vermelho: score < 50
+    """
+    if score < YELLOW_THRESHOLD:
+        return "vermelho", "🔴"
+    if score >= GREEN_THRESHOLD and not has_high_fail:
         return "verde", "🟢"
-    if score >= YELLOW_THRESHOLD:
-        return "amarelo", "🟡"
-    return "vermelho", "🔴"
+    return "amarelo", "🟡"
 
 
 def compute_score(results: Iterable[CheckResult]) -> ScoreBreakdown:
@@ -116,7 +124,11 @@ def compute_score(results: Iterable[CheckResult]) -> ScoreBreakdown:
     else:
         score = round(100 * earned / considered)
 
-    semaphore, icon = _semaphore(score)
+    has_high_fail = (
+        fails_by_severity.get(Severity.CRITICA, 0) > 0
+        or fails_by_severity.get(Severity.ALTA, 0) > 0
+    )
+    semaphore, icon = _semaphore(score, has_high_fail)
 
     return ScoreBreakdown(
         score=score,

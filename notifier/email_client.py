@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
+import hmac
 import os
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -41,7 +43,9 @@ class KlarimMailerError(RuntimeError):
 
 
 def semaphore_from_score(score: int) -> str:
-    if score >= 80:
+    # Alinhado à calibração KL-12 (verde exige >= 90). Aqui só temos o score;
+    # o semáforo autoritativo (que também bloqueia por FALHA alta) vem do scan.
+    if score >= 90:
         return "verde"
     if score >= 50:
         return "amarelo"
@@ -51,6 +55,15 @@ def semaphore_from_score(score: int) -> str:
 def site_name(url: str) -> str:
     host = (urlparse(url).hostname or url).lower()
     return host[4:] if host.startswith("www.") else host
+
+
+def unsubscribe_token(email: str, secret: str) -> str:
+    """HMAC-SHA256 do e-mail (32 chars) — impede descadastro por terceiros."""
+    return hmac.new(secret.encode(), email.strip().lower().encode(), hashlib.sha256).hexdigest()[:32]
+
+
+def build_unsubscribe_link(email: str, secret: str) -> str:
+    return f"{SITE_BASE}/api/unsubscribe?email={quote(email)}&token={unsubscribe_token(email, secret)}"
 
 
 class KlarimMailer:
@@ -86,9 +99,14 @@ class KlarimMailer:
         semaphore: str,
         fail_count: int,
         severity_counts: Dict[str, int],
+        unsubscribe_link: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Alerta gratuito (semáforo) — o anzol do funil."""
         site = site_name(target_url)
+        if unsubscribe_link is None:
+            secret = os.environ.get("UNSUBSCRIBE_SECRET")
+            if secret:
+                unsubscribe_link = build_unsubscribe_link(to_email, secret)
         html = _env.get_template("alert.html").render(
             **self._score_ctx(score, semaphore),
             site_name=site,
@@ -97,6 +115,7 @@ class KlarimMailer:
             sev=severity_counts or {},
             result_link=f"{SITE_BASE}/result?url={quote(target_url, safe='')}",
             lgpd=LGPD_SHORT,
+            unsubscribe_link=unsubscribe_link,
         )
         subject = f"⚠️ Encontramos {fail_count} problema(s) de segurança em {site}"
         return await self._send(

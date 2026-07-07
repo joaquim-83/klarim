@@ -10,7 +10,8 @@ from notifier.email_client import _env
 
 
 def test_semaphore_from_score():
-    assert semaphore_from_score(86) == "verde"
+    assert semaphore_from_score(92) == "verde"
+    assert semaphore_from_score(86) == "amarelo"  # calibração KL-12 (verde >= 90)
     assert semaphore_from_score(60) == "amarelo"
     assert semaphore_from_score(30) == "vermelho"
 

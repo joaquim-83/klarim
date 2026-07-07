@@ -11,6 +11,7 @@ Run local:
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import os
 import secrets
@@ -20,7 +21,7 @@ from typing import Optional
 from urllib.parse import urlparse
 
 from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse, Response, HTMLResponse
 from pydantic import BaseModel
 
 from scanner import run_scan, summarize_fails, Severity, ScanReport
@@ -42,7 +43,8 @@ from payments import (
     get_store,
     init_store,
 )
-from notifier import KlarimMailer, KlarimMailerError
+from notifier import KlarimMailer, KlarimMailerError, unsubscribe_token
+from discovery.alert_worker import send_alert_for_target
 
 
 # --------------------------------------------------------------------------- #
@@ -642,6 +644,84 @@ async def api_get_scan(scan_id: int) -> dict:
     if scan is None:
         raise HTTPException(status_code=404, detail="Scan não encontrado.")
     return scan
+
+
+# --------------------------------------------------------------------------- #
+# Alertas (Alert Worker — KL-12)
+# --------------------------------------------------------------------------- #
+
+@app.get("/alerts")
+async def api_list_alerts(
+    target_id: Optional[int] = Query(default=None),
+    limit: int = Query(default=50, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> dict:
+    rows = await get_target_store().list_alerts(target_id, limit, offset)
+    return {"count": len(rows), "alerts": rows}
+
+
+@app.get("/alerts/stats")
+async def api_alerts_stats() -> dict:
+    return await get_target_store().alert_stats()
+
+
+@app.post("/targets/{target_id}/alert")
+async def api_target_alert(target_id: int) -> dict:
+    """Dispara o alerta manualmente (ignora throttle e janela de 30 dias)."""
+    _require_email()
+    store = get_target_store()
+    target = await store.get_target(target_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Alvo não encontrado.")
+    if not target.get("contact_email"):
+        raise HTTPException(status_code=400, detail="Alvo sem e-mail de contato.")
+    try:
+        email_id = await send_alert_for_target(store, _mailer(), target)
+    except KlarimMailerError as exc:
+        raise HTTPException(status_code=502, detail=f"Falha no envio: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"target_id": target_id, "email": target["contact_email"], "email_id": email_id, "sent": True}
+
+
+@app.get("/unsubscribe")
+async def api_unsubscribe(
+    email: str = Query(...),
+    token: str = Query(...),
+) -> HTMLResponse:
+    """Descadastro via link do rodapé do alerta (token HMAC do e-mail)."""
+    secret = os.environ.get("UNSUBSCRIBE_SECRET")
+    ok = bool(secret) and hmac.compare_digest(token, unsubscribe_token(email, secret))
+    if not ok:
+        return HTMLResponse(_unsubscribe_html(email, success=False), status_code=400)
+    await get_target_store().mark_unsubscribed(email)
+    return HTMLResponse(_unsubscribe_html(email, success=True))
+
+
+def _unsubscribe_html(email: str, success: bool) -> str:
+    from html import escape
+
+    if success:
+        title, msg = "Descadastro concluído", (
+            f"O endereço <strong>{escape(email)}</strong> não receberá mais alertas do Klarim.")
+    else:
+        title, msg = "Link inválido", (
+            "Este link de descadastro é inválido ou expirou. "
+            "Se preferir, escreva para <a href=\"mailto:seguranca@klarim.net\" "
+            "style=\"color:#FF6B35\">seguranca@klarim.net</a>.")
+    return (
+        "<!DOCTYPE html><html lang=\"pt-BR\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">"
+        f"<title>{title} — Klarim</title></head>"
+        "<body style=\"margin:0;background:#0D1117;font-family:Arial,sans-serif;color:#E6EDF3\">"
+        "<div style=\"max-width:520px;margin:64px auto;padding:32px;background:#161B22;"
+        "border:1px solid #30363D;border-radius:12px;text-align:center\">"
+        "<div style=\"font-size:24px;font-weight:bold;letter-spacing:2px;margin-bottom:16px\">"
+        "KLA<span style=\"color:#FF6B35\">R</span>IM</div>"
+        f"<h2 style=\"color:#FF6B35;font-size:20px\">{title}</h2>"
+        f"<p style=\"color:#8B949E;font-size:15px;line-height:1.6\">{msg}</p>"
+        "</div></body></html>"
+    )
 
 
 # --------------------------------------------------------------------------- #

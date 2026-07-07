@@ -223,7 +223,9 @@ soma zero e `INCONCLUSO` é **excluído do denominador** (neutro):
 score = round(100 * Σ peso(PASS) / Σ peso(PASS + FAIL))
 ```
 
-Semáforo: **🟢 verde** ≥ 80 · **🟡 amarelo** 50–79 · **🔴 vermelho** < 50.
+Semáforo (calibração KL-12): **🟢 verde** score ≥ 90 **e** zero FALHA
+Alta/Crítica · **🟡 amarelo** score ≥ 50 (ou ≥ 90 com FALHA Alta/Crítica) ·
+**🔴 vermelho** < 50. Verde não convive com falha séria — verde = "está tudo bem".
 
 ---
 
@@ -354,6 +356,18 @@ compose. Gestão via API: `GET /api/targets`, `/api/targets/stats`,
 > ciclo degrada com elegância. Alvos também podem ser adicionados manualmente
 > via `POST /api/targets/add`.
 
+### Alert Worker (disparo automático)
+
+No mesmo container do Discovery Worker (via `asyncio.gather`), o **Alert Worker**
+(`discovery/alert_worker.py`) dispara a cada 1h o alerta gratuito por e-mail para
+alvos escaneados **com falhas**: filtra elegíveis (com e-mail, não alertados nos
+últimos 30 dias, não descadastrados), respeita **throttle** (`MAX_ALERTS_PER_HOUR`,
+`MAX_ALERTS_PER_DAY`, pausa de 5s entre envios) para proteger a reputação do
+domínio no Resend, e registra tudo em `alert_log`. Cada alerta traz um link de
+**descadastro** com token HMAC (`GET /api/unsubscribe`). Gestão via API:
+`GET /api/alerts`, `/api/alerts/stats`, `POST /api/targets/{id}/alert` (disparo
+manual, ignora throttle).
+
 ---
 
 ## Framework legal
@@ -391,7 +405,8 @@ disclaimer claro em todos os relatórios.
 - [x] CLI de scan manual
 - [x] API com semáforo + relatório
 - [x] Geração de PDF (executivo + técnico) — WeasyPrint
-- [ ] Discovery Worker (Google Dorks por plataforma)
+- [x] Discovery Worker (Certificate Transparency → alvos com e-mail)
+- [x] Alert Worker (disparo automático do alerta + throttle + descadastro)
 - [x] Interface web (React + Vite + Tailwind + Nginx) — scan self-service
 - [x] Pagamento PIX (AbacatePay) para liberar o relatório completo
 - [ ] Pagamento por cartão (Stripe)

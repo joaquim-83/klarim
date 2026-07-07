@@ -113,6 +113,24 @@ def test_semaphore_thresholds():
     assert compute_score(red).semaphore == "vermelho"
 
 
+def test_semaphore_calibration():
+    from scanner.scoring import _semaphore
+    assert _semaphore(100, False) == ("verde", "🟢")
+    assert _semaphore(90, False) == ("verde", "🟢")
+    assert _semaphore(95, True) == ("amarelo", "🟡")   # score alto MAS com FAIL alta/crítica
+    assert _semaphore(85, False) == ("amarelo", "🟡")  # score < 90 -> não é mais verde
+    assert _semaphore(50, False) == ("amarelo", "🟡")
+    assert _semaphore(49, False) == ("vermelho", "🔴")
+
+
+def test_high_fail_blocks_verde():
+    # Score >= 90 mas com FAIL Alta -> amarelo (calibração KL-12).
+    results = [CheckResult(f"p{i}", Status.PASS, Severity.CRITICA) for i in range(20)]
+    results.append(CheckResult("sri", Status.FAIL, Severity.ALTA))
+    b = compute_score(results)
+    assert b.score >= 90 and b.semaphore == "amarelo"
+
+
 # --------------------------------------------------------------------------- #
 # Supply-chain checks 13-15 (offline, mocked HTTP)
 # --------------------------------------------------------------------------- #

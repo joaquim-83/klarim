@@ -7,6 +7,8 @@ from .email_client import (
     KlarimMailerError,
     semaphore_from_score,
     site_name,
+    unsubscribe_token,
+    build_unsubscribe_link,
 )
 
 __all__ = [
@@ -14,4 +16,6 @@ __all__ = [
     "KlarimMailerError",
     "semaphore_from_score",
     "site_name",
+    "unsubscribe_token",
+    "build_unsubscribe_link",
 ]

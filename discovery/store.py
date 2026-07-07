@@ -45,6 +45,20 @@ CREATE TABLE IF NOT EXISTS scans (
 );
 CREATE INDEX IF NOT EXISTS idx_scans_target ON scans(target_id);
 CREATE INDEX IF NOT EXISTS idx_scans_date ON scans(scanned_at);
+
+CREATE TABLE IF NOT EXISTS alert_log (
+    id SERIAL PRIMARY KEY,
+    target_id INTEGER REFERENCES targets(id),
+    contact_email VARCHAR(255) NOT NULL,
+    score INTEGER,
+    semaphore VARCHAR(10),
+    fail_count INTEGER,
+    email_id VARCHAR(100),
+    status VARCHAR(20) DEFAULT 'sent',
+    sent_at TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_alert_log_target ON alert_log(target_id);
+CREATE INDEX IF NOT EXISTS idx_alert_log_date ON alert_log(sent_at);
 """
 
 
@@ -251,6 +265,113 @@ class TargetStore:
             cur.execute("SELECT * FROM scans WHERE id = %s", (scan_id,))
             rows = self._rows_to_dicts(cur)
             return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- alertas ----------------------------------------------------------- #
+
+    async def get_eligible_targets_for_alert(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Alvos escaneados, com FALHAS, com e-mail, sem alerta nos últimos 30d."""
+        def _fn(cur):
+            cur.execute(
+                """
+                SELECT t.*, s.fail_count AS scan_fail_count, s.semaphore AS scan_semaphore,
+                       s.checks_json AS scan_checks
+                FROM targets t
+                JOIN scans s ON t.last_scan_id = s.id
+                WHERE t.status = 'scanned'
+                  AND t.contact_email IS NOT NULL
+                  AND s.fail_count > 0
+                  AND (t.last_alert_at IS NULL OR t.last_alert_at < NOW() - INTERVAL '30 days')
+                ORDER BY t.last_scan_at ASC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def mark_target_alerted(self, target_id: int) -> None:
+        def _fn(cur):
+            cur.execute(
+                "UPDATE targets SET status = 'alerted', last_alert_at = NOW(), "
+                "alert_count = COALESCE(alert_count, 0) + 1 WHERE id = %s",
+                (target_id,),
+            )
+
+        await asyncio.to_thread(self._run, _fn)
+
+    async def mark_unsubscribed(self, email: str) -> int:
+        def _fn(cur):
+            cur.execute(
+                "UPDATE targets SET status = 'unsubscribed' WHERE contact_email = %s",
+                (email,),
+            )
+            return cur.rowcount
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def log_alert(
+        self, target_id: int, contact_email: str, score: Optional[int],
+        semaphore: Optional[str], fail_count: Optional[int], email_id: Optional[str],
+        status: str = "sent",
+    ) -> int:
+        def _fn(cur):
+            cur.execute(
+                """
+                INSERT INTO alert_log (target_id, contact_email, score, semaphore,
+                                       fail_count, email_id, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
+                """,
+                (target_id, contact_email, score, semaphore, fail_count, email_id, status),
+            )
+            return cur.fetchone()[0]
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def count_alerts_last_hours(self, hours: int) -> int:
+        def _fn(cur):
+            cur.execute(
+                "SELECT COUNT(*) FROM alert_log WHERE status = 'sent' "
+                "AND sent_at > NOW() - (%s || ' hours')::interval",
+                (str(hours),),
+            )
+            return int(cur.fetchone()[0])
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def list_alerts(
+        self, target_id: Optional[int] = None, limit: int = 50, offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        def _fn(cur):
+            if target_id is not None:
+                cur.execute(
+                    "SELECT * FROM alert_log WHERE target_id = %s "
+                    "ORDER BY sent_at DESC LIMIT %s OFFSET %s",
+                    (target_id, limit, offset),
+                )
+            else:
+                cur.execute(
+                    "SELECT * FROM alert_log ORDER BY sent_at DESC LIMIT %s OFFSET %s",
+                    (limit, offset),
+                )
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def alert_stats(self) -> Dict[str, Any]:
+        def _fn(cur):
+            out = {}
+            for key, interval in (("today", "1 day"), ("week", "7 days"), ("month", "30 days")):
+                cur.execute(
+                    f"SELECT COUNT(*) FROM alert_log WHERE status = 'sent' "
+                    f"AND sent_at > NOW() - INTERVAL '{interval}'"
+                )
+                out[key] = int(cur.fetchone()[0])
+            cur.execute("SELECT COUNT(*) FROM alert_log WHERE status = 'sent'")
+            out["total"] = int(cur.fetchone()[0])
+            return out
 
         return await asyncio.to_thread(self._run, _fn)
 

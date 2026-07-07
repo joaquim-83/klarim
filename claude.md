@@ -509,3 +509,35 @@ filtra por presença de e-mail de contato, registra como alvo e enfileira para s
 
 **Regra de negócio inviolável:** só escanear sites com e-mail de contato. Sem
 e-mail = sem conversão = não vale o custo do scan.
+
+## 16. Alert Worker + calibração do semáforo (KL-12) — `discovery/alert_worker.py`
+
+**Calibração do semáforo (`scanner/scoring.py`):** 🟢 **Verde** exige score **≥ 90
+E zero FALHAS de severidade Alta/Crítica**; 🟡 **Amarelo** = score ≥ 50 (ou ≥ 90
+mas com FALHA Alta/Crítica); 🔴 **Vermelho** = score < 50. `_semaphore(score,
+has_high_fail)` recebe o flag de falha alta calculado no `compute_score`. Motivo:
+um site com nota alta mas com falha grave não deve exibir "tudo certo" (verde).
+
+**Alert Worker** dispara o alerta gratuito (o anzol do funil) para alvos já
+escaneados que têm falhas:
+
+- **`alert_worker.py`** — `AlertWorker.run_cycle()`: busca elegíveis
+  (`status='scanned'`, com e-mail, `fail_count>0`, sem alerta nos últimos 30d, não
+  `unsubscribed`), respeita throttle (`MAX_ALERTS_PER_HOUR=10`,
+  `MAX_ALERTS_PER_DAY=50`, contados no `alert_log`), envia via `KlarimMailer.send_alert`
+  com **pausa de 5s** entre e-mails, marca `status='alerted'` + `last_alert_at` e
+  registra em `alert_log`. Loop a cada `ALERT_INTERVAL_HOURS` (1h).
+- **Mesmo container do Discovery Worker:** `discovery/worker.py` `main()` roda
+  `asyncio.gather(DiscoveryWorker().start(), AlertWorker().start())`.
+- **`store.py`** — tabela **`alert_log`** (histórico/throttle) + métodos
+  `get_eligible_targets_for_alert`, `mark_target_alerted`, `log_alert`,
+  `count_alerts_last_hours`, `list_alerts`, `alert_stats`, `mark_unsubscribed`.
+- **Descadastro (unsubscribe):** token **HMAC-SHA256** do e-mail (`UNSUBSCRIBE_SECRET`,
+  gerado na VM com `openssl rand -hex 32`). Link no rodapé do alerta →
+  `GET /api/unsubscribe?email&token` valida (constant-time) e marca
+  `status='unsubscribed'`. `notifier`: `unsubscribe_token` / `build_unsubscribe_link`.
+- **API:** `GET /alerts` (histórico), `GET /alerts/stats`, `POST /targets/{id}/alert`
+  (dispara manual, ignora throttle/janela), `GET /unsubscribe`.
+
+**Regra inviolável:** o throttle protege a reputação do domínio no Resend — nunca
+remover os tetos nem a pausa entre envios.
