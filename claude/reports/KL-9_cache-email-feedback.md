@@ -53,7 +53,15 @@ após 1h.
 - Testes: `tests/test_cache.py` (round-trip JSON, normalização de chave,
   degradação com Redis quebrado) + `email_status` no store. Suíte: **40 passed,
   1 skipped**.
-- **Produção (klarim.net):** ver adendo (após deploy).
+- **Produção (klarim.net):**
+  - Log de boot: `[cache] Redis conectado — scans cacheados (TTL 1h)`.
+  - **Cache:** `GET /scan/summary` do mesmo alvo — 1ª chamada (miss) **26,0s**;
+    2ª chamada (hit) **0,47s** (~55× mais rápido). Como os PDFs usam o mesmo
+    `get_or_scan`, o download pós-pagamento fica em ~1-2s (só a geração do PDF).
+  - **email_status:** `GET /payment/status` de uma cobrança com e-mail devolveu
+    `{"paid":false,"buyer_email":"…","email_status":"pending"}`. As transições
+    `sending→sent` foram validadas ponta-a-ponta no KL-8 (auto-send) e o
+    `set_email_status` é coberto por teste.
 
 ## Critérios de aceite
 
