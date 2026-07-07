@@ -97,7 +97,7 @@ JWT_TTL_SECONDS = 86400  # 24h
 
 # Prefixos protegidos — exigem Bearer token. O resto é público (scan/summary,
 # payment, report, webhooks, recovery, unsubscribe, health, auth/login).
-_PROTECTED_PREFIXES = ("/targets", "/scans", "/alerts", "/rescans", "/email", "/payments", "/config")
+_PROTECTED_PREFIXES = ("/targets", "/scans", "/alerts", "/rescans", "/email", "/payments", "/config", "/discovery")
 
 
 def _jwt_secret() -> str:
@@ -799,6 +799,30 @@ async def api_payments_list(
 @app.get("/payments/stats")
 async def api_payments_stats() -> dict:
     return await get_store().payment_stats()
+
+
+@app.get("/discovery/status")
+async def api_discovery_status() -> dict:
+    """Estado do Discovery Worker (Certstream) — publicado no Redis pelo worker."""
+    raw = None
+    if _cache is not None and _cache.redis is not None:
+        try:
+            key = os.environ.get("KLARIM_DISCOVERY_STATUS_KEY", "discovery:status")
+            raw = await _cache.redis.get(key)
+        except Exception:  # noqa: BLE001 - Redis fora do ar
+            raw = None
+    if raw:
+        status = json.loads(raw)
+    else:
+        status = {"source": {"connected": False, "buffer_size": 0, "total_seen": 0,
+                             "total_matched": 0, "last_event_at": None},
+                  "source_kind": "ct_poller", "cycles_completed": 0,
+                  "last_cycle_at": None, "next_cycle_at": None}
+    try:
+        status["targets_discovered_today"] = await get_target_store().count_discovered_today()
+    except Exception:  # noqa: BLE001 - DB opcional
+        status["targets_discovered_today"] = None
+    return status
 
 
 @app.get("/config")

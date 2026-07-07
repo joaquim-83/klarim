@@ -7,7 +7,7 @@ primário, e a API JSON como fallback. Ambos passam pelo mesmo filtro de ruído.
 from __future__ import annotations
 
 import asyncio
-from typing import List, Set
+from typing import List, Optional, Set
 
 import httpx
 
@@ -19,6 +19,22 @@ _INFRA_PREFIXES = (
     "api.", "admin.", "staging.", "stg.", "dev.", "test.", "hml.", "homolog.",
     "cpanel.", "whm.", "ns1.", "ns2.", "mx.", "vpn.", "cdn.", "static.", "assets.",
 )
+
+
+def normalize_domain(name: str, suffix: str = ".com.br") -> Optional[str]:
+    """Reduz um nome DNS ao domínio registrável .com.br, ou None se for ruído.
+
+    Compartilhado por crt.sh (`_filter`) e Certstream (KL-15): tira wildcard,
+    baixa para minúsculas, exige o sufixo, descarta subdomínios de infra e reduz
+    ao domínio registrável (ex.: `www.loja.com.br` → `loja.com.br`).
+    """
+    name = (name or "").strip().lower().lstrip("*.")
+    if not name.endswith(suffix) or " " in name:
+        return None
+    if name.startswith(_INFRA_PREFIXES):
+        return None
+    reg = registrable_domain(name)
+    return reg if reg.endswith(suffix) else None
 
 
 class CTClient:
@@ -94,13 +110,8 @@ class CTClient:
         out: List[str] = []
         seen: Set[str] = set()
         for name in raw:
-            name = (name or "").strip().lower().lstrip("*.")
-            if not name.endswith(suffix) or " " in name:
-                continue
-            if name.startswith(_INFRA_PREFIXES):
-                continue
-            reg = registrable_domain(name)
-            if not reg.endswith(suffix) or reg in seen:
+            reg = normalize_domain(name, suffix)
+            if reg is None or reg in seen:
                 continue
             seen.add(reg)
             out.append(reg)

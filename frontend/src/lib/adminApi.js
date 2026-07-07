@@ -111,4 +111,7 @@ export const admin = {
 
   // configurações operacionais (read-only)
   config: () => get('/config'),
+
+  // status do Discovery Worker (Certstream) — KL-15
+  discoveryStatus: () => get('/discovery/status'),
 }

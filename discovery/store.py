@@ -196,6 +196,14 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    async def count_discovered_today(self) -> int:
+        """Alvos registrados desde 00:00 UTC de hoje (KL-15 — dashboard operacional)."""
+        def _fn(cur):
+            cur.execute("SELECT COUNT(*) FROM targets WHERE discovered_at >= date_trunc('day', NOW())")
+            return int(cur.fetchone()[0])
+
+        return await asyncio.to_thread(self._run, _fn)
+
     async def count_targets(self, status: Optional[str] = None) -> int:
         def _fn(cur):
             if status:

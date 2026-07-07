@@ -50,8 +50,17 @@ def test_login_not_configured(monkeypatch):
 # --- proteção de rotas ----------------------------------------------------- #
 
 def test_protected_without_token(client):
-    for path in ("/targets", "/scans", "/alerts", "/rescans", "/payments/list", "/email/test"):
+    for path in ("/targets", "/scans", "/alerts", "/rescans", "/payments/list",
+                 "/email/test", "/discovery/status"):
         assert client.get(path).status_code == 401, path
+
+
+def test_discovery_status_with_token(client):
+    token = _login(client).json()["token"]
+    r = client.get("/discovery/status", headers={"Authorization": f"Bearer {token}"})
+    assert r.status_code == 200
+    body = r.json()
+    assert "source" in body and "cycles_completed" in body
 
 
 def test_protected_with_invalid_token(client):

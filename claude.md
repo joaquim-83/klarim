@@ -488,17 +488,25 @@ temporário por e-mail.
 
 ---
 
-## 15. Discovery Worker (KL-11) — `discovery/`
+## 15. Discovery Worker (KL-11 + KL-15) — `discovery/`
 
-Motor de aquisição: a cada 6h descobre domínios `.com.br` recém-certificados,
-filtra por presença de e-mail de contato, registra como alvo e enfileira para scan.
+Motor de aquisição (modelo contínuo desde o KL-15): um **poller de CT logs** lê os
+CT logs públicos em tempo real, filtra domínios `.com.br` e os acumula num buffer;
+a cada `DISCOVERY_INTERVAL_MINUTES` (padrão 30) o worker drena o buffer, filtra por
+presença de e-mail de contato, registra como alvo e enfileira para scan.
 
-- **`ct_client.py`** — crt.sh (Certificate Transparency). Primário: Postgres
-  público (`crt.sh:5432`, padrão reverso `rb.moc.%` para usar índice, 3 tentativas
-  + timeout 45s); fallback JSON. Filtra ruído (wildcards, subdomínios de infra
-  `mail./api./cdn.`, não-`.com.br`) e reduz ao domínio registrável.
-  ⚠️ **crt.sh é instável** (derruba conexões sob carga) — o ciclo degrada com
-  elegância (0 domínios naquele ciclo).
+- **`ct_poller.py` (KL-15, fonte primária)** — `CTLogPoller`: descobre os CT logs
+  "usable" da lista oficial do Google (`CT_LOG_LIST_URL`, auto-adapta à rotação de
+  shards por ano), amostra o **topo** de cada log via `get-sth`/`get-entries`,
+  parseia o `MerkleTreeLeaf` (RFC 6962) → cert DER → extrai os domínios do SAN com
+  **`cryptography`** (já é dependência), filtra `.com.br` (`normalize_domain`) e
+  enche um buffer (set, dedup). Roda numa thread daemon (`start_listener`), expõe
+  `flush_buffer`/`get_stats`. Motivo do KL-15: **o Certstream público (calidog)
+  está morto** (conecta e não envia nada — confirmado da VM) e o crt.sh é instável.
+- **`ct_client.py` (KL-11, fallback)** — crt.sh. Se o poller não coletar nada num
+  ciclo, o worker tenta o crt.sh (Postgres público `crt.sh:5432` + fallback JSON).
+  `normalize_domain` (wildcards, infra `mail./api./cdn.`, não-`.com.br`, domínio
+  registrável) é **compartilhado** pelo poller e pelo crt.sh. ⚠️ crt.sh é instável.
 - **`fingerprint.py`** — plataforma (duda, wordpress, cra, wix, squarespace, shopify).
 - **`contact.py`** — melhor e-mail (mailto > texto > meta; fallback `/contato`);
   descarta genéricos (noreply, webmaster) e de terceiros (duda.co, wixpress…);
@@ -507,16 +515,21 @@ filtra por presença de e-mail de contato, registra como alvo e enfileira para s
 - **`store.py`** — `TargetStore` (Postgres): tabelas **`targets`** e **`scans`**
   (criadas no `ensure_schema`, mesmo padrão de `payments`). Conecta por
   `POSTGRES_*` (imune a `/` na senha).
-- **`worker.py`** — `DiscoveryWorker.run_cycle()`: CT → filtra → por domínio
-  (pausa 2s): fetch + fingerprint + e-mail + setor → registra → enfileira. Serviço
-  `discovery` no compose (`DISCOVERY_BATCH_SIZE`, `DISCOVERY_INTERVAL_HOURS`).
+- **`worker.py`** — `DiscoveryWorker`: inicia o poller (thread) + heartbeat de
+  status; `run_cycle()` a cada `DISCOVERY_INTERVAL_MINUTES` (30): drena o buffer
+  (ou fallback crt.sh) → por domínio (pausa 2s): fetch + fingerprint + e-mail +
+  setor → registra → enfileira. Publica o status no Redis (`discovery:status`) pra
+  API. Serviço `discovery` no compose (roda os 3 loops: descoberta + alertas +
+  re-scan).
 
 **Scan worker** (`scanner/main.py --worker`) agora é async: consome a fila
 `{target_id, url}`, escaneia, **cacheia (KL-9)**, salva em `scans` + atualiza
 `targets`, com rate limit `WORKER_MAX_SCANS_PER_HOUR` (50 → 72s entre scans).
 
 **API de gestão:** `GET /targets` (filtros), `GET /targets/stats`, `POST /targets/add`,
-`POST /targets/{id}/scan`, `GET /scans`, `GET /scans/{id}`.
+`POST /targets/{id}/scan`, `GET /scans`, `GET /scans/{id}`,
+**`GET /discovery/status`** (KL-15: estado do poller — connected/total_seen/
+total_matched/buffer_size + ciclos + alvos descobertos hoje; via Redis, JWT).
 
 **Regra de negócio inviolável:** só escanear sites com e-mail de contato. Sem
 e-mail = sem conversão = não vale o custo do scan.

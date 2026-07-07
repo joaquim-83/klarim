@@ -343,18 +343,21 @@ validação cruzada charge↔e-mail.
 
 ## Discovery Worker (aquisição)
 
-O [`discovery/`](./discovery/) é o motor de aquisição: a cada 6h busca domínios
-`.com.br` recém-certificados (**Certificate Transparency** via crt.sh), detecta a
-plataforma (Duda, WordPress, Wix…), extrai o **e-mail de contato**, classifica o
-setor/preço, registra na tabela `targets` e enfileira para scan (resultados em
-`scans`). **Regra de negócio:** site sem e-mail extraível é marcado `sem_contato`
-e **não** é escaneado — sem contato, sem conversão. Serviço `discovery` no
-compose. Gestão via API: `GET /api/targets`, `/api/targets/stats`,
-`POST /api/targets/add`, `GET /api/scans`.
+O [`discovery/`](./discovery/) é o motor de aquisição. Um **poller de CT logs**
+(KL-15) lê os **Certificate Transparency logs públicos direto**, em tempo real
+(descobre os logs "usable" da lista oficial do Google, amostra o topo via
+`get-entries` e extrai os domínios do SAN com `cryptography`), acumula os
+`.com.br` num buffer e, a cada 30 min, processa: detecta a plataforma (Duda,
+WordPress, Wix…), extrai o **e-mail de contato**, classifica o setor/preço,
+registra em `targets` e enfileira para scan. **Regra de negócio:** site sem
+e-mail extraível é marcado `sem_contato` e **não** é escaneado. Gestão via API:
+`GET /api/targets`, `/api/targets/stats`, `POST /api/targets/add`, `/api/scans`,
+e **`GET /api/discovery/status`** (estado do poller em tempo real).
 
-> **crt.sh é instável** para consultas amplas (derruba conexões sob carga); o
-> ciclo degrada com elegância. Alvos também podem ser adicionados manualmente
-> via `POST /api/targets/add`.
+> **Por que não crt.sh nem Certstream?** O Postgres público do crt.sh rejeita
+> conexões e a JSON API dá timeout em consultas amplas; o Certstream público
+> (calidog) está morto (conecta e não envia nada). Ler os CT logs direto é
+> confiável e sem dependência de agregador. O crt.sh fica só como **fallback**.
 
 ## Dashboard admin (`klarim.net/painel`)
 
