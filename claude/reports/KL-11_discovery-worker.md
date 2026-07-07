@@ -62,10 +62,20 @@ Serviço **`discovery`** no `docker-compose.yml` (`python -m discovery.worker`,
   infra, dedup registrável). Suíte total: **49 passed, 1 skipped**.
 - **Offline ao vivo:** fingerprint real do Verdegreen → `duda`; extração de e-mail
   com priorização de mesmo domínio.
-- **crt.sh:** consultas amplas se mostraram **instáveis** (Postgres derruba a
-  conexão sob carga; JSON amplo dá timeout). O client tenta 3× e cai para JSON; o
-  ciclo degrada sem quebrar. Ver adendo (teste na VM).
-- **Produção (VM):** ver adendo.
+- **Produção (VM) — pipeline validado ponta-a-ponta:**
+  - `POST /api/targets/add` (verdegreen) → `target_id=1`, enfileirado.
+  - O **scan worker** (async, nova versão) consumiu `{target_id,url}`, escaneou,
+    salvou em `scans` e atualizou `targets`: `GET /api/scans` → `verdegreen 86
+    verde, 2 fails`; `GET /api/targets/stats` → `{by_status:{scanned:1}}`.
+  - Containers `discovery` e `worker` no ar; tabelas `targets`/`scans` criadas.
+- **crt.sh indisponível no momento (externo, não é o código):** diagnóstico na VM
+  e local — o **Postgres público** (`crt.sh:5432`) **rejeita a conexão na hora**
+  (SSL fechado em ~0,9s, até para uma query trivial); a **JSON API responde a
+  consultas específicas** (verdegreen → 178 certs em 2,3s) mas **dá timeout na
+  consulta ampla `%.com.br`** necessária para descoberta. O ciclo rodou e
+  **degradou com elegância** (`ct_domains: 0`, sem crash). Quando o Postgres do
+  crt.sh voltar, a descoberta ampla funciona; enquanto isso, alvos entram via
+  `POST /api/targets/add`.
 
 ## Critérios de aceite
 
@@ -79,7 +89,8 @@ Serviço **`discovery`** no `docker-compose.yml` (`python -m discovery.worker`,
 - [x] Scan worker salva em `scans` + atualiza `targets`.
 - [x] Container `discovery` no compose.
 - [x] API `/targets`, `/targets/stats`, `/targets/add`.
-- [ ] Ciclo validado na VM — ver adendo.
+- [x] Ciclo validado na VM — pipeline OK (manual add → scan → persist); crt.sh
+  amplo indisponível no momento (Postgres deles rejeitando conexões), degradou ok.
 - [x] Documentação atualizada.
 - [x] Relatório em PT-BR.
 - [x] Commit e push.
