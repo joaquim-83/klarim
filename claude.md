@@ -372,6 +372,17 @@ e recria o `web` em HTTPS.
 Volumes: `/etc/letsencrypt` e `/var/www/certbot` (host) montados no `web` (ro).
 Firewall GCP: `klarim-allow-http` (80) + `klarim-allow-https` (443), tag `http-server`.
 
+**Subdomínio `painel.klarim.net` (dashboard admin).** O mesmo certificado cobre
+`klarim.net`, `www.klarim.net` **e** `painel.klarim.net` (SAN adicionado com
+`certbot certonly --webroot -w /var/www/certbot -d klarim.net -d www.klarim.net -d
+painel.klarim.net --cert-name klarim.net --expand`). O `https.conf.template` tem um
+**server block dedicado** para `painel.${DOMAIN}` (443): serve o mesmo build React,
+faz proxy `/api/` → `api:8000`, aplica os mesmos security headers e **redireciona a
+raiz `/` → `/painel/login`**. O bloco 80 inclui `painel.${DOMAIN}` (ACME + redirect
+para HTTPS). Em modo sem-cert (`http.conf`, catch-all), o subdomínio também
+funciona e a raiz redireciona ao login. Sem nova regra de firewall (mesmo IP/porta).
+Acesso: `https://painel.klarim.net` (equivalente a `https://klarim.net/painel`).
+
 ---
 
 ## 11. Pagamento — AbacatePay PIX (`payments/`)
@@ -618,4 +629,5 @@ segredos). `list_targets` passou a trazer `last_semaphore` (JOIN scans);
 
 **Variáveis (`.env` da VM):** `ADMIN_USER`, `ADMIN_PASSWORD`, `JWT_SECRET`.
 
-**Acesso:** `https://klarim.net/painel/login` → entra → `/painel`.
+**Acesso:** `https://painel.klarim.net` (subdomínio dedicado, redireciona ao login)
+ou `https://klarim.net/painel/login`. Ver o subdomínio na seção 10 (HTTPS).

@@ -368,8 +368,13 @@ Faz parte do **mesmo app React** — as rotas `/painel/*` são protegidas por **
 (`POST /api/auth/login` com `ADMIN_USER`/`ADMIN_PASSWORD`; middleware trava
 `/api/targets`, `/scans`, `/alerts`, `/rescans`, `/email`, `/payments`, `/config`).
 As rotas públicas (scan, pagamento, relatório, webhooks, recuperação) seguem
-livres. Sem novo domínio, container ou certificado; o bundle do painel é
-carregado sob demanda (code-split) para não pesar no site público.
+livres. O bundle do painel é carregado sob demanda (code-split) para não pesar no
+site público.
+
+Acessível em **`https://painel.klarim.net`** (subdomínio dedicado que redireciona à
+tela de login) ou em `https://klarim.net/painel`. O subdomínio usa o mesmo
+certificado Let's Encrypt (SAN `painel.klarim.net`) e um server block Nginx próprio
+com os mesmos security headers — sem novo container nem regra de firewall.
 
 ### Alert Worker (disparo automático)
 
