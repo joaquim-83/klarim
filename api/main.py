@@ -10,6 +10,7 @@ Run local:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from contextlib import asynccontextmanager
@@ -35,6 +36,7 @@ from payments import (
     get_store,
     init_store,
 )
+from notifier import KlarimMailer, KlarimMailerError
 
 
 # --------------------------------------------------------------------------- #
@@ -67,6 +69,18 @@ def _free_access() -> bool:
     return _dev_mode() or not _payments_enabled()
 
 
+def _resend_key() -> str:
+    return os.environ.get("RESEND_API_KEY", "")
+
+
+def _email_enabled() -> bool:
+    return bool(_resend_key())
+
+
+def _mailer() -> KlarimMailer:
+    return KlarimMailer(_resend_key(), os.environ.get("RESEND_FROM") or None)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_store()
@@ -94,8 +108,12 @@ async def root() -> dict:
             "/webhooks/abacatepay (POST)",
             "/report/executive?url=&charge_id=",
             "/report/technical?url=&charge_id=",
+            "/email/test (POST)",
+            "/email/send-alert (POST)",
+            "/email/send-report (POST)",
         ],
         "payments_enabled": _payments_enabled(),
+        "email_enabled": _email_enabled(),
         "dev_mode": _dev_mode(),
     }
 
@@ -151,6 +169,7 @@ async def scan_summary(url: str = Query(..., description="URL alvo.")) -> dict:
 
 class PaymentCreateBody(BaseModel):
     url: str
+    buyer_email: Optional[str] = None
 
 
 @app.post("/payment/create")
@@ -181,6 +200,7 @@ async def payment_create(body: PaymentCreateBody) -> dict:
         br_code=data.get("brCode"),
         br_code_base64=data.get("brCodeBase64"),
         expires_at=data.get("expiresAt"),
+        buyer_email=(body.buyer_email or "").strip() or None,
     )
     await get_store().save(charge)
     return charge.to_public_dict()
@@ -228,6 +248,9 @@ async def webhook_abacatepay(request: Request, webhookSecret: str = Query(defaul
 
     if charge_id and (event.endswith(".completed") or event.endswith(".paid")):
         await get_store().mark_status(charge_id, PaymentStatus.PAID)
+        charge = await get_store().get(charge_id)
+        if charge:
+            await _maybe_send_report_email(charge)
 
     return {"received": True, "charge_id": charge_id, "event": event}
 
@@ -258,6 +281,38 @@ async def _refresh_charge(charge: Charge) -> None:
     if status and status != charge.status:
         await get_store().mark_status(charge.charge_id, status)
         charge.status = status
+        if charge.is_paid:
+            await _maybe_send_report_email(charge)
+
+
+async def _maybe_send_report_email(charge: Charge) -> None:
+    """Dispara (uma vez) o e-mail do relatório após o pagamento, em background.
+
+    Marca ``report_email_sent`` ANTES de agendar para evitar duplicação
+    (webhook + polling). Se o envio falhar, o cliente ainda baixa o PDF no site
+    (fallback) — o erro é apenas registrado.
+    """
+    if not (charge.is_paid and charge.buyer_email and not charge.report_email_sent):
+        return
+    if not _email_enabled():
+        return
+    await get_store().mark_email_sent(charge.charge_id)
+    charge.report_email_sent = True
+    asyncio.create_task(
+        _send_report_email_task(charge.charge_id, charge.target_url, charge.buyer_email)
+    )
+
+
+async def _send_report_email_task(charge_id: str, target_url: str, to_email: str) -> None:
+    try:
+        report = await run_scan(target_url)
+        executive = await generate_executive_pdf(report, target_url)
+        technical = await generate_technical_pdf(report, target_url)
+        score = report.score.score if report.score else 0
+        res = await _mailer().send_report(to_email, target_url, score, executive, technical)
+        print(f"[email] relatório de {charge_id} enviado para {to_email} (id={res.get('email_id')})")
+    except Exception as exc:  # noqa: BLE001 - falha não deve derrubar nada; há fallback de download
+        print(f"[email] falha ao enviar relatório de {charge_id}: {exc!r}")
 
 
 # --------------------------------------------------------------------------- #
@@ -298,6 +353,81 @@ async def _require_paid(charge_id: Optional[str]) -> None:
     await _refresh_charge(charge)
     if not charge.is_paid:
         raise HTTPException(status_code=402, detail="Pagamento ainda não confirmado.")
+
+
+# --------------------------------------------------------------------------- #
+# E-mail (Resend)
+# --------------------------------------------------------------------------- #
+
+class EmailTestBody(BaseModel):
+    to_email: str
+
+
+class EmailAlertBody(BaseModel):
+    to_email: str
+    target_url: str
+
+
+class EmailReportBody(BaseModel):
+    to_email: str
+    target_url: str
+    charge_id: str
+
+
+@app.post("/email/test")
+async def email_test(body: EmailTestBody) -> dict:
+    """Envia um e-mail de teste (validação da configuração)."""
+    _require_email()
+    res = await _safe_email(_mailer().send_test(body.to_email))
+    return {"sent": True, "email_id": res.get("email_id")}
+
+
+@app.post("/email/send-alert")
+async def email_send_alert(body: EmailAlertBody) -> dict:
+    """Escaneia o alvo e envia o alerta gratuito (semáforo)."""
+    _require_email()
+    report = await _safe_scan(body.target_url)
+    s = report.score
+    counts = {
+        "critica": s.fails_by_severity.get(Severity.CRITICA, 0),
+        "alta": s.fails_by_severity.get(Severity.ALTA, 0),
+        "media": s.fails_by_severity.get(Severity.MEDIA, 0),
+        "baixa": s.fails_by_severity.get(Severity.BAIXA, 0),
+    }
+    res = await _safe_email(
+        _mailer().send_alert(body.to_email, body.target_url, s.score, s.semaphore, s.failed, counts)
+    )
+    return {"sent": True, "email_id": res.get("email_id"), "score": s.score}
+
+
+@app.post("/email/send-report")
+async def email_send_report(body: EmailReportBody) -> dict:
+    """Envia o relatório completo (2 PDFs) — exige cobrança paga."""
+    _require_email()
+    charge = await get_store().get(body.charge_id)
+    if charge is None:
+        raise HTTPException(status_code=402, detail="Cobrança não encontrada.")
+    await _refresh_charge(charge)
+    if not charge.is_paid and not _free_access():
+        raise HTTPException(status_code=402, detail="Pagamento não confirmado.")
+    report = await _safe_scan(body.target_url)
+    executive = await _safe_pdf(generate_executive_pdf, report, body.target_url)
+    technical = await _safe_pdf(generate_technical_pdf, report, body.target_url)
+    score = report.score.score if report.score else 0
+    res = await _safe_email(_mailer().send_report(body.to_email, body.target_url, score, executive, technical))
+    return {"sent": True, "email_id": res.get("email_id"), "score": score}
+
+
+def _require_email() -> None:
+    if not _email_enabled():
+        raise HTTPException(status_code=503, detail="E-mail não configurado (RESEND_API_KEY).")
+
+
+async def _safe_email(coro) -> dict:
+    try:
+        return await coro
+    except KlarimMailerError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 # --------------------------------------------------------------------------- #

@@ -47,6 +47,8 @@ class Charge:
     expires_at: Optional[str] = None
     created_at: Optional[str] = None
     paid_at: Optional[str] = None
+    buyer_email: Optional[str] = None
+    report_email_sent: bool = False
 
     @property
     def is_paid(self) -> bool:

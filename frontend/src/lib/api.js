@@ -15,11 +15,11 @@ export async function fetchSummary(url) {
 
 // Cria uma cobrança PIX para a URL escaneada. Retorna { charge_id, br_code,
 // qr_code_base64, amount_display, expires_at, ... }.
-export async function createPayment(url) {
+export async function createPayment(url, buyerEmail) {
   const resp = await fetch(`${BASE}/payment/create`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url }),
+    body: JSON.stringify({ url, buyer_email: buyerEmail || undefined }),
   })
   if (!resp.ok) {
     const detail = await resp.text().catch(() => '')

@@ -308,6 +308,25 @@ pagamento). Variáveis (no `.env` da VM, **nunca commitadas**):
 
 ---
 
+## E-mail (Resend)
+
+Módulo [`notifier/`](./notifier/): **alerta gratuito** (semáforo — o anzol do
+funil) e **entrega do relatório** pago (2 PDFs anexados). Templates HTML
+table-based (Gmail/Outlook), paleta dark.
+
+- `POST /api/email/test` — e-mail de teste.
+- `POST /api/email/send-alert` — escaneia e envia o alerta com semáforo.
+- `POST /api/email/send-report` — envia os 2 PDFs (exige cobrança paga).
+
+Na compra, a tela `/pay` pede o e-mail; após o pagamento confirmado (webhook ou
+polling), o relatório é **enviado automaticamente** em background (idempotente;
+se falhar, o cliente ainda baixa no site). Variáveis (`.env` da VM, **nunca
+commitadas**): `RESEND_API_KEY`, `RESEND_FROM`. Sem domínio verificado, use
+`Klarim <onboarding@resend.dev>` (só envia ao dono da conta Resend); para enviar
+a qualquer um, verifique `klarim.net` no Resend (SPF/DKIM/DMARC).
+
+---
+
 ## Framework legal
 
 O Klarim se enquadra como serviço de *Security Rating* / *Monitoramento de

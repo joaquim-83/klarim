@@ -107,6 +107,9 @@ klarim/
 │   ├── abacatepay.py       # client v2 + verify_webhook_signature
 │   ├── models.py           # Charge, PaymentStatus, PRICING
 │   └── store.py            # persistência (Postgres + fallback memória)
+├── notifier/               # e-mail via Resend (KL-8)
+│   ├── email_client.py     # KlarimMailer (alerta / relatório / teste)
+│   └── templates/          # alert.html + report_delivery.html (table-based)
 ├── api/                    # API HTTP (FastAPI)
 │   └── main.py             # semáforo + PDFs + fluxo de pagamento PIX
 └── tests/                  # pytest
@@ -401,3 +404,30 @@ chave configurada e dev mode off, o pagamento é exigido.
 **Webhook:** registrar o endpoint como
 `https://klarim.net/api/webhooks/abacatepay?webhookSecret=<secret>` (o mesmo
 valor de `ABACATEPAY_WEBHOOK_SECRET`).
+
+---
+
+## 12. E-mail — Resend (`notifier/`)
+
+Dois usos: **alerta gratuito** (anzol do funil, semáforo) e **entrega do
+relatório** pago (2 PDFs anexados).
+
+- **`notifier/email_client.py`** — `KlarimMailer` com `send_alert`, `send_report`,
+  `send_test`. SDK `resend` (síncrono) encapsulado em `asyncio.to_thread`.
+  Templates Jinja2 **table-based** (compatível com Gmail/Outlook), paleta dark.
+- **Endpoints** (`api/main.py`): `POST /email/test`, `POST /email/send-alert`
+  (scan + alerta), `POST /email/send-report` (exige cobrança paga; anexa PDFs).
+- **Envio automático:** ao confirmar pagamento (webhook **ou** polling), se a
+  cobrança tem `buyer_email` e ainda não enviou, dispara o e-mail do relatório em
+  **background** (`asyncio.create_task`), idempotente (`report_email_sent`). Falha
+  é só logada — o cliente sempre pode baixar o PDF no site (fallback).
+- **Fluxo de compra:** a tela `/pay` pede o e-mail **antes** de gerar a cobrança;
+  ele é salvo em `payments.buyer_email`.
+
+**Variáveis** (`.env` da VM, **nunca commitadas**): `RESEND_API_KEY`,
+`RESEND_FROM`. Sem domínio verificado, `RESEND_FROM=Klarim <onboarding@resend.dev>`
+só envia para o e-mail dono da conta Resend. Para enviar a qualquer destinatário,
+**verificar o domínio** `klarim.net` no painel Resend (registros DNS SPF/DKIM/DMARC
+na Hostinger — ver `claude/reports/KL-8_email-resend.md`) e trocar para
+`Klarim <seguranca@klarim.net>`. A chave fornecida é **send-only** (não gerencia
+domínios via API — isso é feito no painel).

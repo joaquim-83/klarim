@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS payments (
     created_at TIMESTAMP DEFAULT NOW(),
     paid_at TIMESTAMP
 );
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS buyer_email TEXT;
+ALTER TABLE payments ADD COLUMN IF NOT EXISTS report_email_sent BOOLEAN DEFAULT FALSE;
 """
 
 
@@ -49,6 +51,11 @@ class MemoryStore:
             c.status = status
             if paid_at:
                 c.paid_at = paid_at
+
+    async def mark_email_sent(self, charge_id: str) -> None:
+        c = self._d.get(charge_id)
+        if c:
+            c.report_email_sent = True
 
 
 class PostgresStore:
@@ -96,11 +103,14 @@ class PostgresStore:
             with conn, conn.cursor() as cur:
                 cur.execute(
                     """
-                    INSERT INTO payments (charge_id, target_url, amount_cents, status)
-                    VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (charge_id) DO UPDATE SET status = EXCLUDED.status
+                    INSERT INTO payments (charge_id, target_url, amount_cents, status, buyer_email)
+                    VALUES (%s, %s, %s, %s, %s)
+                    ON CONFLICT (charge_id) DO UPDATE SET
+                        status = EXCLUDED.status,
+                        buyer_email = COALESCE(EXCLUDED.buyer_email, payments.buyer_email)
                     """,
-                    (charge.charge_id, charge.target_url, charge.amount_cents, charge.status),
+                    (charge.charge_id, charge.target_url, charge.amount_cents,
+                     charge.status, charge.buyer_email),
                 )
         finally:
             conn.close()
@@ -113,8 +123,8 @@ class PostgresStore:
         try:
             with conn, conn.cursor() as cur:
                 cur.execute(
-                    "SELECT charge_id, target_url, amount_cents, status, created_at, paid_at "
-                    "FROM payments WHERE charge_id = %s",
+                    "SELECT charge_id, target_url, amount_cents, status, created_at, paid_at, "
+                    "buyer_email, report_email_sent FROM payments WHERE charge_id = %s",
                     (charge_id,),
                 )
                 row = cur.fetchone()
@@ -129,7 +139,23 @@ class PostgresStore:
             status=row[3],
             created_at=str(row[4]) if row[4] else None,
             paid_at=str(row[5]) if row[5] else None,
+            buyer_email=row[6],
+            report_email_sent=bool(row[7]),
         )
+
+    async def mark_email_sent(self, charge_id: str) -> None:
+        await asyncio.to_thread(self._mark_email_sent_sync, charge_id)
+
+    def _mark_email_sent_sync(self, charge_id: str) -> None:
+        conn = self._connect()
+        try:
+            with conn, conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE payments SET report_email_sent = TRUE WHERE charge_id = %s",
+                    (charge_id,),
+                )
+        finally:
+            conn.close()
 
     async def mark_status(self, charge_id: str, status: str, paid_at: Optional[str] = None) -> None:
         await asyncio.to_thread(self._mark_status_sync, charge_id, status, paid_at)
