@@ -97,17 +97,33 @@ mesmo alvo dentro de 30 dias (evita e-mail duplo).
   71 passed, 1 skipped.**
 - **Imports/rotas:** `api.main` importa limpo; rotas `/rescans`, `/rescans/stats`,
   `/targets/{id}/rescan` registradas.
-- **Produção (VM):** _validação pós-deploy — ver seção abaixo._
+- **Produção (VM):** validado pós-deploy — ver seção abaixo.
 
-## Validação em produção (pós-deploy)
+## Validação em produção (pós-deploy) — confirmada
 
-- [ ] Container `discovery` no ar com **três** loops (`[rescan] iniciado`).
-- [ ] `POST /api/targets/{id}/rescan` reescaneia, grava em `rescan_log` e envia o
-      e-mail de evolução (melhoria/piora/igual conforme o caso).
-- [ ] `GET /api/rescans` e `/rescans/stats` refletem.
-- [ ] Alvo `unsubscribed` NÃO é reescaneado (fora da elegibilidade).
-- [ ] Throttle compartilhado: com e-mails no teto, o re-scan roda e o e-mail fica
-      pendente.
+CI/CD verde (test + deploy). O job de teste falhou uma vez por um repo apt de
+terceiros quebrado no runner (`packages.microsoft.com`, "NOSPLIT") — corrigido no
+workflow (remove os repos MS/Azure antes do `apt-get update`), sem relação com o
+código. Resultados:
+
+- [x] **Três loops** no container `discovery`: `[discovery] iniciado`,
+      `[alert] iniciado`, `[rescan] iniciado (idade 30d, intervalo 24h, teto 10/h 50/dia)`.
+- [x] **Elegibilidade:** envelhecendo o último scan do `verdegreen` para 40 dias e
+      apontando o e-mail para o operador — `get_targets_for_rescan()` = **1** com
+      `status='scanned'` e **0** com `status='unsubscribed'`.
+- [x] **Disparo + e-mail:** `POST /api/targets/1/rescan` com score anterior forçado
+      a 70 → `evolution:improved` (70→86), `sent:true` + `email_id` (🎉 e-mail ao
+      operador). `rescan_log` gravado (`old_semaphore=verde`, `new_semaphore=amarelo`
+      — a recalibração do KL-12 valendo no scan novo); `GET /api/rescans/stats` →
+      `{improved:1}`. Alvo → `last_scan_score=86`, `last_alert_at` setado
+      (`mark_target_contacted` — gate anti-duplicidade do Alert Worker).
+- [x] **Throttle compartilhado:** `count_proactive_emails_last_hours(1)` = **1**
+      após o e-mail de evolução (alert_log + rescan_log somam no mesmo teto).
+- [x] **Adiamento por throttle e reenvio de pendentes:** cobertos por teste
+      unitário (`run_cycle` adia quando no teto; `_flush_pending` reenvia).
+
+Artefatos de validação limpos ao final (e-mail do alvo → NULL, `last_alert_at`
+NULL, `rescan_log` zerado).
 
 ## Critérios de aceite
 
@@ -123,7 +139,7 @@ mesmo alvo dentro de 30 dias (evita e-mail duplo).
 - [x] Testes (71 passed, 1 skipped).
 - [x] Documentação (`claude.md` §17, `README.md`).
 - [x] Relatório em PT-BR.
-- [ ] Deploy + validação em produção + commit/push.
+- [x] Deploy + validação em produção + commit/push.
 
 ## Follow-ups
 
