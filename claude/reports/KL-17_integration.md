@@ -75,18 +75,29 @@ Configurações · Sair`. (De quebra, o Config passou a mostrar
   origem certa** e atualiza `last_scan_*`; caminho sem HTML degrada com elegância.
   Ajustado o FakeStore do rescan para o novo `source`. **Suíte total: 91 passed,
   1 skipped.** Build do frontend OK (tela Escanear code-split).
-- **Produção (VM):** _validação pós-deploy — ver seção abaixo._
+- **Produção (VM):** validado pós-deploy — ver seção abaixo.
 
-## Validação em produção (pós-deploy)
+## Validação em produção (pós-deploy) — confirmada
 
-- [ ] Scan público em `klarim.net` → aparece em Scans com badge **público**; o
-      alvo aparece em Alvos com plataforma/setor/e-mail.
-- [ ] `POST /admin/scan-and-report` (via painel Escanear) → resultado inline;
-      `send_email` entrega o alerta/relatório.
-- [ ] Reenvio (`/admin/resend-alert`, `/admin/send-report`) entrega.
-- [ ] Origem correta nos scans (público/admin/discovery/manual/rescan).
-- [ ] Pagamentos linkam para o alvo; AlvoDetalhe mostra os pagamentos.
-- [ ] Scan duplicado atualiza o alvo (não cria duplicata).
+CI/CD verde; `ALTER TABLE scans ADD COLUMN source` rodou no `ensure_schema`.
+Validado via httpx no container da API (senha só na VM):
+
+- [x] **Scan público → banco:** `GET /scan/summary?url=https://www.uol.com.br`
+      (score 89) → o ingest de background gravou; `GET /scans?source=public` →
+      `[('https://www.uol.com.br', 89, 'public')]`.
+- [x] **Admin scan-and-report:** verdegreen → `target=1, scan=13, score=86,
+      platform=duda, sector=hotel, email=reservas@verdegreen.com.br, checks=15`
+      (resultado inline completo).
+- [x] **Envio de e-mail:** `scan-and-report` com `send_email` (alerta) para o
+      e-mail do **operador** → `email_sent=True, email_id=7195…` (o mesmo caminho
+      de `resend-alert`/`send-report`; nenhum e-mail foi para o negócio real).
+- [x] **Rastreabilidade:** scans com `source=admin` e `source=public` corretos.
+- [x] **Dedup (UPSERT):** escanear verdegreen 2× → `target_id` **igual** (=1),
+      sem duplicar alvo.
+- [x] **Vínculo pagamento↔alvo:** `SELECT … payments LEFT JOIN targets` →
+      a cobrança de `verdegreen` casa com **target_id=1**; as demais (URLs de teste
+      antigas, ex.: example.com, klarim.net) ficam `NULL` → link como texto simples,
+      como previsto.
 
 ## Critérios de aceite
 
@@ -101,7 +112,7 @@ Configurações · Sair`. (De quebra, o Config passou a mostrar
 - [x] Scan duplicado faz UPSERT (não duplica alvo).
 - [x] Documentação (`claude.md` §19, `README.md`).
 - [x] Relatório em PT-BR.
-- [ ] Deploy + validação em produção + commit/push.
+- [x] Deploy + validação em produção + commit/push.
 
 ## Follow-ups
 
