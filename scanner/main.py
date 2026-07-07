@@ -63,42 +63,78 @@ async def _write_pdfs(report, url: str) -> None:
     print(f"\nPDFs gerados:\n  - {exec_name} ({len(exec_bytes)} bytes)\n  - {tech_name} ({len(tech_bytes)} bytes)")
 
 
-def _run_worker() -> int:
+def _parse_queue_item(raw: str):
+    """Aceita JSON {target_id, url} (Discovery Worker) ou uma URL simples."""
     try:
-        import redis  # imported lazily; only needed in worker mode
-    except ImportError:
-        print(
-            "redis package not installed. Install requirements.txt or run a "
-            "one-off scan: python -m scanner.main <url>",
-            file=sys.stderr,
-        )
-        return 2
+        obj = json.loads(raw)
+        if isinstance(obj, dict) and obj.get("url"):
+            return obj.get("target_id"), obj["url"]
+    except (ValueError, TypeError):
+        pass
+    return None, raw
+
+
+async def _worker_loop() -> None:
+    import redis.asyncio as aioredis
+
+    from scanner.cache import ScanCache
+    from discovery.store import get_target_store
 
     redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+    client = aioredis.from_url(redis_url, decode_responses=True)
+    await client.ping()
+    cache = ScanCache(client)
+    store = get_target_store()
     try:
-        client = redis.from_url(redis_url, decode_responses=True)
-        client.ping()
-    except Exception as exc:  # noqa: BLE001
-        print(f"Could not connect to Redis at {redis_url}: {exc!r}", file=sys.stderr)
-        return 2
+        await store.ensure_schema()
+    except Exception as exc:  # noqa: BLE001 - segue sem persistência se o DB faltar
+        print(f"[klarim-worker] targets/scans indisponível ({exc!r})", flush=True)
+        store = None
 
-    print(f"[klarim-worker] connected to {redis_url}; waiting on '{SCAN_QUEUE}'…")
+    # Rate limit: no máximo N scans/hora (padrão 50 -> 72s entre scans).
+    max_per_hour = int(os.environ.get("WORKER_MAX_SCANS_PER_HOUR", "50"))
+    min_interval = 3600.0 / max_per_hour if max_per_hour > 0 else 0.0
+    loop = asyncio.get_event_loop()
+    last = 0.0
+
+    print(f"[klarim-worker] conectado a {redis_url}; aguardando '{SCAN_QUEUE}'…", flush=True)
     while True:
-        item = client.blpop(SCAN_QUEUE, timeout=0)
+        item = await client.blpop(SCAN_QUEUE)
         if not item:
             continue
-        _, url = item
-        print(f"[klarim-worker] scanning {url}")
+        target_id, url = _parse_queue_item(item[1])
+        if last and min_interval:
+            wait = min_interval - (loop.time() - last)
+            if wait > 0:
+                await asyncio.sleep(wait)
+        last = loop.time()
         try:
-            report = asyncio.run(run_scan(url))
-            client.set(
-                REPORT_PREFIX + url,
-                json.dumps(report.to_dict(), ensure_ascii=False),
-            )
-            score = report.score.score if report.score else "n/a"
-            print(f"[klarim-worker] done {url} -> score {score}")
-        except Exception as exc:  # noqa: BLE001 - keep the worker alive
-            print(f"[klarim-worker] error scanning {url}: {exc!r}", file=sys.stderr)
+            report = await run_scan(url)
+            await cache.set(url, report)  # cache do KL-9 (PDF/summary instantâneos)
+            s = report.score
+            if store is not None and target_id is not None and s is not None:
+                scan_id = await store.save_scan(
+                    target_id, url, s.score, s.semaphore, s.passed, s.failed,
+                    s.inconclusive, report.to_dict())
+                await store.update_scan_result(target_id, scan_id, s.score)
+            print(f"[klarim-worker] {url} -> score {s.score if s else 'n/a'}"
+                  f"{' (target ' + str(target_id) + ')' if target_id else ''}", flush=True)
+        except Exception as exc:  # noqa: BLE001 - mantém o worker vivo
+            print(f"[klarim-worker] erro em {url}: {exc!r}", file=sys.stderr, flush=True)
+
+
+def _run_worker() -> int:
+    try:
+        import redis.asyncio  # noqa: F401 - garante o pacote presente
+    except ImportError:
+        print("redis não instalado. Instale requirements.txt.", file=sys.stderr)
+        return 2
+    try:
+        asyncio.run(_worker_loop())
+    except Exception as exc:  # noqa: BLE001
+        print(f"[klarim-worker] loop falhou: {exc!r}", file=sys.stderr)
+        return 2
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

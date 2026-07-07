@@ -339,6 +339,23 @@ validação cruzada charge↔e-mail.
 
 ---
 
+## Discovery Worker (aquisição)
+
+O [`discovery/`](./discovery/) é o motor de aquisição: a cada 6h busca domínios
+`.com.br` recém-certificados (**Certificate Transparency** via crt.sh), detecta a
+plataforma (Duda, WordPress, Wix…), extrai o **e-mail de contato**, classifica o
+setor/preço, registra na tabela `targets` e enfileira para scan (resultados em
+`scans`). **Regra de negócio:** site sem e-mail extraível é marcado `sem_contato`
+e **não** é escaneado — sem contato, sem conversão. Serviço `discovery` no
+compose. Gestão via API: `GET /api/targets`, `/api/targets/stats`,
+`POST /api/targets/add`, `GET /api/scans`.
+
+> **crt.sh é instável** para consultas amplas (derruba conexões sob carga); o
+> ciclo degrada com elegância. Alvos também podem ser adicionados manualmente
+> via `POST /api/targets/add`.
+
+---
+
 ## Framework legal
 
 O Klarim se enquadra como serviço de *Security Rating* / *Monitoramento de

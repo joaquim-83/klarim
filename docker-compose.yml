@@ -92,6 +92,23 @@ services:
       db:
         condition: service_healthy
 
+  # Discovery Worker (KL-11) — descobre alvos via CT logs a cada 6h e enfileira.
+  discovery:
+    build: .
+    restart: unless-stopped
+    command: ["python", "-m", "discovery.worker"]
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql://${POSTGRES_USER:-klarim}:${POSTGRES_PASSWORD:-change-me}@db:5432/${POSTGRES_DB:-klarim}
+      REDIS_URL: redis://redis:6379/0
+      DISCOVERY_BATCH_SIZE: ${DISCOVERY_BATCH_SIZE:-100}
+      DISCOVERY_INTERVAL_HOURS: ${DISCOVERY_INTERVAL_HOURS:-6}
+    depends_on:
+      redis:
+        condition: service_healthy
+      db:
+        condition: service_healthy
+
 volumes:
   pgdata:
   redisdata:

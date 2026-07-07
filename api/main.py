@@ -26,6 +26,8 @@ from pydantic import BaseModel
 from scanner import run_scan, summarize_fails, Severity, ScanReport
 from scanner import __version__ as scanner_version
 from scanner.cache import ScanCache
+from scanner.checks.base import normalize_url, registrable_domain, domain_of
+from discovery.store import get_target_store
 from reporter import generate_executive_pdf, generate_technical_pdf, pdf_filename
 from payments import (
     AbacatePayClient,
@@ -110,6 +112,10 @@ async def _init_cache() -> None:
 async def lifespan(app: FastAPI):
     await init_store()
     await _init_cache()
+    try:
+        await get_target_store().ensure_schema()
+    except Exception as exc:  # noqa: BLE001 - targets/scans opcionais; API sobe mesmo assim
+        print(f"[targets] schema indisponível ({exc!r})", flush=True)
     yield
 
 
@@ -563,6 +569,79 @@ async def recovery_download(
     report = await _safe_scan(charge.target_url)  # usa o cache do KL-9
     pdf = await _safe_pdf(generator, report, charge.target_url)
     return _pdf_response(pdf, pdf_filename(kind, charge.target_url, report.started_at))
+
+
+# --------------------------------------------------------------------------- #
+# Gestão de alvos / scans (Discovery — KL-11)
+# --------------------------------------------------------------------------- #
+
+class TargetAddBody(BaseModel):
+    url: str
+
+
+async def _enqueue_scan(target_id: Optional[int], url: str) -> bool:
+    """Enfileira {target_id, url} na fila de scan (Redis)."""
+    if _cache is None or _cache.redis is None:
+        return False
+    queue = os.environ.get("KLARIM_SCAN_QUEUE", "klarim:scan_queue")
+    await _cache.redis.rpush(queue, json.dumps({"target_id": target_id, "url": url}))
+    return True
+
+
+@app.get("/targets")
+async def api_list_targets(
+    status: Optional[str] = Query(default=None),
+    platform: Optional[str] = Query(default=None),
+    sector: Optional[str] = Query(default=None),
+    limit: int = Query(default=50, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> dict:
+    rows = await get_target_store().list_targets(status, platform, sector, limit, offset)
+    return {"count": len(rows), "targets": rows}
+
+
+@app.get("/targets/stats")
+async def api_targets_stats() -> dict:
+    return await get_target_store().stats()
+
+
+@app.post("/targets/add")
+async def api_targets_add(body: TargetAddBody) -> dict:
+    url = normalize_url(body.url)
+    domain = registrable_domain(domain_of(url))
+    tid = await get_target_store().register_target(
+        url, domain, "unknown", "outro", "standard", None,
+        source="manual", status="discovered")
+    enq = await _enqueue_scan(tid, url)
+    return {"target_id": tid, "url": url, "domain": domain, "enqueued": enq}
+
+
+@app.post("/targets/{target_id}/scan")
+async def api_targets_scan(target_id: int) -> dict:
+    target = await get_target_store().get_target(target_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Alvo não encontrado.")
+    enq = await _enqueue_scan(target_id, target["url"])
+    return {"target_id": target_id, "url": target["url"], "enqueued": enq}
+
+
+@app.get("/scans")
+async def api_list_scans(
+    target_id: Optional[int] = Query(default=None),
+    score_min: Optional[int] = Query(default=None),
+    score_max: Optional[int] = Query(default=None),
+    limit: int = Query(default=50, le=500),
+) -> dict:
+    rows = await get_target_store().list_scans(target_id, score_min, score_max, limit)
+    return {"count": len(rows), "scans": rows}
+
+
+@app.get("/scans/{scan_id}")
+async def api_get_scan(scan_id: int) -> dict:
+    scan = await get_target_store().get_scan(scan_id)
+    if scan is None:
+        raise HTTPException(status_code=404, detail="Scan não encontrado.")
+    return scan
 
 
 # --------------------------------------------------------------------------- #

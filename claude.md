@@ -474,3 +474,38 @@ temporário por e-mail.
 - **Frontend:** `/recuperar` (solicitar) e `/recuperar/acesso?token=` (listar +
   baixar). Link "Recuperar relatórios" no footer de todas as telas.
 - **E-mail:** `notifier/templates/recovery.html` + `KlarimMailer.send_recovery_link`.
+
+---
+
+## 15. Discovery Worker (KL-11) — `discovery/`
+
+Motor de aquisição: a cada 6h descobre domínios `.com.br` recém-certificados,
+filtra por presença de e-mail de contato, registra como alvo e enfileira para scan.
+
+- **`ct_client.py`** — crt.sh (Certificate Transparency). Primário: Postgres
+  público (`crt.sh:5432`, padrão reverso `rb.moc.%` para usar índice, 3 tentativas
+  + timeout 45s); fallback JSON. Filtra ruído (wildcards, subdomínios de infra
+  `mail./api./cdn.`, não-`.com.br`) e reduz ao domínio registrável.
+  ⚠️ **crt.sh é instável** (derruba conexões sob carga) — o ciclo degrada com
+  elegância (0 domínios naquele ciclo).
+- **`fingerprint.py`** — plataforma (duda, wordpress, cra, wix, squarespace, shopify).
+- **`contact.py`** — melhor e-mail (mailto > texto > meta; fallback `/contato`);
+  descarta genéricos (noreply, webmaster) e de terceiros (duda.co, wixpress…);
+  prefere o mesmo domínio do site. **Sem e-mail ⇒ `status='sem_contato'`, NÃO enfileira.**
+- **`classifier.py`** — setor + `price_tier` (hotel→standard, clínica→enterprise…).
+- **`store.py`** — `TargetStore` (Postgres): tabelas **`targets`** e **`scans`**
+  (criadas no `ensure_schema`, mesmo padrão de `payments`). Conecta por
+  `POSTGRES_*` (imune a `/` na senha).
+- **`worker.py`** — `DiscoveryWorker.run_cycle()`: CT → filtra → por domínio
+  (pausa 2s): fetch + fingerprint + e-mail + setor → registra → enfileira. Serviço
+  `discovery` no compose (`DISCOVERY_BATCH_SIZE`, `DISCOVERY_INTERVAL_HOURS`).
+
+**Scan worker** (`scanner/main.py --worker`) agora é async: consome a fila
+`{target_id, url}`, escaneia, **cacheia (KL-9)**, salva em `scans` + atualiza
+`targets`, com rate limit `WORKER_MAX_SCANS_PER_HOUR` (50 → 72s entre scans).
+
+**API de gestão:** `GET /targets` (filtros), `GET /targets/stats`, `POST /targets/add`,
+`POST /targets/{id}/scan`, `GET /scans`, `GET /scans/{id}`.
+
+**Regra de negócio inviolável:** só escanear sites com e-mail de contato. Sem
+e-mail = sem conversão = não vale o custo do scan.
