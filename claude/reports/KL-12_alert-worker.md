@@ -105,17 +105,33 @@ sensíveis).
 - **Endpoint offline:** `/api/unsubscribe` com token válido chega ao DB (HMAC ok);
   token inválido → 400 sem tocar no banco. Rotas registradas: `/alerts`,
   `/alerts/stats`, `/targets/{id}/alert`, `/unsubscribe`.
-- **Produção (VM):** _validação pós-deploy — ver seção abaixo._
+- **Produção (VM):** validado pós-deploy — ver seção abaixo.
 
-## Validação em produção (pós-deploy)
+## Validação em produção (pós-deploy) — confirmada
 
-- [ ] Semáforo: `verdegreen` → amarelo, `klarim.net` → verde.
-- [ ] `UNSUBSCRIBE_SECRET` + tetos presentes na `.env` da VM; container `discovery`
-      no ar com os dois loops.
-- [ ] `POST /api/targets/{id}/alert` envia; `GET /api/alerts` e `/alerts/stats`
-      refletem o envio; `mark_target_alerted` muda o status.
-- [ ] Re-disparo automático pula o alvo já alertado (janela de 30 dias).
-- [ ] `/api/unsubscribe` com token válido descadastra; token inválido → 400.
+CI/CD verde (test + deploy). Após o deploy, o cache Redis (KL-9) ainda servia o
+semáforo antigo do `verdegreen` (calculado sob a regra pré-KL-12); as chaves
+`scan:*` foram limpas para forçar o recálculo. Resultados:
+
+- [x] **Semáforo:** `verdegreen` (86, 2 FALHAS Altas) → **amarelo**; `klarim.net`
+      (100, 0 falhas) → **verde**.
+- [x] **Env + container:** `UNSUBSCRIBE_SECRET` (64 hex) + `MAX_ALERTS_*` +
+      `ALERT_INTERVAL_HOURS` na `.env` da VM; container `discovery` no ar com **os
+      dois loops** (`[alert] iniciado` + `[discovery] iniciado` → `asyncio.gather`).
+- [x] **Disparo:** `POST /api/targets/1/alert` (alvo de teste apontado para o
+      e-mail do próprio operador) → `sent:true` + `email_id`; `GET /api/alerts` e
+      `/alerts/stats` refletiram (`today:1`); alvo → `status='alerted'`,
+      `alert_count=1`, `last_alert_at` preenchido.
+- [x] **Skip no re-disparo:** após alertar, `get_eligible_targets_for_alert()` →
+      **0** (excluído por status e pela janela de 30 dias).
+- [x] **Unsubscribe:** token **válido** → HTTP 200 + página de sucesso, alvo →
+      `status='unsubscribed'`; token **inválido** → HTTP 400.
+- [x] **Throttle:** coberto por teste unitário (teto por hora corta o excedente);
+      não forçado em produção para não enviar 10 e-mails reais.
+
+Artefatos de validação limpos ao final (e-mail do alvo → NULL, `status='scanned'`,
+`alert_log` zerado) — o `verdegreen` é um negócio real e não deve reter o e-mail
+do operador nem um alerta de teste.
 
 ## Critérios de aceite
 
@@ -129,7 +145,7 @@ sensíveis).
 - [x] Testes (61 passed, 1 skipped).
 - [x] Documentação (`claude.md` §16, `README.md`).
 - [x] Relatório em PT-BR.
-- [ ] Deploy + validação em produção + commit/push.
+- [x] Deploy + validação em produção + commit/push.
 
 ## Follow-ups
 
