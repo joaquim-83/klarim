@@ -49,6 +49,12 @@ jobs:
       # the job green if a future test does.
       - name: Install WeasyPrint system libraries
         run: |
+          # Repos de terceiros pré-instalados no runner (packages.microsoft.com)
+          # às vezes ficam com assinatura inválida ("no longer signed / NOSPLIT")
+          # e quebram o apt-get update com exit 100. Não precisamos deles para as
+          # libs do WeasyPrint, então os removemos antes de atualizar.
+          sudo rm -f /etc/apt/sources.list.d/*microsoft* \
+                     /etc/apt/sources.list.d/*azure* 2>/dev/null || true
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             libpango-1.0-0 libpangocairo-1.0-0 libgdk-pixbuf-2.0-0 \
