@@ -7,7 +7,15 @@ from .abacatepay import (
     AbacatePayError,
     verify_webhook_signature,
 )
-from .models import Charge, PaymentStatus, PRICING, DEFAULT_TIER, amount_display
+from .models import (
+    Charge,
+    PaymentStatus,
+    PRICING,
+    DEFAULT_TIER,
+    amount_display,
+    mask_email,
+    RecoveryToken,
+)
 from .store import get_store, init_store
 
 __all__ = [
@@ -19,6 +27,8 @@ __all__ = [
     "PRICING",
     "DEFAULT_TIER",
     "amount_display",
+    "mask_email",
+    "RecoveryToken",
     "get_store",
     "init_store",
 ]

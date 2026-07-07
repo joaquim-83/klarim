@@ -34,6 +34,29 @@ def amount_display(cents: int) -> str:
     return f"R$ {cents // 100},{cents % 100:02d}"
 
 
+def mask_email(email: str) -> str:
+    """Mascara um e-mail para exibição: 'hotel@x.com' -> 'h***l@x.com'."""
+    if not email or "@" not in email:
+        return "***"
+    local, domain = email.split("@", 1)
+    if len(local) <= 2:
+        masked = (local[0] if local else "") + "***"
+    else:
+        masked = local[0] + "***" + local[-1]
+    return f"{masked}@{domain}"
+
+
+@dataclass
+class RecoveryToken:
+    """Token temporário de recuperação de relatórios (TTL 24h)."""
+
+    token: str
+    buyer_email: str
+    created_at: Optional[str] = None
+    expires_at: Optional[str] = None
+    used_at: Optional[str] = None
+
+
 @dataclass
 class Charge:
     """Uma cobrança PIX criada na AbacatePay + persistida localmente."""

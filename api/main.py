@@ -13,7 +13,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import secrets
 from contextlib import asynccontextmanager
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -34,6 +36,7 @@ from payments import (
     PRICING,
     DEFAULT_TIER,
     amount_display,
+    mask_email,
     get_store,
     init_store,
 )
@@ -134,6 +137,9 @@ async def root() -> dict:
             "/email/test (POST)",
             "/email/send-alert (POST)",
             "/email/send-report (POST)",
+            "/recovery/request (POST)",
+            "/recovery/validate?token=",
+            "/recovery/download?token=&charge_id=&type=",
         ],
         "payments_enabled": _payments_enabled(),
         "email_enabled": _email_enabled(),
@@ -473,6 +479,90 @@ async def _safe_email(coro) -> dict:
         return await coro
     except KlarimMailerError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+# --------------------------------------------------------------------------- #
+# Recuperação de relatórios (token temporário por e-mail)
+# --------------------------------------------------------------------------- #
+
+RECOVERY_TTL_HOURS = 24
+RECOVERY_RATE_LIMIT = 3  # solicitações por e-mail por hora
+_GENERIC_RECOVERY_MSG = (
+    "Se existirem relatórios associados a este e-mail, enviaremos um link de acesso."
+)
+
+
+class RecoveryRequestBody(BaseModel):
+    email: str
+
+
+@app.post("/recovery/request")
+async def recovery_request(body: RecoveryRequestBody) -> dict:
+    """Gera token + envia link — sempre resposta genérica (não revela e-mails)."""
+    email = (body.email or "").strip().lower()
+    if email and "@" in email and _email_enabled():
+        # Rate limit e envio em background para manter a resposta rápida/uniforme.
+        _spawn(_recovery_request_task(email))
+    return {"message": _GENERIC_RECOVERY_MSG}
+
+
+async def _recovery_request_task(email: str) -> None:
+    try:
+        store = get_store()
+        if await store.count_recent_recovery_requests(email) >= RECOVERY_RATE_LIMIT:
+            print(f"[recovery] rate limit atingido para {mask_email(email)}", flush=True)
+            return
+        charges = await store.list_paid_charges_by_email(email)
+        if not charges:
+            return  # nenhum relatório pago -> não envia nada
+        token = secrets.token_urlsafe(48)
+        expires = (datetime.now(timezone.utc).replace(tzinfo=None) + timedelta(hours=RECOVERY_TTL_HOURS))
+        await store.create_recovery_token(token, email, expires.isoformat())
+        recovery_url = f"https://klarim.net/recuperar/acesso?token={token}"
+        res = await _mailer().send_recovery_link(email, recovery_url)
+        print(f"[recovery] link enviado para {mask_email(email)} (id={res.get('email_id')})", flush=True)
+    except Exception as exc:  # noqa: BLE001 - não deve derrubar nada
+        print(f"[recovery] falha para {mask_email(email)}: {exc!r}", flush=True)
+
+
+@app.get("/recovery/validate")
+async def recovery_validate(token: str = Query(...)) -> dict:
+    """Valida o token e lista os relatórios pagos do e-mail associado."""
+    rt = await get_store().get_valid_recovery_token(token)
+    if rt is None:
+        return {"valid": False, "error": "Token inválido ou expirado. Solicite um novo link."}
+    charges = await get_store().list_paid_charges_by_email(rt.buyer_email)
+    reports = [
+        {
+            "charge_id": c.charge_id,
+            "target_url": c.target_url,
+            "paid_at": c.paid_at,
+            "amount_display": amount_display(c.amount_cents),
+        }
+        for c in charges
+    ]
+    return {"valid": True, "email": mask_email(rt.buyer_email), "reports": reports}
+
+
+@app.get("/recovery/download")
+async def recovery_download(
+    token: str = Query(...),
+    charge_id: str = Query(...),
+    type: str = Query("executive"),
+) -> Response:
+    """Baixa o PDF via token, validando que o charge pertence ao e-mail do token."""
+    rt = await get_store().get_valid_recovery_token(token)
+    if rt is None:
+        raise HTTPException(status_code=401, detail="Token inválido ou expirado.")
+    charge = await get_store().get(charge_id)
+    if charge is None or charge.buyer_email != rt.buyer_email or not charge.is_paid:
+        raise HTTPException(status_code=401, detail="Acesso negado a este relatório.")
+
+    kind = "technical" if type == "technical" else "executive"
+    generator = generate_technical_pdf if kind == "technical" else generate_executive_pdf
+    report = await _safe_scan(charge.target_url)  # usa o cache do KL-9
+    pdf = await _safe_pdf(generator, report, charge.target_url)
+    return _pdf_response(pdf, pdf_filename(kind, charge.target_url, report.started_at))
 
 
 # --------------------------------------------------------------------------- #

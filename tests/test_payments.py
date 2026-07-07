@@ -142,6 +142,51 @@ def test_require_paid_ok_when_paid(monkeypatch):
     asyncio.run(apimain._require_paid("char_paid"))  # não levanta
 
 
+def test_mask_email():
+    from payments import mask_email
+    assert mask_email("hotel@example.com") == "h***l@example.com"
+    assert mask_email("a@x.com") == "a***@x.com"
+    assert mask_email("bad") == "***"
+
+
+def test_recovery_token_store():
+    from datetime import datetime, timedelta, timezone
+    store = store_mod._store
+    asyncio.run(store.save(Charge("cR", "https://x.com", 2900,
+                                  status=PaymentStatus.PAID, buyer_email="a@b.com")))
+    asyncio.run(store.save(Charge("cU", "https://y.com", 2900,
+                                  status=PaymentStatus.PENDING, buyer_email="a@b.com")))
+    paid = asyncio.run(store.list_paid_charges_by_email("a@b.com"))
+    assert len(paid) == 1 and paid[0].charge_id == "cR"
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    asyncio.run(store.create_recovery_token("tok1", "a@b.com", (now + timedelta(hours=24)).isoformat()))
+    asyncio.run(store.create_recovery_token("tok2", "a@b.com", (now - timedelta(hours=1)).isoformat()))
+    assert asyncio.run(store.get_valid_recovery_token("tok1")).buyer_email == "a@b.com"
+    assert asyncio.run(store.get_valid_recovery_token("tok2")) is None  # expirado
+    assert asyncio.run(store.get_valid_recovery_token("nope")) is None
+    assert asyncio.run(store.count_recent_recovery_requests("a@b.com")) == 2
+
+
+def test_recovery_validate_and_download_cross_check():
+    from datetime import datetime, timedelta, timezone
+    store = store_mod._store
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    asyncio.run(store.create_recovery_token("tokV", "hotel@example.com", (now + timedelta(hours=24)).isoformat()))
+    asyncio.run(store.save(Charge("cV", "https://x.com", 2900,
+                                  status=PaymentStatus.PAID, buyer_email="hotel@example.com")))
+    res = asyncio.run(apimain.recovery_validate(token="tokV"))
+    assert res["valid"] and res["email"] == "h***l@example.com" and len(res["reports"]) == 1
+    assert asyncio.run(apimain.recovery_validate(token="nope"))["valid"] is False
+
+    # download com charge de outro e-mail -> 401
+    asyncio.run(store.save(Charge("cOther", "https://y.com", 2900,
+                                  status=PaymentStatus.PAID, buyer_email="outro@x.com")))
+    with pytest.raises(HTTPException) as ei:
+        asyncio.run(apimain.recovery_download(token="tokV", charge_id="cOther", type="executive"))
+    assert ei.value.status_code == 401
+
+
 def test_require_paid_402_when_pending_no_network(monkeypatch):
     # Cobrança pendente + chave inválida: _refresh falha silenciosamente -> 402.
     monkeypatch.setenv("KLARIM_DEV_MODE", "false")

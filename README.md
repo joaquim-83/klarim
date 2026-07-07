@@ -330,6 +330,13 @@ a qualquer um, verifique `klarim.net` no Resend (SPF/DKIM/DMARC).
 > `scanner/cache.py`), então baixar o PDF após o pagamento é **instantâneo**
 > (< 3s) em vez de re-escanear ~30s.
 
+**Recuperação (KL-10):** quem pagou e não recebeu recupera em
+[`klarim.net/recuperar`](https://klarim.net/recuperar) — informa o e-mail do
+pagamento e recebe um **link temporário** (token 24h) que lista e permite
+re-baixar os relatórios pagos. Endpoints `/recovery/request|validate|download`;
+resposta genérica (anti-enumeração), rate limit 3/e-mail/hora, e-mail mascarado,
+validação cruzada charge↔e-mail.
+
 ---
 
 ## Framework legal

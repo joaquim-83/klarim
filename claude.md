@@ -451,3 +451,26 @@ está cacheado).
 pagamento → `sending` (antes de agendar a task); task → `sent`/`failed`. O
 frontend (`/report`) faz polling e mostra o banner (enviando → enviado/falhou);
 `/pay` mostra "Enviando relatório para <e-mail>…" antes de redirecionar.
+
+---
+
+## 14. Recuperação de relatórios (KL-10)
+
+Cliente que pagou mas não recebeu o relatório (e-mail no spam, trocou de
+aparelho, perdeu o link) recupera o acesso em `klarim.net/recuperar` via link
+temporário por e-mail.
+
+- **Tabela `recovery_tokens`** (`token`, `buyer_email`, `expires_at`, ...) — token
+  `secrets.token_urlsafe(48)` (64 chars), **TTL 24h**, reutilizável até expirar.
+- **Endpoints:** `POST /recovery/request` (gera token + envia link — **sempre**
+  resposta genérica, não revela se o e-mail existe), `GET /recovery/validate?token=`
+  (lista os relatórios pagos, e-mail mascarado), `GET /recovery/download?token=&charge_id=&type=`
+  (PDF via token, com **validação cruzada**: o charge precisa pertencer ao e-mail
+  do token, senão 401).
+- **Segurança:** resposta genérica (anti-enumeração), **rate limit 3/e-mail/hora**,
+  token seguro, TTL 24h, validação cruzada, e-mail mascarado (`h***l@example.com`).
+  O `POST /recovery/request` roda em **background** (`_spawn`) para o tempo de
+  resposta não vazar se o e-mail existe.
+- **Frontend:** `/recuperar` (solicitar) e `/recuperar/acesso?token=` (listar +
+  baixar). Link "Recuperar relatórios" no footer de todas as telas.
+- **E-mail:** `notifier/templates/recovery.html` + `KlarimMailer.send_recovery_link`.

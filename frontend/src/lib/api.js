@@ -42,20 +42,50 @@ export function reportUrl(kind, url, chargeId) {
   return u
 }
 
-// Baixa um PDF de relatório: busca o blob e dispara o download no navegador.
-export async function downloadReport(kind, url, chargeId) {
-  const resp = await fetch(reportUrl(kind, url, chargeId))
-  if (resp.status === 402) throw new Error('Pagamento necessário para baixar o relatório.')
-  if (!resp.ok) throw new Error(`Falha ao gerar o PDF (${resp.status}).`)
+async function downloadFromResponse(resp, fallbackName) {
   const blob = await resp.blob()
   const objectUrl = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = objectUrl
   const disposition = resp.headers.get('content-disposition') || ''
   const match = disposition.match(/filename="([^"]+)"/)
-  a.download = match ? match[1] : `klarim_${kind}.pdf`
+  a.download = match ? match[1] : fallbackName
   document.body.appendChild(a)
   a.click()
   a.remove()
   URL.revokeObjectURL(objectUrl)
+}
+
+// Baixa um PDF de relatório: busca o blob e dispara o download no navegador.
+export async function downloadReport(kind, url, chargeId) {
+  const resp = await fetch(reportUrl(kind, url, chargeId))
+  if (resp.status === 402) throw new Error('Pagamento necessário para baixar o relatório.')
+  if (!resp.ok) throw new Error(`Falha ao gerar o PDF (${resp.status}).`)
+  await downloadFromResponse(resp, `klarim_${kind}.pdf`)
+}
+
+// --- Recuperação de relatórios (token temporário) --- //
+
+export async function recoveryRequest(email) {
+  const resp = await fetch(`${BASE}/recovery/request`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email }),
+  })
+  if (!resp.ok) throw new Error(`Falha na solicitação (${resp.status}).`)
+  return resp.json()
+}
+
+export async function recoveryValidate(token) {
+  const resp = await fetch(`${BASE}/recovery/validate?token=${encodeURIComponent(token)}`)
+  if (!resp.ok) throw new Error(`Falha ao validar (${resp.status}).`)
+  return resp.json()
+}
+
+export async function recoveryDownload(token, chargeId, kind) {
+  const resp = await fetch(
+    `${BASE}/recovery/download?token=${encodeURIComponent(token)}&charge_id=${encodeURIComponent(chargeId)}&type=${kind}`,
+  )
+  if (!resp.ok) throw new Error(`Falha ao baixar (${resp.status}).`)
+  await downloadFromResponse(resp, `klarim_${kind}.pdf`)
 }

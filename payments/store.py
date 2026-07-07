@@ -9,9 +9,15 @@ from __future__ import annotations
 
 import asyncio
 import os
-from typing import Dict, Optional
+from datetime import datetime, timedelta, timezone
+from typing import Dict, List, Optional
 
-from .models import Charge, PaymentStatus
+from .models import Charge, PaymentStatus, RecoveryToken
+
+
+def _utcnow() -> datetime:
+    """UTC naive (consistente com o TIMESTAMP sem tz do Postgres)."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS payments (
@@ -26,6 +32,16 @@ CREATE TABLE IF NOT EXISTS payments (
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS buyer_email TEXT;
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS report_email_sent BOOLEAN DEFAULT FALSE;
 ALTER TABLE payments ADD COLUMN IF NOT EXISTS email_status VARCHAR(20);
+
+CREATE TABLE IF NOT EXISTS recovery_tokens (
+    id SERIAL PRIMARY KEY,
+    token VARCHAR(64) UNIQUE NOT NULL,
+    buyer_email VARCHAR(255) NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW(),
+    expires_at TIMESTAMP NOT NULL,
+    used_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_recovery_email ON recovery_tokens (buyer_email);
 """
 
 
@@ -36,9 +52,45 @@ class MemoryStore:
 
     def __init__(self) -> None:
         self._d: Dict[str, Charge] = {}
+        self._tokens: Dict[str, RecoveryToken] = {}
 
     async def ensure_schema(self) -> None:
         return None
+
+    # --- recuperação ------------------------------------------------------- #
+
+    async def list_paid_charges_by_email(self, email: str) -> List[Charge]:
+        return [c for c in self._d.values() if c.buyer_email == email and c.is_paid]
+
+    async def create_recovery_token(self, token: str, buyer_email: str, expires_at_iso: str) -> None:
+        self._tokens[token] = RecoveryToken(
+            token=token, buyer_email=buyer_email,
+            created_at=_utcnow().isoformat(), expires_at=expires_at_iso,
+        )
+
+    async def get_valid_recovery_token(self, token: str) -> Optional[RecoveryToken]:
+        t = self._tokens.get(token)
+        if not t:
+            return None
+        try:
+            if datetime.fromisoformat(t.expires_at) <= _utcnow():
+                return None
+        except (ValueError, TypeError):
+            return None
+        return t
+
+    async def count_recent_recovery_requests(self, email: str) -> int:
+        cutoff = _utcnow() - timedelta(hours=1)
+        n = 0
+        for t in self._tokens.values():
+            if t.buyer_email != email or not t.created_at:
+                continue
+            try:
+                if datetime.fromisoformat(t.created_at) > cutoff:
+                    n += 1
+            except (ValueError, TypeError):
+                pass
+        return n
 
     async def save(self, charge: Charge) -> None:
         self._d[charge.charge_id] = charge
@@ -162,6 +214,89 @@ class PostgresStore:
                     "UPDATE payments SET email_status = %s WHERE charge_id = %s",
                     (status, charge_id),
                 )
+        finally:
+            conn.close()
+
+    # --- recuperação ------------------------------------------------------- #
+
+    async def list_paid_charges_by_email(self, email: str) -> List[Charge]:
+        return await asyncio.to_thread(self._list_paid_by_email_sync, email)
+
+    def _list_paid_by_email_sync(self, email: str) -> List[Charge]:
+        conn = self._connect()
+        try:
+            with conn, conn.cursor() as cur:
+                cur.execute(
+                    "SELECT charge_id, target_url, amount_cents, status, created_at, paid_at, "
+                    "buyer_email, report_email_sent, email_status FROM payments "
+                    "WHERE buyer_email = %s AND status = 'PAID' ORDER BY paid_at DESC NULLS LAST",
+                    (email,),
+                )
+                rows = cur.fetchall()
+        finally:
+            conn.close()
+        return [
+            Charge(
+                charge_id=r[0], target_url=r[1], amount_cents=r[2], status=r[3],
+                created_at=str(r[4]) if r[4] else None,
+                paid_at=str(r[5]) if r[5] else None,
+                buyer_email=r[6], report_email_sent=bool(r[7]), email_status=r[8],
+            )
+            for r in rows
+        ]
+
+    async def create_recovery_token(self, token: str, buyer_email: str, expires_at_iso: str) -> None:
+        await asyncio.to_thread(self._create_token_sync, token, buyer_email, expires_at_iso)
+
+    def _create_token_sync(self, token: str, buyer_email: str, expires_at_iso: str) -> None:
+        conn = self._connect()
+        try:
+            with conn, conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO recovery_tokens (token, buyer_email, expires_at) "
+                    "VALUES (%s, %s, %s)",
+                    (token, buyer_email, expires_at_iso),
+                )
+        finally:
+            conn.close()
+
+    async def get_valid_recovery_token(self, token: str) -> Optional[RecoveryToken]:
+        return await asyncio.to_thread(self._get_valid_token_sync, token)
+
+    def _get_valid_token_sync(self, token: str) -> Optional[RecoveryToken]:
+        conn = self._connect()
+        try:
+            with conn, conn.cursor() as cur:
+                cur.execute(
+                    "SELECT token, buyer_email, created_at, expires_at, used_at "
+                    "FROM recovery_tokens WHERE token = %s AND expires_at > NOW()",
+                    (token,),
+                )
+                row = cur.fetchone()
+        finally:
+            conn.close()
+        if not row:
+            return None
+        return RecoveryToken(
+            token=row[0], buyer_email=row[1],
+            created_at=str(row[2]) if row[2] else None,
+            expires_at=str(row[3]) if row[3] else None,
+            used_at=str(row[4]) if row[4] else None,
+        )
+
+    async def count_recent_recovery_requests(self, email: str) -> int:
+        return await asyncio.to_thread(self._count_tokens_sync, email)
+
+    def _count_tokens_sync(self, email: str) -> int:
+        conn = self._connect()
+        try:
+            with conn, conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM recovery_tokens "
+                    "WHERE buyer_email = %s AND created_at > NOW() - INTERVAL '1 hour'",
+                    (email,),
+                )
+                return int(cur.fetchone()[0])
         finally:
             conn.close()
 

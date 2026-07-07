@@ -131,6 +131,16 @@ class KlarimMailer:
             "html": html, "attachments": attachments,
         })
 
+    async def send_recovery_link(self, to_email: str, recovery_url: str) -> Dict[str, Any]:
+        """Envia o link temporário de recuperação de relatórios."""
+        html = _env.get_template("recovery.html").render(recovery_url=recovery_url)
+        return await self._send({
+            "from": self.from_address,
+            "to": [to_email],
+            "subject": "🔑 Acesso aos seus relatórios Klarim",
+            "html": html,
+        })
+
     async def send_test(self, to_email: str) -> Dict[str, Any]:
         """E-mail de teste para validar a configuração do Resend."""
         html = (
