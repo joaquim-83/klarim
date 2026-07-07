@@ -180,6 +180,11 @@ class DiscoveryWorker:
         print(f"[discovery] iniciado (poller de CT logs + fallback crt.sh, "
               f"batch={self.batch_size}, intervalo={self.interval_minutes}min)", flush=True)
 
+        # Aquecimento: deixa o poller encher o buffer antes do 1º ciclo (senão a
+        # primeira drenagem sai vazia e cai no crt.sh à toa).
+        warmup = int(os.environ.get("DISCOVERY_WARMUP_SECONDS", "90"))
+        await asyncio.sleep(warmup)
+
         while True:
             try:
                 await self.run_cycle()
