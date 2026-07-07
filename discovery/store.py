@@ -181,12 +181,15 @@ class TargetStore:
             where, params = [], []
             for col, val in (("status", status), ("platform", platform), ("sector", sector)):
                 if val:
-                    where.append(f"{col} = %s")
+                    where.append(f"t.{col} = %s")
                     params.append(val)
             clause = ("WHERE " + " AND ".join(where)) if where else ""
             params.extend([limit, offset])
+            # JOIN traz o semáforo do último scan (KL-14: lista de alvos no painel).
             cur.execute(
-                f"SELECT * FROM targets {clause} ORDER BY discovered_at DESC LIMIT %s OFFSET %s",
+                f"SELECT t.*, s.semaphore AS last_semaphore FROM targets t "
+                f"LEFT JOIN scans s ON t.last_scan_id = s.id {clause} "
+                f"ORDER BY t.discovered_at DESC LIMIT %s OFFSET %s",
                 params,
             )
             return self._rows_to_dicts(cur)
@@ -271,6 +274,41 @@ class TargetStore:
                 params,
             )
             return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- dashboard admin (KL-14) ------------------------------------------- #
+
+    async def scan_stats(self) -> Dict[str, Any]:
+        """Média de score e distribuição por semáforo (todos os scans)."""
+        def _fn(cur):
+            cur.execute("SELECT COUNT(*), COALESCE(ROUND(AVG(score)), 0) FROM scans")
+            total, avg = cur.fetchone()
+            cur.execute("SELECT semaphore, COUNT(*) FROM scans GROUP BY semaphore")
+            by_semaphore = {r[0]: int(r[1]) for r in cur.fetchall()}
+            return {"total": int(total), "avg_score": int(avg), "by_semaphore": by_semaphore}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def scans_daily(self, days: int = 30) -> List[Dict[str, Any]]:
+        return await self._daily_counts("scans", "scanned_at", days)
+
+    async def alerts_daily(self, days: int = 30) -> List[Dict[str, Any]]:
+        return await self._daily_counts("alert_log", "sent_at", days, extra="status = 'sent'")
+
+    async def _daily_counts(self, table: str, ts_col: str, days: int,
+                            extra: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Série diária (últimos N dias) — [{day: 'YYYY-MM-DD', count: int}]."""
+        def _fn(cur):
+            where = f"{ts_col} > NOW() - (%s || ' days')::interval"
+            if extra:
+                where += f" AND {extra}"
+            cur.execute(
+                f"SELECT to_char(date_trunc('day', {ts_col}), 'YYYY-MM-DD') AS day, "
+                f"COUNT(*) FROM {table} WHERE {where} GROUP BY day ORDER BY day",
+                (str(days),),
+            )
+            return [{"day": r[0], "count": int(r[1])} for r in cur.fetchall()]
 
         return await asyncio.to_thread(self._run, _fn)
 
@@ -367,15 +405,16 @@ class TargetStore:
         self, target_id: Optional[int] = None, limit: int = 50, offset: int = 0
     ) -> List[Dict[str, Any]]:
         def _fn(cur):
+            base = ("SELECT a.*, t.url FROM alert_log a "
+                    "LEFT JOIN targets t ON a.target_id = t.id ")
             if target_id is not None:
                 cur.execute(
-                    "SELECT * FROM alert_log WHERE target_id = %s "
-                    "ORDER BY sent_at DESC LIMIT %s OFFSET %s",
+                    base + "WHERE a.target_id = %s ORDER BY a.sent_at DESC LIMIT %s OFFSET %s",
                     (target_id, limit, offset),
                 )
             else:
                 cur.execute(
-                    "SELECT * FROM alert_log ORDER BY sent_at DESC LIMIT %s OFFSET %s",
+                    base + "ORDER BY a.sent_at DESC LIMIT %s OFFSET %s",
                     (limit, offset),
                 )
             return self._rows_to_dicts(cur)
@@ -499,16 +538,17 @@ class TargetStore:
         def _fn(cur):
             where, params = [], []
             if target_id is not None:
-                where.append("target_id = %s")
+                where.append("r.target_id = %s")
                 params.append(target_id)
             if evolution:
-                where.append("evolution = %s")
+                where.append("r.evolution = %s")
                 params.append(evolution)
             clause = ("WHERE " + " AND ".join(where)) if where else ""
             params.extend([limit, offset])
             cur.execute(
-                f"SELECT * FROM rescan_log {clause} "
-                f"ORDER BY rescanned_at DESC LIMIT %s OFFSET %s",
+                f"SELECT r.*, t.url FROM rescan_log r "
+                f"LEFT JOIN targets t ON r.target_id = t.id {clause} "
+                f"ORDER BY r.rescanned_at DESC LIMIT %s OFFSET %s",
                 params,
             )
             return self._rows_to_dicts(cur)

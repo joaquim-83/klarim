@@ -66,6 +66,25 @@ def test_memory_store_roundtrip():
     assert got.is_paid and got.paid_at
 
 
+def test_memory_store_list_and_stats():
+    store = MemoryStore()
+    asyncio.run(store.save(Charge("p1", "https://a.com", 2900, status=PaymentStatus.PAID)))
+    asyncio.run(store.save(Charge("p2", "https://b.com", 1900, status=PaymentStatus.PENDING)))
+    asyncio.run(store.save(Charge("p3", "https://c.com", 4900, status=PaymentStatus.PAID)))
+
+    all_charges = asyncio.run(store.list_charges())
+    assert len(all_charges) == 3
+    paid = asyncio.run(store.list_charges(status=PaymentStatus.PAID))
+    assert {c.charge_id for c in paid} == {"p1", "p3"}
+
+    stats = asyncio.run(store.payment_stats())
+    assert stats["total"] == 3
+    assert stats["paid_count"] == 2
+    assert stats["revenue_cents"] == 2900 + 4900
+    assert stats["revenue_display"] == "R$ 78,00"
+    assert stats["by_status"][PaymentStatus.PENDING] == 1
+
+
 def test_memory_store_email_status():
     store = MemoryStore()
     asyncio.run(store.save(Charge("c2", "https://x.com", 2900,

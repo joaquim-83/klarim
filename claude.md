@@ -577,3 +577,45 @@ descobrir alvos novos).
 não via re-enfileiramento na `klarim:scan_queue`, porque a comparação de score + o
 e-mail + o throttle compartilhado + a fila de pendentes vivem melhor num só lugar;
 o `rescan_log` já distingue os re-scans dos scans normais.
+
+## 18. Dashboard admin (KL-14) — `klarim.net/painel`
+
+Painel do operador (login único) para operar e monitorar o Klarim. Faz parte do
+**mesmo app React** (`frontend/`) — rotas `/painel/*` protegidas por JWT. Sem novo
+domínio, container ou certificado; o Nginx (`try_files … /index.html`) já cobre o
+SPA.
+
+**Autenticação (`api/main.py`):**
+- `POST /auth/login {username, password}` → `{token, expires_in: 86400}`.
+  Credenciais em `ADMIN_USER`/`ADMIN_PASSWORD`; JWT (PyJWT, HS256, 24h) assinado
+  com `JWT_SECRET`. Sem tabela de usuários (é um operador só).
+- **Middleware** (`_admin_auth_mw`) protege os prefixos `/targets`, `/scans`,
+  `/alerts`, `/rescans`, `/email`, `/payments`, `/config` — exigem
+  `Authorization: Bearer <token>` (401 se ausente/inválido/expirado). Rotas
+  públicas ficam livres: `/health`, `/scan/summary`, `/payment/*`, `/report/*`,
+  `/webhooks/*`, `/recovery/*`, `/unsubscribe`, `/auth/login`.
+- Segredos gerados **na VM** (`openssl rand -hex 32`), nunca no repo.
+
+**Endpoints novos de gestão** (protegidos): `GET /targets/{id}`,
+`POST /targets/{id}/discard`, `GET /scans/stats`, `/scans/daily`, `/alerts/daily`,
+`GET /scans/{id}/report/{executive|technical}` (PDF sem gating de pagamento),
+`GET /payments/list`, `/payments/stats`, `GET /config` (params operacionais, sem
+segredos). `list_targets` passou a trazer `last_semaphore` (JOIN scans);
+`list_alerts`/`list_rescans` trazem a `url` do alvo.
+
+**Frontend (`frontend/src/`):**
+- `lib/auth.js` (token no localStorage + checagem de exp), `lib/adminApi.js`
+  (Bearer + redirect em 401 + `adminDownload` para PDFs), `lib/useAsync.js`.
+- `components/admin/` — `AdminLayout` (sidebar responsiva + logout),
+  `ProtectedRoute`, `ui.jsx` (Card/StatCard/Badge/SemaphoreDot/Pagination…).
+- `pages/admin/` — `Login`, `Overview` (KPIs + **Recharts**: donut status, bar
+  plataforma, 2 line charts diários, atividade recente), `Alvos` (lista + filtros
+  + ações + modal), `AlvoDetalhe` (ficha + históricos + ações), `Scans`,
+  `ScanDetalhe` (checks + PDF), `Alertas`, `Pagamentos`, `Rescans`, `Config`
+  (read-only).
+- **Code-split:** o painel é `lazy()` — o site público não baixa o bundle do
+  dashboard (Recharts fica num chunk separado).
+
+**Variáveis (`.env` da VM):** `ADMIN_USER`, `ADMIN_PASSWORD`, `JWT_SECRET`.
+
+**Acesso:** `https://klarim.net/painel/login` → entra → `/painel`.

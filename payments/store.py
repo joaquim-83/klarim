@@ -10,9 +10,9 @@ from __future__ import annotations
 import asyncio
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
-from .models import Charge, PaymentStatus, RecoveryToken
+from .models import Charge, PaymentStatus, RecoveryToken, amount_display
 
 
 def _utcnow() -> datetime:
@@ -114,6 +114,26 @@ class MemoryStore:
         c = self._d.get(charge_id)
         if c:
             c.email_status = status
+
+    # --- admin (KL-14) ----------------------------------------------------- #
+
+    async def list_charges(self, status: Optional[str] = None, limit: int = 50,
+                           offset: int = 0) -> List[Charge]:
+        rows = sorted(self._d.values(), key=lambda c: c.created_at or "", reverse=True)
+        if status:
+            rows = [c for c in rows if c.status == status]
+        return rows[offset:offset + limit]
+
+    async def payment_stats(self) -> Dict[str, Any]:
+        by_status: Dict[str, int] = {}
+        revenue = 0
+        for c in self._d.values():
+            by_status[c.status] = by_status.get(c.status, 0) + 1
+            if c.is_paid:
+                revenue += c.amount_cents
+        return {"total": len(self._d), "by_status": by_status,
+                "revenue_cents": revenue, "revenue_display": amount_display(revenue),
+                "paid_count": by_status.get(PaymentStatus.PAID, 0)}
 
 
 class PostgresStore:
@@ -244,6 +264,57 @@ class PostgresStore:
             )
             for r in rows
         ]
+
+    # --- admin (KL-14) ----------------------------------------------------- #
+
+    async def list_charges(self, status: Optional[str] = None, limit: int = 50,
+                           offset: int = 0) -> List[Charge]:
+        return await asyncio.to_thread(self._list_charges_sync, status, limit, offset)
+
+    def _list_charges_sync(self, status: Optional[str], limit: int, offset: int) -> List[Charge]:
+        conn = self._connect()
+        try:
+            with conn, conn.cursor() as cur:
+                where = "WHERE status = %s" if status else ""
+                params: list = [status] if status else []
+                params.extend([limit, offset])
+                cur.execute(
+                    "SELECT charge_id, target_url, amount_cents, status, created_at, paid_at, "
+                    f"buyer_email, report_email_sent, email_status FROM payments {where} "
+                    "ORDER BY created_at DESC NULLS LAST LIMIT %s OFFSET %s",
+                    params,
+                )
+                rows = cur.fetchall()
+        finally:
+            conn.close()
+        return [
+            Charge(
+                charge_id=r[0], target_url=r[1], amount_cents=r[2], status=r[3],
+                created_at=str(r[4]) if r[4] else None,
+                paid_at=str(r[5]) if r[5] else None,
+                buyer_email=r[6], report_email_sent=bool(r[7]), email_status=r[8],
+            )
+            for r in rows
+        ]
+
+    async def payment_stats(self) -> Dict[str, Any]:
+        return await asyncio.to_thread(self._payment_stats_sync)
+
+    def _payment_stats_sync(self) -> Dict[str, Any]:
+        conn = self._connect()
+        try:
+            with conn, conn.cursor() as cur:
+                cur.execute("SELECT status, COUNT(*) FROM payments GROUP BY status")
+                by_status = {r[0]: int(r[1]) for r in cur.fetchall()}
+                cur.execute("SELECT COALESCE(SUM(amount_cents), 0) FROM payments WHERE status = 'PAID'")
+                revenue = int(cur.fetchone()[0])
+                cur.execute("SELECT COUNT(*) FROM payments")
+                total = int(cur.fetchone()[0])
+        finally:
+            conn.close()
+        return {"total": total, "by_status": by_status,
+                "revenue_cents": revenue, "revenue_display": amount_display(revenue),
+                "paid_count": by_status.get(PaymentStatus.PAID, 0)}
 
     async def create_recovery_token(self, token: str, buyer_email: str, expires_at_iso: str) -> None:
         await asyncio.to_thread(self._create_token_sync, token, buyer_email, expires_at_iso)

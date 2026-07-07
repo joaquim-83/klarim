@@ -90,6 +90,43 @@ def _mailer() -> KlarimMailer:
     return KlarimMailer(_resend_key(), os.environ.get("RESEND_FROM") or None)
 
 
+# --- Auth do dashboard admin (KL-14) --------------------------------------- #
+
+JWT_ALGO = "HS256"
+JWT_TTL_SECONDS = 86400  # 24h
+
+# Prefixos protegidos — exigem Bearer token. O resto é público (scan/summary,
+# payment, report, webhooks, recovery, unsubscribe, health, auth/login).
+_PROTECTED_PREFIXES = ("/targets", "/scans", "/alerts", "/rescans", "/email", "/payments", "/config")
+
+
+def _jwt_secret() -> str:
+    return os.environ.get("JWT_SECRET", "")
+
+
+def _auth_configured() -> bool:
+    return bool(os.environ.get("ADMIN_USER") and os.environ.get("ADMIN_PASSWORD") and _jwt_secret())
+
+
+def _create_token(username: str) -> str:
+    import jwt
+
+    now = datetime.now(timezone.utc)
+    payload = {"sub": username, "iat": now, "exp": now + timedelta(seconds=JWT_TTL_SECONDS)}
+    return jwt.encode(payload, _jwt_secret(), algorithm=JWT_ALGO)
+
+
+def _verify_token(token: str) -> dict:
+    """Decodifica/valida o JWT (levanta em token inválido/expirado)."""
+    import jwt
+
+    return jwt.decode(token, _jwt_secret(), algorithms=[JWT_ALGO])
+
+
+def _is_protected(path: str) -> bool:
+    return any(path == p or path.startswith(p + "/") for p in _PROTECTED_PREFIXES)
+
+
 # Cache de scan (Redis). None => sem cache (scans rodam sempre).
 _cache: Optional[ScanCache] = None
 
@@ -128,6 +165,40 @@ app = FastAPI(
     description="O alarme que toca antes do ataque — scanner passivo de segurança web.",
     lifespan=lifespan,
 )
+
+
+@app.middleware("http")
+async def _admin_auth_mw(request: Request, call_next):
+    """Protege as rotas de gestão (KL-14). Rotas públicas passam direto."""
+    if request.method != "OPTIONS" and _is_protected(request.url.path):
+        auth = request.headers.get("authorization", "")
+        token = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
+        try:
+            if not token:
+                raise ValueError("token ausente")
+            _verify_token(token)
+        except Exception:  # noqa: BLE001 - qualquer falha => 401
+            return JSONResponse({"detail": "Não autorizado."}, status_code=401)
+    return await call_next(request)
+
+
+class LoginBody(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/auth/login")
+async def auth_login(body: LoginBody) -> dict:
+    """Login único do operador (credenciais do .env). Retorna um JWT de 24h."""
+    if not _auth_configured():
+        raise HTTPException(status_code=503, detail="Autenticação não configurada.")
+    admin_user = os.environ.get("ADMIN_USER", "")
+    admin_pw = os.environ.get("ADMIN_PASSWORD", "")
+    ok = (hmac.compare_digest(body.username, admin_user)
+          and hmac.compare_digest(body.password, admin_pw))
+    if not ok:
+        raise HTTPException(status_code=401, detail="Credenciais inválidas.")
+    return {"token": _create_token(body.username), "expires_in": JWT_TTL_SECONDS}
 
 
 @app.get("/")
@@ -608,6 +679,14 @@ async def api_targets_stats() -> dict:
     return await get_target_store().stats()
 
 
+@app.get("/targets/{target_id}")
+async def api_get_target(target_id: int) -> dict:
+    target = await get_target_store().get_target(target_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Alvo não encontrado.")
+    return target
+
+
 @app.post("/targets/add")
 async def api_targets_add(body: TargetAddBody) -> dict:
     url = normalize_url(body.url)
@@ -628,6 +707,16 @@ async def api_targets_scan(target_id: int) -> dict:
     return {"target_id": target_id, "url": target["url"], "enqueued": enq}
 
 
+@app.post("/targets/{target_id}/discard")
+async def api_targets_discard(target_id: int) -> dict:
+    """Marca um alvo como 'descartado' (sai dos ciclos de scan/alerta/re-scan)."""
+    store = get_target_store()
+    if await store.get_target(target_id) is None:
+        raise HTTPException(status_code=404, detail="Alvo não encontrado.")
+    await store.update_status(target_id, "descartado")
+    return {"target_id": target_id, "status": "descartado"}
+
+
 @app.get("/scans")
 async def api_list_scans(
     target_id: Optional[int] = Query(default=None),
@@ -639,12 +728,38 @@ async def api_list_scans(
     return {"count": len(rows), "scans": rows}
 
 
+# Rotas específicas ANTES de /scans/{scan_id} (senão "stats"/"daily" viram id).
+@app.get("/scans/stats")
+async def api_scans_stats() -> dict:
+    return await get_target_store().scan_stats()
+
+
+@app.get("/scans/daily")
+async def api_scans_daily(days: int = Query(default=30, ge=1, le=365)) -> dict:
+    return {"series": await get_target_store().scans_daily(days)}
+
+
 @app.get("/scans/{scan_id}")
 async def api_get_scan(scan_id: int) -> dict:
     scan = await get_target_store().get_scan(scan_id)
     if scan is None:
         raise HTTPException(status_code=404, detail="Scan não encontrado.")
     return scan
+
+
+@app.get("/scans/{scan_id}/report/{kind}")
+async def api_scan_report(scan_id: int, kind: str) -> Response:
+    """PDF (executivo/técnico) de um scan — via painel admin, sem gating de pagamento."""
+    if kind not in ("executive", "technical"):
+        raise HTTPException(status_code=404, detail="Tipo inválido.")
+    scan = await get_target_store().get_scan(scan_id)
+    if scan is None:
+        raise HTTPException(status_code=404, detail="Scan não encontrado.")
+    url = scan["url"]
+    report = await get_or_scan(url)
+    fn = generate_executive_pdf if kind == "executive" else generate_technical_pdf
+    pdf = await _safe_pdf(fn, report, url)
+    return _pdf_response(pdf, pdf_filename(kind, url, report.started_at))
 
 
 # --------------------------------------------------------------------------- #
@@ -664,6 +779,63 @@ async def api_list_alerts(
 @app.get("/alerts/stats")
 async def api_alerts_stats() -> dict:
     return await get_target_store().alert_stats()
+
+
+@app.get("/alerts/daily")
+async def api_alerts_daily(days: int = Query(default=30, ge=1, le=365)) -> dict:
+    return {"series": await get_target_store().alerts_daily(days)}
+
+
+@app.get("/payments/list")
+async def api_payments_list(
+    status: Optional[str] = Query(default=None),
+    limit: int = Query(default=50, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> dict:
+    charges = await get_store().list_charges(status, limit, offset)
+    return {"count": len(charges), "payments": [_payment_row(c) for c in charges]}
+
+
+@app.get("/payments/stats")
+async def api_payments_stats() -> dict:
+    return await get_store().payment_stats()
+
+
+@app.get("/config")
+async def api_config() -> dict:
+    """Parâmetros operacionais em uso (somente leitura — sem segredos)."""
+    def _i(name: str, default: str) -> int:
+        try:
+            return int(os.environ.get(name, default))
+        except ValueError:
+            return int(default)
+
+    return {
+        "discovery_batch_size": _i("DISCOVERY_BATCH_SIZE", "100"),
+        "discovery_interval_hours": _i("DISCOVERY_INTERVAL_HOURS", "6"),
+        "max_alerts_per_hour": _i("MAX_ALERTS_PER_HOUR", "10"),
+        "max_alerts_per_day": _i("MAX_ALERTS_PER_DAY", "50"),
+        "rescan_interval_hours": _i("RESCAN_INTERVAL_HOURS", "24"),
+        "rescan_age_days": _i("RESCAN_AGE_DAYS", "30"),
+        "worker_max_scans_per_hour": _i("WORKER_MAX_SCANS_PER_HOUR", "50"),
+    }
+
+
+def _payment_row(charge) -> dict:
+    """Payload de pagamento para o painel admin (mascarando o e-mail do comprador)."""
+    return {
+        "charge_id": charge.charge_id,
+        "target_url": charge.target_url,
+        "amount_cents": charge.amount_cents,
+        "amount_display": amount_display(charge.amount_cents),
+        "status": charge.status,
+        "paid": charge.is_paid,
+        "created_at": charge.created_at,
+        "paid_at": charge.paid_at,
+        "buyer_email": mask_email(charge.buyer_email) if charge.buyer_email else None,
+        "report_email_sent": charge.report_email_sent,
+        "email_status": charge.email_status,
+    }
 
 
 @app.post("/targets/{target_id}/alert")

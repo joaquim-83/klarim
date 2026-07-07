@@ -356,6 +356,21 @@ compose. Gestão via API: `GET /api/targets`, `/api/targets/stats`,
 > ciclo degrada com elegância. Alvos também podem ser adicionados manualmente
 > via `POST /api/targets/add`.
 
+## Dashboard admin (`klarim.net/painel`)
+
+Painel do operador (login único) para operar e monitorar tudo: KPIs em tempo real
+(alvos, alertas, receita, score médio) com gráficos **Recharts**, gestão de alvos
+(lista, filtros, scan/alerta/re-scan manual, detalhe com históricos), scans (com
+detalhe dos checks e geração de PDF), alertas, pagamentos (receita + conversão) e
+re-scans (evolução de score), além de uma tela de configurações (read-only).
+
+Faz parte do **mesmo app React** — as rotas `/painel/*` são protegidas por **JWT**
+(`POST /api/auth/login` com `ADMIN_USER`/`ADMIN_PASSWORD`; middleware trava
+`/api/targets`, `/scans`, `/alerts`, `/rescans`, `/email`, `/payments`, `/config`).
+As rotas públicas (scan, pagamento, relatório, webhooks, recuperação) seguem
+livres. Sem novo domínio, container ou certificado; o bundle do painel é
+carregado sob demanda (code-split) para não pesar no site público.
+
 ### Alert Worker (disparo automático)
 
 No mesmo container do Discovery Worker (via `asyncio.gather`), o **Alert Worker**
@@ -420,6 +435,7 @@ disclaimer claro em todos os relatórios.
 - [x] Discovery Worker (Certificate Transparency → alvos com e-mail)
 - [x] Alert Worker (disparo automático do alerta + throttle + descadastro)
 - [x] Re-scan Worker (re-scan de 30 dias + e-mail de evolução de score)
+- [x] Dashboard admin (`/painel`) — auth JWT, KPIs, gestão e monitoramento
 - [x] Interface web (React + Vite + Tailwind + Nginx) — scan self-service
 - [x] Pagamento PIX (AbacatePay) para liberar o relatório completo
 - [ ] Pagamento por cartão (Stripe)
