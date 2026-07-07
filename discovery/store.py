@@ -45,6 +45,8 @@ CREATE TABLE IF NOT EXISTS scans (
 );
 CREATE INDEX IF NOT EXISTS idx_scans_target ON scans(target_id);
 CREATE INDEX IF NOT EXISTS idx_scans_date ON scans(scanned_at);
+-- Origem do scan (KL-17): public | discovery | admin | manual | rescan.
+ALTER TABLE scans ADD COLUMN IF NOT EXISTS source VARCHAR(20) DEFAULT 'discovery';
 
 CREATE TABLE IF NOT EXISTS alert_log (
     id SERIAL PRIMARY KEY,
@@ -149,6 +151,25 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    async def get_target_by_url(self, url: str) -> Optional[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute("SELECT * FROM targets WHERE url = %s LIMIT 1", (url,))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def map_urls_to_target_ids(self, urls: List[str]) -> Dict[str, int]:
+        """{url: target_id} para as URLs dadas (KL-17: vincular pagamentos a alvos)."""
+        if not urls:
+            return {}
+
+        def _fn(cur):
+            cur.execute("SELECT url, id FROM targets WHERE url = ANY(%s)", (list(set(urls)),))
+            return {r[0]: r[1] for r in cur.fetchall()}
+
+        return await asyncio.to_thread(self._run, _fn)
+
     async def get_target(self, target_id: int) -> Optional[Dict[str, Any]]:
         def _fn(cur):
             cur.execute("SELECT * FROM targets WHERE id = %s", (target_id,))
@@ -175,11 +196,13 @@ class TargetStore:
 
     async def list_targets(
         self, status: Optional[str] = None, platform: Optional[str] = None,
-        sector: Optional[str] = None, limit: int = 50, offset: int = 0,
+        sector: Optional[str] = None, source: Optional[str] = None,
+        limit: int = 50, offset: int = 0,
     ) -> List[Dict[str, Any]]:
         def _fn(cur):
             where, params = [], []
-            for col, val in (("status", status), ("platform", platform), ("sector", sector)):
+            for col, val in (("status", status), ("platform", platform),
+                             ("sector", sector), ("source", source)):
                 if val:
                     where.append(f"t.{col} = %s")
                     params.append(val)
@@ -243,16 +266,17 @@ class TargetStore:
     async def save_scan(
         self, target_id: Optional[int], url: str, score: int, semaphore: str,
         pass_count: int, fail_count: int, inconclusive_count: int, checks_json: dict,
+        source: str = "discovery",
     ) -> int:
         def _fn(cur):
             cur.execute(
                 """
                 INSERT INTO scans (target_id, url, score, semaphore, pass_count,
-                                   fail_count, inconclusive_count, checks_json)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+                                   fail_count, inconclusive_count, checks_json, source)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
                 """,
                 (target_id, url, score, semaphore, pass_count, fail_count,
-                 inconclusive_count, json.dumps(checks_json)),
+                 inconclusive_count, json.dumps(checks_json), source),
             )
             return cur.fetchone()[0]
 
@@ -260,7 +284,7 @@ class TargetStore:
 
     async def list_scans(
         self, target_id: Optional[int] = None, score_min: Optional[int] = None,
-        score_max: Optional[int] = None, limit: int = 50,
+        score_max: Optional[int] = None, source: Optional[str] = None, limit: int = 50,
     ) -> List[Dict[str, Any]]:
         def _fn(cur):
             where, params = [], []
@@ -273,11 +297,14 @@ class TargetStore:
             if score_max is not None:
                 where.append("score <= %s")
                 params.append(score_max)
+            if source:
+                where.append("source = %s")
+                params.append(source)
             clause = ("WHERE " + " AND ".join(where)) if where else ""
             params.append(limit)
             cur.execute(
                 f"SELECT id, target_id, url, score, semaphore, pass_count, fail_count, "
-                f"inconclusive_count, scanned_at FROM scans {clause} "
+                f"inconclusive_count, source, scanned_at FROM scans {clause} "
                 f"ORDER BY scanned_at DESC LIMIT %s",
                 params,
             )

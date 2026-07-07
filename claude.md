@@ -644,3 +644,34 @@ segredos). `list_targets` passou a trazer `last_semaphore` (JOIN scans);
 
 **Acesso:** `https://painel.klarim.net` (subdomínio dedicado, redireciona ao login)
 ou `https://klarim.net/painel/login`. Ver o subdomínio na seção 10 (HTTPS).
+
+## 19. Integração completa (KL-17) — scans públicos + fluxo admin + rastreabilidade
+
+Fecha os gaps de integração entre o site público, o scanner e o painel.
+
+- **Scans públicos gravam no banco.** `GET /scan/summary` agora, além de cachear
+  (KL-9), **ingere em background** (`_spawn`, source='public') via
+  `discovery/ingest.py::ingest_scan`: registra/atualiza o `target` (fingerprint +
+  setor + e-mail, como o Discovery) e salva o `scan`. Só na cache **miss** (scan de
+  verdade) — o response volta imediato do cache; o visitante não espera o banco.
+- **Origem do scan.** Coluna `scans.source` (`public|discovery|admin|manual|
+  rescan`). A fila de scan (`{target_id,url,source}`) carrega a origem: Discovery →
+  `discovery`, `POST /targets/add` → `manual`, `POST /targets/{id}/scan` → `admin`,
+  rescan worker → `rescan`. `list_scans`/`list_targets` filtram por `source`.
+- **Fluxo admin num request:** `POST /admin/scan-and-report {url, send_email?,
+  email_to?, email_type}` — escaneia (cache/fresh) → `ingest_scan(source='admin')`
+  → devolve checks + plataforma + setor + e-mail + ids → opcionalmente envia alerta
+  ou relatório. Tela **`/painel/escanear`** (input → resultado inline → modal de
+  e-mail).
+- **Reenvio (JWT, ignora throttle):** `POST /admin/resend-alert {target_id}`,
+  `POST /admin/send-report {target_id, email_to?}` (2 PDFs),
+  `POST /admin/resend-payment {charge_id}` (reusa o caminho pós-pagamento).
+- **Vínculo pagamentos ↔ alvos:** `payments` não muda; a API casa por URL —
+  `GET /payments/list` traz `target_id` (via `map_urls_to_target_ids`) e
+  `GET /targets/{id}/payments` lista as cobranças do alvo. No painel: Pagamentos
+  linka o site → alvo; AlvoDetalhe tem seção "Pagamentos" + "Reenviar relatório".
+- **Idempotência:** `register_target` faz UPSERT por URL (não duplica alvo);
+  scan repetido atualiza `last_scan_*` e grava um novo `scan` (histórico).
+
+**Sidebar:** Visão geral · **Escanear** · Alvos · Scans · Alertas · Pagamentos ·
+Re-scans · Configurações.

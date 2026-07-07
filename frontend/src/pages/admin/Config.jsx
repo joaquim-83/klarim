@@ -4,7 +4,7 @@ import { Card, Loading, ErrorBox } from '../../components/admin/ui'
 
 const ROWS = [
   { key: 'discovery_batch_size', label: 'Batch de descoberta', env: 'DISCOVERY_BATCH_SIZE', unit: 'domínios/ciclo' },
-  { key: 'discovery_interval_hours', label: 'Intervalo de descoberta', env: 'DISCOVERY_INTERVAL_HOURS', unit: 'h' },
+  { key: 'discovery_interval_minutes', label: 'Intervalo de descoberta', env: 'DISCOVERY_INTERVAL_MINUTES', unit: 'min' },
   { key: 'max_alerts_per_hour', label: 'Máx. alertas/hora', env: 'MAX_ALERTS_PER_HOUR', unit: 'e-mails' },
   { key: 'max_alerts_per_day', label: 'Máx. alertas/dia', env: 'MAX_ALERTS_PER_DAY', unit: 'e-mails' },
   { key: 'rescan_interval_hours', label: 'Intervalo de re-scan', env: 'RESCAN_INTERVAL_HOURS', unit: 'h' },

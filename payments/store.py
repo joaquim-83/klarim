@@ -124,6 +124,10 @@ class MemoryStore:
             rows = [c for c in rows if c.status == status]
         return rows[offset:offset + limit]
 
+    async def list_charges_by_url(self, url: str) -> List[Charge]:
+        rows = [c for c in self._d.values() if c.target_url == url]
+        return sorted(rows, key=lambda c: c.created_at or "", reverse=True)
+
     async def payment_stats(self) -> Dict[str, Any]:
         by_status: Dict[str, int] = {}
         revenue = 0
@@ -271,12 +275,19 @@ class PostgresStore:
                            offset: int = 0) -> List[Charge]:
         return await asyncio.to_thread(self._list_charges_sync, status, limit, offset)
 
-    def _list_charges_sync(self, status: Optional[str], limit: int, offset: int) -> List[Charge]:
+    def _list_charges_sync(self, status: Optional[str], limit: int, offset: int,
+                           url: Optional[str] = None) -> List[Charge]:
         conn = self._connect()
         try:
             with conn, conn.cursor() as cur:
-                where = "WHERE status = %s" if status else ""
-                params: list = [status] if status else []
+                conds, params = [], []
+                if status:
+                    conds.append("status = %s")
+                    params.append(status)
+                if url:
+                    conds.append("target_url = %s")
+                    params.append(url)
+                where = ("WHERE " + " AND ".join(conds)) if conds else ""
                 params.extend([limit, offset])
                 cur.execute(
                     "SELECT charge_id, target_url, amount_cents, status, created_at, paid_at, "
@@ -296,6 +307,9 @@ class PostgresStore:
             )
             for r in rows
         ]
+
+    async def list_charges_by_url(self, url: str) -> List[Charge]:
+        return await asyncio.to_thread(self._list_charges_sync, None, 100, 0, url)
 
     async def payment_stats(self) -> Dict[str, Any]:
         return await asyncio.to_thread(self._payment_stats_sync)

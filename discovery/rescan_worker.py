@@ -73,7 +73,7 @@ async def rescan_target(store, mailer: Optional[KlarimMailer], cache: Optional[S
     if s is not None:
         scan_id = await store.save_scan(
             target_id, url, s.score, s.semaphore, s.passed, s.failed,
-            s.inconclusive, report.to_dict())
+            s.inconclusive, report.to_dict(), source="rescan")
         await store.update_scan_result(target_id, scan_id, s.score)
 
     evolution = classify_evolution(old_score, new_score)

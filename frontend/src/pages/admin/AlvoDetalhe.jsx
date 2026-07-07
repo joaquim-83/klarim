@@ -3,9 +3,11 @@ import { useParams, Link, useNavigate } from 'react-router-dom'
 import { admin } from '../../lib/adminApi'
 import { useAsync } from '../../lib/useAsync'
 import {
-  Card, Loading, ErrorBox, Button, PlatformBadge, StatusBadge, SemaphoreDot,
-  EVOLUTION_META, formatDate, relativeTime,
+  Card, Loading, ErrorBox, Button, Badge, PlatformBadge, StatusBadge, SourceBadge,
+  SemaphoreDot, EVOLUTION_META, formatDate, relativeTime,
 } from '../../components/admin/ui'
+
+const PAY_COLOR = { PAID: '#00D26A', PENDING: '#F0C000', EXPIRED: '#8B949E', CANCELLED: '#F85149' }
 
 function Field({ label, children }) {
   return (
@@ -26,17 +28,19 @@ export default function AlvoDetalhe() {
     () => Promise.all([
       admin.target(id), admin.scans({ target_id: id, limit: 50 }),
       admin.alerts({ target_id: id }), admin.rescans({ target_id: id }),
-    ]).then(([target, scans, alerts, rescans]) => ({
+      admin.targetPayments(id),
+    ]).then(([target, scans, alerts, rescans, payments]) => ({
       target, scans: scans.scans, alerts: alerts.alerts, rescans: rescans.rescans,
+      payments: payments.payments,
     })),
     [id],
   )
 
-  async function act(fn, label, key) {
+  async function act(fn, label, key, arg) {
     setBusy(key)
     setMsg('')
     try {
-      await fn(id)
+      await fn(arg !== undefined ? arg : id)
       setMsg(`${label} ✓`)
       reload()
     } catch (e) {
@@ -62,7 +66,8 @@ export default function AlvoDetalhe() {
       {/* Ações */}
       <div className="flex flex-wrap gap-2">
         <Button variant="primary" disabled={busy === 'scan'} onClick={() => act(admin.scanTarget, 'Scan enfileirado', 'scan')}>Escanear agora</Button>
-        <Button disabled={busy === 'alert' || !t.contact_email} onClick={() => act(admin.alertTarget, 'Alerta enviado', 'alert')}>Enviar alerta</Button>
+        <Button disabled={busy === 'alert' || !t.contact_email} onClick={() => act(admin.resendAlert, 'Alerta reenviado', 'alert')}>Reenviar alerta</Button>
+        <Button disabled={busy === 'report' || !t.contact_email} onClick={() => act(admin.sendReport, 'Relatório enviado', 'report')}>Enviar relatório completo</Button>
         <Button disabled={busy === 'rescan'} onClick={() => act(admin.rescanTarget, 'Re-scan feito', 'rescan')}>Forçar re-scan</Button>
         <Button variant="danger" disabled={busy === 'discard'} onClick={() => act(admin.discardTarget, 'Descartado', 'discard')}>Marcar como descartado</Button>
       </div>
@@ -76,7 +81,7 @@ export default function AlvoDetalhe() {
           <Field label="Setor">{t.sector || 'outro'}</Field>
           <Field label="Preço (tier)">{t.price_tier || 'standard'}</Field>
           <Field label="E-mail">{t.contact_email || '—'}</Field>
-          <Field label="Fonte">{t.source || '—'}</Field>
+          <Field label="Origem"><SourceBadge source={t.source} /></Field>
           <Field label="Score atual">{t.last_scan_score ?? '—'}</Field>
           <Field label="Último scan">{t.last_scan_at ? relativeTime(t.last_scan_at) : '—'}</Field>
           <Field label="Alertas enviados">{t.alert_count ?? 0}</Field>
@@ -106,6 +111,45 @@ export default function AlvoDetalhe() {
           </tr>
         )} empty="Nenhum alerta." />
       </Card>
+
+      {/* Pagamentos vinculados */}
+      {data.payments && data.payments.length > 0 && (
+        <Card title={`Pagamentos (${data.payments.length})`}>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="text-left text-xs uppercase text-klarim-muted">
+                  <th className="py-2 pr-3">Cobrança</th>
+                  <th className="py-2 pr-3">Valor</th>
+                  <th className="py-2 pr-3">Status</th>
+                  <th className="py-2 pr-3">Relatório?</th>
+                  <th className="py-2 pr-3">Data</th>
+                  <th className="py-2"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.payments.map((p) => (
+                  <tr key={p.charge_id} className="border-t border-klarim-border">
+                    <td className="py-2 pr-3 font-mono text-[11px] text-klarim-muted">{p.charge_id}</td>
+                    <td className="py-2 pr-3 font-semibold">{p.amount_display}</td>
+                    <td className="py-2 pr-3"><Badge color={PAY_COLOR[p.status] || '#8B949E'}>{p.status}</Badge></td>
+                    <td className="py-2 pr-3 text-xs">{p.report_email_sent ? '✅' : (p.email_status === 'failed' ? '❌ falhou' : '—')}</td>
+                    <td className="py-2 pr-3 text-xs text-klarim-muted">{formatDate(p.created_at)}</td>
+                    <td className="py-2 text-right">
+                      {p.status === 'PAID' && (!p.report_email_sent || p.email_status === 'failed') && (
+                        <Button disabled={busy === `pay-${p.charge_id}`}
+                          onClick={() => act((cid) => admin.resendPayment(cid), 'Reenvio agendado', `pay-${p.charge_id}`, p.charge_id)}>
+                          Reenviar relatório
+                        </Button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </Card>
+      )}
 
       {/* Histórico de re-scans */}
       <Card title={`Re-scans (${data.rescans.length})`}>

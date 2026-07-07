@@ -124,8 +124,8 @@ class FakeStore:
         self.contacted = []
         self.updated_emails = []
 
-    async def save_scan(self, *a):
-        self.saved.append(a)
+    async def save_scan(self, *a, **kw):
+        self.saved.append((a, kw))
         return 999
 
     async def update_scan_result(self, target_id, scan_id, score):

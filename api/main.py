@@ -46,6 +46,7 @@ from payments import (
 from notifier import KlarimMailer, KlarimMailerError, unsubscribe_token
 from discovery.alert_worker import send_alert_for_target
 from discovery.rescan_worker import rescan_target
+from discovery.ingest import ingest_scan
 
 
 # --------------------------------------------------------------------------- #
@@ -97,7 +98,8 @@ JWT_TTL_SECONDS = 86400  # 24h
 
 # Prefixos protegidos — exigem Bearer token. O resto é público (scan/summary,
 # payment, report, webhooks, recovery, unsubscribe, health, auth/login).
-_PROTECTED_PREFIXES = ("/targets", "/scans", "/alerts", "/rescans", "/email", "/payments", "/config", "/discovery")
+_PROTECTED_PREFIXES = ("/targets", "/scans", "/alerts", "/rescans", "/email", "/payments",
+                       "/config", "/discovery", "/admin")
 
 
 def _jwt_secret() -> str:
@@ -245,7 +247,8 @@ async def scan_full(url: str = Query(..., description="URL alvo (http/https)."))
 @app.get("/scan/summary")
 async def scan_summary(url: str = Query(..., description="URL alvo.")) -> dict:
     """Semáforo executivo gratuito — score + contagens, sem detalhe por check."""
-    report = await _safe_scan(url)
+    # KL-17: scan público grava o alvo + scan no banco (background, source='public').
+    report = await _safe_scan(url, ingest_source="public")
     score = report.score
     sev = score.fails_by_severity if score else {}
     return {
@@ -653,12 +656,13 @@ class TargetAddBody(BaseModel):
     url: str
 
 
-async def _enqueue_scan(target_id: Optional[int], url: str) -> bool:
-    """Enfileira {target_id, url} na fila de scan (Redis)."""
+async def _enqueue_scan(target_id: Optional[int], url: str, source: str = "manual") -> bool:
+    """Enfileira {target_id, url, source} na fila de scan (Redis)."""
     if _cache is None or _cache.redis is None:
         return False
     queue = os.environ.get("KLARIM_SCAN_QUEUE", "klarim:scan_queue")
-    await _cache.redis.rpush(queue, json.dumps({"target_id": target_id, "url": url}))
+    await _cache.redis.rpush(queue, json.dumps(
+        {"target_id": target_id, "url": url, "source": source}))
     return True
 
 
@@ -667,10 +671,11 @@ async def api_list_targets(
     status: Optional[str] = Query(default=None),
     platform: Optional[str] = Query(default=None),
     sector: Optional[str] = Query(default=None),
+    source: Optional[str] = Query(default=None),
     limit: int = Query(default=50, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> dict:
-    rows = await get_target_store().list_targets(status, platform, sector, limit, offset)
+    rows = await get_target_store().list_targets(status, platform, sector, source, limit, offset)
     return {"count": len(rows), "targets": rows}
 
 
@@ -687,6 +692,16 @@ async def api_get_target(target_id: int) -> dict:
     return target
 
 
+@app.get("/targets/{target_id}/payments")
+async def api_target_payments(target_id: int) -> dict:
+    """Pagamentos vinculados a um alvo (mesma URL) — KL-17."""
+    target = await get_target_store().get_target(target_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Alvo não encontrado.")
+    charges = await get_store().list_charges_by_url(target["url"])
+    return {"count": len(charges), "payments": [_payment_row(c, target_id) for c in charges]}
+
+
 @app.post("/targets/add")
 async def api_targets_add(body: TargetAddBody) -> dict:
     url = normalize_url(body.url)
@@ -694,7 +709,7 @@ async def api_targets_add(body: TargetAddBody) -> dict:
     tid = await get_target_store().register_target(
         url, domain, "unknown", "outro", "standard", None,
         source="manual", status="discovered")
-    enq = await _enqueue_scan(tid, url)
+    enq = await _enqueue_scan(tid, url, source="manual")
     return {"target_id": tid, "url": url, "domain": domain, "enqueued": enq}
 
 
@@ -703,7 +718,7 @@ async def api_targets_scan(target_id: int) -> dict:
     target = await get_target_store().get_target(target_id)
     if target is None:
         raise HTTPException(status_code=404, detail="Alvo não encontrado.")
-    enq = await _enqueue_scan(target_id, target["url"])
+    enq = await _enqueue_scan(target_id, target["url"], source="admin")
     return {"target_id": target_id, "url": target["url"], "enqueued": enq}
 
 
@@ -722,9 +737,10 @@ async def api_list_scans(
     target_id: Optional[int] = Query(default=None),
     score_min: Optional[int] = Query(default=None),
     score_max: Optional[int] = Query(default=None),
+    source: Optional[str] = Query(default=None),
     limit: int = Query(default=50, le=500),
 ) -> dict:
-    rows = await get_target_store().list_scans(target_id, score_min, score_max, limit)
+    rows = await get_target_store().list_scans(target_id, score_min, score_max, source, limit)
     return {"count": len(rows), "scans": rows}
 
 
@@ -793,7 +809,10 @@ async def api_payments_list(
     offset: int = Query(default=0, ge=0),
 ) -> dict:
     charges = await get_store().list_charges(status, limit, offset)
-    return {"count": len(charges), "payments": [_payment_row(c) for c in charges]}
+    # KL-17: vincula cada pagamento ao alvo (mesma URL), se existir.
+    id_by_url = await get_target_store().map_urls_to_target_ids([c.target_url for c in charges])
+    return {"count": len(charges),
+            "payments": [_payment_row(c, id_by_url.get(c.target_url)) for c in charges]}
 
 
 @app.get("/payments/stats")
@@ -836,7 +855,7 @@ async def api_config() -> dict:
 
     return {
         "discovery_batch_size": _i("DISCOVERY_BATCH_SIZE", "100"),
-        "discovery_interval_hours": _i("DISCOVERY_INTERVAL_HOURS", "6"),
+        "discovery_interval_minutes": _i("DISCOVERY_INTERVAL_MINUTES", "30"),
         "max_alerts_per_hour": _i("MAX_ALERTS_PER_HOUR", "10"),
         "max_alerts_per_day": _i("MAX_ALERTS_PER_DAY", "50"),
         "rescan_interval_hours": _i("RESCAN_INTERVAL_HOURS", "24"),
@@ -845,11 +864,151 @@ async def api_config() -> dict:
     }
 
 
-def _payment_row(charge) -> dict:
+# --------------------------------------------------------------------------- #
+# Fluxo admin integrado (KL-17): escanear + registrar + enviar / reenviar
+# --------------------------------------------------------------------------- #
+
+class ScanAndReportBody(BaseModel):
+    url: str
+    send_email: bool = False
+    email_to: Optional[str] = None
+    email_type: str = "alert"  # 'alert' | 'report'
+
+
+class ResendAlertBody(BaseModel):
+    target_id: int
+
+
+class SendReportBody(BaseModel):
+    target_id: int
+    email_to: Optional[str] = None
+
+
+class ResendPaymentBody(BaseModel):
+    charge_id: str
+
+
+def _severity_counts(report: ScanReport) -> dict:
+    sev = report.score.fails_by_severity if report.score else {}
+    return {
+        "critica": sev.get(Severity.CRITICA, 0), "alta": sev.get(Severity.ALTA, 0),
+        "media": sev.get(Severity.MEDIA, 0), "baixa": sev.get(Severity.BAIXA, 0),
+    }
+
+
+async def _send_alert_to(url: str, report: ScanReport, to_email: str) -> Optional[str]:
+    s = report.score
+    res = await _mailer().send_alert(
+        to_email, url, s.score if s else 0, s.semaphore if s else "vermelho",
+        s.failed if s else 0, _severity_counts(report))
+    return res.get("email_id")
+
+
+async def _send_report_to(url: str, report: ScanReport, to_email: str) -> Optional[str]:
+    executive = await _safe_pdf(generate_executive_pdf, report, url)
+    technical = await _safe_pdf(generate_technical_pdf, report, url)
+    score = report.score.score if report.score else 0
+    res = await _mailer().send_report(to_email, url, score, executive, technical)
+    return res.get("email_id")
+
+
+@app.post("/admin/scan-and-report")
+async def api_admin_scan_and_report(body: ScanAndReportBody) -> dict:
+    """Escaneia (cache ou fresh) → registra no banco (source='admin') → opcionalmente
+    envia alerta/relatório. Tudo num request (JWT)."""
+    url = normalize_url(body.url)
+    report = await _safe_scan(url)  # sem auto-ingest; ingerimos abaixo com os ids
+    meta = await ingest_scan(get_target_store(), url, report, source="admin")
+    s = report.score
+    result = {
+        "target_id": meta["target_id"], "scan_id": meta["scan_id"], "url": url,
+        "score": s.score if s else None, "semaphore": s.semaphore if s else None,
+        "checks": report.to_dict().get("results", []),
+        "pass_count": s.passed if s else 0, "fail_count": s.failed if s else 0,
+        "inconclusive": s.inconclusive if s else 0,
+        "severity_counts": _severity_counts(report),
+        "platform": meta["platform"], "sector": meta["sector"],
+        "contact_email": meta["contact_email"],
+        "email_sent": False, "email_id": None,
+    }
+    if body.send_email:
+        to_email = (body.email_to or meta["contact_email"] or "").strip()
+        if not to_email:
+            result["email_error"] = "Sem e-mail de destino."
+        elif not _email_enabled():
+            result["email_error"] = "Envio de e-mail não configurado."
+        else:
+            try:
+                if body.email_type == "report":
+                    result["email_id"] = await _send_report_to(url, report, to_email)
+                else:
+                    result["email_id"] = await _send_alert_to(url, report, to_email)
+                result["email_sent"] = True
+                result["email_to"] = to_email
+            except (KlarimMailerError, HTTPException) as exc:
+                result["email_error"] = str(getattr(exc, "detail", exc))
+    return result
+
+
+@app.post("/admin/resend-alert")
+async def api_admin_resend_alert(body: ResendAlertBody) -> dict:
+    """Reenvia o alerta de um alvo (ignora throttle/janela — ação manual)."""
+    _require_email()
+    store = get_target_store()
+    target = await store.get_target(body.target_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Alvo não encontrado.")
+    if not target.get("contact_email"):
+        raise HTTPException(status_code=400, detail="Alvo sem e-mail de contato.")
+    try:
+        email_id = await send_alert_for_target(store, _mailer(), target)
+    except KlarimMailerError as exc:
+        raise HTTPException(status_code=502, detail=f"Falha no envio: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"target_id": body.target_id, "email": target["contact_email"],
+            "email_id": email_id, "sent": True}
+
+
+@app.post("/admin/send-report")
+async def api_admin_send_report(body: SendReportBody) -> dict:
+    """Envia os 2 PDFs para o e-mail do contato (ou `email_to`)."""
+    _require_email()
+    store = get_target_store()
+    target = await store.get_target(body.target_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Alvo não encontrado.")
+    to_email = (body.email_to or target.get("contact_email") or "").strip()
+    if not to_email:
+        raise HTTPException(status_code=400, detail="Sem e-mail de destino.")
+    report = await _safe_scan(target["url"])
+    try:
+        email_id = await _send_report_to(target["url"], report, to_email)
+    except KlarimMailerError as exc:
+        raise HTTPException(status_code=502, detail=f"Falha no envio: {exc}") from exc
+    return {"target_id": body.target_id, "email": to_email, "email_id": email_id, "sent": True}
+
+
+@app.post("/admin/resend-payment")
+async def api_admin_resend_payment(body: ResendPaymentBody) -> dict:
+    """Reenvia o relatório pago de uma cobrança (mesmo caminho do pós-pagamento)."""
+    _require_email()
+    charge = await get_store().get(body.charge_id)
+    if charge is None:
+        raise HTTPException(status_code=404, detail="Cobrança não encontrada.")
+    if not charge.buyer_email:
+        raise HTTPException(status_code=400, detail="Cobrança sem e-mail do comprador.")
+    await get_store().set_email_status(charge.charge_id, "sending")
+    _spawn(_send_report_email_task(charge.charge_id, charge.target_url, charge.buyer_email))
+    return {"charge_id": charge.charge_id, "email": charge.buyer_email, "queued": True}
+
+
+def _payment_row(charge, target_id: Optional[int] = None) -> dict:
     """Payload de pagamento para o painel admin (mascarando o e-mail do comprador)."""
     return {
         "charge_id": charge.charge_id,
         "target_url": charge.target_url,
+        "target_id": target_id,
         "amount_cents": charge.amount_cents,
         "amount_display": amount_display(charge.amount_cents),
         "status": charge.status,
@@ -975,8 +1134,13 @@ def _pdf_response(pdf: bytes, filename: str) -> Response:
     )
 
 
-async def get_or_scan(url: str) -> ScanReport:
-    """Retorna o scan do cache (Redis) ou executa um novo scan e cacheia."""
+async def get_or_scan(url: str, ingest_source: Optional[str] = None) -> ScanReport:
+    """Retorna o scan do cache (Redis) ou executa um novo scan e cacheia.
+
+    Em cache MISS (scan de verdade), se ``ingest_source`` for dado, grava o alvo +
+    scan no Postgres em **background** (KL-17) — o response volta imediato do cache.
+    Em cache HIT o alvo já foi ingerido no 1º scan, então não repete.
+    """
     if _cache is not None:
         cached = await _cache.get(url)
         if cached is not None:
@@ -984,12 +1148,22 @@ async def get_or_scan(url: str) -> ScanReport:
     report = await run_scan(url)
     if _cache is not None:
         await _cache.set(url, report)
+    if ingest_source:
+        _spawn(_ingest_scan_bg(url, report, ingest_source))
     return report
 
 
-async def _safe_scan(url: str):
+async def _ingest_scan_bg(url: str, report: ScanReport, source: str) -> None:
     try:
-        return await get_or_scan(url)
+        await ingest_scan(get_target_store(), url, report, source)
+        print(f"[ingest] {url} registrado no banco (source={source})", flush=True)
+    except Exception as exc:  # noqa: BLE001 - ingestão é best-effort, não quebra o scan
+        print(f"[ingest] falha ao registrar {url} ({exc!r})", flush=True)
+
+
+async def _safe_scan(url: str, ingest_source: Optional[str] = None):
+    try:
+        return await get_or_scan(url, ingest_source)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"URL inválida: {exc}") from exc
     except Exception as exc:  # noqa: BLE001

@@ -379,6 +379,15 @@ tela de login) ou em `https://klarim.net/painel`. O subdomínio usa o mesmo
 certificado Let's Encrypt (SAN `painel.klarim.net`) e um server block Nginx próprio
 com os mesmos security headers — sem novo container nem regra de firewall.
 
+**Integração completa (KL-17):** os scans feitos no site público passam a gravar em
+`targets`/`scans` (em background, com `source='public'`), então aparecem no painel;
+a tela **Escanear** deixa o operador rodar o ciclo inteiro (URL → scan → resultado
+inline → enviar alerta/relatório por e-mail) num só lugar; cada scan carrega a
+**origem** (público/discovery/admin/manual/rescan, com badge e filtro); e os
+pagamentos ficam vinculados aos alvos (link nos dois sentidos + reenvio de
+relatório). Endpoints: `POST /api/admin/scan-and-report`, `/resend-alert`,
+`/send-report`, `/resend-payment`.
+
 ### Alert Worker (disparo automático)
 
 No mesmo container do Discovery Worker (via `asyncio.gather`), o **Alert Worker**

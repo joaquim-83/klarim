@@ -64,14 +64,14 @@ async def _write_pdfs(report, url: str) -> None:
 
 
 def _parse_queue_item(raw: str):
-    """Aceita JSON {target_id, url} (Discovery Worker) ou uma URL simples."""
+    """Aceita JSON {target_id, url, source?} (workers) ou uma URL simples."""
     try:
         obj = json.loads(raw)
         if isinstance(obj, dict) and obj.get("url"):
-            return obj.get("target_id"), obj["url"]
+            return obj.get("target_id"), obj["url"], obj.get("source", "discovery")
     except (ValueError, TypeError):
         pass
-    return None, raw
+    return None, raw, "discovery"
 
 
 async def _worker_loop() -> None:
@@ -102,7 +102,7 @@ async def _worker_loop() -> None:
         item = await client.blpop(SCAN_QUEUE)
         if not item:
             continue
-        target_id, url = _parse_queue_item(item[1])
+        target_id, url, source = _parse_queue_item(item[1])
         if last and min_interval:
             wait = min_interval - (loop.time() - last)
             if wait > 0:
@@ -115,7 +115,7 @@ async def _worker_loop() -> None:
             if store is not None and target_id is not None and s is not None:
                 scan_id = await store.save_scan(
                     target_id, url, s.score, s.semaphore, s.passed, s.failed,
-                    s.inconclusive, report.to_dict())
+                    s.inconclusive, report.to_dict(), source=source)
                 await store.update_scan_result(target_id, scan_id, s.score)
             print(f"[klarim-worker] {url} -> score {s.score if s else 'n/a'}"
                   f"{' (target ' + str(target_id) + ')' if target_id else ''}", flush=True)

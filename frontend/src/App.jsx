@@ -14,6 +14,7 @@ import ProtectedRoute from './components/admin/ProtectedRoute'
 const AdminLayout = lazy(() => import('./components/admin/AdminLayout'))
 const Login = lazy(() => import('./pages/admin/Login'))
 const Overview = lazy(() => import('./pages/admin/Overview'))
+const Escanear = lazy(() => import('./pages/admin/Escanear'))
 const Alvos = lazy(() => import('./pages/admin/Alvos'))
 const AlvoDetalhe = lazy(() => import('./pages/admin/AlvoDetalhe'))
 const Scans = lazy(() => import('./pages/admin/Scans'))
@@ -59,6 +60,7 @@ export default function App() {
         }
       >
         <Route index element={<Overview />} />
+        <Route path="escanear" element={<Escanear />} />
         <Route path="alvos" element={<Alvos />} />
         <Route path="alvos/:id" element={<AlvoDetalhe />} />
         <Route path="scans" element={<Scans />} />

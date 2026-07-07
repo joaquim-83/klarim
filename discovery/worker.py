@@ -70,7 +70,8 @@ class DiscoveryWorker:
 
     async def _enqueue(self, target_id: int, url: str) -> None:
         r = await self._redis_client()
-        await r.rpush(SCAN_QUEUE, json.dumps({"target_id": target_id, "url": url}))
+        await r.rpush(SCAN_QUEUE, json.dumps(
+            {"target_id": target_id, "url": url, "source": "discovery"}))
 
     # --- status (ponte Redis para a API, que roda noutro container) -------- #
 

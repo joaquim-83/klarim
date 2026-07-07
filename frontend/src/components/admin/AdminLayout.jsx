@@ -13,6 +13,7 @@ const I = (paths) => (
 
 const ICONS = {
   overview: I(<><rect x="3" y="3" width="7" height="9" /><rect x="14" y="3" width="7" height="5" /><rect x="14" y="12" width="7" height="9" /><rect x="3" y="16" width="7" height="5" /></>),
+  radar: I(<><circle cx="12" cy="12" r="9" /><path d="M12 12 L19 7" /><path d="M12 3 a9 9 0 0 1 7 4" /></>),
   targets: I(<><circle cx="12" cy="12" r="9" /><circle cx="12" cy="12" r="5" /><circle cx="12" cy="12" r="1" /></>),
   scans: I(<><circle cx="11" cy="11" r="7" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></>),
   alerts: I(<><path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" /><path d="M13.73 21a2 2 0 0 1-3.46 0" /></>),
@@ -24,6 +25,7 @@ const ICONS = {
 
 const NAV = [
   { to: '/painel', label: 'Visão geral', icon: 'overview', end: true },
+  { to: '/painel/escanear', label: 'Escanear', icon: 'radar' },
   { to: '/painel/alvos', label: 'Alvos', icon: 'targets' },
   { to: '/painel/scans', label: 'Scans', icon: 'scans' },
   { to: '/painel/alertas', label: 'Alertas', icon: 'alerts' },

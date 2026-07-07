@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Link } from 'react-router-dom'
 import { admin } from '../../lib/adminApi'
 import { useAsync } from '../../lib/useAsync'
 import { Card, StatCard, Loading, ErrorBox, Badge, Pagination, formatDate } from '../../components/admin/ui'
@@ -59,7 +60,11 @@ export default function Pagamentos() {
                 {rows.map((p) => (
                   <tr key={p.charge_id} className="border-t border-klarim-border">
                     <td className="py-2 pr-3 font-mono text-[11px] text-klarim-muted">{p.charge_id}</td>
-                    <td className="py-2 pr-3 font-mono text-xs">{p.target_url}</td>
+                    <td className="py-2 pr-3 font-mono text-xs">
+                      {p.target_id
+                        ? <Link to={`/painel/alvos/${p.target_id}`} className="text-klarim-alert hover:underline">{p.target_url}</Link>
+                        : p.target_url}
+                    </td>
                     <td className="py-2 pr-3 text-xs text-klarim-muted">{p.buyer_email || '—'}</td>
                     <td className="py-2 pr-3 font-semibold">{p.amount_display}</td>
                     <td className="py-2 pr-3"><Badge color={STATUS_COLOR[p.status] || '#8B949E'}>{p.status}</Badge></td>

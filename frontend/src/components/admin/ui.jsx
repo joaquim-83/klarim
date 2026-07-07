@@ -19,6 +19,19 @@ export const STATUS_LABEL = {
   descartado: 'descartado',
 }
 
+export const SOURCE_META = {
+  public: { label: 'público', color: '#8B949E' },
+  discovery: { label: 'discovery', color: '#2DD4BF' },
+  admin: { label: 'admin', color: '#FF6B35' },
+  manual: { label: 'manual', color: '#3B82F6' },
+  rescan: { label: 'rescan', color: '#A855F7' },
+}
+
+export function SourceBadge({ source }) {
+  const m = SOURCE_META[source] || { label: source || '—', color: '#8B949E' }
+  return <Badge color={m.color}>{m.label}</Badge>
+}
+
 export const EVOLUTION_META = {
   improved: { label: 'melhorou', icon: '🟢', color: '#00D26A' },
   worsened: { label: 'piorou', icon: '🔴', color: '#F85149' },

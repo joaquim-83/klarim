@@ -3,13 +3,14 @@ import { Link } from 'react-router-dom'
 import { admin } from '../../lib/adminApi'
 import { useAsync } from '../../lib/useAsync'
 import {
-  Card, Loading, ErrorBox, Button, Badge, PlatformBadge, StatusBadge,
+  Card, Loading, ErrorBox, Button, Badge, PlatformBadge, StatusBadge, SourceBadge,
   SemaphoreDot, Pagination, relativeTime, STATUS_LABEL,
 } from '../../components/admin/ui'
 
 const STATUS_OPTS = ['discovered', 'scanned', 'alerted', 'sem_contato', 'unsubscribed', 'descartado']
 const PLATFORM_OPTS = ['duda', 'wordpress', 'cra', 'wix', 'shopify', 'squarespace', 'unknown']
 const SECTOR_OPTS = ['hotel', 'clinica', 'escola', 'restaurante', 'ecommerce', 'contabilidade', 'outro']
+const SOURCE_OPTS = ['public', 'discovery', 'admin', 'manual']
 const PAGE_SIZE = 25
 
 function Select({ value, onChange, options, allLabel, labels }) {
@@ -29,6 +30,7 @@ export default function Alvos() {
   const [status, setStatus] = useState('')
   const [platform, setPlatform] = useState('')
   const [sector, setSector] = useState('')
+  const [source, setSource] = useState('')
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(0)
   const [msg, setMsg] = useState('')
@@ -36,8 +38,8 @@ export default function Alvos() {
   const [showAdd, setShowAdd] = useState(false)
 
   const { data, loading, error, reload } = useAsync(
-    () => admin.targets({ status, platform, sector, limit: PAGE_SIZE, offset: page * PAGE_SIZE }),
-    [status, platform, sector, page],
+    () => admin.targets({ status, platform, sector, source, limit: PAGE_SIZE, offset: page * PAGE_SIZE }),
+    [status, platform, sector, source, page],
   )
 
   async function act(id, fn, label) {
@@ -70,6 +72,7 @@ export default function Alvos() {
         <Select value={status} onChange={(v) => { setStatus(v); setPage(0) }} options={STATUS_OPTS} allLabel="Todos os status" labels={STATUS_LABEL} />
         <Select value={platform} onChange={(v) => { setPlatform(v); setPage(0) }} options={PLATFORM_OPTS} allLabel="Todas as plataformas" />
         <Select value={sector} onChange={(v) => { setSector(v); setPage(0) }} options={SECTOR_OPTS} allLabel="Todos os setores" />
+        <Select value={source} onChange={(v) => { setSource(v); setPage(0) }} options={SOURCE_OPTS} allLabel="Todas as origens" />
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -91,6 +94,7 @@ export default function Alvos() {
                   <th className="py-2 pr-3">Setor</th>
                   <th className="py-2 pr-3">Score</th>
                   <th className="py-2 pr-3">Status</th>
+                  <th className="py-2 pr-3">Origem</th>
                   <th className="py-2 pr-3">E-mail</th>
                   <th className="py-2 pr-3">Último scan</th>
                   <th className="py-2">Ações</th>
@@ -112,6 +116,7 @@ export default function Alvos() {
                         : <span className="text-klarim-muted">—</span>}
                     </td>
                     <td className="py-2 pr-3"><StatusBadge status={t.status} /></td>
+                    <td className="py-2 pr-3"><SourceBadge source={t.source} /></td>
                     <td className="py-2 pr-3 text-xs text-klarim-muted">{t.contact_email || '—'}</td>
                     <td className="py-2 pr-3 text-xs text-klarim-muted">{t.last_scan_at ? relativeTime(t.last_scan_at) : '—'}</td>
                     <td className="py-2">
@@ -124,7 +129,7 @@ export default function Alvos() {
                   </tr>
                 ))}
                 {rows.length === 0 && (
-                  <tr><td colSpan={8} className="py-8 text-center text-klarim-muted">Nenhum alvo.</td></tr>
+                  <tr><td colSpan={9} className="py-8 text-center text-klarim-muted">Nenhum alvo.</td></tr>
                 )}
               </tbody>
             </table>

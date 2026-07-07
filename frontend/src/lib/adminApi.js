@@ -112,6 +112,13 @@ export const admin = {
   // configurações operacionais (read-only)
   config: () => get('/config'),
 
-  // status do Discovery Worker (Certstream) — KL-15
+  // status do Discovery Worker — KL-15
   discoveryStatus: () => get('/discovery/status'),
+
+  // fluxo integrado (KL-17)
+  scanAndReport: (body) => post('/admin/scan-and-report', body),
+  resendAlert: (targetId) => post('/admin/resend-alert', { target_id: targetId }),
+  sendReport: (targetId, emailTo) => post('/admin/send-report', { target_id: targetId, email_to: emailTo }),
+  resendPayment: (chargeId) => post('/admin/resend-payment', { charge_id: chargeId }),
+  targetPayments: (id) => get(`/targets/${id}/payments`),
 }
