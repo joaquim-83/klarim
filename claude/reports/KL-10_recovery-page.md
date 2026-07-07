@@ -65,7 +65,22 @@ de expiração em 24h.
   inexistente), `list_paid_charges_by_email`, `count_recent_recovery_requests`,
   `recovery_validate` (e-mail mascarado + lista) e `recovery_download` (401 cruzado).
   Suíte: **43 passed, 1 skipped**.
-- **Produção (klarim.net):** ver adendo (após deploy).
+- **Produção (klarim.net):**
+  - Tabela `recovery_tokens` criada.
+  - `POST /recovery/request` (e-mail com 2 cobranças PAID) → mensagem genérica;
+    log `[recovery] link enviado para k***n@gmail.com (id=…)` (e-mail real da
+    `seguranca@klarim.net`).
+  - **Anti-enumeração:** request com e-mail sem pagamento → mesma mensagem,
+    **nenhum token** criado (confirmado no DB).
+  - **Rate limit:** 4 requests seguidos → 3 enviados + `[recovery] rate limit
+    atingido` no 4º; DB parou em 3 tokens.
+  - `GET /recovery/validate` → `valid:true`, e-mail **mascarado** `k***n@gmail.com`,
+    2 relatórios; token inválido → `valid:false`.
+  - `GET /recovery/download` → **200** `application/pdf`; charge de **outro
+    e-mail** → **401** (validação cruzada).
+  - **Navegador:** `/recuperar/acesso?token=…` renderiza a lista dos relatórios
+    (e-mail mascarado, valor/data, botões Executivo/Técnico); footer com
+    "Recuperar relatórios".
 
 ## Critérios de aceite
 
