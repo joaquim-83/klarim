@@ -115,15 +115,21 @@ class DiscoveryWorker:
             await asyncio.sleep(self.interval_hours * 3600)
 
 
-async def _run_both() -> None:
+async def _run_all() -> None:
     from .alert_worker import AlertWorker
+    from .rescan_worker import RescanWorker
 
-    # Um único container roda os dois loops (descoberta 6h + alertas 1h).
-    await asyncio.gather(DiscoveryWorker().start(), AlertWorker().start())
+    # Um único container roda os três loops: descoberta (6h), alertas (1h) e
+    # re-scan de evolução (24h).
+    await asyncio.gather(
+        DiscoveryWorker().start(),
+        AlertWorker().start(),
+        RescanWorker().start(),
+    )
 
 
 def main() -> None:
-    asyncio.run(_run_both())
+    asyncio.run(_run_all())
 
 
 if __name__ == "__main__":

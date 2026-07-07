@@ -70,8 +70,9 @@ class AlertWorker:
             print("[alert] RESEND_API_KEY não configurada; ciclo pulado", flush=True)
             return stats
 
-        sent_hour = await self.store.count_alerts_last_hours(1)
-        sent_day = await self.store.count_alerts_last_hours(24)
+        # Throttle GLOBAL: alertas + e-mails de evolução (KL-13) somam no mesmo teto.
+        sent_hour = await self.store.count_proactive_emails_last_hours(1)
+        sent_day = await self.store.count_proactive_emails_last_hours(24)
         if sent_hour >= self.max_hour or sent_day >= self.max_day:
             print(f"[alert] limite atingido (hora={sent_hour}/{self.max_hour}, "
                   f"dia={sent_day}/{self.max_day}); aguardando", flush=True)

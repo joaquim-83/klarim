@@ -541,3 +541,39 @@ escaneados que têm falhas:
 
 **Regra inviolável:** o throttle protege a reputação do domínio no Resend — nunca
 remover os tetos nem a pausa entre envios.
+
+## 17. Re-scan Worker + e-mail de evolução (KL-13) — `discovery/rescan_worker.py`
+
+Fecha o ciclo de vida do alvo: a cada 30 dias reescaneia sites já engajados,
+compara o score com o anterior e envia um e-mail de evolução (re-engajamento sem
+descobrir alvos novos).
+
+- **`rescan_worker.py`** — `RescanWorker.run_cycle()` (loop 24h,
+  `RESCAN_INTERVAL_HOURS`): (1) reenvia e-mails de evolução pendentes do ciclo
+  anterior (`_flush_pending`); (2) `get_targets_for_rescan` (status `scanned`/
+  `alerted`, com e-mail, `last_scan_at` > `RESCAN_AGE_DAYS`=30); (3) por alvo, com
+  pausa igual ao scan worker (`WORKER_MAX_SCANS_PER_HOUR`): reescaneia, salva em
+  `scans`, atualiza `targets`, **cacheia (KL-9)**, classifica a evolução e envia o
+  e-mail. `classify_evolution` → `improved` / `worsened` / `unchanged` /
+  `first_rescan`. A função `rescan_target()` é compartilhada com a API.
+- **Throttle GLOBAL compartilhado com o Alert Worker:**
+  `count_proactive_emails_last_hours` soma `alert_log` + `rescan_log`. No teto, o
+  re-scan acontece (dados atualizados) e o e-mail fica **pendente**
+  (`rescan_log.email_id IS NULL`) para reenvio no próximo ciclo. Após enviar uma
+  evolução, `mark_target_contacted` seta `last_alert_at` (evita alerta duplicado).
+- **`notifier`** — 3 templates (`evolution_improved/worsened/unchanged.html`) +
+  `KlarimMailer.send_evolution` (escolhe o template pelo tipo). Preço do CTA vem de
+  `payments.PRICING` pelo `price_tier` do alvo.
+- **`store.py`** — tabela **`rescan_log`** + métodos `get_targets_for_rescan`,
+  `log_rescan`, `update_rescan_email`, `get_pending_evolution_emails`,
+  `list_rescans`, `rescan_stats`, `count_proactive_emails_last_hours`,
+  `mark_target_contacted`.
+- **Mesmo container:** `discovery/worker.py` `main()` roda três loops —
+  `asyncio.gather(DiscoveryWorker, AlertWorker, RescanWorker)`.
+- **API:** `GET /rescans` (filtros target_id/evolution), `GET /rescans/stats`,
+  `POST /targets/{id}/rescan` (força re-scan + e-mail, ignora janela/throttle).
+
+**Nota de design:** o re-scan roda **inline** no worker (como o Alert Worker),
+não via re-enfileiramento na `klarim:scan_queue`, porque a comparação de score + o
+e-mail + o throttle compartilhado + a fila de pendentes vivem melhor num só lugar;
+o `rescan_log` já distingue os re-scans dos scans normais.

@@ -45,6 +45,7 @@ from payments import (
 )
 from notifier import KlarimMailer, KlarimMailerError, unsubscribe_token
 from discovery.alert_worker import send_alert_for_target
+from discovery.rescan_worker import rescan_target
 
 
 # --------------------------------------------------------------------------- #
@@ -722,6 +723,48 @@ def _unsubscribe_html(email: str, success: bool) -> str:
         f"<p style=\"color:#8B949E;font-size:15px;line-height:1.6\">{msg}</p>"
         "</div></body></html>"
     )
+
+
+# --------------------------------------------------------------------------- #
+# Re-scan / evolução (Re-scan Worker — KL-13)
+# --------------------------------------------------------------------------- #
+
+@app.get("/rescans")
+async def api_list_rescans(
+    target_id: Optional[int] = Query(default=None),
+    evolution: Optional[str] = Query(default=None),
+    limit: int = Query(default=50, le=500),
+    offset: int = Query(default=0, ge=0),
+) -> dict:
+    rows = await get_target_store().list_rescans(target_id, evolution, limit, offset)
+    return {"count": len(rows), "rescans": rows}
+
+
+@app.get("/rescans/stats")
+async def api_rescans_stats() -> dict:
+    return await get_target_store().rescan_stats()
+
+
+@app.post("/targets/{target_id}/rescan")
+async def api_target_rescan(target_id: int) -> dict:
+    """Força o re-scan de um alvo (ignora a janela de 30 dias e o throttle) e envia
+    o e-mail de evolução se houver e-mail de contato."""
+    store = get_target_store()
+    target = await store.get_target(target_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Alvo não encontrado.")
+    # Enriquecemos com o semáforo do scan anterior (para o registro de evolução).
+    if target.get("last_scan_id"):
+        prev = await store.get_scan(target["last_scan_id"])
+        if prev is not None:
+            target["old_semaphore"] = prev.get("semaphore")
+    send_email = _email_enabled() and bool(target.get("contact_email"))
+    mailer = _mailer() if send_email else None
+    try:
+        res = await rescan_target(store, mailer, _cache, target, send_email=send_email)
+    except KlarimMailerError as exc:
+        raise HTTPException(status_code=502, detail=f"Falha no envio: {exc}") from exc
+    return res
 
 
 # --------------------------------------------------------------------------- #

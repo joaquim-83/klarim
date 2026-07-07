@@ -84,6 +84,10 @@ class FakeStore:
     async def count_alerts_last_hours(self, hours):
         return self._sent_day if hours >= 24 else self._sent_hour
 
+    async def count_proactive_emails_last_hours(self, hours):
+        # Throttle global compartilhado (alertas + evolução) — KL-13.
+        return self._sent_day if hours >= 24 else self._sent_hour
+
     async def mark_target_alerted(self, target_id):
         self.alerted.append(target_id)
 

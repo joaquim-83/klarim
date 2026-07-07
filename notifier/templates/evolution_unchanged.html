@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Varredura mensal — Klarim</title>
+</head>
+<body style="margin:0; padding:0; background-color:#0D1117;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#0D1117;">
+    <tr>
+      <td align="center" style="padding:24px 12px;">
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:600px; max-width:100%; background-color:#161B22; border:1px solid #30363D; border-radius:12px; overflow:hidden; font-family:Arial,Helvetica,sans-serif;">
+
+          <!-- Header -->
+          <tr>
+            <td style="padding:20px 24px; border-bottom:2px solid #30363D;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="font-size:22px; font-weight:bold; letter-spacing:2px; color:#E6EDF3;">
+                    KLA<span style="color:#FF6B35;">R</span>IM
+                  </td>
+                  <td align="right" style="font-size:13px; color:#8B949E;">📊 Atualização mensal</td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Score / semáforo -->
+          <tr>
+            <td align="center" style="padding:28px 24px 8px 24px;">
+              <div style="display:inline-block; padding:14px 28px; border:3px solid {{ score_color }}; border-radius:9999px;">
+                <span style="font-size:40px; font-weight:bold; color:{{ score_color }};">{{ new_score }}</span><span style="font-size:16px; color:#8B949E;">/100</span>
+              </div>
+              <div style="margin-top:12px; font-size:20px; font-weight:bold; color:{{ score_color }};">
+                {{ semaphore_emoji }} {{ semaphore_label }}
+              </div>
+            </td>
+          </tr>
+
+          <!-- Resumo -->
+          <tr>
+            <td style="padding:12px 28px; color:#E6EDF3; font-size:15px; line-height:1.6;">
+              Reescaneamos seu site
+              <a href="{{ target_url }}" style="color:#FF6B35; text-decoration:none;">{{ site_name }}</a>.
+              O score permanece em <strong>{{ new_score }}/100</strong>.
+            </td>
+          </tr>
+
+          {% if fail_count and fail_count > 0 %}
+          <!-- Problemas ainda abertos -->
+          <tr>
+            <td style="padding:0 28px 8px 28px; color:#E6EDF3; font-size:15px; line-height:1.6;">
+              Os <strong>{{ fail_count }}</strong> problema(s) identificados anteriormente ainda não foram corrigidos.
+            </td>
+          </tr>
+
+          <!-- Contagem por severidade -->
+          <tr>
+            <td style="padding:6px 28px 16px 28px;">
+              <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
+                <tr>
+                  <td align="center" style="padding:8px; background-color:#0D1117; border:1px solid #30363D; border-radius:6px;">
+                    <div style="font-size:18px; font-weight:bold; color:#FF4D4D;">{{ sev.critica or 0 }}</div>
+                    <div style="font-size:10px; color:#8B949E; text-transform:uppercase;">Críticos</div>
+                  </td>
+                  <td width="8"></td>
+                  <td align="center" style="padding:8px; background-color:#0D1117; border:1px solid #30363D; border-radius:6px;">
+                    <div style="font-size:18px; font-weight:bold; color:#FF6B35;">{{ sev.alta or 0 }}</div>
+                    <div style="font-size:10px; color:#8B949E; text-transform:uppercase;">Altos</div>
+                  </td>
+                  <td width="8"></td>
+                  <td align="center" style="padding:8px; background-color:#0D1117; border:1px solid #30363D; border-radius:6px;">
+                    <div style="font-size:18px; font-weight:bold; color:#F2C744;">{{ sev.media or 0 }}</div>
+                    <div style="font-size:10px; color:#8B949E; text-transform:uppercase;">Médios</div>
+                  </td>
+                  <td width="8"></td>
+                  <td align="center" style="padding:8px; background-color:#0D1117; border:1px solid #30363D; border-radius:6px;">
+                    <div style="font-size:18px; font-weight:bold; color:#58A6FF;">{{ sev.baixa or 0 }}</div>
+                    <div style="font-size:10px; color:#8B949E; text-transform:uppercase;">Baixos</div>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- CTA -->
+          <tr>
+            <td align="center" style="padding:8px 28px 24px 28px;">
+              <a href="{{ result_link }}" style="display:inline-block; background-color:#FF6B35; color:#0D1117; font-size:16px; font-weight:bold; text-decoration:none; padding:14px 28px; border-radius:8px;">
+                Ver relatório e recomendações — {{ price_display }}
+              </a>
+            </td>
+          </tr>
+          {% else %}
+          <tr>
+            <td style="padding:0 28px 24px 28px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#0D1117; border-left:4px solid #00D26A; border-radius:4px;">
+                <tr><td style="padding:14px 16px; color:#E6EDF3; font-size:15px; line-height:1.5;">
+                  <strong style="color:#00D26A;">Nenhum problema em aberto nos nossos critérios.</strong> Seguimos monitorando mensalmente.
+                </td></tr>
+              </table>
+            </td>
+          </tr>
+          {% endif %}
+
+          <!-- Footer -->
+          <tr>
+            <td style="padding:16px 28px; border-top:1px solid #30363D; color:#8B949E; font-size:11px; line-height:1.6;">
+              Esta é uma análise automatizada e 100% passiva. Nenhum dado do seu site foi acessado.
+              <br>Klarim Scanner — <a href="https://klarim.net" style="color:#8B949E;">klarim.net</a>
+              &nbsp;·&nbsp;
+              {% if unsubscribe_link %}
+              <a href="{{ unsubscribe_link }}" style="color:#8B949E;">Não quer mais receber? Clique aqui para se descadastrar</a>
+              {% else %}
+              <a href="mailto:seguranca@klarim.net?subject=REMOVER" style="color:#8B949E;">Não receber mais alertas</a>
+              {% endif %}
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

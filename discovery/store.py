@@ -59,6 +59,20 @@ CREATE TABLE IF NOT EXISTS alert_log (
 );
 CREATE INDEX IF NOT EXISTS idx_alert_log_target ON alert_log(target_id);
 CREATE INDEX IF NOT EXISTS idx_alert_log_date ON alert_log(sent_at);
+
+CREATE TABLE IF NOT EXISTS rescan_log (
+    id SERIAL PRIMARY KEY,
+    target_id INTEGER REFERENCES targets(id),
+    old_score INTEGER,
+    new_score INTEGER,
+    evolution VARCHAR(20),
+    old_semaphore VARCHAR(10),
+    new_semaphore VARCHAR(10),
+    email_id VARCHAR(100),
+    rescanned_at TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_rescan_log_target ON rescan_log(target_id);
+CREATE INDEX IF NOT EXISTS idx_rescan_log_date ON rescan_log(rescanned_at);
 """
 
 
@@ -302,6 +316,14 @@ class TargetStore:
 
         await asyncio.to_thread(self._run, _fn)
 
+    async def mark_target_contacted(self, target_id: int) -> None:
+        """Só toca last_alert_at (KL-13): após um e-mail de evolução, evita que o
+        Alert Worker contate o mesmo alvo dentro da janela de 30 dias."""
+        await asyncio.to_thread(
+            self._run, lambda cur: cur.execute(
+                "UPDATE targets SET last_alert_at = NOW() WHERE id = %s", (target_id,))
+        )
+
     async def mark_unsubscribed(self, email: str) -> int:
         def _fn(cur):
             cur.execute(
@@ -372,6 +394,134 @@ class TargetStore:
             cur.execute("SELECT COUNT(*) FROM alert_log WHERE status = 'sent'")
             out["total"] = int(cur.fetchone()[0])
             return out
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def count_proactive_emails_last_hours(self, hours: int) -> int:
+        """Throttle GLOBAL: alertas (alert_log) + e-mails de evolução (rescan_log).
+
+        Ambos são e-mails proativos e disputam o mesmo teto de reputação do domínio.
+        """
+        def _fn(cur):
+            cur.execute(
+                "SELECT "
+                "(SELECT COUNT(*) FROM alert_log WHERE status = 'sent' "
+                "  AND sent_at > NOW() - (%s || ' hours')::interval) + "
+                "(SELECT COUNT(*) FROM rescan_log WHERE email_id IS NOT NULL "
+                "  AND rescanned_at > NOW() - (%s || ' hours')::interval)",
+                (str(hours), str(hours)),
+            )
+            return int(cur.fetchone()[0])
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- re-scan (KL-13) --------------------------------------------------- #
+
+    async def get_targets_for_rescan(self, days: int = 30, limit: int = 50) -> List[Dict[str, Any]]:
+        """Alvos já engajados (scanned/alerted), com e-mail, escaneados há > N dias."""
+        def _fn(cur):
+            cur.execute(
+                """
+                SELECT t.*, s.semaphore AS old_semaphore, s.fail_count AS old_fail_count
+                FROM targets t
+                LEFT JOIN scans s ON t.last_scan_id = s.id
+                WHERE t.status IN ('scanned', 'alerted')
+                  AND t.contact_email IS NOT NULL
+                  AND t.last_scan_at IS NOT NULL
+                  AND t.last_scan_at < NOW() - (%s || ' days')::interval
+                ORDER BY t.last_scan_at ASC
+                LIMIT %s
+                """,
+                (str(days), limit),
+            )
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def log_rescan(
+        self, target_id: int, old_score: Optional[int], new_score: Optional[int],
+        evolution: str, old_semaphore: Optional[str], new_semaphore: Optional[str],
+        email_id: Optional[str] = None,
+    ) -> int:
+        def _fn(cur):
+            cur.execute(
+                """
+                INSERT INTO rescan_log (target_id, old_score, new_score, evolution,
+                                        old_semaphore, new_semaphore, email_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
+                """,
+                (target_id, old_score, new_score, evolution, old_semaphore,
+                 new_semaphore, email_id),
+            )
+            return cur.fetchone()[0]
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def update_rescan_email(self, rescan_id: int, email_id: str) -> None:
+        await asyncio.to_thread(
+            self._run, lambda cur: cur.execute(
+                "UPDATE rescan_log SET email_id = %s WHERE id = %s", (email_id, rescan_id))
+        )
+
+    async def get_pending_evolution_emails(self, days: int = 7, limit: int = 50) -> List[Dict[str, Any]]:
+        """Re-scans recentes cujo e-mail de evolução ficou pendente (throttle no ciclo anterior).
+
+        Traz o que o e-mail precisa para reenvio: url, e-mail, tier, e o fail_count/
+        checks_json do último scan (para a contagem por severidade).
+        """
+        def _fn(cur):
+            cur.execute(
+                """
+                SELECT r.id AS rescan_id, r.target_id, r.old_score, r.new_score,
+                       r.evolution, r.new_semaphore,
+                       t.url, t.contact_email, t.price_tier,
+                       s.fail_count, s.checks_json
+                FROM rescan_log r
+                JOIN targets t ON r.target_id = t.id
+                LEFT JOIN scans s ON t.last_scan_id = s.id
+                WHERE r.email_id IS NULL
+                  AND t.status != 'unsubscribed'
+                  AND t.contact_email IS NOT NULL
+                  AND r.rescanned_at > NOW() - (%s || ' days')::interval
+                ORDER BY r.rescanned_at ASC
+                LIMIT %s
+                """,
+                (str(days), limit),
+            )
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def list_rescans(
+        self, target_id: Optional[int] = None, evolution: Optional[str] = None,
+        limit: int = 50, offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        def _fn(cur):
+            where, params = [], []
+            if target_id is not None:
+                where.append("target_id = %s")
+                params.append(target_id)
+            if evolution:
+                where.append("evolution = %s")
+                params.append(evolution)
+            clause = ("WHERE " + " AND ".join(where)) if where else ""
+            params.extend([limit, offset])
+            cur.execute(
+                f"SELECT * FROM rescan_log {clause} "
+                f"ORDER BY rescanned_at DESC LIMIT %s OFFSET %s",
+                params,
+            )
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def rescan_stats(self) -> Dict[str, Any]:
+        def _fn(cur):
+            cur.execute("SELECT evolution, COUNT(*) FROM rescan_log GROUP BY evolution")
+            by_evolution = {r[0]: int(r[1]) for r in cur.fetchall()}
+            cur.execute("SELECT COUNT(*) FROM rescan_log")
+            total = int(cur.fetchone()[0])
+            return {"by_evolution": by_evolution, "total": total}
 
         return await asyncio.to_thread(self._run, _fn)
 

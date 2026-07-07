@@ -368,6 +368,18 @@ domínio no Resend, e registra tudo em `alert_log`. Cada alerta traz um link de
 `GET /api/alerts`, `/api/alerts/stats`, `POST /api/targets/{id}/alert` (disparo
 manual, ignora throttle).
 
+### Re-scan Worker (evolução de score)
+
+Terceiro loop no mesmo container (ciclo de 24h). O **Re-scan Worker**
+(`discovery/rescan_worker.py`) reescaneia alvos já engajados a cada **30 dias**,
+compara o score novo com o anterior e envia um e-mail de **evolução**: 🎉 melhorou,
+⚠️ piorou ou 📊 permaneceu igual. Isso reativa a conversão sem descobrir alvos
+novos. Os e-mails de evolução dividem o **mesmo throttle** dos alertas (o total de
+e-mails proativos respeita `MAX_ALERTS_PER_HOUR/DAY`); no teto, o re-scan atualiza
+os dados e o e-mail fica pendente para o próximo ciclo. Histórico em `rescan_log`.
+Gestão via API: `GET /api/rescans`, `/api/rescans/stats`,
+`POST /api/targets/{id}/rescan` (força re-scan + e-mail).
+
 ---
 
 ## Framework legal
@@ -407,6 +419,7 @@ disclaimer claro em todos os relatórios.
 - [x] Geração de PDF (executivo + técnico) — WeasyPrint
 - [x] Discovery Worker (Certificate Transparency → alvos com e-mail)
 - [x] Alert Worker (disparo automático do alerta + throttle + descadastro)
+- [x] Re-scan Worker (re-scan de 30 dias + e-mail de evolução de score)
 - [x] Interface web (React + Vite + Tailwind + Nginx) — scan self-service
 - [x] Pagamento PIX (AbacatePay) para liberar o relatório completo
 - [ ] Pagamento por cartão (Stripe)

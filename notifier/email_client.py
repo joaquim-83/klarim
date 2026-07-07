@@ -122,6 +122,54 @@ class KlarimMailer:
             {"from": self.from_address, "to": [to_email], "subject": subject, "html": html}
         )
 
+    async def send_evolution(
+        self,
+        to_email: str,
+        target_url: str,
+        old_score: int,
+        new_score: int,
+        evolution: str,
+        semaphore: str,
+        fail_count: int,
+        severity_counts: Dict[str, int],
+        price_display: str,
+        unsubscribe_link: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """E-mail de evolução do score (KL-13). Escolhe o template pelo tipo."""
+        site = site_name(target_url)
+        if unsubscribe_link is None:
+            secret = os.environ.get("UNSUBSCRIBE_SECRET")
+            if secret:
+                unsubscribe_link = build_unsubscribe_link(to_email, secret)
+
+        templates = {
+            "improved": ("evolution_improved.html",
+                         f"🎉 Seu site melhorou! {site} — de {old_score} para {new_score}"),
+            "worsened": ("evolution_worsened.html",
+                         f"⚠️ Novos problemas encontrados — {site} caiu de {old_score} para {new_score}"),
+        }
+        # unchanged / first_rescan caem no template mensal.
+        template_name, subject = templates.get(
+            evolution,
+            ("evolution_unchanged.html", f"📊 Varredura mensal — {site} permanece em {new_score}/100"),
+        )
+        html = _env.get_template(template_name).render(
+            **self._score_ctx(new_score, semaphore),
+            old_score=old_score,
+            new_score=new_score,
+            site_name=site,
+            target_url=target_url,
+            fail_count=fail_count,
+            sev=severity_counts or {},
+            result_link=f"{SITE_BASE}/result?url={quote(target_url, safe='')}",
+            price_display=price_display,
+            lgpd=LGPD_SHORT,
+            unsubscribe_link=unsubscribe_link,
+        )
+        return await self._send(
+            {"from": self.from_address, "to": [to_email], "subject": subject, "html": html}
+        )
+
     async def send_report(
         self,
         to_email: str,
