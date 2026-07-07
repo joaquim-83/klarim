@@ -80,7 +80,22 @@ entrega para o **e-mail dono da conta Resend** (`klarimscan@gmail.com`).
 - **Envio real (Resend, local):** `send_test`, `send_alert` e `send_report`
   (com os 2 PDFs de referência do Verdegreen anexados) enviados com sucesso para
   `klarimscan@gmail.com` — `email_id` retornado nos três.
-- **Produção (klarim.net):** ver adendo (após deploy).
+- **Produção (klarim.net):**
+  - `GET /api/` → `email_enabled: true`.
+  - `POST /api/email/test` (para `klarimscan@gmail.com`) → `{"sent":true,"email_id":…}`.
+  - **Envio automático:** criei uma cobrança com `buyer_email`, simulei o
+    pagamento → o webhook marcou paga → a task de background escaneou, gerou os 2
+    PDFs e enviou o relatório. Log: `[email] relatório de pix_char_… enviado para
+    klarimscan@gmail.com (id=…)`. DB: `report_email_sent = t`.
+
+### Correção — task de background sumindo (GC) + logs bufferizados
+
+Na 1ª tentativa o `report_email_sent` era marcado mas o e-mail não saía nem
+logava. Causa: `asyncio.create_task` **sem guardar referência** → o Python podia
+coletar (GC) a task no meio da execução (durante o scan de ~30s). Corrigido
+guardando as tasks num `set` com `add_done_callback`, `flush=True` nos logs e
+`PYTHONUNBUFFERED=1` na imagem. Após o redeploy, o envio automático completou e
+logou o sucesso. ✅
 
 ## Critérios de aceite
 
