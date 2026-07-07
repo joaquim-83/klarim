@@ -2,6 +2,9 @@
 # The same image runs both services; docker-compose overrides the command.
 FROM python:3.12-slim
 
+# Logs sem buffer (aparecem em tempo real no docker logs).
+ENV PYTHONUNBUFFERED=1
+
 # System libraries:
 #  - WeasyPrint needs pango/cairo/gdk-pixbuf for PDF rendering.
 #  - libpq is needed by psycopg2 at runtime.

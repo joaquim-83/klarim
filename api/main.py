@@ -298,9 +298,18 @@ async def _maybe_send_report_email(charge: Charge) -> None:
         return
     await get_store().mark_email_sent(charge.charge_id)
     charge.report_email_sent = True
-    asyncio.create_task(
-        _send_report_email_task(charge.charge_id, charge.target_url, charge.buyer_email)
-    )
+    _spawn(_send_report_email_task(charge.charge_id, charge.target_url, charge.buyer_email))
+
+
+# Mantém referência às tasks de background: sem isso o Python pode coletá-las
+# (GC) antes de terminarem, matando o envio no meio.
+_background_tasks: set = set()
+
+
+def _spawn(coro) -> None:
+    task = asyncio.create_task(coro)
+    _background_tasks.add(task)
+    task.add_done_callback(_background_tasks.discard)
 
 
 async def _send_report_email_task(charge_id: str, target_url: str, to_email: str) -> None:
@@ -310,9 +319,9 @@ async def _send_report_email_task(charge_id: str, target_url: str, to_email: str
         technical = await generate_technical_pdf(report, target_url)
         score = report.score.score if report.score else 0
         res = await _mailer().send_report(to_email, target_url, score, executive, technical)
-        print(f"[email] relatório de {charge_id} enviado para {to_email} (id={res.get('email_id')})")
+        print(f"[email] relatório de {charge_id} enviado para {to_email} (id={res.get('email_id')})", flush=True)
     except Exception as exc:  # noqa: BLE001 - falha não deve derrubar nada; há fallback de download
-        print(f"[email] falha ao enviar relatório de {charge_id}: {exc!r}")
+        print(f"[email] falha ao enviar relatório de {charge_id}: {exc!r}", flush=True)
 
 
 # --------------------------------------------------------------------------- #
