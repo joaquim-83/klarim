@@ -94,6 +94,17 @@ class CheckResult:
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
 
+    @classmethod
+    def from_dict(cls, d: Dict[str, Any]) -> "CheckResult":
+        return cls(
+            name=d["name"],
+            status=d["status"],
+            severity=d["severity"],
+            evidence=d.get("evidence", ""),
+            check_id=d.get("check_id", ""),
+            details=d.get("details") or {},
+        )
+
     def __str__(self) -> str:  # pragma: no cover - cosmetic
         icon = {
             Status.PASS: "PASS",

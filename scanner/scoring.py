@@ -59,6 +59,21 @@ class ScoreBreakdown:
             "fails_by_severity": self.fails_by_severity,
         }
 
+    @classmethod
+    def from_dict(cls, d: dict) -> "ScoreBreakdown":
+        return cls(
+            score=d["score"],
+            semaphore=d["semaphore"],
+            grade_icon=d["grade_icon"],
+            earned_weight=d["earned_weight"],
+            considered_weight=d["considered_weight"],
+            total_weight=d["total_weight"],
+            passed=d["passed"],
+            failed=d["failed"],
+            inconclusive=d["inconclusive"],
+            fails_by_severity=d.get("fails_by_severity") or {},
+        )
+
 
 def _semaphore(score: int) -> tuple[str, str]:
     if score >= GREEN_THRESHOLD:

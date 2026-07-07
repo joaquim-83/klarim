@@ -66,6 +66,18 @@ def test_memory_store_roundtrip():
     assert got.is_paid and got.paid_at
 
 
+def test_memory_store_email_status():
+    store = MemoryStore()
+    asyncio.run(store.save(Charge("c2", "https://x.com", 2900,
+                                  buyer_email="a@b.com", email_status="pending")))
+    assert asyncio.run(store.get("c2")).email_status == "pending"
+    asyncio.run(store.set_email_status("c2", "sending"))
+    assert asyncio.run(store.get("c2")).email_status == "sending"
+    asyncio.run(store.set_email_status("c2", "sent"))
+    got = asyncio.run(store.get("c2"))
+    assert got.email_status == "sent" and got.buyer_email == "a@b.com"
+
+
 # --- AbacatePayClient (parsing, sem rede) ---------------------------------- #
 
 def test_client_create_and_check_parsing(monkeypatch):

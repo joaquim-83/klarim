@@ -58,7 +58,7 @@ export default function Payment() {
                 `/report?url=${encodeURIComponent(url)}&charge_id=${encodeURIComponent(charge.charge_id)}`,
                 { replace: true },
               ),
-            1500,
+            2000,
           )
         }
       } catch {
@@ -97,8 +97,8 @@ export default function Payment() {
             ✓
           </div>
           <h1 className="mt-6 text-2xl font-bold text-klarim-ok">Pagamento confirmado!</h1>
-          <p className="mt-2 text-klarim-muted">
-            Enviamos o relatório para <span className="text-klarim-text">{email}</span>. Liberando o download…
+          <p className="mt-2 flex items-center justify-center gap-2 text-klarim-muted">
+            📧 Enviando relatório para <span className="text-klarim-text">{email}</span>…
           </p>
         </div>
       </Layout>

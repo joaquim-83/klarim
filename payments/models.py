@@ -49,6 +49,8 @@ class Charge:
     paid_at: Optional[str] = None
     buyer_email: Optional[str] = None
     report_email_sent: bool = False
+    # null | pending | sending | sent | failed
+    email_status: Optional[str] = None
 
     @property
     def is_paid(self) -> bool:

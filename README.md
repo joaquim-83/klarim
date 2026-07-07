@@ -320,10 +320,15 @@ table-based (Gmail/Outlook), paleta dark.
 
 Na compra, a tela `/pay` pede o e-mail; após o pagamento confirmado (webhook ou
 polling), o relatório é **enviado automaticamente** em background (idempotente;
-se falhar, o cliente ainda baixa no site). Variáveis (`.env` da VM, **nunca
+se falhar, o cliente ainda baixa no site). A tela `/report` mostra o status do
+envio (enviando → enviado/falhou). Variáveis (`.env` da VM, **nunca
 commitadas**): `RESEND_API_KEY`, `RESEND_FROM`. Sem domínio verificado, use
 `Klarim <onboarding@resend.dev>` (só envia ao dono da conta Resend); para enviar
 a qualquer um, verifique `klarim.net` no Resend (SPF/DKIM/DMARC).
+
+> **Cache de scan (KL-9):** o `ScanReport` é cacheado no **Redis** (TTL 1h,
+> `scanner/cache.py`), então baixar o PDF após o pagamento é **instantâneo**
+> (< 3s) em vez de re-escanear ~30s.
 
 ---
 

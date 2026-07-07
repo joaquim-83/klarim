@@ -431,3 +431,23 @@ só envia para o e-mail dono da conta Resend. Para enviar a qualquer destinatár
 na Hostinger — ver `claude/reports/KL-8_email-resend.md`) e trocar para
 `Klarim <seguranca@klarim.net>`. A chave fornecida é **send-only** (não gerencia
 domínios via API — isso é feito no painel).
+
+---
+
+## 13. Cache de scan + feedback de e-mail (KL-9)
+
+**Cache (Redis).** Cada scan leva ~30s. `scanner/cache.py` (`ScanCache`) cacheia
+o `ScanReport` no Redis (mesma instância do compose, `REDIS_URL`) com **TTL 1h**.
+Chave: `scan:<sha256(url normalizada)[:16]}` (url em lowercase, sem `/` final).
+Serialização JSON via `ScanReport.to_dict()`/`from_dict()`. A API usa
+`get_or_scan(url)` (dentro de `_safe_scan` e da task de e-mail): cache hit →
+instantâneo; miss → scan + grava no cache. Redis fora do ar degrada com elegância
+(escaneia de novo). Resultado: **PDF pós-pagamento em < 3s** (o scan do summary já
+está cacheado).
+
+**Feedback de e-mail.** A cobrança ganhou `email_status`
+(`null|pending|sending|sent|failed`). `GET /payment/status` devolve `buyer_email`
++ `email_status`. Transições: create com e-mail → `pending`; ao confirmar
+pagamento → `sending` (antes de agendar a task); task → `sent`/`failed`. O
+frontend (`/report`) faz polling e mostra o banner (enviando → enviado/falhou);
+`/pay` mostra "Enviando relatório para <e-mail>…" antes de redirecionar.

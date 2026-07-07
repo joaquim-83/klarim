@@ -1,43 +1,97 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useSearchParams, Link } from 'react-router-dom'
 import Layout from '../components/Layout'
 import Semaphore from '../components/Semaphore'
 import { useSummary } from '../lib/useSummary'
-import { downloadReport } from '../lib/api'
+import { downloadReport, getPaymentStatus } from '../lib/api'
 
 function DownloadButton({ kind, url, chargeId, label, hint }) {
   const [busy, setBusy] = useState(false)
-  const [err, setErr] = useState('')
+  const [failed, setFailed] = useState(false)
 
   async function onClick() {
     setBusy(true)
-    setErr('')
+    setFailed(false)
     try {
       await downloadReport(kind, url, chargeId)
-    } catch (e) {
-      setErr(e.message || 'Falha no download.')
+    } catch {
+      setFailed(true)
     } finally {
       setBusy(false)
     }
   }
 
+  const bg = failed ? 'bg-klarim-fail' : 'bg-klarim-alert'
   return (
     <div>
       <button
         onClick={onClick}
         disabled={busy}
-        className="flex w-full items-center justify-center gap-2 rounded-lg bg-klarim-alert px-6 py-4 font-bold text-klarim-bg transition hover:opacity-90 disabled:opacity-60"
+        className={`flex w-full items-center justify-center gap-2 rounded-lg ${bg} px-6 py-4 font-bold text-klarim-bg transition hover:opacity-90 disabled:opacity-60`}
       >
         {busy ? (
           <>
             <span className="klarim-spinner h-5 w-5" /> Gerando PDF…
           </>
+        ) : failed ? (
+          'Erro — tentar novamente'
         ) : (
           label
         )}
       </button>
       <p className="mt-1 text-center text-xs text-klarim-muted">{hint}</p>
-      {err && <p className="mt-1 text-center text-sm text-klarim-fail">{err}</p>}
+    </div>
+  )
+}
+
+function EmailStatusBanner({ chargeId }) {
+  const [info, setInfo] = useState(null) // { email_status, buyer_email }
+  const stop = useRef(false)
+
+  useEffect(() => {
+    if (!chargeId) return
+    stop.current = false
+    async function poll() {
+      try {
+        const s = await getPaymentStatus(chargeId)
+        setInfo({ email_status: s.email_status, buyer_email: s.buyer_email })
+        if (s.email_status === 'sent' || s.email_status === 'failed' || !s.buyer_email) {
+          stop.current = true
+        }
+      } catch {
+        /* ignora */
+      }
+    }
+    poll()
+    const t = setInterval(() => {
+      if (stop.current) return
+      poll()
+    }, 3000)
+    return () => clearInterval(t)
+  }, [chargeId])
+
+  if (!info || !info.buyer_email) return null
+  const email = info.buyer_email
+  const st = info.email_status
+
+  if (st === 'sent') {
+    return (
+      <div className="mx-auto mb-6 max-w-md rounded-lg border border-klarim-ok bg-klarim-surface px-4 py-3 text-sm text-klarim-ok">
+        ✅ Relatório enviado para <strong>{email}</strong>. Verifique sua caixa de entrada.
+      </div>
+    )
+  }
+  if (st === 'failed') {
+    return (
+      <div className="mx-auto mb-6 max-w-md rounded-lg border border-klarim-warn bg-klarim-surface px-4 py-3 text-sm text-klarim-warn">
+        ⚠️ Não foi possível enviar por e-mail. Use os botões abaixo para baixar.
+      </div>
+    )
+  }
+  // pending | sending
+  return (
+    <div className="mx-auto mb-6 flex max-w-md items-center justify-center gap-2 rounded-lg border border-klarim-border bg-klarim-surface px-4 py-3 text-sm text-klarim-muted">
+      <span className="klarim-spinner h-4 w-4" /> 📧 Enviando relatório para <strong className="text-klarim-text">{email}</strong>…
     </div>
   )
 }
@@ -87,7 +141,11 @@ export default function Report() {
           ou equipe de TI).
         </p>
 
-        <div className="mx-auto mt-8 flex max-w-md flex-col gap-5">
+        <div className="mt-8">
+          {chargeId && <EmailStatusBanner chargeId={chargeId} />}
+        </div>
+
+        <div className="mx-auto flex max-w-md flex-col gap-5">
           <DownloadButton
             kind="executive"
             url={url}

@@ -21,8 +21,9 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
-from scanner import run_scan, summarize_fails, Severity
+from scanner import run_scan, summarize_fails, Severity, ScanReport
 from scanner import __version__ as scanner_version
+from scanner.cache import ScanCache
 from reporter import generate_executive_pdf, generate_technical_pdf, pdf_filename
 from payments import (
     AbacatePayClient,
@@ -81,9 +82,31 @@ def _mailer() -> KlarimMailer:
     return KlarimMailer(_resend_key(), os.environ.get("RESEND_FROM") or None)
 
 
+# Cache de scan (Redis). None => sem cache (scans rodam sempre).
+_cache: Optional[ScanCache] = None
+
+
+async def _init_cache() -> None:
+    global _cache
+    redis_url = os.environ.get("REDIS_URL")
+    if not redis_url:
+        return
+    try:
+        import redis.asyncio as aioredis
+
+        client = aioredis.from_url(redis_url, decode_responses=True)
+        await client.ping()
+        _cache = ScanCache(client)
+        print("[cache] Redis conectado — scans cacheados (TTL 1h)", flush=True)
+    except Exception as exc:  # noqa: BLE001 - sem cache, mas a API sobe normalmente
+        print(f"[cache] Redis indisponível ({exc!r}); sem cache de scan", flush=True)
+        _cache = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_store()
+    await _init_cache()
     yield
 
 
@@ -192,6 +215,7 @@ async def payment_create(body: PaymentCreateBody) -> dict:
     if not charge_id:
         raise HTTPException(status_code=502, detail="AbacatePay não retornou o id da cobrança.")
 
+    buyer_email = (body.buyer_email or "").strip() or None
     charge = Charge(
         charge_id=charge_id,
         target_url=body.url,
@@ -200,7 +224,8 @@ async def payment_create(body: PaymentCreateBody) -> dict:
         br_code=data.get("brCode"),
         br_code_base64=data.get("brCodeBase64"),
         expires_at=data.get("expiresAt"),
-        buyer_email=(body.buyer_email or "").strip() or None,
+        buyer_email=buyer_email,
+        email_status="pending" if buyer_email else None,
     )
     await get_store().save(charge)
     return charge.to_public_dict()
@@ -213,7 +238,12 @@ async def payment_status(charge_id: str = Query(..., description="ID da cobranç
     if charge is None:
         raise HTTPException(status_code=404, detail="Cobrança não encontrada.")
     await _refresh_charge(charge)
-    return {"status": charge.status, "paid": charge.is_paid}
+    return {
+        "status": charge.status,
+        "paid": charge.is_paid,
+        "buyer_email": charge.buyer_email,
+        "email_status": charge.email_status,
+    }
 
 
 @app.post("/webhooks/abacatepay")
@@ -296,8 +326,12 @@ async def _maybe_send_report_email(charge: Charge) -> None:
         return
     if not _email_enabled():
         return
+    # Marca "enviado" (idempotência) + "sending" ANTES de agendar, para evitar
+    # disparo duplicado (webhook + polling) e dar feedback imediato ao frontend.
     await get_store().mark_email_sent(charge.charge_id)
+    await get_store().set_email_status(charge.charge_id, "sending")
     charge.report_email_sent = True
+    charge.email_status = "sending"
     _spawn(_send_report_email_task(charge.charge_id, charge.target_url, charge.buyer_email))
 
 
@@ -314,13 +348,15 @@ def _spawn(coro) -> None:
 
 async def _send_report_email_task(charge_id: str, target_url: str, to_email: str) -> None:
     try:
-        report = await run_scan(target_url)
+        report = await get_or_scan(target_url)  # cache hit -> instantâneo
         executive = await generate_executive_pdf(report, target_url)
         technical = await generate_technical_pdf(report, target_url)
         score = report.score.score if report.score else 0
         res = await _mailer().send_report(to_email, target_url, score, executive, technical)
+        await get_store().set_email_status(charge_id, "sent")
         print(f"[email] relatório de {charge_id} enviado para {to_email} (id={res.get('email_id')})", flush=True)
     except Exception as exc:  # noqa: BLE001 - falha não deve derrubar nada; há fallback de download
+        await get_store().set_email_status(charge_id, "failed")
         print(f"[email] falha ao enviar relatório de {charge_id}: {exc!r}", flush=True)
 
 
@@ -451,9 +487,21 @@ def _pdf_response(pdf: bytes, filename: str) -> Response:
     )
 
 
+async def get_or_scan(url: str) -> ScanReport:
+    """Retorna o scan do cache (Redis) ou executa um novo scan e cacheia."""
+    if _cache is not None:
+        cached = await _cache.get(url)
+        if cached is not None:
+            return cached
+    report = await run_scan(url)
+    if _cache is not None:
+        await _cache.set(url, report)
+    return report
+
+
 async def _safe_scan(url: str):
     try:
-        return await run_scan(url)
+        return await get_or_scan(url)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"URL inválida: {exc}") from exc
     except Exception as exc:  # noqa: BLE001

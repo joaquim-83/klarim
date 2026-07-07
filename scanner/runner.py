@@ -40,6 +40,19 @@ class ScanReport:
             "results": [r.to_dict() for r in self.results],
         }
 
+    @classmethod
+    def from_dict(cls, d: dict) -> "ScanReport":
+        from .scoring import ScoreBreakdown
+
+        return cls(
+            url=d["url"],
+            started_at=d["started_at"],
+            finished_at=d["finished_at"],
+            duration_s=d.get("duration_s", 0.0),
+            results=[CheckResult.from_dict(r) for r in d.get("results", [])],
+            score=ScoreBreakdown.from_dict(d["score"]) if d.get("score") else None,
+        )
+
 
 async def run_scan(url: str) -> ScanReport:
     """Run all registered checks against ``url`` sequentially and score them."""
