@@ -32,6 +32,32 @@ function secs(s) {
   return n < 60 ? `${n}s` : `${Math.floor(n / 60)}min`
 }
 
+// Limpa um page_url para exibição: remove UTM e, quando há ?url=<alvo>, mostra
+// "<path> → <hostname>" (ex.: /result → iclinic.com.br). Idempotente — se o valor
+// já vier limpo do backend (sem '?'), retorna como está. Espelha _clean_page_key.
+function cleanPageUrl(raw) {
+  if (!raw || !raw.includes('?')) return raw || ''
+  try {
+    const u = new URL(raw, 'https://klarim.net')
+    const target = u.searchParams.get('url')
+    if (target) {
+      try {
+        const t = new URL(target.startsWith('http') ? target : `https://${target}`)
+        return `${u.pathname} → ${t.hostname}`
+      } catch {
+        return u.pathname
+      }
+    }
+    for (const k of [...u.searchParams.keys()]) {
+      if (k.startsWith('utm_')) u.searchParams.delete(k)
+    }
+    const rest = u.searchParams.toString()
+    return rest ? `${u.pathname}?${rest}` : u.pathname
+  } catch {
+    return raw
+  }
+}
+
 export default function Analytics() {
   const [period, setPeriod] = useState('7d')
   const { data, loading, error } = useAsync(
@@ -109,7 +135,11 @@ export default function Analytics() {
                     {data.abandoned.map((a) => (
                       <tr key={a.session_id} className="border-t border-klarim-border">
                         <td className="py-2 pr-3 font-mono text-[11px] text-klarim-muted">{(a.session_id || '').slice(0, 8)}</td>
-                        <td className="py-2 pr-3 font-mono text-xs">{a.target_url}</td>
+                        <td className="py-2 pr-3">
+                          <div className="max-w-[220px] truncate font-mono text-xs" title={a.target_url}>
+                            {a.target_url}
+                          </div>
+                        </td>
                         <td className="py-2 pr-3">{a.amount ? `R$ ${(a.amount / 100).toFixed(2).replace('.', ',')}` : '—'}</td>
                         <td className="py-2 pr-3 text-klarim-muted">{relativeTime(a.created_at)}</td>
                         <td className="py-2 text-klarim-muted">{secs(a.duration_seconds)}</td>
@@ -127,6 +157,7 @@ export default function Analytics() {
               {data.campaigns.length === 0 ? (
                 <p className="text-sm text-klarim-muted">Sem cliques atribuídos ainda.</p>
               ) : (
+                <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-left text-xs uppercase text-klarim-muted">
@@ -151,6 +182,7 @@ export default function Analytics() {
                     ))}
                   </tbody>
                 </table>
+                </div>
               )}
             </Card>
 
@@ -159,6 +191,7 @@ export default function Analytics() {
               {data.pages.length === 0 ? (
                 <p className="text-sm text-klarim-muted">Sem page views ainda.</p>
               ) : (
+                <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="text-left text-xs uppercase text-klarim-muted">
@@ -170,13 +203,18 @@ export default function Analytics() {
                   <tbody>
                     {data.pages.map((p, i) => (
                       <tr key={i} className="border-t border-klarim-border">
-                        <td className="py-2 pr-3 font-mono text-xs">{p.page_url}</td>
+                        <td className="py-2 pr-3">
+                          <div className="max-w-[280px] truncate font-mono text-xs" title={p.page_url}>
+                            {cleanPageUrl(p.page_url)}
+                          </div>
+                        </td>
                         <td className="py-2 pr-3">{p.views}</td>
                         <td className="py-2">{p.sessions}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
+                </div>
               )}
             </Card>
           </div>
@@ -193,8 +231,9 @@ export default function Analytics() {
                       style={{ color: EV_COLOR[e.event_type] || '#8B949E', backgroundColor: `${EV_COLOR[e.event_type] || '#8B949E'}22` }}>
                       {e.event_type}
                     </span>
-                    <span className="flex-1 truncate font-mono text-xs text-klarim-muted">
-                      {e.target_url || e.page_url || ''}{e.utm_campaign ? ` · ${e.utm_campaign}` : ''}
+                    <span className="min-w-0 flex-1 truncate font-mono text-xs text-klarim-muted"
+                      title={e.target_url || e.page_url || ''}>
+                      {e.target_url || cleanPageUrl(e.page_url)}{e.utm_campaign ? ` · ${e.utm_campaign}` : ''}
                     </span>
                     <span className="whitespace-nowrap text-xs text-klarim-muted">{formatDate(e.created_at)}</span>
                   </div>

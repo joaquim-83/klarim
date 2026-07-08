@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 from typing import Any, Dict, List, Optional
+from urllib.parse import parse_qsl, urlsplit
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS targets (
@@ -796,15 +797,31 @@ class TargetStore:
         since = _period_since(period)
 
         def _fn(cur):
+            # Agrupa por page_url cru no banco (poucas linhas) e reúne as sessões
+            # distintas; a fusão por página "limpa" (sem UTM, url= decodificado)
+            # acontece em Python para não splittar a mesma página por UTM (KL-21).
             cur.execute(
                 f"""
-                SELECT page_url, COUNT(*) AS views, COUNT(DISTINCT session_id) AS sessions
+                SELECT page_url, COUNT(*) AS views,
+                       array_agg(DISTINCT session_id) AS sessions
                 FROM site_events WHERE event_type='page_view' AND {since}
-                GROUP BY page_url ORDER BY views DESC LIMIT %s
-                """,
-                (limit,),
+                GROUP BY page_url
+                """
             )
-            return self._rows_to_dicts(cur)
+            merged: Dict[str, Dict[str, Any]] = {}
+            for r in self._rows_to_dicts(cur):
+                key = _clean_page_key(r["page_url"])
+                agg = merged.setdefault(key, {"page_url": key, "views": 0, "_sessions": set()})
+                agg["views"] += int(r["views"] or 0)
+                for s in (r["sessions"] or []):
+                    if s:
+                        agg["_sessions"].add(s)
+            rows = [
+                {"page_url": a["page_url"], "views": a["views"], "sessions": len(a["_sessions"])}
+                for a in merged.values()
+            ]
+            rows.sort(key=lambda x: x["views"], reverse=True)
+            return rows[:limit]
 
         return await asyncio.to_thread(self._run, _fn)
 
@@ -832,6 +849,33 @@ _PERIOD_BOUNDS = {
 def _period_since(period: str, col: str = "created_at") -> str:
     bound = _PERIOD_BOUNDS.get(period)
     return f"{col} >= {bound}" if bound else "TRUE"  # 'total'/desconhecido → sem filtro
+
+
+_UTM_KEYS = {"utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term"}
+
+
+def _clean_page_key(raw: Optional[str]) -> str:
+    """Normaliza um page_url para agrupamento/exibição (KL-21).
+
+    Remove os parâmetros UTM e, quando há ``?url=<alvo>``, troca a query pela
+    forma legível ``<path> → <hostname do alvo>`` (ex.: ``/result → iclinic.com.br``).
+    Espelha ``cleanPageUrl`` do frontend. Retorna só o path quando não há query útil.
+    """
+    if not raw:
+        return raw or "/"
+    try:
+        base = raw if raw.startswith("http") else "https://klarim.net" + (raw if raw.startswith("/") else "/" + raw)
+        parts = urlsplit(base)
+        path = parts.path or "/"
+        params = parse_qsl(parts.query, keep_blank_values=True)
+        target = next((v for k, v in params if k == "url"), None)
+        if target:
+            host = urlsplit(target if target.startswith("http") else "https://" + target).hostname
+            return f"{path} → {host}" if host else path
+        rest = [k for k, _ in params if k not in _UTM_KEYS]
+        return f"{path}?{'&'.join(rest)}" if rest else path
+    except Exception:
+        return raw
 
 
 _store: Optional[TargetStore] = None
