@@ -510,17 +510,26 @@ presença de e-mail de contato, registra como alvo e enfileira para scan.
 - **`fingerprint.py`** — plataforma (duda, wordpress, cra, wix, squarespace, shopify).
 - **`contact.py`** — melhor e-mail (mailto > texto > meta; fallback `/contato`);
   descarta genéricos (noreply, webmaster) e de terceiros (duda.co, wixpress…);
-  prefere o mesmo domínio do site. **Sem e-mail ⇒ `status='sem_contato'`, NÃO enfileira.**
+  prefere o mesmo domínio do site. **`_is_valid_email` (KL-19)** rejeita nomes de
+  arquivo (`.css/.js/.png…`), placeholders (`seuemail@`, `email@email.com.br`) e
+  domínios de exemplo — evita bounce/reputação. **Sem e-mail válido ⇒
+  `status='sem_contato'`.**
 - **`classifier.py`** — setor + `price_tier` (hotel→standard, clínica→enterprise…).
 - **`store.py`** — `TargetStore` (Postgres): tabelas **`targets`** e **`scans`**
   (criadas no `ensure_schema`, mesmo padrão de `payments`). Conecta por
   `POSTGRES_*` (imune a `/` na senha).
 - **`worker.py`** — `DiscoveryWorker`: inicia o poller (thread) + heartbeat de
   status; `run_cycle()` a cada `DISCOVERY_INTERVAL_MINUTES` (30): drena o buffer
-  (ou fallback crt.sh) → por domínio (pausa 2s): fetch + fingerprint + e-mail +
-  setor → registra → enfileira. Publica o status no Redis (`discovery:status`) pra
-  API. Serviço `discovery` no compose (roda os 3 loops: descoberta + alertas +
-  re-scan).
+  (ou fallback crt.sh) → por domínio: fetch + fingerprint + e-mail + setor →
+  registra → enfileira. Publica o status no Redis (`discovery:status`) pra API.
+  Serviço `discovery` no compose (roda os 3 loops: descoberta + alertas + re-scan).
+  **Blindagem (KL-19):** cada domínio roda sob `asyncio.wait_for
+  (DISCOVERY_DOMAIN_TIMEOUT=30s)` — um site travado é pulado (`timeouts` no stat),
+  não congela o loop; e um **watchdog em thread** (`DISCOVERY_WATCHDOG_SECONDS=600`)
+  faz `os._exit(1)` se o event loop não progride, deixando o `restart:unless-stopped`
+  subir de novo. `docker-compose` tem `HEALTHCHECK` (`discovery/healthcheck.py`,
+  checa heartbeat no Redis) para visibilidade. Motivo: o incidente de 08/07 03:20,
+  em que um domínio travado congelou discovery+alert+rescan por 7,5h.
 
 **Scan worker** (`scanner/main.py --worker`) agora é async: consome a fila
 `{target_id, url}`, escaneia, **cacheia (KL-9)**, salva em `scans` + atualiza

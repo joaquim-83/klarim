@@ -102,7 +102,15 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-klarim}:${POSTGRES_PASSWORD:-change-me}@db:5432/${POSTGRES_DB:-klarim}
       REDIS_URL: redis://redis:6379/0
       DISCOVERY_BATCH_SIZE: ${DISCOVERY_BATCH_SIZE:-100}
-      DISCOVERY_INTERVAL_HOURS: ${DISCOVERY_INTERVAL_HOURS:-6}
+      DISCOVERY_INTERVAL_MINUTES: ${DISCOVERY_INTERVAL_MINUTES:-30}
+    # Watchdog (KL-19): se o event loop travar, os heartbeats no Redis expiram
+    # (TTL 600s); após 3 falhas (~6min) o Docker reinicia o container.
+    healthcheck:
+      test: ["CMD", "python", "-m", "discovery.healthcheck"]
+      interval: 120s
+      timeout: 10s
+      retries: 3
+      start_period: 150s
     depends_on:
       redis:
         condition: service_healthy

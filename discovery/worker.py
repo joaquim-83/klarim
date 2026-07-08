@@ -16,6 +16,8 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 
 import httpx
@@ -41,6 +43,13 @@ class DiscoveryWorker:
         self.batch_size = int(os.environ.get("DISCOVERY_BATCH_SIZE", "100"))
         self.interval_minutes = int(os.environ.get("DISCOVERY_INTERVAL_MINUTES", "30"))
         self.pause_s = float(os.environ.get("DISCOVERY_PAUSE_SECONDS", "2"))
+        # Timeout TOTAL por domínio (KL-19): impede que um site travado
+        # (redirect infinito, servidor que aceita mas não responde) congele o
+        # event loop inteiro — que era compartilhado por discovery/alert/rescan.
+        self.domain_timeout = int(os.environ.get("DISCOVERY_DOMAIN_TIMEOUT", "30"))
+        # Watchdog (KL-19): reinicia o processo se o event loop não progredir.
+        self.watchdog_timeout = int(os.environ.get("DISCOVERY_WATCHDOG_SECONDS", "600"))
+        self._last_progress = time.monotonic()
         self.store = get_target_store()
         self.ct = CTClient()
         self.source = CTLogPoller()
@@ -96,10 +105,28 @@ class DiscoveryWorker:
 
     async def _status_heartbeat(self) -> None:
         # Mantém o /api/discovery/status fresco entre ciclos (buffer/total mudam
-        # o tempo todo no listener).
+        # o tempo todo no listener) e marca "progresso" para o watchdog (KL-19):
+        # se o event loop travar, este loop para e o watchdog reinicia o processo.
         while True:
+            self._last_progress = time.monotonic()
             await self._write_status()
             await asyncio.sleep(20)
+
+    def _start_watchdog(self) -> None:
+        """Thread separada (KL-19): se o event loop não progride há
+        `DISCOVERY_WATCHDOG_SECONDS`, encerra o processo (os._exit) — o Docker
+        (`restart: unless-stopped`) sobe um novo. Roda numa THREAD para funcionar
+        mesmo com o loop asyncio 100% travado."""
+        def _run():
+            while True:
+                time.sleep(60)
+                stale = time.monotonic() - self._last_progress
+                if stale > self.watchdog_timeout:
+                    print(f"[discovery] WATCHDOG: sem progresso há {stale:.0f}s "
+                          f"(> {self.watchdog_timeout}s) — reiniciando o processo", flush=True)
+                    os._exit(1)
+
+        threading.Thread(target=_run, name="discovery-watchdog", daemon=True).start()
 
     # --- ciclo ------------------------------------------------------------- #
 
@@ -114,10 +141,40 @@ class DiscoveryWorker:
             stats["source"] = "crt.sh" if domains else "none"
         return domains
 
+    async def _process_domain(self, domain: str, stats: dict) -> None:
+        """Processa um domínio: fetch → fingerprint → e-mail → setor → registra.
+
+        Sempre chamado sob `asyncio.wait_for` (KL-19), então qualquer await interno
+        (fetch, /contato, DB) é interrompível se estourar o timeout do domínio.
+        """
+        url = f"https://{domain}"
+        html = await self._fetch_html(url)
+        if html is None:
+            await self.store.register_target(
+                url, domain, "unknown", "outro", "standard", None, status="descartado")
+            stats["unreachable"] += 1
+            return
+
+        platform = detect_platform(url, html)
+        email = await extract_email(html, url)
+        sector, tier = classify_sector(html)
+
+        if not email:
+            await self.store.register_target(
+                url, domain, platform, sector, tier, None, status="sem_contato")
+            stats["no_contact"] += 1
+        else:
+            tid = await self.store.register_target(
+                url, domain, platform, sector, tier, email, status="discovered")
+            stats["registered"] += 1
+            await self._enqueue(tid, url)
+            stats["enqueued"] += 1
+
     async def run_cycle(self) -> dict:
         stats = {
             "source": None, "buffer": 0, "processed": 0, "skipped_existing": 0,
-            "no_contact": 0, "registered": 0, "enqueued": 0, "unreachable": 0, "errors": 0,
+            "no_contact": 0, "registered": 0, "enqueued": 0, "unreachable": 0,
+            "timeouts": 0, "errors": 0,
         }
         domains = await self._get_domains(stats)
         if not domains:
@@ -135,30 +192,23 @@ class DiscoveryWorker:
                 if await self.store.domain_exists(domain):
                     stats["skipped_existing"] += 1
                     continue
-                stats["processed"] += 1
-                url = f"https://{domain}"
-                html = await self._fetch_html(url)
-                if html is None:
-                    await self.store.register_target(
-                        url, domain, "unknown", "outro", "standard", None, status="descartado")
-                    stats["unreachable"] += 1
-                    await asyncio.sleep(self.pause_s)
-                    continue
+            except Exception as exc:  # noqa: BLE001
+                stats["errors"] += 1
+                print(f"[discovery] erro no dedup de {domain}: {exc!r}", flush=True)
+                continue
 
-                platform = detect_platform(url, html)
-                email = await extract_email(html, url)
-                sector, tier = classify_sector(html)
-
-                if not email:
-                    await self.store.register_target(
-                        url, domain, platform, sector, tier, None, status="sem_contato")
-                    stats["no_contact"] += 1
-                else:
-                    tid = await self.store.register_target(
-                        url, domain, platform, sector, tier, email, status="discovered")
-                    stats["registered"] += 1
-                    await self._enqueue(tid, url)
-                    stats["enqueued"] += 1
+            stats["processed"] += 1
+            self._last_progress = time.monotonic()  # progresso p/ o watchdog (KL-19)
+            t0 = time.monotonic()
+            try:
+                await asyncio.wait_for(
+                    self._process_domain(domain, stats), timeout=self.domain_timeout)
+                elapsed = time.monotonic() - t0
+                if elapsed > 10:
+                    print(f"[discovery] {domain} processado em {elapsed:.1f}s (lento)", flush=True)
+            except asyncio.TimeoutError:
+                stats["timeouts"] += 1
+                print(f"[discovery] {domain} timeout após {self.domain_timeout}s — pulando", flush=True)
             except Exception as exc:  # noqa: BLE001 - um domínio ruim não derruba o ciclo
                 stats["errors"] += 1
                 print(f"[discovery] erro em {domain}: {exc!r}", flush=True)
@@ -166,6 +216,7 @@ class DiscoveryWorker:
 
         print(f"[discovery] ciclo completo: {stats['processed']} processados, "
               f"{stats['registered']} com email, {stats['no_contact']} sem contato, "
+              f"{stats['timeouts']} timeouts, {stats['errors']} erros, "
               f"{stats['skipped_existing']} já registrados", flush=True)
         self._last_cycle_stats = stats
         return stats
@@ -178,9 +229,12 @@ class DiscoveryWorker:
 
         self.source.start_listener()
         self._started_at = _utcnow()
+        self._last_progress = time.monotonic()
+        self._start_watchdog()
         asyncio.create_task(self._status_heartbeat())
         print(f"[discovery] iniciado (poller de CT logs + fallback crt.sh, "
-              f"batch={self.batch_size}, intervalo={self.interval_minutes}min)", flush=True)
+              f"batch={self.batch_size}, intervalo={self.interval_minutes}min, "
+              f"timeout/domínio={self.domain_timeout}s, watchdog={self.watchdog_timeout}s)", flush=True)
 
         # Aquecimento: deixa o poller encher o buffer antes do 1º ciclo (senão a
         # primeira drenagem sai vazia e cai no crt.sh à toa).

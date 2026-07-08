@@ -35,6 +35,47 @@ _JUNK_DOMAINS = (
 
 _CONTACT_PATHS = ["contato", "contact", "fale-conosco", "fale-conosco/"]
 
+# Extensões de arquivo que aparecem em nomes que "parecem" e-mail (KL-19).
+_INVALID_EXTENSIONS = (
+    ".css", ".js", ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp",
+    ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".zip", ".rar",
+    ".woff", ".woff2", ".ttf", ".eot", ".ico", ".mp4", ".mp3", ".json", ".xml",
+)
+# Placeholders de template (não são contatos reais) — evitam bounce/reputação.
+_PLACEHOLDER_PREFIXES = (
+    "seuemail@", "youremail@", "email@email", "nome@email", "name@email",
+    "exemplo@", "example@", "test@test", "teste@teste", "info@example",
+    "your@email", "seu@email", "user@example", "mail@mail", "email@exemplo",
+    "contato@seusite", "contato@suaempresa", "email@suaempresa", "seunome@",
+)
+_PLACEHOLDER_DOMAINS = {
+    "example.com", "example.com.br", "email.com", "email.com.br",
+    "teste.com", "teste.com.br", "test.com", "seusite.com.br", "suaempresa.com.br",
+    "dominio.com.br", "exemplo.com.br", "empresa.com.br",
+}
+_VALID_EMAIL_RE = re.compile(r"^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$")
+
+
+def _is_valid_email(email: str) -> bool:
+    """Rejeita 'e-mails' que são nomes de arquivo, placeholders ou lixo (KL-19)."""
+    email = (email or "").strip().lower()
+    local, _, domain = email.partition("@")
+    if not local or not domain:
+        return False
+    if len(local) < 2:                                   # ex.: "_@astro..."
+        return False
+    if domain.endswith(_INVALID_EXTENSIONS):             # ex.: "...dwg1vcjs.css"
+        return False
+    if any(local.endswith(ext.lstrip(".")) for ext in _INVALID_EXTENSIONS):
+        return False
+    if email.startswith(_PLACEHOLDER_PREFIXES):          # ex.: "seuemail@..."
+        return False
+    if domain in _PLACEHOLDER_DOMAINS:                   # ex.: "...@email.com.br"
+        return False
+    if not _VALID_EMAIL_RE.match(email):
+        return False
+    return True
+
 
 def _is_junk(email: str) -> bool:
     email = email.lower()
@@ -73,7 +114,7 @@ def _collect_emails(html: str) -> List[str]:
 
 
 def _best_email(emails: List[str], site_domain: str) -> Optional[str]:
-    candidates = [e for e in emails if not _is_junk(e)]
+    candidates = [e for e in emails if _is_valid_email(e) and not _is_junk(e)]
     if not candidates:
         return None
     # Prioriza e-mails no mesmo domínio registrável do site.

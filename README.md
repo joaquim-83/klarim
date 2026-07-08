@@ -359,6 +359,13 @@ e **`GET /api/discovery/status`** (estado do poller em tempo real).
 > (calidog) está morto (conecta e não envia nada). Ler os CT logs direto é
 > confiável e sem dependência de agregador. O crt.sh fica só como **fallback**.
 
+**Blindagem (KL-19):** cada domínio é processado sob timeout total de 30s (um site
+travado é pulado, não congela o worker), e um watchdog reinicia o processo se o
+event loop parar de progredir — resposta ao incidente de 08/07 em que um domínio
+travado congelou os três workers por 7,5h. O `contact.py` também filtra "e-mails"
+inválidos (nomes de arquivo, placeholders) para não desperdiçar cota nem gerar
+bounces no Resend.
+
 ## Dashboard admin (`klarim.net/painel`)
 
 Painel do operador (login único) para operar e monitorar tudo: KPIs em tempo real
