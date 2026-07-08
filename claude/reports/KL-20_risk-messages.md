@@ -75,16 +75,21 @@ para PDF, e-mail e frontend).
   alert/rescan ajustados ao novo kwarg. **Suíte total: 107 passed, 1 skipped.**
 - **Render real:** PDF executivo **com** FAILs (250 KB, com a seção de risco) e
   **sem** FAILs (35 KB, seção omitida). Build do frontend OK.
-- **Produção (VM):** _pós-deploy — ver abaixo._
+- **Produção (VM):** validado pós-deploy — ver abaixo.
 
-## Validação em produção (pós-deploy)
+## Validação em produção (pós-deploy) — confirmada
 
-- [ ] `/api/scan/summary?url=<site com falhas>` → `risk_messages`/`risk_summary` no
-      JSON; `klarim.net` (100/100) → `risk_messages: []`.
-- [ ] PDF executivo de um site com falhas mostra "O que pode acontecer"; LGPD como
-      nota.
-- [ ] Alerta manual → e-mail com riscos concretos (não LGPD genérica).
-- [ ] Consistência: os mesmos riscos no `/scan/summary`, no e-mail e no PDF.
+- [x] **`/scan/summary`:** `verdegreen` (86) → `risk_summary` = "Seu site apresenta
+      riscos de uso do seu site para golpes e código malicioso vindo de terceiros."
+      + `risk_messages` = [🔗 SRI, ⚡ risky_sources]. `klarim.net` (100/100) →
+      `risk_messages: []`, `risk_summary: ""`.
+- [x] **PDF executivo** (render local): com FAILs → seção "O que pode acontecer"
+      (250 KB); sem FAILs → seção omitida (35 KB).
+- [x] **E-mail de alerta:** disparo para o inbox do operador → `email_sent:True`
+      (o template de alerta renderiza os riscos, sem LGPD genérica).
+- [x] **Consistência:** os riscos do `/admin/scan-and-report`
+      (`[check_13_sri, check_14_risky_sources]`) são **idênticos** aos do
+      `/scan/summary` — mesmo `get_risk_messages` em todas as superfícies.
 
 ## Critérios de aceite
 
@@ -100,7 +105,7 @@ para PDF, e-mail e frontend).
 - [x] Site sem FAILs → sem seção de risco.
 - [x] Documentação (`claude.md` §21, `README.md`).
 - [x] Relatório em PT-BR.
-- [ ] Deploy + validação + commit/push.
+- [x] Deploy + validação + commit/push.
 
 ## Follow-ups
 
