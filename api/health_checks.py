@@ -66,38 +66,38 @@ async def check_ct_logs(redis_client) -> Dict[str, Any]:
     }
 
 
+async def _reachable(url: str, key: str) -> Dict[str, Any]:
+    """Health por REACHABILITY: qualquer resposta < 500 = serviço no ar.
+
+    Chaves com escopo limitado (ex.: a do Resend é send-only) respondem 401 em
+    endpoints de leitura mesmo válidas — isso NÃO é downtime, então não vira 🔴.
+    Só rede/timeout/5xx contam como erro.
+    """
+    t0 = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as c:
+            r = await c.get(url, headers={"Authorization": f"Bearer {key}"})
+        ms = int((time.monotonic() - t0) * 1000)
+        if r.status_code < 500:
+            detail = None if r.status_code < 400 else f"reachable (HTTP {r.status_code})"
+            return _result("ok", ms, detail)
+        return _result("error", ms, f"HTTP {r.status_code}")
+    except Exception as exc:  # noqa: BLE001 - rede/timeout
+        return _result("error", int((time.monotonic() - t0) * 1000), repr(exc))
+
+
 async def check_resend() -> Dict[str, Any]:
     key = os.environ.get("RESEND_API_KEY")
     if not key:
         return _result("unknown", detail="RESEND_API_KEY não configurada")
-
-    async def _call():
-        async with httpx.AsyncClient(timeout=5.0) as c:
-            r = await c.get("https://api.resend.com/domains",
-                            headers={"Authorization": f"Bearer {key}"})
-        if r.status_code >= 400:
-            raise RuntimeError(f"HTTP {r.status_code}")
-        return None
-
-    status, detail, ms = await _timed(_call())
-    return _result(status, ms, None if status == "ok" else detail)
+    return await _reachable("https://api.resend.com/domains", key)
 
 
 async def check_abacatepay() -> Dict[str, Any]:
     key = os.environ.get("ABACATEPAY_API_KEY")
     if not key:
         return _result("unknown", detail="ABACATEPAY_API_KEY não configurada")
-
-    async def _call():
-        async with httpx.AsyncClient(timeout=5.0) as c:
-            r = await c.get("https://api.abacatepay.com/v2/billing/list",
-                            headers={"Authorization": f"Bearer {key}"})
-        if r.status_code >= 400:
-            raise RuntimeError(f"HTTP {r.status_code}")
-        return None
-
-    status, detail, ms = await _timed(_call())
-    return _result(status, ms, None if status == "ok" else detail)
+    return await _reachable("https://api.abacatepay.com/v2/billing/list", key)
 
 
 async def run_all(redis_client) -> Dict[str, Any]:
