@@ -66,14 +66,22 @@ Re-scans e Configurações. Code-split (lazy).
   + `publish_heartbeat` (chave `worker:<name>:status`, TTL, `alive`). **Suíte total:
   98 passed, 1 skipped.** Build do frontend OK (Sistema code-split).
 - **Limpeza:** confirmada em produção — `payments/stats` = R$ 29,00 / 1 pago.
-- **Produção (VM):** _status dos workers + tela — ver seção abaixo._
+- **Produção (VM):** validado pós-deploy — ver seção abaixo.
 
-## Validação em produção (pós-deploy)
+## Validação em produção (pós-deploy) — confirmada
 
-- [x] Limpeza: `payments/stats` → R$ 29,00, 1 pago.
-- [ ] `GET /api/system/status`: 4 workers `alive:true`, dependências, e-mail.
-- [ ] Worker morto (parar container discovery) → workers ficam 🔴 (TTL expira).
-- [ ] `GET /api/system/activity` → últimas ações reais.
+- [x] **Limpeza:** `payments/stats` → **R$ 29,00, 1 pago**.
+- [x] **`/system/status`:** os **4 workers `alive:true`**; dependências
+      `{postgres:ok, redis:ok, ct_logs:streaming, resend:ok, abacatepay:ok}`;
+      `email_metrics {sent_today:10, throttle_used:'10/50'}`.
+- [x] **Health por reachability:** Resend respondia 401 (chave send-only) e
+      AbacatePay 400 — ambos **estão no ar**; ajustei o check para tratar `<500`
+      como no ar (só rede/5xx = 🔴). Depois do fix: os dois `ok`.
+- [x] **Worker morto → 🔴:** apaguei `worker:alert:status` do Redis →
+      `alert.alive=false` (os outros 3 seguem `true`); o loop de heartbeat (60s)
+      republica e volta ao verde (self-healing).
+- [x] **`/system/activity`:** timeline com ações **reais** do funil ao vivo (scans
+      de contratech/blackrocketsys, alertas para sabretech/casadeluzestreladourada…).
 
 ## Critérios de aceite
 
@@ -88,7 +96,7 @@ Re-scans e Configurações. Code-split (lazy).
 - [x] Sidebar com "Sistema".
 - [x] Documentação (`claude.md` §20, `README.md`).
 - [x] Relatório em PT-BR.
-- [ ] Deploy + validação em produção + commit/push.
+- [x] Deploy + validação em produção + commit/push.
 
 ## Follow-ups
 
