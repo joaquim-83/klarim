@@ -880,7 +880,7 @@ async def api_system_status() -> dict:
     eligible = await store.count_rescan_eligible()
     discovered_today = await store.count_discovered_today()
     email = await store.email_metrics()
-    max_day = int(os.environ.get("MAX_ALERTS_PER_DAY", "50"))
+    max_day = int(os.environ.get("MAX_ALERTS_PER_DAY", "90"))
 
     queue_size = None
     if redis is not None:
@@ -1078,11 +1078,16 @@ async def api_config() -> dict:
         except ValueError:
             return int(default)
 
+    # ALERT_INTERVAL_MINUTES tem precedência; senão deriva de ALERT_INTERVAL_HOURS.
+    alert_interval_minutes = _i("ALERT_INTERVAL_MINUTES", "0") or _i("ALERT_INTERVAL_HOURS", "1") * 60
+
     return {
         "discovery_batch_size": _i("DISCOVERY_BATCH_SIZE", "100"),
         "discovery_interval_minutes": _i("DISCOVERY_INTERVAL_MINUTES", "30"),
-        "max_alerts_per_hour": _i("MAX_ALERTS_PER_HOUR", "10"),
-        "max_alerts_per_day": _i("MAX_ALERTS_PER_DAY", "50"),
+        "alert_interval_minutes": alert_interval_minutes,
+        "max_alerts_per_cycle": _i("MAX_ALERTS_PER_CYCLE", "4"),
+        "max_alerts_per_hour": _i("MAX_ALERTS_PER_HOUR", "8"),
+        "max_alerts_per_day": _i("MAX_ALERTS_PER_DAY", "90"),
         "rescan_interval_hours": _i("RESCAN_INTERVAL_HOURS", "24"),
         "rescan_age_days": _i("RESCAN_AGE_DAYS", "30"),
         "worker_max_scans_per_hour": _i("WORKER_MAX_SCANS_PER_HOUR", "50"),

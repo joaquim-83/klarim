@@ -81,7 +81,10 @@ class FakeStore:
                 "checks_json": {"results": [{"status": "FAIL", "severity": "ALTA"}]}}
 
     async def get_eligible_targets_for_alert(self, limit=50):
-        return list(self._eligible)
+        return list(self._eligible)[:limit]
+
+    async def count_eligible_targets_for_alert(self):
+        return len(self._eligible)
 
     async def count_alerts_last_hours(self, hours):
         return self._sent_day if hours >= 24 else self._sent_hour
@@ -128,7 +131,8 @@ def test_send_alert_for_target_requires_email():
 def _worker(store):
     w = AlertWorker()
     w.store = store
-    w.max_hour, w.max_day = 10, 50
+    # max_cycle alto por padrão para não interferir nos testes que não o exercitam.
+    w.max_hour, w.max_day, w.max_cycle = 10, 50, 50
     w._mailer = lambda: FakeMailer()  # noqa: E731
     return w
 
@@ -147,13 +151,22 @@ def test_run_cycle_respects_global_throttle():
     assert stats["sent"] == 0 and store.alerted == []
 
 
-def test_run_cycle_stops_at_per_target_limit():
-    # teto por hora = 1: envia 1, os demais viram throttled
+def test_run_cycle_caps_per_cycle():
+    # 6 elegíveis, mas o cap por ciclo = 4 -> envia exatamente 4
+    store = FakeStore(eligible=[_target(i) for i in range(1, 7)])
+    w = _worker(store)
+    w.max_cycle = 4
+    stats = asyncio.run(w.run_cycle())
+    assert stats["sent"] == 4 and store.alerted == [1, 2, 3, 4]
+
+
+def test_run_cycle_stops_at_hourly_throttle():
+    # teto por hora = 1: envia 1 e para (break no throttle)
     store = FakeStore(eligible=[_target(1), _target(2), _target(3)])
     w = _worker(store)
     w.max_hour = 1
     stats = asyncio.run(w.run_cycle())
-    assert stats["sent"] == 1 and stats["throttled"] == 2
+    assert stats["sent"] == 1
 
 
 def test_run_cycle_skips_without_mailer():

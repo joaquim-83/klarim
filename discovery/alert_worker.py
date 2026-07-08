@@ -59,9 +59,14 @@ async def send_alert_for_target(store, mailer: KlarimMailer, target: Dict[str, A
 
 class AlertWorker:
     def __init__(self) -> None:
-        self.max_hour = int(os.environ.get("MAX_ALERTS_PER_HOUR", "10"))
-        self.max_day = int(os.environ.get("MAX_ALERTS_PER_DAY", "50"))
-        self.interval_hours = int(os.environ.get("ALERT_INTERVAL_HOURS", "1"))
+        self.max_hour = int(os.environ.get("MAX_ALERTS_PER_HOUR", "8"))
+        self.max_day = int(os.environ.get("MAX_ALERTS_PER_DAY", "90"))
+        self.max_cycle = int(os.environ.get("MAX_ALERTS_PER_CYCLE", "4"))
+        # Intervalo em minutos tem precedência; ALERT_INTERVAL_HOURS é o fallback.
+        interval_minutes = int(os.environ.get("ALERT_INTERVAL_MINUTES", "0"))
+        if not interval_minutes:
+            interval_minutes = int(os.environ.get("ALERT_INTERVAL_HOURS", "1")) * 60
+        self.interval_minutes = interval_minutes
         self.store = get_target_store()
         self._last_cycle_at = None
         self._next_cycle_at = None
@@ -93,18 +98,24 @@ class AlertWorker:
         # Throttle GLOBAL: alertas + e-mails de evolução (KL-13) somam no mesmo teto.
         sent_hour = await self.store.count_proactive_emails_last_hours(1)
         sent_day = await self.store.count_proactive_emails_last_hours(24)
-        if sent_hour >= self.max_hour or sent_day >= self.max_day:
-            print(f"[alert] limite atingido (hora={sent_hour}/{self.max_hour}, "
-                  f"dia={sent_day}/{self.max_day}); aguardando", flush=True)
+        if sent_day >= self.max_day:
+            print(f"[alert] limite diário atingido ({sent_day}/{self.max_day})", flush=True)
+            return stats
+        if sent_hour >= self.max_hour:
+            print(f"[alert] limite horário atingido ({sent_hour}/{self.max_hour}); aguardando", flush=True)
             return stats
 
-        targets = await self.store.get_eligible_targets_for_alert(limit=self.max_day)
+        # Busca só o necessário: cap do ciclo, sem estourar o que resta na cota diária.
+        want = min(self.max_cycle, self.max_day - sent_day)
+        targets = await self.store.get_eligible_targets_for_alert(limit=want)
         stats["eligible"] = len(targets)
 
         for t in targets:
+            if stats["sent"] >= self.max_cycle:
+                break
             if sent_hour >= self.max_hour or sent_day >= self.max_day:
                 stats["throttled"] += 1
-                continue
+                break
             try:
                 email_id = await send_alert_for_target(self.store, mailer, t)
                 stats["sent"] += 1
@@ -119,12 +130,15 @@ class AlertWorker:
                     None, None, None, status="failed")
                 print(f"[alert] falha em {t.get('url')}: {exc!r}", flush=True)
 
-        print(f"[alert] ciclo concluído: {stats}", flush=True)
+        remaining = await self.store.count_eligible_targets_for_alert()
+        print(f"[alert] ciclo: {stats['sent']} enviados, {remaining} restantes, "
+              f"cota dia {sent_day}/{self.max_day}", flush=True)
         return stats
 
     async def start(self) -> None:
-        print(f"[alert] iniciado (max {self.max_hour}/h, {self.max_day}/dia, "
-              f"intervalo {self.interval_hours}h)", flush=True)
+        print(f"[alert] iniciado (ciclo {self.interval_minutes}min, {self.max_cycle}/ciclo, "
+              f"teto {self.max_hour}/h {self.max_day}/dia, pausa "
+              f"{int(ALERT_PAUSE_SECONDS)}s)", flush=True)
         asyncio.create_task(self._heartbeat_loop())
         while True:
             try:
@@ -132,6 +146,6 @@ class AlertWorker:
             except Exception as exc:  # noqa: BLE001
                 print(f"[alert] ciclo falhou: {exc!r}", flush=True)
             self._last_cycle_at = datetime.now(timezone.utc)
-            self._next_cycle_at = self._last_cycle_at + timedelta(hours=self.interval_hours)
+            self._next_cycle_at = self._last_cycle_at + timedelta(minutes=self.interval_minutes)
             await publish_heartbeat("alert", self._hb_payload())
-            await asyncio.sleep(self.interval_hours * 3600)
+            await asyncio.sleep(self.interval_minutes * 60)

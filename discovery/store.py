@@ -468,6 +468,24 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    async def count_eligible_targets_for_alert(self) -> int:
+        """Backlog total de alvos elegíveis a alerta (mesma regra do get_, sem limit)."""
+        def _fn(cur):
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM targets t
+                JOIN scans s ON t.last_scan_id = s.id
+                WHERE t.status = 'scanned'
+                  AND t.contact_email IS NOT NULL
+                  AND s.fail_count > 0
+                  AND (t.last_alert_at IS NULL OR t.last_alert_at < NOW() - INTERVAL '30 days')
+                """
+            )
+            return int(cur.fetchone()[0])
+
+        return await asyncio.to_thread(self._run, _fn)
+
     async def mark_target_alerted(self, target_id: int) -> None:
         def _fn(cur):
             cur.execute(
