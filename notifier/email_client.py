@@ -100,6 +100,7 @@ class KlarimMailer:
         fail_count: int,
         severity_counts: Dict[str, int],
         unsubscribe_link: Optional[str] = None,
+        risk_messages: Optional[list] = None,
     ) -> Dict[str, Any]:
         """Alerta gratuito (semáforo) — o anzol do funil."""
         site = site_name(target_url)
@@ -113,6 +114,7 @@ class KlarimMailer:
             target_url=target_url,
             fail_count=fail_count,
             sev=severity_counts or {},
+            risk_messages=(risk_messages or [])[:3],  # KL-20: máx 3 riscos no e-mail
             result_link=f"{SITE_BASE}/result?url={quote(target_url, safe='')}",
             lgpd=LGPD_SHORT,
             unsubscribe_link=unsubscribe_link,
@@ -134,6 +136,7 @@ class KlarimMailer:
         severity_counts: Dict[str, int],
         price_display: str,
         unsubscribe_link: Optional[str] = None,
+        risk_messages: Optional[list] = None,
     ) -> Dict[str, Any]:
         """E-mail de evolução do score (KL-13). Escolhe o template pelo tipo."""
         site = site_name(target_url)
@@ -161,6 +164,7 @@ class KlarimMailer:
             target_url=target_url,
             fail_count=fail_count,
             sev=severity_counts or {},
+            risk_messages=(risk_messages or [])[:3],  # KL-20
             result_link=f"{SITE_BASE}/result?url={quote(target_url, safe='')}",
             price_display=price_display,
             lgpd=LGPD_SHORT,

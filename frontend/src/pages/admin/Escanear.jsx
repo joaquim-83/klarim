@@ -108,6 +108,21 @@ function ResultView({ result, onEmail }) {
       </div>
       {msg && <div className="mt-3 text-sm text-klarim-muted">{msg}</div>}
 
+      {(result.risk_messages || []).length > 0 && (
+        <div className="mt-5">
+          <h4 className="font-bold text-klarim-alert">⚠ O que pode acontecer com o site</h4>
+          {result.risk_summary && <p className="mt-1 text-sm text-klarim-muted">{result.risk_summary}</p>}
+          <div className="mt-2 space-y-2">
+            {result.risk_messages.map((risk, i) => (
+              <div key={i} className="rounded-lg border-l-4 border-klarim-alert bg-klarim-bg p-3">
+                <div className="font-semibold">{risk.icon} {risk.headline}</div>
+                <div className="mt-1 text-sm text-klarim-muted">{risk.risk}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="mt-5 overflow-x-auto">
         <table className="w-full text-sm">
           <thead>

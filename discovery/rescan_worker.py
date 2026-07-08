@@ -21,6 +21,7 @@ from typing import Any, Dict, Optional
 from scanner import run_scan
 from scanner.cache import ScanCache
 from notifier import KlarimMailer, build_unsubscribe_link
+from reporter.risk_messages import get_risk_messages
 from payments import PRICING, DEFAULT_TIER, amount_display
 from .heartbeat import publish_heartbeat
 from .store import get_target_store
@@ -80,6 +81,7 @@ async def rescan_target(store, mailer: Optional[KlarimMailer], cache: Optional[S
 
     evolution = classify_evolution(old_score, new_score)
     sev = severity_counts_from_checks(report.to_dict())
+    risks = get_risk_messages(report)
 
     email_id = None
     if send_email and mailer is not None and target.get("contact_email"):
@@ -88,7 +90,8 @@ async def rescan_target(store, mailer: Optional[KlarimMailer], cache: Optional[S
             old_score if old_score is not None else new_score, new_score,
             evolution, new_semaphore, fail_count, sev,
             price_display_for_tier(target.get("price_tier")),
-            unsubscribe_link=_unsub_link(target["contact_email"]))
+            unsubscribe_link=_unsub_link(target["contact_email"]),
+            risk_messages=risks)
         email_id = res.get("email_id")
 
     await store.log_rescan(target_id, old_score, new_score, evolution,
@@ -161,13 +164,15 @@ class RescanWorker:
                 break  # ainda no teto; tenta no próximo ciclo
             try:
                 sev = severity_counts_from_checks(p.get("checks_json"))
+                risks = get_risk_messages((p.get("checks_json") or {}).get("results", []))
                 res = await mailer.send_evolution(
                     p["contact_email"], p["url"],
                     p["old_score"] if p["old_score"] is not None else p["new_score"],
                     p["new_score"], p["evolution"], p["new_semaphore"],
                     p.get("fail_count") or 0, sev,
                     price_display_for_tier(p.get("price_tier")),
-                    unsubscribe_link=_unsub_link(p["contact_email"]))
+                    unsubscribe_link=_unsub_link(p["contact_email"]),
+                    risk_messages=risks)
                 email_id = res.get("email_id")
                 if email_id:
                     await self.store.update_rescan_email(p["rescan_id"], email_id)

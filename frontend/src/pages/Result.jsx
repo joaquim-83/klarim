@@ -4,7 +4,6 @@ import Layout from '../components/Layout'
 import Semaphore from '../components/Semaphore'
 import SeverityChips from '../components/SeverityChips'
 import { useSummary, problemLine } from '../lib/useSummary'
-import { LGPD_TEXT } from '../lib/constants'
 
 export default function Result() {
   const [params] = useSearchParams()
@@ -61,11 +60,26 @@ export default function Result() {
           <SeverityChips counts={counts} />
         </div>
 
-        {/* Bloco LGPD */}
-        <div className="mx-auto mt-8 max-w-xl rounded-lg border-l-4 border-klarim-alert bg-klarim-surface p-4 text-left">
-          <p className="font-bold text-klarim-alert">⚠ Atenção — LGPD</p>
-          <p className="mt-1 text-sm text-klarim-muted">{LGPD_TEXT}</p>
-        </div>
+        {/* Riscos concretos (KL-20) */}
+        {(summary.risk_messages || []).length > 0 && (
+          <div className="mx-auto mt-8 max-w-xl text-left">
+            <h3 className="text-lg font-bold text-klarim-alert">⚠ O que pode acontecer com o seu site</h3>
+            {summary.risk_summary && (
+              <p className="mt-1 text-sm text-klarim-muted">{summary.risk_summary}</p>
+            )}
+            <div className="mt-3 space-y-2">
+              {summary.risk_messages.map((risk, i) => (
+                <div key={i} className="rounded-lg border-l-4 border-klarim-alert bg-klarim-surface p-3">
+                  <p className="font-semibold text-klarim-text">{risk.icon} {risk.headline}</p>
+                  <p className="mt-1 text-sm text-klarim-muted">{risk.risk}</p>
+                </div>
+              ))}
+            </div>
+            <p className="mt-4 text-xs text-klarim-muted">
+              Nota: falhas de segurança também podem resultar em sanções pela LGPD.
+            </p>
+          </div>
+        )}
 
         {/* CTA principal */}
         <div className="mt-8">

@@ -13,6 +13,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from notifier import KlarimMailer, build_unsubscribe_link
+from reporter.risk_messages import get_risk_messages
 from .store import get_target_store
 from .heartbeat import publish_heartbeat
 
@@ -43,11 +44,12 @@ async def send_alert_for_target(store, mailer: KlarimMailer, target: Dict[str, A
 
     score, semaphore, fail_count = scan["score"], scan["semaphore"], scan["fail_count"]
     sev = severity_counts_from_checks(scan.get("checks_json"))
+    risks = get_risk_messages((scan.get("checks_json") or {}).get("results", []))
     secret = os.environ.get("UNSUBSCRIBE_SECRET")
     unsub = build_unsubscribe_link(email, secret) if secret else None
 
     res = await mailer.send_alert(email, target["url"], score, semaphore, fail_count, sev,
-                                  unsubscribe_link=unsub)
+                                  unsubscribe_link=unsub, risk_messages=risks)
     email_id = res.get("email_id")
     await store.mark_target_alerted(target["id"])
     await store.log_alert(target["id"], email, score, semaphore, fail_count, email_id)

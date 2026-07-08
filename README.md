@@ -235,7 +235,9 @@ O módulo [`reporter/`](./reporter/) transforma um `ScanReport` em dois PDFs
 (**Jinja2 → WeasyPrint**), na identidade visual do Klarim (dark + laranja/verde):
 
 - **Executivo** (1-2 páginas) — para o dono do negócio: semáforo, linguagem
-  acessível, bloco de risco **LGPD**, lista de problemas em linguagem humana.
+  acessível, seção **"O que pode acontecer com o seu site"** com riscos concretos
+  por falha (KL-20 — "seu site pode ser usado para golpes", não artigos de lei; a
+  LGPD vira nota de rodapé), lista de problemas em linguagem humana.
 - **Técnico** (3-5 páginas) — para dev/agência: tabela de todos os checks,
   detalhamento de cada falha (evidência + impacto + correção com exemplo) e
   inventário (domínios externos, scripts sem SRI, fontes arriscadas, headers).

@@ -30,6 +30,7 @@ from scanner.cache import ScanCache
 from scanner.checks.base import normalize_url, registrable_domain, domain_of
 from discovery.store import get_target_store
 from reporter import generate_executive_pdf, generate_technical_pdf, pdf_filename
+from reporter.risk_messages import get_risk_messages, get_risk_summary
 from payments import (
     AbacatePayClient,
     AbacatePayError,
@@ -252,12 +253,15 @@ async def scan_summary(url: str = Query(..., description="URL alvo.")) -> dict:
     report = await _safe_scan(url, ingest_source="public")
     score = report.score
     sev = score.fails_by_severity if score else {}
+    risk_messages = get_risk_messages(report)
     return {
         "url": report.url,
         "score": score.score if score else None,
         "semaphore": score.semaphore if score else None,
         "grade_icon": score.grade_icon if score else None,
         "summary": summarize_fails(report.results),
+        "risk_summary": get_risk_summary(risk_messages),
+        "risk_messages": risk_messages,
         "problems": score.failed if score else 0,
         "passed": score.passed if score else 0,
         "inconclusive": score.inconclusive if score else 0,
@@ -1015,7 +1019,8 @@ async def _send_alert_to(url: str, report: ScanReport, to_email: str) -> Optiona
     s = report.score
     res = await _mailer().send_alert(
         to_email, url, s.score if s else 0, s.semaphore if s else "vermelho",
-        s.failed if s else 0, _severity_counts(report))
+        s.failed if s else 0, _severity_counts(report),
+        risk_messages=get_risk_messages(report))
     return res.get("email_id")
 
 
@@ -1035,6 +1040,7 @@ async def api_admin_scan_and_report(body: ScanAndReportBody) -> dict:
     report = await _safe_scan(url)  # sem auto-ingest; ingerimos abaixo com os ids
     meta = await ingest_scan(get_target_store(), url, report, source="admin")
     s = report.score
+    risk_messages = get_risk_messages(report)
     result = {
         "target_id": meta["target_id"], "scan_id": meta["scan_id"], "url": url,
         "score": s.score if s else None, "semaphore": s.semaphore if s else None,
@@ -1042,6 +1048,8 @@ async def api_admin_scan_and_report(body: ScanAndReportBody) -> dict:
         "pass_count": s.passed if s else 0, "fail_count": s.failed if s else 0,
         "inconclusive": s.inconclusive if s else 0,
         "severity_counts": _severity_counts(report),
+        "risk_summary": get_risk_summary(risk_messages),
+        "risk_messages": risk_messages,
         "platform": meta["platform"], "sector": meta["sector"],
         "contact_email": meta["contact_email"],
         "email_sent": False, "email_id": None,

@@ -61,8 +61,9 @@ class FakeMailer:
         self.sent = []
 
     async def send_alert(self, to_email, target_url, score, semaphore, fail_count,
-                         severity_counts, unsubscribe_link=None):
-        self.sent.append({"to": to_email, "url": target_url, "unsub": unsubscribe_link})
+                         severity_counts, unsubscribe_link=None, risk_messages=None):
+        self.sent.append({"to": to_email, "url": target_url, "unsub": unsubscribe_link,
+                          "risks": risk_messages})
         return {"email_id": f"em_{len(self.sent)}"}
 
 

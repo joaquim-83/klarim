@@ -712,3 +712,25 @@ Visão de operação em tempo real (auto-refresh a cada 30s).
 removidas; ficou só o pagamento **real** (pousadacostera, R$ 29, 36s para pagar).
 `payments/stats` → **R$ 29,00, 1 pago**. `alert_log` preservado (alertas reais do
 funil).
+
+## 21. Mensagens de risco dinâmicas (KL-20) — `reporter/risk_messages.py`
+
+O bloco fixo de LGPD ("sanções de até R$ 50 milhões") foi trocado por **riscos
+concretos** por falha — o dono de PME reage a "seu site pode ser usado para golpes",
+não a artigos de lei.
+
+- **`reporter/risk_messages.py`** (módulo leve, sem WeasyPrint): `RISK_MESSAGES`
+  (headline + risco + ícone para os **15 checks**, indexado por `check_id`);
+  `get_risk_messages(report)` — filtra os FAILs, ordena por severidade, limita a 4;
+  `get_risk_summary(risks)` — frase-resumo por categoria (vazamento de dados /
+  golpes / invasão / código de terceiros). Aceita ScanReport, dict ou lista.
+- **`reporter/__init__.py`** virou **lazy** (PEP 562 `__getattr__`) para que
+  importar `reporter.risk_messages` não puxe o WeasyPrint nos containers do worker.
+- **Onde aparece** (mesmos riscos em todas as superfícies, consistente):
+  PDF executivo (`executive.html`), e-mail de **alerta** (`alert.html`, máx 3) e de
+  **evolução** (`evolution_worsened/unchanged.html`), tela pública `/result`, e a
+  tela admin **Escanear**. A LGPD virou **nota de rodapé** discreta.
+- **API:** `/scan/summary` e `/admin/scan-and-report` retornam `risk_messages` +
+  `risk_summary`. Os workers (alert/rescan) e os helpers de e-mail computam os
+  riscos do `checks_json` e passam para `send_alert`/`send_evolution`.
+- **Sem FAILs ⇒ sem seção de risco** (ex.: PDF de site 100/100, e-mail de melhoria).

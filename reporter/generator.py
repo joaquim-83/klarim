@@ -26,6 +26,7 @@ from weasyprint import HTML
 from scanner import __version__ as scanner_version
 from scanner.runner import ScanReport
 from scanner.checks.base import Status, Severity
+from .risk_messages import get_risk_messages, get_risk_summary
 
 _HERE = Path(__file__).resolve().parent
 _TEMPLATES = _HERE / "templates"
@@ -294,6 +295,9 @@ def _build_context(report: ScanReport, target_url: str) -> Dict[str, Any]:
         "headers": _collect_headers(report),
     }
 
+    risk_messages = get_risk_messages(report)
+    risk_summary = get_risk_summary(risk_messages)
+
     n = s.failed if s else 0
     if n == 0:
         problem_line = "Nenhum problema de segurança foi encontrado no seu site."
@@ -336,6 +340,8 @@ def _build_context(report: ScanReport, target_url: str) -> Dict[str, Any]:
         "fails": fails,
         "all_checks": all_checks,
         "inventory": inventory,
+        "risk_messages": risk_messages,
+        "risk_summary": risk_summary,
         "lgpd_text": LGPD_TEXT,
     }
 
