@@ -44,11 +44,15 @@ novo.
   reescaneia (reconstrói de `checks_json`); sem cache/banco → escaneia. Round-trip
   `to_dict`/`from_dict` conferido. Nenhuma `sanções pela LGPD` antiga restante.
   **Suíte total: 109 passed, 1 skipped.**
-- **Produção (VM):** _pós-deploy — ver abaixo._
+- **Produção (VM):** validado pós-deploy.
 
-## Validação em produção (pós-deploy)
+## Validação em produção (pós-deploy) — confirmada
 
-- [ ] `/api/scan/summary?url=<alvo já escaneado>` responde rápido (cache/banco, sem
-      re-scan de ~30s).
-- [ ] Nota "sanções e multas pela LGPD" no `/result`, no e-mail e no PDF.
-- [ ] Scan de URL nova continua funcionando (sem regressão).
+- [x] **Fix 1 — carregamento rápido:** com a chave de cache do `verdegreen`
+      **apagada** (miss forçado), `/scan/summary` respondeu em **0,027s** (antes:
+      ~30s de re-scan). O fallback no banco reconstruiu o `ScanReport` em vez de
+      reescanear.
+- [x] **Fix 2 — texto:** "sanções e multas pela LGPD" presente no template do
+      servidor (`alert.html`) **e** no bundle do frontend deployado.
+- [x] Sem regressão: URL nova continua escaneando (nível 3 do `get_or_scan`,
+      coberto por teste).
