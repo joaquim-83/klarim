@@ -5,9 +5,10 @@ from __future__ import annotations
 import asyncio
 
 from discovery.fingerprint import detect_platform
-from discovery.classifier import classify_sector
 from discovery.contact import extract_email, _is_junk, _best_email, _collect_emails, _is_valid_email
 from discovery.ct_client import CTClient
+
+# A cobertura do classificador de setor vive em tests/test_classifier.py (refino KL-11).
 
 
 # --- fingerprint ----------------------------------------------------------- #
@@ -20,17 +21,6 @@ def test_detect_platform():
     assert detect_platform("https://x.com", "cdn.shopify.com/x") == "shopify"
     assert detect_platform("https://x.com", "sqsp.net asset") == "squarespace"
     assert detect_platform("https://x.com", "nada aqui") == "unknown"
-
-
-# --- classifier ------------------------------------------------------------ #
-
-def test_classify_sector():
-    assert classify_sector("hotel pousada reserva diária check-in") == ("hotel", "standard")
-    assert classify_sector("clínica dentista paciente agendamento saúde")[0] == "clinica"
-    assert classify_sector("clínica dentista paciente")[1] == "enterprise"
-    assert classify_sector("restaurante cardápio menu delivery")[0] == "restaurante"
-    assert classify_sector("restaurante cardápio menu")[1] == "basic"
-    assert classify_sector("página institucional sem nada específico") == ("outro", "standard")
 
 
 # --- contact --------------------------------------------------------------- #

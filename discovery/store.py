@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS targets (
 CREATE INDEX IF NOT EXISTS idx_targets_status ON targets(status);
 CREATE INDEX IF NOT EXISTS idx_targets_domain ON targets(domain);
 CREATE INDEX IF NOT EXISTS idx_targets_platform ON targets(platform);
+-- Confiança da classificação de setor (refino do KL-11): 0.0–1.0. Permite
+-- filtrar "classificação incerta" (< 0.5) para revisão manual no painel.
+ALTER TABLE targets ADD COLUMN IF NOT EXISTS classification_confidence REAL DEFAULT 0.0;
 
 CREATE TABLE IF NOT EXISTS scans (
     id SERIAL PRIMARY KEY,
@@ -143,25 +146,64 @@ class TargetStore:
     async def register_target(
         self, url: str, domain: str, platform: str, sector: str, price_tier: str,
         contact_email: Optional[str], source: str = "ct_log", status: str = "discovered",
+        confidence: float = 0.0,
     ) -> int:
         def _fn(cur):
             cur.execute(
                 """
                 INSERT INTO targets (url, domain, platform, sector, price_tier,
-                                     contact_email, status, source)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                                     contact_email, status, source, classification_confidence)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (url) DO UPDATE SET
                     platform = EXCLUDED.platform,
                     sector = EXCLUDED.sector,
                     price_tier = EXCLUDED.price_tier,
+                    classification_confidence = EXCLUDED.classification_confidence,
                     contact_email = COALESCE(EXCLUDED.contact_email, targets.contact_email)
                 RETURNING id
                 """,
-                (url, domain, platform, sector, price_tier, contact_email, status, source),
+                (url, domain, platform, sector, price_tier, contact_email, status,
+                 source, confidence),
             )
             return cur.fetchone()[0]
 
         return await asyncio.to_thread(self._run, _fn)
+
+    async def all_targets_for_reclassify(self) -> List[Dict[str, Any]]:
+        """Alvos reclassificáveis (todos menos 'descartado') — id, url, setor atual."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT id, url, sector, price_tier FROM targets "
+                "WHERE status != 'descartado' ORDER BY id"
+            )
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def update_classification(
+        self, target_id: int, sector: str, price_tier: str, confidence: float
+    ) -> None:
+        await asyncio.to_thread(
+            self._run, lambda cur: cur.execute(
+                "UPDATE targets SET sector = %s, price_tier = %s, "
+                "classification_confidence = %s WHERE id = %s",
+                (sector, price_tier, confidence, target_id))
+        )
+
+    async def bulk_update_classification(self, updates: List[tuple]) -> None:
+        """Atualiza setor/tier/confiança em lote (uma conexão). updates: (sector,
+        tier, confidence, target_id)."""
+        if not updates:
+            return
+
+        def _fn(cur):
+            cur.executemany(
+                "UPDATE targets SET sector = %s, price_tier = %s, "
+                "classification_confidence = %s WHERE id = %s",
+                updates,
+            )
+
+        await asyncio.to_thread(self._run, _fn)
 
     async def domain_exists(self, domain: str) -> bool:
         def _fn(cur):
@@ -224,7 +266,7 @@ class TargetStore:
     async def list_targets(
         self, status: Optional[str] = None, platform: Optional[str] = None,
         sector: Optional[str] = None, source: Optional[str] = None,
-        limit: int = 50, offset: int = 0,
+        limit: int = 50, offset: int = 0, low_confidence: bool = False,
     ) -> List[Dict[str, Any]]:
         def _fn(cur):
             where, params = [], []
@@ -233,6 +275,8 @@ class TargetStore:
                 if val:
                     where.append(f"t.{col} = %s")
                     params.append(val)
+            if low_confidence:  # revisão manual: classificação incerta (< 0.5)
+                where.append("t.classification_confidence < 0.5")
             clause = ("WHERE " + " AND ".join(where)) if where else ""
             params.extend([limit, offset])
             # JOIN traz o semáforo do último scan (KL-14: lista de alvos no painel).

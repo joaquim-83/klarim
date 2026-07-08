@@ -28,10 +28,10 @@ class FakeStore:
         self.updated = []
 
     async def register_target(self, url, domain, platform, sector, tier, email,
-                              source="ct_log", status="discovered"):
+                              source="ct_log", status="discovered", confidence=0.0):
         self.registered.append({"url": url, "domain": domain, "platform": platform,
                                 "sector": sector, "email": email, "source": source,
-                                "status": status})
+                                "status": status, "confidence": confidence})
         return 42
 
     async def save_scan(self, target_id, url, score, semaphore, pass_count, fail_count,

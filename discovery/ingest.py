@@ -35,15 +35,17 @@ async def ingest_scan(store, url: str, report, source: str) -> Dict[str, Any]:
     Retorna: target_id, scan_id, platform, sector, contact_email.
     """
     domain = registrable_domain(domain_of(url))
-    platform, sector, tier, email = "unknown", "outro", "standard", None
+    platform, email = "unknown", None
     html = await _fetch_html(url)
+    # Classifica em cascata (domínio + HTML): funciona mesmo se o fetch falhar.
+    sector, tier, confidence = classify_sector(html, url)
     if html:
         platform = detect_platform(url, html)
-        sector, tier = classify_sector(html)
         email = await extract_email(html, url)
 
     target_id = await store.register_target(
-        url, domain, platform, sector, tier, email, source=source, status="scanned")
+        url, domain, platform, sector, tier, email, source=source, status="scanned",
+        confidence=confidence)
 
     scan_id = None
     s = report.score
@@ -56,4 +58,5 @@ async def ingest_scan(store, url: str, report, source: str) -> Dict[str, Any]:
     return {
         "target_id": target_id, "scan_id": scan_id,
         "platform": platform, "sector": sector, "contact_email": email,
+        "classification_confidence": confidence,
     }

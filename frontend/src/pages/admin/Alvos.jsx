@@ -9,7 +9,8 @@ import {
 
 const STATUS_OPTS = ['discovered', 'scanned', 'alerted', 'sem_contato', 'unsubscribed', 'descartado']
 const PLATFORM_OPTS = ['duda', 'wordpress', 'cra', 'wix', 'shopify', 'squarespace', 'unknown']
-const SECTOR_OPTS = ['hotel', 'clinica', 'escola', 'restaurante', 'ecommerce', 'contabilidade', 'outro']
+const SECTOR_OPTS = ['hotel', 'clinica', 'escola', 'restaurante', 'ecommerce', 'contabilidade',
+  'juridico', 'condominio', 'imobiliaria', 'automotivo', 'outro']
 const SOURCE_OPTS = ['public', 'discovery', 'admin', 'manual']
 const PAGE_SIZE = 25
 
@@ -26,21 +27,65 @@ function Select({ value, onChange, options, allLabel, labels }) {
   )
 }
 
+// Setor com indicador visual de confiança da classificação (refino KL-11):
+//  ≥0.8 badge normal · 0.5–0.79 borda pontilhada (provável) · <0.5 cinza com "?".
+function SectorCell({ sector, confidence }) {
+  const c = confidence == null ? null : Number(confidence)
+  const label = sector || 'outro'
+  const pct = c == null ? null : `${Math.round(c * 100)}%`
+  if (c != null && c < 0.5) {
+    return (
+      <span title={`Classificação incerta${pct ? ` (${pct})` : ''}`}
+        className="inline-block rounded-full border border-klarim-border bg-klarim-border/20 px-2 py-0.5 text-xs font-semibold text-klarim-muted">
+        {label} ?
+      </span>
+    )
+  }
+  if (c != null && c < 0.8) {
+    return (
+      <span title={`Classificação provável (${pct})`}
+        className="inline-block rounded-full border border-dashed border-klarim-alert/70 px-2 py-0.5 text-xs font-semibold text-klarim-text">
+        {label}
+      </span>
+    )
+  }
+  return <span title={pct ? `Confiança ${pct}` : undefined}><Badge>{label}</Badge></span>
+}
+
 export default function Alvos() {
   const [status, setStatus] = useState('')
   const [platform, setPlatform] = useState('')
   const [sector, setSector] = useState('')
   const [source, setSource] = useState('')
+  const [lowConf, setLowConf] = useState(false)
   const [search, setSearch] = useState('')
   const [page, setPage] = useState(0)
   const [msg, setMsg] = useState('')
   const [busyId, setBusyId] = useState(null)
   const [showAdd, setShowAdd] = useState(false)
+  const [reclassifying, setReclassifying] = useState(false)
 
   const { data, loading, error, reload } = useAsync(
-    () => admin.targets({ status, platform, sector, source, limit: PAGE_SIZE, offset: page * PAGE_SIZE }),
-    [status, platform, sector, source, page],
+    () => admin.targets({
+      status, platform, sector, source, low_confidence: lowConf || undefined,
+      limit: PAGE_SIZE, offset: page * PAGE_SIZE,
+    }),
+    [status, platform, sector, source, lowConf, page],
   )
+
+  async function reclassifyDomains() {
+    setReclassifying(true)
+    setMsg('')
+    try {
+      const r = await admin.reclassifyDomains()
+      setMsg(`Reclassificação por domínio: ${r.changed} de ${r.processed} alvos alterados.`)
+      reload()
+    } catch (e) {
+      setMsg(e.message)
+    } finally {
+      setReclassifying(false)
+    }
+  }
 
   async function act(id, fn, label) {
     setBusyId(id)
@@ -64,7 +109,12 @@ export default function Alvos() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-xl font-bold">Alvos</h1>
-        <Button variant="primary" onClick={() => setShowAdd(true)}>+ Adicionar alvo</Button>
+        <div className="flex gap-2">
+          <Button disabled={reclassifying} onClick={reclassifyDomains}>
+            {reclassifying ? 'Reclassificando…' : 'Reclassificar domínios'}
+          </Button>
+          <Button variant="primary" onClick={() => setShowAdd(true)}>+ Adicionar alvo</Button>
+        </div>
       </div>
 
       {/* Filtros */}
@@ -73,6 +123,12 @@ export default function Alvos() {
         <Select value={platform} onChange={(v) => { setPlatform(v); setPage(0) }} options={PLATFORM_OPTS} allLabel="Todas as plataformas" />
         <Select value={sector} onChange={(v) => { setSector(v); setPage(0) }} options={SECTOR_OPTS} allLabel="Todos os setores" />
         <Select value={source} onChange={(v) => { setSource(v); setPage(0) }} options={SOURCE_OPTS} allLabel="Todas as origens" />
+        <button
+          onClick={() => { setLowConf(!lowConf); setPage(0) }}
+          className={`rounded-lg border px-3 py-1.5 text-sm ${lowConf ? 'border-klarim-alert bg-klarim-alert/15 text-klarim-text' : 'border-klarim-border bg-klarim-surface text-klarim-muted hover:text-klarim-text'}`}
+        >
+          Classificação incerta
+        </button>
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -109,7 +165,7 @@ export default function Alvos() {
                       </a>
                     </td>
                     <td className="py-2 pr-3"><PlatformBadge platform={t.platform} /></td>
-                    <td className="py-2 pr-3"><Badge>{t.sector || 'outro'}</Badge></td>
+                    <td className="py-2 pr-3"><SectorCell sector={t.sector} confidence={t.classification_confidence} /></td>
                     <td className="py-2 pr-3">
                       {t.last_scan_score != null
                         ? <SemaphoreDot semaphore={t.last_semaphore} score={t.last_scan_score} />

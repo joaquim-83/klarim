@@ -150,22 +150,27 @@ class DiscoveryWorker:
         url = f"https://{domain}"
         html = await self._fetch_html(url)
         if html is None:
+            # Site fora do ar: ainda tenta classificar pela pista do domínio.
+            sector, tier, confidence = classify_sector(None, url)
             await self.store.register_target(
-                url, domain, "unknown", "outro", "standard", None, status="descartado")
+                url, domain, "unknown", sector, tier, None, status="descartado",
+                confidence=confidence)
             stats["unreachable"] += 1
             return
 
         platform = detect_platform(url, html)
         email = await extract_email(html, url)
-        sector, tier = classify_sector(html)
+        sector, tier, confidence = classify_sector(html, url)
 
         if not email:
             await self.store.register_target(
-                url, domain, platform, sector, tier, None, status="sem_contato")
+                url, domain, platform, sector, tier, None, status="sem_contato",
+                confidence=confidence)
             stats["no_contact"] += 1
         else:
             tid = await self.store.register_target(
-                url, domain, platform, sector, tier, email, status="discovered")
+                url, domain, platform, sector, tier, email, status="discovered",
+                confidence=confidence)
             stats["registered"] += 1
             await self._enqueue(tid, url)
             stats["enqueued"] += 1

@@ -48,7 +48,8 @@ from payments import (
 from notifier import KlarimMailer, KlarimMailerError, unsubscribe_token
 from discovery.alert_worker import send_alert_for_target
 from discovery.rescan_worker import rescan_target
-from discovery.ingest import ingest_scan
+from discovery.ingest import ingest_scan, _fetch_html
+from discovery.classifier import classify_sector, classify_by_domain, PRICE_TIERS
 from api import health_checks
 
 
@@ -678,10 +679,12 @@ async def api_list_targets(
     platform: Optional[str] = Query(default=None),
     sector: Optional[str] = Query(default=None),
     source: Optional[str] = Query(default=None),
+    low_confidence: bool = Query(default=False),
     limit: int = Query(default=50, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> dict:
-    rows = await get_target_store().list_targets(status, platform, sector, source, limit, offset)
+    rows = await get_target_store().list_targets(
+        status, platform, sector, source, limit, offset, low_confidence=low_confidence)
     return {"count": len(rows), "targets": rows}
 
 
@@ -712,9 +715,11 @@ async def api_target_payments(target_id: int) -> dict:
 async def api_targets_add(body: TargetAddBody) -> dict:
     url = normalize_url(body.url)
     domain = registrable_domain(domain_of(url))
+    # Classificação inicial pelo domínio; o scan enfileirado refina via HTML.
+    sector, tier, confidence = classify_sector(None, url)
     tid = await get_target_store().register_target(
-        url, domain, "unknown", "outro", "standard", None,
-        source="manual", status="discovered")
+        url, domain, "unknown", sector, tier, None,
+        source="manual", status="discovered", confidence=confidence)
     enq = await _enqueue_scan(tid, url, source="manual")
     return {"target_id": tid, "url": url, "domain": domain, "enqueued": enq}
 
@@ -1236,6 +1241,81 @@ async def api_admin_resend_payment(body: ResendPaymentBody) -> dict:
     await get_store().set_email_status(charge.charge_id, "sending")
     _spawn(_send_report_email_task(charge.charge_id, charge.target_url, charge.buyer_email))
     return {"charge_id": charge.charge_id, "email": charge.buyer_email, "queued": True}
+
+
+# --------------------------------------------------------------------------- #
+# Reclassificação de setor (refino do KL-11)
+# --------------------------------------------------------------------------- #
+
+# Estado do job de reclassificação por HTML (em memória — um operador só).
+_reclassify_status: dict = {"running": False, "processed": 0, "changed": 0, "total": 0}
+
+
+@app.post("/admin/reclassify-domains")
+async def api_reclassify_domains() -> dict:
+    """Reclassifica TODOS os alvos só pela pista do domínio (instantâneo, sem HTTP).
+
+    Só atualiza quando o domínio dá uma pista confiável (≥ 0.9) — nunca rebaixa
+    uma classificação existente para 'outro'. Os sem pista ficam como estão e são
+    refinados via `/admin/reclassify-all` (fetch) ou no próximo re-scan.
+    """
+    store = get_target_store()
+    rows = await store.all_targets_for_reclassify()
+    updates, changed, by_sector = [], 0, {}
+    for r in rows:
+        res = classify_by_domain(r["url"])
+        if not res:
+            continue  # sem pista no domínio → mantém a classificação atual
+        sector, confidence = res
+        tier = PRICE_TIERS.get(sector, "standard")
+        updates.append((sector, tier, confidence, r["id"]))
+        by_sector[sector] = by_sector.get(sector, 0) + 1
+        if sector != (r.get("sector") or "outro"):
+            changed += 1
+    await store.bulk_update_classification(updates)
+    print(f"[reclassify] domínios: {len(rows)} avaliados, {len(updates)} com pista, "
+          f"{changed} alterados", flush=True)
+    return {"processed": len(rows), "updated": len(updates), "changed": changed,
+            "by_sector": by_sector}
+
+
+async def _reclassify_all_task() -> None:
+    """Reclassifica cada alvo buscando o HTML (rate limit 1/s). Roda em background."""
+    store = get_target_store()
+    rows = await store.all_targets_for_reclassify()
+    _reclassify_status.update(running=True, processed=0, changed=0, total=len(rows))
+    print(f"[reclassify] fetch: iniciando {len(rows)} alvos", flush=True)
+    changed = 0
+    for i, r in enumerate(rows, 1):
+        try:
+            html = await _fetch_html(r["url"])
+            sector, tier, confidence = classify_sector(html, r["url"])
+            await store.update_classification(r["id"], sector, tier, confidence)
+            if sector != (r.get("sector") or "outro"):
+                changed += 1
+        except Exception as exc:  # noqa: BLE001 - um alvo ruim não derruba o job
+            print(f"[reclassify] falha em {r.get('url')}: {exc!r}", flush=True)
+        _reclassify_status.update(processed=i, changed=changed)
+        if i % 50 == 0:
+            print(f"[reclassify] {i}/{len(rows)} processados, {changed} alterados", flush=True)
+        await asyncio.sleep(1.0)  # rate limit: 1 fetch/segundo
+    _reclassify_status["running"] = False
+    print(f"[reclassify] concluído: {len(rows)} processados, {changed} alterados", flush=True)
+
+
+@app.post("/admin/reclassify-all")
+async def api_reclassify_all() -> dict:
+    """Dispara a reclassificação por HTML (background). Idempotente: não reinicia
+    se já estiver rodando."""
+    if _reclassify_status["running"]:
+        return {"started": False, "reason": "já em execução", **_reclassify_status}
+    _spawn(_reclassify_all_task())
+    return {"started": True}
+
+
+@app.get("/admin/reclassify-status")
+async def api_reclassify_status() -> dict:
+    return dict(_reclassify_status)
 
 
 def _payment_row(charge, target_id: Optional[int] = None) -> dict:

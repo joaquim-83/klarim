@@ -126,6 +126,11 @@ export const admin = {
   analyticsPages: (period = '7d') => get(`/analytics/pages?period=${period}`),
   analyticsEvents: (limit = 50) => get(`/analytics/events?limit=${limit}`),
 
+  // reclassificação de setor (refino KL-11)
+  reclassifyDomains: () => post('/admin/reclassify-domains'),
+  reclassifyAll: () => post('/admin/reclassify-all'),
+  reclassifyStatus: () => get('/admin/reclassify-status'),
+
   // fluxo integrado (KL-17)
   scanAndReport: (body) => post('/admin/scan-and-report', body),
   resendAlert: (targetId) => post('/admin/resend-alert', { target_id: targetId }),

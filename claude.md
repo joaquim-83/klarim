@@ -516,7 +516,23 @@ presença de e-mail de contato, registra como alvo e enfileira para scan.
   arquivo (`.css/.js/.png…`), placeholders (`seuemail@`, `email@email.com.br`) e
   domínios de exemplo — evita bounce/reputação. **Sem e-mail válido ⇒
   `status='sem_contato'`.**
-- **`classifier.py`** — setor + `price_tier` (hotel→standard, clínica→enterprise…).
+- **`classifier.py`** — setor + `price_tier` + **confiança** por **cascata de 3
+  camadas** (refino do KL-11), da pista mais forte para a mais fraca: **(1)
+  domínio** (o dono batizou o site — `hotelverdegreen`→hotel, conf 0.9; 2 padrões
+  do mesmo setor → 0.95); **(2) cabeçalho** `<title>/<h1>/meta` (peso 5×; conf
+  0.7–0.8); **(3) conteúdo limpo** do body — `extract_visible_text` remove
+  `nav/footer/header/script/style` antes de contar keywords (peso 1×; conf ≥0.5).
+  Sem pista ⇒ `('outro', 0.0)`. Keywords **ambíguas** ("reserva", "produto",
+  "entrega") só contam com **co-ocorrência** de uma âncora do mesmo setor (evita
+  que "direitos reservados" vire hotel). Keywords casam **sem acento** (`_fold`).
+  `classify_sector(html, url)` retorna `(setor, tier, confiança)`; é síncrono (CPU
+  puro). A confiança é gravada em `targets.classification_confidence` (REAL). 11
+  setores + `outro`. **Reclassificação:** `POST /admin/reclassify-domains`
+  (instantâneo, só domínio, nunca rebaixa para `outro`) e `POST
+  /admin/reclassify-all` (background, refaz fetch, 1/s; `GET
+  /admin/reclassify-status`). No painel **Alvos**: badge com indicador de confiança
+  (≥0.8 normal · 0.5–0.79 pontilhado · <0.5 cinza com "?") + filtro "Classificação
+  incerta" + botão "Reclassificar domínios".
 - **`store.py`** — `TargetStore` (Postgres): tabelas **`targets`** e **`scans`**
   (criadas no `ensure_schema`, mesmo padrão de `payments`). Conecta por
   `POSTGRES_*` (imune a `/` na senha).
