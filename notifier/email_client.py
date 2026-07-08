@@ -34,7 +34,7 @@ SEMAPHORE_EMOJI = {"verde": "🟢", "amarelo": "🟡", "vermelho": "🔴"}
 
 LGPD_SHORT = (
     "Se o seu site coleta dados pessoais (nome, CPF, e-mail, cartão), falhas de "
-    "segurança podem resultar em sanções pela LGPD (até R$ 50 milhões por infração)."
+    "segurança podem resultar em sanções e multas pela LGPD (até R$ 50 milhões por infração)."
 )
 
 

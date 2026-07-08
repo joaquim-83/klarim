@@ -402,6 +402,26 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    async def get_recent_scan_checks(self, url: str, max_age_minutes: int = 60) -> Optional[dict]:
+        """checks_json do scan mais recente (< N min) para a URL, ou None.
+
+        Deixa o PDF/summary pelo link do e-mail carregar do banco em vez de
+        reescanear (~30s). Casa URL de forma tolerante a caixa e '/' final.
+        """
+        def _fn(cur):
+            cur.execute(
+                "SELECT checks_json FROM scans "
+                "WHERE lower(rtrim(url, '/')) = lower(rtrim(%s, '/')) "
+                "  AND checks_json IS NOT NULL "
+                "  AND scanned_at > NOW() - (%s || ' minutes')::interval "
+                "ORDER BY scanned_at DESC LIMIT 1",
+                (url, str(max_age_minutes)),
+            )
+            row = cur.fetchone()
+            return row[0] if row else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
     # --- alertas ----------------------------------------------------------- #
 
     async def get_eligible_targets_for_alert(self, limit: int = 50) -> List[Dict[str, Any]]:

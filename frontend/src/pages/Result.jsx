@@ -76,7 +76,7 @@ export default function Result() {
               ))}
             </div>
             <p className="mt-4 text-xs text-klarim-muted">
-              Nota: falhas de segurança também podem resultar em sanções pela LGPD.
+              Nota: falhas de segurança também podem resultar em sanções e multas pela LGPD.
             </p>
           </div>
         )}

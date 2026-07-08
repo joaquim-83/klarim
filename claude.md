@@ -451,10 +451,12 @@ domínios via API — isso é feito no painel).
 o `ScanReport` no Redis (mesma instância do compose, `REDIS_URL`) com **TTL 1h**.
 Chave: `scan:<sha256(url normalizada)[:16]}` (url em lowercase, sem `/` final).
 Serialização JSON via `ScanReport.to_dict()`/`from_dict()`. A API usa
-`get_or_scan(url)` (dentro de `_safe_scan` e da task de e-mail): cache hit →
-instantâneo; miss → scan + grava no cache. Redis fora do ar degrada com elegância
-(escaneia de novo). Resultado: **PDF pós-pagamento em < 3s** (o scan do summary já
-está cacheado).
+`get_or_scan(url)` (dentro de `_safe_scan` e da task de e-mail): (1) cache hit →
+instantâneo; (2) **fallback no banco** — em cache miss, reusa o scan mais recente
+(< 1h) da tabela `scans` (`get_recent_scan_checks` → `from_dict` → reaquece o
+cache), **sem reescanear**; (3) só então escaneia de novo. Redis/banco fora do ar
+degrada com elegância. Resultado: o link do e-mail e o **PDF pós-pagamento carregam
+em < 3s** mesmo se o cache Redis já expirou.
 
 **Feedback de e-mail.** A cobrança ganhou `email_status`
 (`null|pending|sending|sent|failed`). `GET /payment/status` devolve `buyer_email`

@@ -1258,16 +1258,36 @@ def _pdf_response(pdf: bytes, filename: str) -> Response:
 
 
 async def get_or_scan(url: str, ingest_source: Optional[str] = None) -> ScanReport:
-    """Retorna o scan do cache (Redis) ou executa um novo scan e cacheia.
+    """Retorna o scan reusando o dado mais recente; só escaneia em último caso.
 
-    Em cache MISS (scan de verdade), se ``ingest_source`` for dado, grava o alvo +
-    scan no Postgres em **background** (KL-17) — o response volta imediato do cache.
-    Em cache HIT o alvo já foi ingerido no 1º scan, então não repete.
+    Prioridade (fix — carregamento rápido pelo link do e-mail):
+      1. **Cache Redis** (KL-9) — instantâneo.
+      2. **Tabela `scans`** (Postgres) — reconstrói o `ScanReport` de um scan < 1h
+         e reaquece o cache, sem reescanear.
+      3. **Scan novo** — só se não houver nada recente; se ``ingest_source``,
+         grava alvo+scan no Postgres em background (KL-17).
     """
     if _cache is not None:
         cached = await _cache.get(url)
         if cached is not None:
             return cached
+
+    # 2. Scan recente no banco → reconstrói e reaquece o cache (sem reescanear).
+    try:
+        checks = await get_target_store().get_recent_scan_checks(url, 60)
+    except Exception as exc:  # noqa: BLE001 - banco opcional; cai no scan novo
+        checks = None
+        print(f"[get_or_scan] lookup no banco falhou ({exc!r})", flush=True)
+    if checks:
+        try:
+            report = ScanReport.from_dict(checks)
+            if _cache is not None:
+                await _cache.set(url, report)
+            return report
+        except Exception as exc:  # noqa: BLE001 - checks_json corrompido → reescaneia
+            print(f"[get_or_scan] from_dict falhou ({exc!r}); reescaneando", flush=True)
+
+    # 3. Scan novo.
     report = await run_scan(url)
     if _cache is not None:
         await _cache.set(url, report)
