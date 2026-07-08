@@ -76,16 +76,21 @@ Resend (bounces).
   dorme > timeout → `timeouts=1`, o domínio seguinte processa, loop continua).
   **Suíte total: 102 passed, 1 skipped.** `discovery.worker`/`healthcheck` importam
   limpo.
-- **Produção (VM):** _pós-deploy — ver abaixo (o deploy também destrava o discovery
-  parado desde 03:20)._
+- **Produção (VM):** validado pós-deploy — ver abaixo.
 
-## Validação em produção (pós-deploy)
+## Validação em produção (pós-deploy) — confirmada
 
-- [ ] Deploy recria o container discovery → workers voltam a 🟢 (destrava o
-      incidente); `/system/status` mostra discovery/alert/rescan `alive:true`.
-- [ ] Log de início mostra `timeout/domínio=30s, watchdog=600s`.
-- [ ] `docker inspect` do discovery mostra `Health: healthy` após o start_period.
-- [ ] Um ciclo completa com o novo resumo (com `timeouts`).
+O deploy recriou o container discovery, **destravando o incidente** (parado desde
+08/07 03:20).
+
+- [x] **Recuperação:** `/system/status` → **os 4 workers `alive:true`**
+      (discovery/alert/rescan voltaram). O funil está online de novo.
+- [x] **Log de início:** `[discovery] iniciado (… batch=100, intervalo=30min,
+      timeout/domínio=30s, watchdog=600s)`.
+- [x] **Novo resumo de ciclo:** `[discovery] ciclo completo: 4 processados, 1 com
+      email, 2 sem contato, 0 timeouts, 0 erros, 4 já registrados`.
+- [x] **HEALTHCHECK:** `docker inspect` do discovery → **`healthy`**
+      (`discovery/healthcheck.py` lê o heartbeat no Redis).
 
 ## Critérios de aceite
 
@@ -100,7 +105,7 @@ Resend (bounces).
 - [x] Testes do filtro de e-mail (+ do timeout).
 - [x] Documentação (`claude.md` §15, `README.md`).
 - [x] Relatório em PT-BR.
-- [ ] Deploy + validação + commit/push.
+- [x] Deploy + validação + commit/push.
 
 ## Follow-ups
 
