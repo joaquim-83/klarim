@@ -89,7 +89,8 @@ class DiscoveryWorker:
     async def _write_status(self) -> None:
         try:
             r = await self._redis_client()
-            await r.set(STATUS_KEY, json.dumps(self._status_payload()), ex=3600)
+            # TTL 600s (KL-16): se o worker morrer, o status expira e o painel mostra 🔴.
+            await r.set(STATUS_KEY, json.dumps(self._status_payload()), ex=600)
         except Exception as exc:  # noqa: BLE001 - status é best-effort
             print(f"[discovery] falha ao publicar status ({exc!r})", flush=True)
 

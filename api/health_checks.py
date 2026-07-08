@@ -1,0 +1,108 @@
+"""Health checks das dependências externas (KL-16 — dashboard operacional).
+
+Cada check devolve {"status": "ok"|"error"|"unknown", "latency_ms": N, "detail": …}
+e nunca levanta — o painel mostra 🟢/🟡/🔴 sem derrubar o /system/status.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import time
+from typing import Any, Dict, Optional
+
+import httpx
+
+from discovery.store import get_target_store
+
+
+async def _timed(coro) -> tuple:
+    t0 = time.monotonic()
+    try:
+        detail = await coro
+        return "ok", detail, int((time.monotonic() - t0) * 1000)
+    except Exception as exc:  # noqa: BLE001
+        return "error", repr(exc), int((time.monotonic() - t0) * 1000)
+
+
+def _result(status: str, latency_ms: Optional[int] = None, detail: Any = None) -> Dict[str, Any]:
+    out: Dict[str, Any] = {"status": status}
+    if latency_ms is not None:
+        out["latency_ms"] = latency_ms
+    if detail is not None:
+        out["detail"] = detail
+    return out
+
+
+async def check_postgres() -> Dict[str, Any]:
+    status, detail, ms = await _timed(get_target_store().ping())
+    return _result(status, ms, None if status == "ok" else detail)
+
+
+async def check_redis(redis_client) -> Dict[str, Any]:
+    if redis_client is None:
+        return _result("unknown", detail="sem cliente Redis")
+    status, detail, ms = await _timed(redis_client.ping())
+    return _result(status, ms, None if status == "ok" else detail)
+
+
+async def check_ct_logs(redis_client) -> Dict[str, Any]:
+    """Lê o status do CT poller (publicado pelo Discovery Worker no Redis)."""
+    if redis_client is None:
+        return _result("unknown", detail="sem cliente Redis")
+    try:
+        raw = await redis_client.get(os.environ.get("KLARIM_DISCOVERY_STATUS_KEY", "discovery:status"))
+    except Exception as exc:  # noqa: BLE001
+        return _result("error", detail=repr(exc))
+    if not raw:
+        return _result("error", detail="sem heartbeat do discovery")
+    src = (json.loads(raw).get("source") or {})
+    connected = bool(src.get("connected"))
+    return {
+        "status": "streaming" if connected else "disconnected",
+        "total_seen": src.get("total_seen"),
+        "buffer": src.get("buffer_size"),
+    }
+
+
+async def check_resend() -> Dict[str, Any]:
+    key = os.environ.get("RESEND_API_KEY")
+    if not key:
+        return _result("unknown", detail="RESEND_API_KEY não configurada")
+
+    async def _call():
+        async with httpx.AsyncClient(timeout=5.0) as c:
+            r = await c.get("https://api.resend.com/domains",
+                            headers={"Authorization": f"Bearer {key}"})
+        if r.status_code >= 400:
+            raise RuntimeError(f"HTTP {r.status_code}")
+        return None
+
+    status, detail, ms = await _timed(_call())
+    return _result(status, ms, None if status == "ok" else detail)
+
+
+async def check_abacatepay() -> Dict[str, Any]:
+    key = os.environ.get("ABACATEPAY_API_KEY")
+    if not key:
+        return _result("unknown", detail="ABACATEPAY_API_KEY não configurada")
+
+    async def _call():
+        async with httpx.AsyncClient(timeout=5.0) as c:
+            r = await c.get("https://api.abacatepay.com/v2/billing/list",
+                            headers={"Authorization": f"Bearer {key}"})
+        if r.status_code >= 400:
+            raise RuntimeError(f"HTTP {r.status_code}")
+        return None
+
+    status, detail, ms = await _timed(_call())
+    return _result(status, ms, None if status == "ok" else detail)
+
+
+async def run_all(redis_client) -> Dict[str, Any]:
+    pg, rd, ct, rs, ab = await asyncio.gather(
+        check_postgres(), check_redis(redis_client), check_ct_logs(redis_client),
+        check_resend(), check_abacatepay(),
+    )
+    return {"postgres": pg, "redis": rd, "ct_logs": ct, "resend": rs, "abacatepay": ab}

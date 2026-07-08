@@ -96,6 +96,11 @@ class TargetStore:
     async def ensure_schema(self) -> None:
         await asyncio.to_thread(self._run, lambda cur: cur.execute(_SCHEMA))
 
+    async def ping(self) -> bool:
+        """SELECT 1 — health check do PostgreSQL (KL-16)."""
+        await asyncio.to_thread(self._run, lambda cur: cur.execute("SELECT 1"))
+        return True
+
     # --- helper de execução ------------------------------------------------ #
 
     def _run(self, fn):
@@ -322,6 +327,48 @@ class TargetStore:
             cur.execute("SELECT semaphore, COUNT(*) FROM scans GROUP BY semaphore")
             by_semaphore = {r[0]: int(r[1]) for r in cur.fetchall()}
             return {"total": int(total), "avg_score": int(avg), "by_semaphore": by_semaphore}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- métricas operacionais (KL-16) ------------------------------------- #
+
+    async def scan_today_stats(self) -> Dict[str, Any]:
+        """Scans completados hoje + score médio de hoje."""
+        def _fn(cur):
+            cur.execute("SELECT COUNT(*), COALESCE(ROUND(AVG(score)), 0) FROM scans "
+                        "WHERE scanned_at >= date_trunc('day', NOW())")
+            c, avg = cur.fetchone()
+            return {"count": int(c), "avg_score": int(avg)}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def count_rescan_eligible(self, days: int = 30) -> int:
+        """Alvos com last_scan > N dias (próximos elegíveis a re-scan)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT COUNT(*) FROM targets WHERE status IN ('scanned','alerted') "
+                "AND contact_email IS NOT NULL AND last_scan_at IS NOT NULL "
+                "AND last_scan_at < NOW() - (%s || ' days')::interval",
+                (str(days),),
+            )
+            return int(cur.fetchone()[0])
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def email_metrics(self) -> Dict[str, int]:
+        """E-mails proativos (alertas + evolução) enviados hoje/semana/mês."""
+        def _fn(cur):
+            out: Dict[str, int] = {}
+            for key, interval in (("sent_today", "1 day"), ("sent_week", "7 days"),
+                                  ("sent_month", "30 days")):
+                cur.execute(
+                    f"SELECT (SELECT COUNT(*) FROM alert_log WHERE status='sent' "
+                    f"  AND sent_at > NOW() - INTERVAL '{interval}') + "
+                    f"(SELECT COUNT(*) FROM rescan_log WHERE email_id IS NOT NULL "
+                    f"  AND rescanned_at > NOW() - INTERVAL '{interval}')"
+                )
+                out[key] = int(cur.fetchone()[0])
+            return out
 
         return await asyncio.to_thread(self._run, _fn)
 
@@ -596,7 +643,9 @@ class TargetStore:
             by_evolution = {r[0]: int(r[1]) for r in cur.fetchall()}
             cur.execute("SELECT COUNT(*) FROM rescan_log")
             total = int(cur.fetchone()[0])
-            return {"by_evolution": by_evolution, "total": total}
+            cur.execute("SELECT COUNT(*) FROM rescan_log WHERE rescanned_at >= date_trunc('day', NOW())")
+            today = int(cur.fetchone()[0])
+            return {"by_evolution": by_evolution, "total": total, "today": today}
 
         return await asyncio.to_thread(self._run, _fn)
 

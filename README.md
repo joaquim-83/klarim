@@ -379,6 +379,13 @@ tela de login) ou em `https://klarim.net/painel`. O subdomínio usa o mesmo
 certificado Let's Encrypt (SAN `painel.klarim.net`) e um server block Nginx próprio
 com os mesmos security headers — sem novo container nem regra de firewall.
 
+**Dashboard operacional (KL-16):** a tela **Sistema** (`/painel/sistema`) mostra em
+tempo real (auto-refresh 30s) o status 🟢/🔴 dos 4 workers (via heartbeat no Redis,
+TTL 10min), o health das dependências (PostgreSQL, Redis, CT logs, Resend,
+AbacatePay), as métricas de e-mail (hoje/semana/mês + uso do throttle) e um log de
+atividade (scans, alertas, re-scans, pagamentos). Endpoints `GET /api/system/status`
+e `/api/system/activity`.
+
 **Integração completa (KL-17):** os scans feitos no site público passam a gravar em
 `targets`/`scans` (em background, com `source='public'`), então aparecem no painel;
 a tela **Escanear** deixa o operador rodar o ciclo inteiro (URL → scan → resultado
@@ -453,6 +460,7 @@ disclaimer claro em todos os relatórios.
 - [x] Alert Worker (disparo automático do alerta + throttle + descadastro)
 - [x] Re-scan Worker (re-scan de 30 dias + e-mail de evolução de score)
 - [x] Dashboard admin (`/painel`) — auth JWT, KPIs, gestão e monitoramento
+- [x] Dashboard operacional (`/painel/sistema`) — status dos workers, health, atividade
 - [x] Interface web (React + Vite + Tailwind + Nginx) — scan self-service
 - [x] Pagamento PIX (AbacatePay) para liberar o relatório completo
 - [ ] Pagamento por cartão (Stripe)

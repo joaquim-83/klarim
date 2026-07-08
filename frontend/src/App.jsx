@@ -22,6 +22,7 @@ const ScanDetalhe = lazy(() => import('./pages/admin/ScanDetalhe'))
 const Alertas = lazy(() => import('./pages/admin/Alertas'))
 const Pagamentos = lazy(() => import('./pages/admin/Pagamentos'))
 const Rescans = lazy(() => import('./pages/admin/Rescans'))
+const Sistema = lazy(() => import('./pages/admin/Sistema'))
 const Config = lazy(() => import('./pages/admin/Config'))
 
 function AdminFallback() {
@@ -68,6 +69,7 @@ export default function App() {
         <Route path="alertas" element={<Alertas />} />
         <Route path="pagamentos" element={<Pagamentos />} />
         <Route path="rescans" element={<Rescans />} />
+        <Route path="sistema" element={<Sistema />} />
         <Route path="config" element={<Config />} />
       </Route>
 

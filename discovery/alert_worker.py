@@ -9,10 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from notifier import KlarimMailer, build_unsubscribe_link
 from .store import get_target_store
+from .heartbeat import publish_heartbeat
 
 _SEV_MAP = {"CRITICA": "critica", "ALTA": "alta", "MEDIA": "media", "BAIXA": "baixa"}
 
@@ -58,6 +60,21 @@ class AlertWorker:
         self.max_day = int(os.environ.get("MAX_ALERTS_PER_DAY", "50"))
         self.interval_hours = int(os.environ.get("ALERT_INTERVAL_HOURS", "1"))
         self.store = get_target_store()
+        self._last_cycle_at = None
+        self._next_cycle_at = None
+        self._last_cycle_stats: dict = {}
+
+    def _hb_payload(self) -> dict:
+        return {
+            "last_cycle_at": self._last_cycle_at.isoformat() if self._last_cycle_at else None,
+            "next_cycle_at": self._next_cycle_at.isoformat() if self._next_cycle_at else None,
+            "last_cycle_stats": self._last_cycle_stats,
+        }
+
+    async def _heartbeat_loop(self) -> None:
+        while True:
+            await publish_heartbeat("alert", self._hb_payload())
+            await asyncio.sleep(60)
 
     def _mailer(self) -> Optional[KlarimMailer]:
         key = os.environ.get("RESEND_API_KEY")
@@ -105,9 +122,13 @@ class AlertWorker:
     async def start(self) -> None:
         print(f"[alert] iniciado (max {self.max_hour}/h, {self.max_day}/dia, "
               f"intervalo {self.interval_hours}h)", flush=True)
+        asyncio.create_task(self._heartbeat_loop())
         while True:
             try:
-                await self.run_cycle()
+                self._last_cycle_stats = await self.run_cycle()
             except Exception as exc:  # noqa: BLE001
                 print(f"[alert] ciclo falhou: {exc!r}", flush=True)
+            self._last_cycle_at = datetime.now(timezone.utc)
+            self._next_cycle_at = self._last_cycle_at + timedelta(hours=self.interval_hours)
+            await publish_heartbeat("alert", self._hb_payload())
             await asyncio.sleep(self.interval_hours * 3600)

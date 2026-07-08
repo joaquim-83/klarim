@@ -47,6 +47,7 @@ from notifier import KlarimMailer, KlarimMailerError, unsubscribe_token
 from discovery.alert_worker import send_alert_for_target
 from discovery.rescan_worker import rescan_target
 from discovery.ingest import ingest_scan
+from api import health_checks
 
 
 # --------------------------------------------------------------------------- #
@@ -99,7 +100,7 @@ JWT_TTL_SECONDS = 86400  # 24h
 # Prefixos protegidos — exigem Bearer token. O resto é público (scan/summary,
 # payment, report, webhooks, recovery, unsubscribe, health, auth/login).
 _PROTECTED_PREFIXES = ("/targets", "/scans", "/alerts", "/rescans", "/email", "/payments",
-                       "/config", "/discovery", "/admin")
+                       "/config", "/discovery", "/admin", "/system")
 
 
 def _jwt_secret() -> str:
@@ -842,6 +843,120 @@ async def api_discovery_status() -> dict:
     except Exception:  # noqa: BLE001 - DB opcional
         status["targets_discovered_today"] = None
     return status
+
+
+# --------------------------------------------------------------------------- #
+# Dashboard operacional (KL-16): status dos workers + health + atividade
+# --------------------------------------------------------------------------- #
+
+async def _redis_json(key: str):
+    if _cache is None or _cache.redis is None:
+        return None
+    try:
+        raw = await _cache.redis.get(key)
+        return json.loads(raw) if raw else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+@app.get("/system/status")
+async def api_system_status() -> dict:
+    """Status dos workers + health das dependências + métricas de e-mail (KL-16)."""
+    store = get_target_store()
+    redis = _cache.redis if _cache is not None else None
+    disc = await _redis_json(os.environ.get("KLARIM_DISCOVERY_STATUS_KEY", "discovery:status"))
+    alert_hb = await _redis_json("worker:alert:status")
+    rescan_hb = await _redis_json("worker:rescan:status")
+    scan_hb = await _redis_json("worker:scan:status")
+
+    a_stats = await store.alert_stats()
+    r_stats = await store.rescan_stats()
+    scan_today = await store.scan_today_stats()
+    eligible = await store.count_rescan_eligible()
+    discovered_today = await store.count_discovered_today()
+    email = await store.email_metrics()
+    max_day = int(os.environ.get("MAX_ALERTS_PER_DAY", "50"))
+
+    queue_size = None
+    if redis is not None:
+        try:
+            queue_size = await redis.llen(os.environ.get("KLARIM_SCAN_QUEUE", "klarim:scan_queue"))
+        except Exception:  # noqa: BLE001
+            queue_size = None
+
+    deps = await health_checks.run_all(redis)
+
+    return {
+        "workers": {
+            "discovery": {
+                "alive": disc is not None,
+                "last_cycle_at": (disc or {}).get("last_cycle_at"),
+                "next_cycle_at": (disc or {}).get("next_cycle_at"),
+                "cycles_completed": (disc or {}).get("cycles_completed", 0),
+                "source": (disc or {}).get("source"),
+                "targets_discovered_today": discovered_today,
+            },
+            "alert": {
+                "alive": alert_hb is not None,
+                "last_cycle_at": (alert_hb or {}).get("last_cycle_at"),
+                "next_cycle_at": (alert_hb or {}).get("next_cycle_at"),
+                "sent_today": a_stats.get("today", 0),
+                "sent_week": a_stats.get("week", 0),
+                "throttle_limit": max_day,
+                "last_cycle_stats": (alert_hb or {}).get("last_cycle_stats"),
+            },
+            "rescan": {
+                "alive": rescan_hb is not None,
+                "last_cycle_at": (rescan_hb or {}).get("last_cycle_at"),
+                "next_cycle_at": (rescan_hb or {}).get("next_cycle_at"),
+                "rescanned_today": r_stats.get("today", 0),
+                "eligible": eligible,
+                "last_cycle_stats": (rescan_hb or {}).get("last_cycle_stats"),
+            },
+            "scan": {
+                "alive": scan_hb is not None,
+                "queue_size": queue_size,
+                "completed_today": scan_today["count"],
+                "avg_score_today": scan_today["avg_score"],
+                "last_scan_at": (scan_hb or {}).get("last_scan_at"),
+            },
+        },
+        "dependencies": deps,
+        "email_metrics": {**email, "throttle_used": f"{email['sent_today']}/{max_day}"},
+    }
+
+
+@app.get("/system/activity")
+async def api_system_activity(limit: int = Query(default=50, le=200)) -> dict:
+    """Timeline das últimas ações do sistema (scans, alertas, re-scans, pagamentos)."""
+    store = get_target_store()
+    per = min(limit, 50)
+    events = []
+
+    for a in await store.list_alerts(limit=per):
+        events.append({"type": "alert", "at": str(a.get("sent_at")),
+                       "message": f"alerta enviado para {a.get('contact_email')} "
+                                  f"({a.get('url') or 'alvo #' + str(a.get('target_id'))}, score {a.get('score')})"})
+    for r in await store.list_rescans(limit=per):
+        events.append({"type": "rescan", "at": str(r.get("rescanned_at")),
+                       "message": f"re-scan {r.get('url') or 'alvo #' + str(r.get('target_id'))}: "
+                                  f"{r.get('old_score')}→{r.get('new_score')} ({r.get('evolution')})"})
+    for s in await store.list_scans(limit=per):
+        events.append({"type": "scan", "at": str(s.get("scanned_at")),
+                       "message": f"scan {s.get('url')} → {s.get('score')}/100 {s.get('semaphore')} "
+                                  f"[{s.get('source')}]"})
+    try:
+        for c in await get_store().list_charges(limit=per):
+            if c.status in PaymentStatus.PAID_STATES:
+                events.append({"type": "payment", "at": str(c.paid_at or c.created_at),
+                               "message": f"pagamento confirmado: {amount_display(c.amount_cents)} "
+                                          f"({c.target_url})"})
+    except Exception:  # noqa: BLE001
+        pass
+
+    events = [e for e in events if e["at"] and e["at"] != "None"]
+    events.sort(key=lambda e: e["at"], reverse=True)
+    return {"count": min(len(events), limit), "activity": events[:limit]}
 
 
 @app.get("/config")

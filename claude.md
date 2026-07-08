@@ -674,4 +674,32 @@ Fecha os gaps de integração entre o site público, o scanner e o painel.
   scan repetido atualiza `last_scan_*` e grava um novo `scan` (histórico).
 
 **Sidebar:** Visão geral · **Escanear** · Alvos · Scans · Alertas · Pagamentos ·
-Re-scans · Configurações.
+Re-scans · **Sistema** · Configurações.
+
+## 20. Dashboard operacional (KL-16) — `/painel/sistema`
+
+Visão de operação em tempo real (auto-refresh a cada 30s).
+
+- **Heartbeat dos workers** (`discovery/heartbeat.py`): cada worker publica
+  `worker:<name>:status` no Redis com **TTL 600s** (10min). Se o worker morre, a
+  chave expira e o painel mostra 🔴. Alert/Re-scan/Scan têm um loop de heartbeat a
+  cada 60s (independente do ciclo, que é de horas); o Discovery reusa o
+  `discovery:status` do KL-15 (TTL baixado para 600s). O Scan Worker faz `blpop`
+  com timeout de 30s para bater o heartbeat mesmo com a fila vazia.
+- **`GET /api/system/status`** (JWT): estado dos 4 workers (alive + últimos
+  ciclos + stats), health das dependências e métricas de e-mail.
+- **`api/health_checks.py`**: `postgres` (SELECT 1), `redis` (ping), `ct_logs`
+  (lê `discovery:status`), `resend` (GET /domains), `abacatepay` (GET /billing/list)
+  — cada um `{status, latency_ms, detail}`, nunca levanta; rodam em paralelo.
+- **`GET /api/system/activity?limit=`** (JWT): timeline intercalada das últimas
+  ações (scans, alertas, re-scans, pagamentos), ordenada por data.
+- **Métricas de e-mail:** `store.email_metrics()` soma `alert_log` + `rescan_log`
+  (hoje/semana/mês); `throttle_used = enviados_hoje/MAX_ALERTS_PER_DAY`.
+- **Frontend `/painel/sistema`:** cards 🟢/🔴 por worker, health das dependências,
+  métricas de e-mail e log de atividade — polling a cada 30s (`setInterval`).
+
+**Limpeza (KL-16):** as 4 cobranças simuladas do sandbox (`simulate_payment`,
+`paid_at` instantâneo) + cobranças de teste (URLs example/klarim/igoove) foram
+removidas; ficou só o pagamento **real** (pousadacostera, R$ 29, 36s para pagar).
+`payments/stats` → **R$ 29,00, 1 pago**. `alert_log` preservado (alertas reais do
+funil).

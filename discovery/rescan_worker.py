@@ -15,12 +15,14 @@ from __future__ import annotations
 
 import asyncio
 import os
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from scanner import run_scan
 from scanner.cache import ScanCache
 from notifier import KlarimMailer, build_unsubscribe_link
 from payments import PRICING, DEFAULT_TIER, amount_display
+from .heartbeat import publish_heartbeat
 from .store import get_target_store
 from .alert_worker import severity_counts_from_checks
 
@@ -113,6 +115,21 @@ class RescanWorker:
         self.batch = int(os.environ.get("RESCAN_BATCH_SIZE", "50"))
         self.store = get_target_store()
         self._cache_obj: Optional[ScanCache] = None
+        self._last_cycle_at = None
+        self._next_cycle_at = None
+        self._last_cycle_stats: dict = {}
+
+    def _hb_payload(self) -> dict:
+        return {
+            "last_cycle_at": self._last_cycle_at.isoformat() if self._last_cycle_at else None,
+            "next_cycle_at": self._next_cycle_at.isoformat() if self._next_cycle_at else None,
+            "last_cycle_stats": self._last_cycle_stats,
+        }
+
+    async def _heartbeat_loop(self) -> None:
+        while True:
+            await publish_heartbeat("rescan", self._hb_payload())
+            await asyncio.sleep(60)
 
     def _mailer(self) -> Optional[KlarimMailer]:
         key = os.environ.get("RESEND_API_KEY")
@@ -196,9 +213,13 @@ class RescanWorker:
     async def start(self) -> None:
         print(f"[rescan] iniciado (idade {self.age_days}d, intervalo {self.interval_hours}h, "
               f"teto {self.max_hour}/h {self.max_day}/dia)", flush=True)
+        asyncio.create_task(self._heartbeat_loop())
         while True:
             try:
-                await self.run_cycle()
+                self._last_cycle_stats = await self.run_cycle()
             except Exception as exc:  # noqa: BLE001
                 print(f"[rescan] ciclo falhou: {exc!r}", flush=True)
+            self._last_cycle_at = datetime.now(timezone.utc)
+            self._next_cycle_at = self._last_cycle_at + timedelta(hours=self.interval_hours)
+            await publish_heartbeat("rescan", self._hb_payload())
             await asyncio.sleep(self.interval_hours * 3600)

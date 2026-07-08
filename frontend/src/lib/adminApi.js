@@ -115,6 +115,10 @@ export const admin = {
   // status do Discovery Worker — KL-15
   discoveryStatus: () => get('/discovery/status'),
 
+  // dashboard operacional — KL-16
+  systemStatus: () => get('/system/status'),
+  systemActivity: (limit = 50) => get(`/system/activity?limit=${limit}`),
+
   // fluxo integrado (KL-17)
   scanAndReport: (body) => post('/admin/scan-and-report', body),
   resendAlert: (targetId) => post('/admin/resend-alert', { target_id: targetId }),

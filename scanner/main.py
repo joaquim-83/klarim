@@ -21,6 +21,7 @@ import asyncio
 import json
 import os
 import sys
+from datetime import datetime, timezone
 
 from .runner import run_scan, format_report
 
@@ -79,6 +80,7 @@ async def _worker_loop() -> None:
 
     from scanner.cache import ScanCache
     from discovery.store import get_target_store
+    from discovery.heartbeat import publish_heartbeat
 
     redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
     client = aioredis.from_url(redis_url, decode_responses=True)
@@ -96,10 +98,21 @@ async def _worker_loop() -> None:
     min_interval = 3600.0 / max_per_hour if max_per_hour > 0 else 0.0
     loop = asyncio.get_event_loop()
     last = 0.0
+    last_scan_at = None
+
+    async def _beat():
+        try:
+            qlen = await client.llen(SCAN_QUEUE)
+        except Exception:  # noqa: BLE001
+            qlen = None
+        await publish_heartbeat("scan", {"queue_size": qlen, "last_scan_at": last_scan_at})
 
     print(f"[klarim-worker] conectado a {redis_url}; aguardando '{SCAN_QUEUE}'…", flush=True)
+    await _beat()
     while True:
-        item = await client.blpop(SCAN_QUEUE)
+        # timeout 30s: acorda pra bater o heartbeat mesmo com a fila vazia (KL-16).
+        item = await client.blpop(SCAN_QUEUE, timeout=30)
+        await _beat()
         if not item:
             continue
         target_id, url, source = _parse_queue_item(item[1])
@@ -117,6 +130,7 @@ async def _worker_loop() -> None:
                     target_id, url, s.score, s.semaphore, s.passed, s.failed,
                     s.inconclusive, report.to_dict(), source=source)
                 await store.update_scan_result(target_id, scan_id, s.score)
+            last_scan_at = datetime.now(timezone.utc).isoformat()
             print(f"[klarim-worker] {url} -> score {s.score if s else 'n/a'}"
                   f"{' (target ' + str(target_id) + ')' if target_id else ''}", flush=True)
         except Exception as exc:  # noqa: BLE001 - mantém o worker vivo
