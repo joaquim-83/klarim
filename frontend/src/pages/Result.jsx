@@ -1,9 +1,10 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useSearchParams, useNavigate, Link } from 'react-router-dom'
 import Layout from '../components/Layout'
 import Semaphore from '../components/Semaphore'
 import SeverityChips from '../components/SeverityChips'
 import { useSummary, problemLine } from '../lib/useSummary'
+import { trackEvent } from '../lib/tracker'
 
 export default function Result() {
   const [params] = useSearchParams()
@@ -11,6 +12,15 @@ export default function Result() {
   const navigate = useNavigate()
   const { summary, loading, error } = useSummary(url)
   const [copied, setCopied] = useState(false)
+
+  // KL-21: result_viewed quando o resultado carrega (uma vez por scan).
+  useEffect(() => {
+    if (!summary) return
+    trackEvent('result_viewed', {
+      url, score: summary.score, semaphore: summary.semaphore,
+      fail_count: summary.problems,
+    }, url)
+  }, [summary, url])
 
   function share() {
     navigator.clipboard?.writeText(window.location.href).then(() => {
@@ -84,7 +94,10 @@ export default function Result() {
         {/* CTA principal */}
         <div className="mt-8">
           <button
-            onClick={() => navigate(`/pay?url=${encodeURIComponent(url)}`)}
+            onClick={() => {
+              trackEvent('cta_clicked', { url, price: summary.price, score: summary.score }, url)
+              navigate(`/pay?url=${encodeURIComponent(url)}`)
+            }}
             className="w-full rounded-lg bg-klarim-alert px-6 py-4 text-lg font-bold text-klarim-bg transition hover:opacity-90 sm:w-auto"
           >
             Ver relatório completo — R$ 29

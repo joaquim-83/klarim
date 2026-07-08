@@ -4,6 +4,7 @@ import Layout from '../components/Layout'
 import Semaphore from '../components/Semaphore'
 import { useSummary } from '../lib/useSummary'
 import { downloadReport, getPaymentStatus } from '../lib/api'
+import { trackEvent } from '../lib/tracker'
 
 function DownloadButton({ kind, url, chargeId, label, hint }) {
   const [busy, setBusy] = useState(false)
@@ -12,6 +13,7 @@ function DownloadButton({ kind, url, chargeId, label, hint }) {
   async function onClick() {
     setBusy(true)
     setFailed(false)
+    trackEvent('report_downloaded', { url, type: kind }, url)
     try {
       await downloadReport(kind, url, chargeId)
     } catch {

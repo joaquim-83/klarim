@@ -49,7 +49,8 @@ async def send_alert_for_target(store, mailer: KlarimMailer, target: Dict[str, A
     unsub = build_unsubscribe_link(email, secret) if secret else None
 
     res = await mailer.send_alert(email, target["url"], score, semaphore, fail_count, sev,
-                                  unsubscribe_link=unsub, risk_messages=risks)
+                                  unsubscribe_link=unsub, risk_messages=risks,
+                                  target_id=target["id"])
     email_id = res.get("email_id")
     await store.mark_target_alerted(target["id"])
     await store.log_alert(target["id"], email, score, semaphore, fail_count, email_id)

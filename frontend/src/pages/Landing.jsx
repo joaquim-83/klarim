@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom'
 import Layout from '../components/Layout'
 import { Beacon } from '../components/Logo'
 import { normalizeUrl, isValidUrl } from '../lib/url'
+import { trackEvent } from '../lib/tracker'
 
 function Step({ icon, title, children }) {
   return (
@@ -28,7 +29,9 @@ export default function Landing() {
       return
     }
     setError('')
-    navigate(`/scan?url=${encodeURIComponent(normalizeUrl(url))}`)
+    const target = normalizeUrl(url)
+    trackEvent('scan_started', { url: target }, target)
+    navigate(`/scan?url=${encodeURIComponent(target)}`)
   }
 
   return (

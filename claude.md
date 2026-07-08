@@ -736,3 +736,31 @@ não a artigos de lei.
   `risk_summary`. Os workers (alert/rescan) e os helpers de e-mail computam os
   riscos do `checks_json` e passam para `send_alert`/`send_evolution`.
 - **Sem FAILs ⇒ sem seção de risco** (ex.: PDF de site 100/100, e-mail de melhoria).
+
+## 22. Tracking da jornada do lead (KL-21) — `site_events` + UTM + Analytics
+
+Tracking **100% interno** (sem GA4/terceiros) do funil pós-alerta: e-mail enviado →
+link clicado → resultado visto → CTA → PIX gerado → pago → PDF baixado.
+
+- **Tabela `site_events`** (`event_type, session_id, target_url, target_id,
+  page_url, referrer, utm_*, metadata, created_at`) + índices. Tipos:
+  `page_view, scan_started, scan_completed, result_viewed, cta_clicked,
+  payment_created, payment_completed, report_downloaded, email_link_clicked`.
+- **`POST /api/events`** (público, sem JWT): fire-and-forget — valida o tipo,
+  **rate limit 100/min por sessão** (in-memory), resolve `target_id` de
+  `utm_content` (`target_<id>`), grava em **background** (`_spawn`) e responde
+  `{ok:true}` na hora. Nunca bloqueia.
+- **Frontend `lib/tracker.js`:** `session_id` (sessionStorage + `crypto.randomUUID`),
+  captura os **UTM na 1ª página** e persiste (some da URL ao navegar), `trackEvent`
+  fire-and-forget (`keepalive`, `.catch(()=>{})`). `page_view` em cada rota pública
+  (App.jsx, ignora `/painel`); os outros 7 eventos disparados nas páginas do funil.
+- **UTM nos e-mails** (`notifier`): `utm_result_link(url, campaign, target_id)` —
+  alerta `utm_campaign=alerta`, evolução `evolucao_<tipo>`, recuperação
+  `recuperacao`; `utm_content=target_<id>` (ou o domínio).
+- **Analytics (JWT):** `GET /api/analytics/{funnel|abandoned|campaigns|pages|events}`
+  (`?period=today|7d|30d|total`). Tela **`/painel/analytics`**: funil de conversão
+  (barras + %), carrinho abandonado (PIX gerado sem pagar + tempo no site),
+  atribuição por campanha, páginas mais visitadas, timeline de eventos. Sidebar:
+  item **Analytics** (entre Re-scans e Sistema).
+- **Contagem do funil:** `COUNT(DISTINCT session_id)` por etapa em `site_events`;
+  o topo (e-mails enviados) vem do `alert_log`.

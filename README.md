@@ -388,6 +388,15 @@ tela de login) ou em `https://klarim.net/painel`. O subdomínio usa o mesmo
 certificado Let's Encrypt (SAN `painel.klarim.net`) e um server block Nginx próprio
 com os mesmos security headers — sem novo container nem regra de firewall.
 
+**Analytics da jornada (KL-21):** tracking 100% interno (sem GA4) do funil
+pós-alerta. Os links dos e-mails levam UTM; o `tracker.js` dispara eventos
+(`page_view`, `scan_started/completed`, `result_viewed`, `cta_clicked`,
+`payment_created/completed`, `report_downloaded`) para `POST /api/events` (público,
+rate-limited, gravação em background na tabela `site_events`). A tela **Analytics**
+(`/painel/analytics`) mostra o funil de conversão, carrinho abandonado, atribuição
+por campanha, páginas mais visitadas e a timeline de eventos, com período
+selecionável.
+
 **Dashboard operacional (KL-16):** a tela **Sistema** (`/painel/sistema`) mostra em
 tempo real (auto-refresh 30s) o status 🟢/🔴 dos 4 workers (via heartbeat no Redis,
 TTL 10min), o health das dependências (PostgreSQL, Redis, CT logs, Resend,

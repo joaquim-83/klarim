@@ -91,7 +91,7 @@ async def rescan_target(store, mailer: Optional[KlarimMailer], cache: Optional[S
             evolution, new_semaphore, fail_count, sev,
             price_display_for_tier(target.get("price_tier")),
             unsubscribe_link=_unsub_link(target["contact_email"]),
-            risk_messages=risks)
+            risk_messages=risks, target_id=target_id)
         email_id = res.get("email_id")
 
     await store.log_rescan(target_id, old_score, new_score, evolution,
@@ -172,7 +172,7 @@ class RescanWorker:
                     p.get("fail_count") or 0, sev,
                     price_display_for_tier(p.get("price_tier")),
                     unsubscribe_link=_unsub_link(p["contact_email"]),
-                    risk_messages=risks)
+                    risk_messages=risks, target_id=p.get("target_id"))
                 email_id = res.get("email_id")
                 if email_id:
                     await self.store.update_rescan_email(p["rescan_id"], email_id)

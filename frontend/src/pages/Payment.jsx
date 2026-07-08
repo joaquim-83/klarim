@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useSearchParams, useNavigate, Link } from 'react-router-dom'
 import Layout from '../components/Layout'
 import { createPayment, getPaymentStatus } from '../lib/api'
+import { trackEvent } from '../lib/tracker'
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
@@ -36,6 +37,7 @@ export default function Payment() {
     try {
       const c = await createPayment(url, email)
       setCharge(c)
+      trackEvent('payment_created', { url, charge_id: c.charge_id, amount: c.amount }, url)
     } catch (err) {
       setError(err.message || 'Erro ao criar cobrança.')
     } finally {
@@ -51,6 +53,7 @@ export default function Payment() {
         const s = await getPaymentStatus(charge.charge_id)
         if (s.paid) {
           setPaid(true)
+          trackEvent('payment_completed', { url, charge_id: charge.charge_id, amount: charge.amount }, url)
           clearInterval(t)
           setTimeout(
             () =>

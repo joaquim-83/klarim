@@ -57,6 +57,15 @@ def site_name(url: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
+def utm_result_link(target_url: str, campaign: str, target_id=None) -> str:
+    """Link /result com UTM (KL-21) — permite rastrear cliques do e-mail por campanha
+    e por alvo. Sem target_id, usa o domínio como utm_content."""
+    content = f"target_{target_id}" if target_id else site_name(target_url)
+    return (f"{SITE_BASE}/result?url={quote(target_url, safe='')}"
+            f"&utm_source=klarim&utm_medium=email&utm_campaign={quote(campaign, safe='')}"
+            f"&utm_content={quote(content, safe='')}")
+
+
 def unsubscribe_token(email: str, secret: str) -> str:
     """HMAC-SHA256 do e-mail (32 chars) — impede descadastro por terceiros."""
     return hmac.new(secret.encode(), email.strip().lower().encode(), hashlib.sha256).hexdigest()[:32]
@@ -101,6 +110,7 @@ class KlarimMailer:
         severity_counts: Dict[str, int],
         unsubscribe_link: Optional[str] = None,
         risk_messages: Optional[list] = None,
+        target_id=None,
     ) -> Dict[str, Any]:
         """Alerta gratuito (semáforo) — o anzol do funil."""
         site = site_name(target_url)
@@ -115,7 +125,7 @@ class KlarimMailer:
             fail_count=fail_count,
             sev=severity_counts or {},
             risk_messages=(risk_messages or [])[:3],  # KL-20: máx 3 riscos no e-mail
-            result_link=f"{SITE_BASE}/result?url={quote(target_url, safe='')}",
+            result_link=utm_result_link(target_url, "alerta", target_id),
             lgpd=LGPD_SHORT,
             unsubscribe_link=unsubscribe_link,
         )
@@ -137,6 +147,7 @@ class KlarimMailer:
         price_display: str,
         unsubscribe_link: Optional[str] = None,
         risk_messages: Optional[list] = None,
+        target_id=None,
     ) -> Dict[str, Any]:
         """E-mail de evolução do score (KL-13). Escolhe o template pelo tipo."""
         site = site_name(target_url)
@@ -165,7 +176,7 @@ class KlarimMailer:
             fail_count=fail_count,
             sev=severity_counts or {},
             risk_messages=(risk_messages or [])[:3],  # KL-20
-            result_link=f"{SITE_BASE}/result?url={quote(target_url, safe='')}",
+            result_link=utm_result_link(target_url, f"evolucao_{evolution}", target_id),
             price_display=price_display,
             lgpd=LGPD_SHORT,
             unsubscribe_link=unsubscribe_link,
@@ -204,6 +215,8 @@ class KlarimMailer:
 
     async def send_recovery_link(self, to_email: str, recovery_url: str) -> Dict[str, Any]:
         """Envia o link temporário de recuperação de relatórios."""
+        sep = "&" if "?" in recovery_url else "?"
+        recovery_url = f"{recovery_url}{sep}utm_source=klarim&utm_medium=email&utm_campaign=recuperacao"
         html = _env.get_template("recovery.html").render(recovery_url=recovery_url)
         return await self._send({
             "from": self.from_address,

@@ -1,5 +1,6 @@
-import { lazy, Suspense } from 'react'
-import { Routes, Route, Navigate } from 'react-router-dom'
+import { lazy, Suspense, useEffect } from 'react'
+import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { trackEvent, initTracking } from './lib/tracker'
 import Landing from './pages/Landing'
 import Scan from './pages/Scan'
 import Result from './pages/Result'
@@ -22,6 +23,7 @@ const ScanDetalhe = lazy(() => import('./pages/admin/ScanDetalhe'))
 const Alertas = lazy(() => import('./pages/admin/Alertas'))
 const Pagamentos = lazy(() => import('./pages/admin/Pagamentos'))
 const Rescans = lazy(() => import('./pages/admin/Rescans'))
+const Analytics = lazy(() => import('./pages/admin/Analytics'))
 const Sistema = lazy(() => import('./pages/admin/Sistema'))
 const Config = lazy(() => import('./pages/admin/Config'))
 
@@ -33,8 +35,23 @@ function AdminFallback() {
   )
 }
 
+// KL-21: page_view a cada rota do site público (não trackeia o painel admin).
+function RouteTracker() {
+  const location = useLocation()
+  useEffect(() => {
+    initTracking()
+  }, [])
+  useEffect(() => {
+    if (location.pathname.startsWith('/painel')) return
+    trackEvent('page_view', { page: location.pathname })
+  }, [location.pathname, location.search])
+  return null
+}
+
 export default function App() {
   return (
+    <>
+    <RouteTracker />
     <Routes>
       {/* Site público */}
       <Route path="/" element={<Landing />} />
@@ -69,11 +86,13 @@ export default function App() {
         <Route path="alertas" element={<Alertas />} />
         <Route path="pagamentos" element={<Pagamentos />} />
         <Route path="rescans" element={<Rescans />} />
+        <Route path="analytics" element={<Analytics />} />
         <Route path="sistema" element={<Sistema />} />
         <Route path="config" element={<Config />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
+    </>
   )
 }

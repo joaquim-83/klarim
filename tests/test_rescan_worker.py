@@ -108,9 +108,9 @@ class FakeMailer:
 
     async def send_evolution(self, to_email, target_url, old_score, new_score, evolution,
                              semaphore, fail_count, severity_counts, price_display,
-                             unsubscribe_link=None, risk_messages=None):
-        self.sent.append({"to": to_email, "evolution": evolution,
-                          "old": old_score, "new": new_score, "risks": risk_messages})
+                             unsubscribe_link=None, risk_messages=None, target_id=None):
+        self.sent.append({"to": to_email, "evolution": evolution, "old": old_score,
+                          "new": new_score, "risks": risk_messages, "target_id": target_id})
         return {"email_id": f"em_{len(self.sent)}"}
 
 

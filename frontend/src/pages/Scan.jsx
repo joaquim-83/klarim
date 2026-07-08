@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useSearchParams, useNavigate, Link } from 'react-router-dom'
 import Layout from '../components/Layout'
 import { fetchSummary } from '../lib/api'
+import { trackEvent } from '../lib/tracker'
 import { SCAN_STEPS } from '../lib/constants'
 
 export default function Scan() {
@@ -30,6 +31,7 @@ export default function Scan() {
     started.current = true
     fetchSummary(url)
       .then((summary) => {
+        trackEvent('scan_completed', { url, score: summary.score, semaphore: summary.semaphore }, url)
         navigate(`/result?url=${encodeURIComponent(url)}`, {
           replace: true,
           state: { summary },

@@ -119,6 +119,13 @@ export const admin = {
   systemStatus: () => get('/system/status'),
   systemActivity: (limit = 50) => get(`/system/activity?limit=${limit}`),
 
+  // analytics da jornada do lead — KL-21
+  analyticsFunnel: (period = '7d') => get(`/analytics/funnel?period=${period}`),
+  analyticsAbandoned: (period = '7d') => get(`/analytics/abandoned?period=${period}`),
+  analyticsCampaigns: (period = '7d') => get(`/analytics/campaigns?period=${period}`),
+  analyticsPages: (period = '7d') => get(`/analytics/pages?period=${period}`),
+  analyticsEvents: (limit = 50) => get(`/analytics/events?limit=${limit}`),
+
   // fluxo integrado (KL-17)
   scanAndReport: (body) => post('/admin/scan-and-report', body),
   resendAlert: (targetId) => post('/admin/resend-alert', { target_id: targetId }),

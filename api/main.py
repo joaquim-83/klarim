@@ -15,6 +15,7 @@ import hmac
 import json
 import os
 import secrets
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -101,7 +102,7 @@ JWT_TTL_SECONDS = 86400  # 24h
 # Prefixos protegidos — exigem Bearer token. O resto é público (scan/summary,
 # payment, report, webhooks, recovery, unsubscribe, health, auth/login).
 _PROTECTED_PREFIXES = ("/targets", "/scans", "/alerts", "/rescans", "/email", "/payments",
-                       "/config", "/discovery", "/admin", "/system")
+                       "/config", "/discovery", "/admin", "/system", "/analytics")
 
 
 def _jwt_secret() -> str:
@@ -963,6 +964,111 @@ async def api_system_activity(limit: int = Query(default=50, le=200)) -> dict:
     return {"count": min(len(events), limit), "activity": events[:limit]}
 
 
+# --------------------------------------------------------------------------- #
+# Tracking da jornada do lead (KL-21): eventos públicos + analytics (JWT)
+# --------------------------------------------------------------------------- #
+
+_KNOWN_EVENTS = {
+    "page_view", "scan_started", "scan_completed", "result_viewed", "cta_clicked",
+    "payment_created", "payment_completed", "report_downloaded", "email_link_clicked",
+}
+_EVENT_RL_MAX = 100          # eventos/minuto por sessão
+_event_rl: dict = {}         # session_id -> lista de timestamps (janela de 60s)
+
+
+def _event_rate_ok(session_id: str) -> bool:
+    now = time.monotonic()
+    q = _event_rl.setdefault(session_id, [])
+    cutoff = now - 60
+    while q and q[0] < cutoff:
+        q.pop(0)
+    if len(q) >= _EVENT_RL_MAX:
+        return False
+    q.append(now)
+    # Limpeza oportunista para o dict não crescer sem limite.
+    if len(_event_rl) > 5000:
+        for sid in [s for s, ts in _event_rl.items() if not ts or ts[-1] < cutoff]:
+            _event_rl.pop(sid, None)
+    return True
+
+
+def _target_id_from_utm(utm_content: Optional[str], given: Optional[int]) -> Optional[int]:
+    if given is not None:
+        return given
+    if utm_content and utm_content.startswith("target_"):
+        try:
+            return int(utm_content[len("target_"):])
+        except ValueError:
+            return None
+    return None
+
+
+class EventBody(BaseModel):
+    event_type: str
+    session_id: str
+    target_url: Optional[str] = None
+    target_id: Optional[int] = None
+    page_url: Optional[str] = None
+    referrer: Optional[str] = None
+    utm_source: Optional[str] = None
+    utm_medium: Optional[str] = None
+    utm_campaign: Optional[str] = None
+    utm_content: Optional[str] = None
+    metadata: Optional[dict] = None
+
+
+@app.post("/events")
+async def api_track_event(body: EventBody) -> dict:
+    """Tracking público (sem JWT) — fire-and-forget, gravação em background (KL-21)."""
+    if body.event_type not in _KNOWN_EVENTS or not body.session_id:
+        return {"ok": True, "recorded": False}
+    if not _event_rate_ok(body.session_id):
+        return {"ok": True, "recorded": False, "rate_limited": True}
+    target_id = _target_id_from_utm(body.utm_content, body.target_id)
+    _spawn(_log_event_bg(body, target_id))
+    return {"ok": True}
+
+
+async def _log_event_bg(body: EventBody, target_id: Optional[int]) -> None:
+    try:
+        await get_target_store().log_event(
+            body.event_type, body.session_id, target_url=body.target_url, target_id=target_id,
+            page_url=body.page_url, referrer=body.referrer, utm_source=body.utm_source,
+            utm_medium=body.utm_medium, utm_campaign=body.utm_campaign,
+            utm_content=body.utm_content, metadata=body.metadata)
+    except Exception as exc:  # noqa: BLE001 - tracking nunca derruba nada
+        print(f"[events] falha ao gravar {body.event_type} ({exc!r})", flush=True)
+
+
+@app.get("/analytics/funnel")
+async def api_analytics_funnel(period: str = Query(default="7d")) -> dict:
+    return await get_target_store().analytics_funnel(period)
+
+
+@app.get("/analytics/abandoned")
+async def api_analytics_abandoned(period: str = Query(default="7d")) -> dict:
+    rows = await get_target_store().analytics_abandoned(period)
+    return {"count": len(rows), "abandoned": rows}
+
+
+@app.get("/analytics/campaigns")
+async def api_analytics_campaigns(period: str = Query(default="7d")) -> dict:
+    rows = await get_target_store().analytics_campaigns(period)
+    return {"count": len(rows), "campaigns": rows}
+
+
+@app.get("/analytics/pages")
+async def api_analytics_pages(period: str = Query(default="7d")) -> dict:
+    rows = await get_target_store().analytics_pages(period)
+    return {"count": len(rows), "pages": rows}
+
+
+@app.get("/analytics/events")
+async def api_analytics_events(limit: int = Query(default=50, le=500)) -> dict:
+    rows = await get_target_store().analytics_events(limit)
+    return {"count": len(rows), "events": rows}
+
+
 @app.get("/config")
 async def api_config() -> dict:
     """Parâmetros operacionais em uso (somente leitura — sem segredos)."""
@@ -1015,12 +1121,13 @@ def _severity_counts(report: ScanReport) -> dict:
     }
 
 
-async def _send_alert_to(url: str, report: ScanReport, to_email: str) -> Optional[str]:
+async def _send_alert_to(url: str, report: ScanReport, to_email: str,
+                         target_id: Optional[int] = None) -> Optional[str]:
     s = report.score
     res = await _mailer().send_alert(
         to_email, url, s.score if s else 0, s.semaphore if s else "vermelho",
         s.failed if s else 0, _severity_counts(report),
-        risk_messages=get_risk_messages(report))
+        risk_messages=get_risk_messages(report), target_id=target_id)
     return res.get("email_id")
 
 
@@ -1065,7 +1172,7 @@ async def api_admin_scan_and_report(body: ScanAndReportBody) -> dict:
                 if body.email_type == "report":
                     result["email_id"] = await _send_report_to(url, report, to_email)
                 else:
-                    result["email_id"] = await _send_alert_to(url, report, to_email)
+                    result["email_id"] = await _send_alert_to(url, report, to_email, meta["target_id"])
                 result["email_sent"] = True
                 result["email_to"] = to_email
             except (KlarimMailerError, HTTPException) as exc:

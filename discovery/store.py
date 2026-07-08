@@ -75,6 +75,27 @@ CREATE TABLE IF NOT EXISTS rescan_log (
 );
 CREATE INDEX IF NOT EXISTS idx_rescan_log_target ON rescan_log(target_id);
 CREATE INDEX IF NOT EXISTS idx_rescan_log_date ON rescan_log(rescanned_at);
+
+CREATE TABLE IF NOT EXISTS site_events (
+    id SERIAL PRIMARY KEY,
+    event_type VARCHAR(50) NOT NULL,
+    session_id VARCHAR(64),
+    target_url TEXT,
+    target_id INTEGER,
+    page_url TEXT,
+    referrer TEXT,
+    utm_source VARCHAR(100),
+    utm_medium VARCHAR(100),
+    utm_campaign VARCHAR(100),
+    utm_content VARCHAR(200),
+    metadata JSONB DEFAULT '{}',
+    created_at TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_events_type ON site_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_events_session ON site_events(session_id);
+CREATE INDEX IF NOT EXISTS idx_events_date ON site_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_events_target ON site_events(target_id);
+CREATE INDEX IF NOT EXISTS idx_events_utm ON site_events(utm_source, utm_campaign);
 """
 
 
@@ -668,6 +689,149 @@ class TargetStore:
             return {"by_evolution": by_evolution, "total": total, "today": today}
 
         return await asyncio.to_thread(self._run, _fn)
+
+    # --- tracking da jornada do lead (KL-21) ------------------------------- #
+
+    async def log_event(
+        self, event_type: str, session_id: Optional[str], target_url: Optional[str] = None,
+        target_id: Optional[int] = None, page_url: Optional[str] = None,
+        referrer: Optional[str] = None, utm_source: Optional[str] = None,
+        utm_medium: Optional[str] = None, utm_campaign: Optional[str] = None,
+        utm_content: Optional[str] = None, metadata: Optional[dict] = None,
+    ) -> int:
+        def _fn(cur):
+            cur.execute(
+                """
+                INSERT INTO site_events (event_type, session_id, target_url, target_id,
+                    page_url, referrer, utm_source, utm_medium, utm_campaign, utm_content, metadata)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+                """,
+                (event_type, session_id, target_url, target_id, page_url, referrer,
+                 utm_source, utm_medium, utm_campaign, utm_content, json.dumps(metadata or {})),
+            )
+            return cur.fetchone()[0]
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def count_events_last_minute(self, session_id: str) -> int:
+        def _fn(cur):
+            cur.execute(
+                "SELECT COUNT(*) FROM site_events WHERE session_id = %s "
+                "AND created_at > NOW() - INTERVAL '1 minute'",
+                (session_id,),
+            )
+            return int(cur.fetchone()[0])
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def analytics_funnel(self, period: str = "7d") -> Dict[str, int]:
+        since = _period_since(period)
+        alert_since = _period_since(period, "sent_at")
+
+        def _fn(cur):
+            def distinct(where):
+                cur.execute(f"SELECT COUNT(DISTINCT session_id) FROM site_events "
+                            f"WHERE session_id IS NOT NULL AND {since} AND ({where})")
+                return int(cur.fetchone()[0])
+
+            cur.execute(f"SELECT COUNT(*) FROM alert_log WHERE status='sent' AND {alert_since}")
+            emails_sent = int(cur.fetchone()[0])
+            return {
+                "emails_sent": emails_sent,
+                "links_clicked": distinct("utm_medium = 'email'"),
+                "results_viewed": distinct("event_type = 'result_viewed'"),
+                "cta_clicked": distinct("event_type = 'cta_clicked'"),
+                "payments_created": distinct("event_type = 'payment_created'"),
+                "payments_completed": distinct("event_type = 'payment_completed'"),
+                "reports_downloaded": distinct("event_type = 'report_downloaded'"),
+            }
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def analytics_abandoned(self, period: str = "7d", limit: int = 50) -> List[Dict[str, Any]]:
+        since = _period_since(period)
+
+        def _fn(cur):
+            cur.execute(
+                f"""
+                SELECT DISTINCT ON (se.session_id) se.session_id, se.target_url,
+                       se.metadata->>'amount' AS amount, se.created_at,
+                       (SELECT EXTRACT(EPOCH FROM (MAX(created_at) - MIN(created_at)))
+                          FROM site_events e WHERE e.session_id = se.session_id) AS duration_seconds
+                FROM site_events se
+                WHERE se.event_type = 'payment_created' AND {since}
+                  AND se.session_id NOT IN (
+                    SELECT session_id FROM site_events
+                    WHERE event_type = 'payment_completed' AND session_id IS NOT NULL)
+                ORDER BY se.session_id, se.created_at DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def analytics_campaigns(self, period: str = "7d") -> List[Dict[str, Any]]:
+        since = _period_since(period)
+
+        def _fn(cur):
+            cur.execute(
+                f"""
+                SELECT utm_campaign,
+                    COUNT(DISTINCT session_id) AS clicks,
+                    COUNT(DISTINCT session_id) FILTER (WHERE event_type='result_viewed') AS scans,
+                    COUNT(DISTINCT session_id) FILTER (WHERE event_type='cta_clicked') AS ctas,
+                    COUNT(DISTINCT session_id) FILTER (WHERE event_type='payment_completed') AS payments
+                FROM site_events
+                WHERE utm_campaign IS NOT NULL AND {since}
+                GROUP BY utm_campaign ORDER BY clicks DESC
+                """
+            )
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def analytics_pages(self, period: str = "7d", limit: int = 10) -> List[Dict[str, Any]]:
+        since = _period_since(period)
+
+        def _fn(cur):
+            cur.execute(
+                f"""
+                SELECT page_url, COUNT(*) AS views, COUNT(DISTINCT session_id) AS sessions
+                FROM site_events WHERE event_type='page_view' AND {since}
+                GROUP BY page_url ORDER BY views DESC LIMIT %s
+                """,
+                (limit,),
+            )
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def analytics_events(self, limit: int = 50) -> List[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute(
+                "SELECT event_type, session_id, target_url, page_url, utm_campaign, "
+                "metadata, created_at FROM site_events ORDER BY created_at DESC LIMIT %s",
+                (limit,),
+            )
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+
+# Períodos aceitos pelos endpoints de analytics (KL-21). Valores são constantes
+# (nunca vêm do usuário direto) — seguro interpolar no SQL.
+_PERIOD_BOUNDS = {
+    "today": "date_trunc('day', NOW())",
+    "7d": "NOW() - INTERVAL '7 days'",
+    "30d": "NOW() - INTERVAL '30 days'",
+}
+
+
+def _period_since(period: str, col: str = "created_at") -> str:
+    bound = _PERIOD_BOUNDS.get(period)
+    return f"{col} >= {bound}" if bound else "TRUE"  # 'total'/desconhecido → sem filtro
 
 
 _store: Optional[TargetStore] = None
