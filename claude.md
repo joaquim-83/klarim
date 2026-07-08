@@ -533,6 +533,15 @@ presença de e-mail de contato, registra como alvo e enfileira para scan.
   /admin/reclassify-status`). No painel **Alvos**: badge com indicador de confiança
   (≥0.8 normal · 0.5–0.79 pontilhado · <0.5 cinza com "?") + filtro "Classificação
   incerta" + botão "Reclassificar domínios".
+  **Classificação manual (operador):** coluna `targets.classification_source`
+  (`auto|domain|manual`). `PATCH /targets/{id}/classify {sector, price_tier?}` (tier
+  derivado do setor se omitido) e `POST /admin/classify-batch {target_ids, sector}`
+  gravam `source='manual'`, `confidence=1.0`. **Manual nunca é sobrescrito** pelo
+  automático: o `register_target` (UPSERT) preserva setor/tier de alvos manuais, e
+  reclassify-domains/all pulam `source='manual'` (log `[reclassify] pulando target
+  N`). No painel: edição inline do setor (dropdown ✏️ na lista e no detalhe, com
+  🔒 quando manual) + seleção múltipla → "Classificar selecionados"
+  (`components/admin/SectorEditor.jsx`).
 - **`store.py`** — `TargetStore` (Postgres): tabelas **`targets`** e **`scans`**
   (criadas no `ensure_schema`, mesmo padrão de `payments`). Conecta por
   `POSTGRES_*` (imune a `/` na senha).

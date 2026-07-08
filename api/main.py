@@ -1261,8 +1261,12 @@ async def api_reclassify_domains() -> dict:
     """
     store = get_target_store()
     rows = await store.all_targets_for_reclassify()
-    updates, changed, by_sector = [], 0, {}
+    updates, changed, skipped, by_sector = [], 0, 0, {}
     for r in rows:
+        if r.get("classification_source") == "manual":
+            skipped += 1
+            print(f"[reclassify] pulando target {r['id']} (classificação manual)", flush=True)
+            continue
         res = classify_by_domain(r["url"])
         if not res:
             continue  # sem pista no domínio → mantém a classificação atual
@@ -1274,9 +1278,9 @@ async def api_reclassify_domains() -> dict:
             changed += 1
     await store.bulk_update_classification(updates)
     print(f"[reclassify] domínios: {len(rows)} avaliados, {len(updates)} com pista, "
-          f"{changed} alterados", flush=True)
+          f"{changed} alterados, {skipped} manuais preservados", flush=True)
     return {"processed": len(rows), "updated": len(updates), "changed": changed,
-            "by_sector": by_sector}
+            "skipped_manual": skipped, "by_sector": by_sector}
 
 
 async def _reclassify_all_task() -> None:
@@ -1288,17 +1292,20 @@ async def _reclassify_all_task() -> None:
     changed = 0
     for i, r in enumerate(rows, 1):
         try:
-            html = await _fetch_html(r["url"])
-            sector, tier, confidence = classify_sector(html, r["url"])
-            await store.update_classification(r["id"], sector, tier, confidence)
-            if sector != (r.get("sector") or "outro"):
-                changed += 1
+            if r.get("classification_source") == "manual":
+                print(f"[reclassify] pulando target {r['id']} (classificação manual)", flush=True)
+            else:
+                html = await _fetch_html(r["url"])
+                sector, tier, confidence = classify_sector(html, r["url"])
+                await store.update_classification(r["id"], sector, tier, confidence)
+                if sector != (r.get("sector") or "outro"):
+                    changed += 1
+                await asyncio.sleep(1.0)  # rate limit: 1 fetch/segundo (só quando busca)
         except Exception as exc:  # noqa: BLE001 - um alvo ruim não derruba o job
             print(f"[reclassify] falha em {r.get('url')}: {exc!r}", flush=True)
         _reclassify_status.update(processed=i, changed=changed)
         if i % 50 == 0:
             print(f"[reclassify] {i}/{len(rows)} processados, {changed} alterados", flush=True)
-        await asyncio.sleep(1.0)  # rate limit: 1 fetch/segundo
     _reclassify_status["running"] = False
     print(f"[reclassify] concluído: {len(rows)} processados, {changed} alterados", flush=True)
 
@@ -1316,6 +1323,54 @@ async def api_reclassify_all() -> dict:
 @app.get("/admin/reclassify-status")
 async def api_reclassify_status() -> dict:
     return dict(_reclassify_status)
+
+
+# --------------------------------------------------------------------------- #
+# Classificação manual pelo operador (source='manual', confiança 1.0)
+# --------------------------------------------------------------------------- #
+
+_VALID_SECTORS = set(PRICE_TIERS)          # 11 setores + 'outro'
+_VALID_TIERS = set(PRICING)                # basic | standard | professional | enterprise
+
+
+class ClassifyBody(BaseModel):
+    sector: str
+    price_tier: Optional[str] = None
+
+
+class ClassifyBatchBody(BaseModel):
+    target_ids: list[int]
+    sector: str
+    price_tier: Optional[str] = None
+
+
+def _resolve_classification(sector: str, price_tier: Optional[str]) -> tuple[str, str]:
+    """Valida o setor, deriva o tier do PRICE_TIERS se omitido, e valida o tier."""
+    if sector not in _VALID_SECTORS:
+        raise HTTPException(status_code=422, detail=f"Setor inválido: {sector}")
+    tier = price_tier or PRICE_TIERS.get(sector, "standard")
+    if tier not in _VALID_TIERS:
+        raise HTTPException(status_code=422, detail=f"Faixa de preço inválida: {tier}")
+    return sector, tier
+
+
+@app.patch("/targets/{target_id}/classify")
+async def api_target_classify(target_id: int, body: ClassifyBody) -> dict:
+    """Classifica manualmente um alvo (source='manual', confiança 1.0). O tier é
+    derivado do setor se não vier no corpo."""
+    sector, tier = _resolve_classification(body.sector, body.price_tier)
+    updated = await get_target_store().manual_classify(target_id, sector, tier)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Alvo não encontrado.")
+    return updated
+
+
+@app.post("/admin/classify-batch")
+async def api_classify_batch(body: ClassifyBatchBody) -> dict:
+    """Classificação manual em massa. Retorna quantos alvos foram atualizados."""
+    sector, tier = _resolve_classification(body.sector, body.price_tier)
+    updated = await get_target_store().manual_classify_batch(body.target_ids, sector, tier)
+    return {"updated": updated, "sector": sector, "price_tier": tier}
 
 
 def _payment_row(charge, target_id: Optional[int] = None) -> dict:

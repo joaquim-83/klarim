@@ -6,6 +6,7 @@ import {
   Card, Loading, ErrorBox, Button, Badge, PlatformBadge, StatusBadge, SourceBadge,
   SemaphoreDot, EVOLUTION_META, formatDate, relativeTime,
 } from '../../components/admin/ui'
+import { SectorEditor } from '../../components/admin/SectorEditor'
 
 const PAY_COLOR = { PAID: '#00D26A', PENDING: '#F0C000', EXPIRED: '#8B949E', CANCELLED: '#F85149' }
 
@@ -78,7 +79,13 @@ export default function AlvoDetalhe() {
         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
           <Field label="URL"><a href={t.url} target="_blank" rel="noreferrer" className="text-klarim-alert hover:underline">{t.url}</a></Field>
           <Field label="Plataforma"><PlatformBadge platform={t.platform} /></Field>
-          <Field label="Setor">{t.sector || 'outro'}</Field>
+          <Field label="Setor">
+            <SectorEditor
+              target={t}
+              onSaved={(_u, note) => { setMsg(note); reload() }}
+              onError={(m) => setMsg(m)}
+            />
+          </Field>
           <Field label="Preço (tier)">{t.price_tier || 'standard'}</Field>
           <Field label="E-mail">{t.contact_email || '—'}</Field>
           <Field label="Origem"><SourceBadge source={t.source} /></Field>

@@ -34,6 +34,9 @@ CREATE INDEX IF NOT EXISTS idx_targets_platform ON targets(platform);
 -- Confiança da classificação de setor (refino do KL-11): 0.0–1.0. Permite
 -- filtrar "classificação incerta" (< 0.5) para revisão manual no painel.
 ALTER TABLE targets ADD COLUMN IF NOT EXISTS classification_confidence REAL DEFAULT 0.0;
+-- Origem da classificação: auto (classificador) | domain (reclassify-domains) |
+-- manual (operador corrigiu no painel). Manual nunca é sobrescrito pelo automático.
+ALTER TABLE targets ADD COLUMN IF NOT EXISTS classification_source VARCHAR(20) DEFAULT 'auto';
 
 CREATE TABLE IF NOT EXISTS scans (
     id SERIAL PRIMARY KEY,
@@ -146,34 +149,44 @@ class TargetStore:
     async def register_target(
         self, url: str, domain: str, platform: str, sector: str, price_tier: str,
         contact_email: Optional[str], source: str = "ct_log", status: str = "discovered",
-        confidence: float = 0.0,
+        confidence: float = 0.0, classification_source: str = "auto",
     ) -> int:
         def _fn(cur):
+            # No conflito, a classificação MANUAL é preservada (o automático nunca
+            # sobrescreve setor/tier/confiança de um alvo corrigido pelo operador).
             cur.execute(
                 """
                 INSERT INTO targets (url, domain, platform, sector, price_tier,
-                                     contact_email, status, source, classification_confidence)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                     contact_email, status, source,
+                                     classification_confidence, classification_source)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ON CONFLICT (url) DO UPDATE SET
                     platform = EXCLUDED.platform,
-                    sector = EXCLUDED.sector,
-                    price_tier = EXCLUDED.price_tier,
-                    classification_confidence = EXCLUDED.classification_confidence,
+                    sector = CASE WHEN targets.classification_source = 'manual'
+                                  THEN targets.sector ELSE EXCLUDED.sector END,
+                    price_tier = CASE WHEN targets.classification_source = 'manual'
+                                      THEN targets.price_tier ELSE EXCLUDED.price_tier END,
+                    classification_confidence = CASE WHEN targets.classification_source = 'manual'
+                                      THEN targets.classification_confidence
+                                      ELSE EXCLUDED.classification_confidence END,
+                    classification_source = CASE WHEN targets.classification_source = 'manual'
+                                      THEN 'manual' ELSE EXCLUDED.classification_source END,
                     contact_email = COALESCE(EXCLUDED.contact_email, targets.contact_email)
                 RETURNING id
                 """,
                 (url, domain, platform, sector, price_tier, contact_email, status,
-                 source, confidence),
+                 source, confidence, classification_source),
             )
             return cur.fetchone()[0]
 
         return await asyncio.to_thread(self._run, _fn)
 
     async def all_targets_for_reclassify(self) -> List[Dict[str, Any]]:
-        """Alvos reclassificáveis (todos menos 'descartado') — id, url, setor atual."""
+        """Alvos reclassificáveis (todos menos 'descartado') — id, url, setor +
+        origem da classificação (o chamador pula os 'manual')."""
         def _fn(cur):
             cur.execute(
-                "SELECT id, url, sector, price_tier FROM targets "
+                "SELECT id, url, sector, price_tier, classification_source FROM targets "
                 "WHERE status != 'descartado' ORDER BY id"
             )
             return self._rows_to_dicts(cur)
@@ -181,29 +194,68 @@ class TargetStore:
         return await asyncio.to_thread(self._run, _fn)
 
     async def update_classification(
-        self, target_id: int, sector: str, price_tier: str, confidence: float
+        self, target_id: int, sector: str, price_tier: str, confidence: float,
+        classification_source: str = "auto",
     ) -> None:
+        # Guarda extra: nunca mexe num alvo classificado manualmente.
         await asyncio.to_thread(
             self._run, lambda cur: cur.execute(
                 "UPDATE targets SET sector = %s, price_tier = %s, "
-                "classification_confidence = %s WHERE id = %s",
-                (sector, price_tier, confidence, target_id))
+                "classification_confidence = %s, classification_source = %s "
+                "WHERE id = %s AND classification_source IS DISTINCT FROM 'manual'",
+                (sector, price_tier, confidence, classification_source, target_id))
         )
 
     async def bulk_update_classification(self, updates: List[tuple]) -> None:
-        """Atualiza setor/tier/confiança em lote (uma conexão). updates: (sector,
-        tier, confidence, target_id)."""
+        """Atualiza setor/tier/confiança em lote (uma conexão, source='domain').
+        updates: (sector, tier, confidence, target_id). Pula alvos manuais."""
         if not updates:
             return
 
         def _fn(cur):
             cur.executemany(
                 "UPDATE targets SET sector = %s, price_tier = %s, "
-                "classification_confidence = %s WHERE id = %s",
+                "classification_confidence = %s, classification_source = 'domain' "
+                "WHERE id = %s AND classification_source IS DISTINCT FROM 'manual'",
                 updates,
             )
 
         await asyncio.to_thread(self._run, _fn)
+
+    async def manual_classify(
+        self, target_id: int, sector: str, price_tier: str
+    ) -> Optional[Dict[str, Any]]:
+        """Classifica manualmente (operador): source='manual', confiança=1.0.
+        Retorna o alvo atualizado (ou None se não existir)."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE targets SET sector = %s, price_tier = %s, "
+                "classification_confidence = 1.0, classification_source = 'manual' "
+                "WHERE id = %s RETURNING *",
+                (sector, price_tier, target_id),
+            )
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def manual_classify_batch(
+        self, target_ids: List[int], sector: str, price_tier: str
+    ) -> int:
+        """Classificação manual em massa. Retorna quantos alvos foram atualizados."""
+        if not target_ids:
+            return 0
+
+        def _fn(cur):
+            cur.execute(
+                "UPDATE targets SET sector = %s, price_tier = %s, "
+                "classification_confidence = 1.0, classification_source = 'manual' "
+                "WHERE id = ANY(%s)",
+                (sector, price_tier, list(target_ids)),
+            )
+            return cur.rowcount
+
+        return await asyncio.to_thread(self._run, _fn)
 
     async def domain_exists(self, domain: str) -> bool:
         def _fn(cur):

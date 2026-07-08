@@ -28,6 +28,8 @@ async function req(path, opts = {}) {
 const get = (path) => req(path)
 const post = (path, body) =>
   req(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined })
+const patch = (path, body) =>
+  req(path, { method: 'PATCH', body: body ? JSON.stringify(body) : undefined })
 
 // Baixa um arquivo protegido (envia o Bearer token e dispara o download).
 export async function adminDownload(path, fallbackName) {
@@ -130,6 +132,12 @@ export const admin = {
   reclassifyDomains: () => post('/admin/reclassify-domains'),
   reclassifyAll: () => post('/admin/reclassify-all'),
   reclassifyStatus: () => get('/admin/reclassify-status'),
+
+  // classificação manual (operador)
+  classifyTarget: (id, sector, priceTier) =>
+    patch(`/targets/${id}/classify`, { sector, price_tier: priceTier }),
+  classifyBatch: (ids, sector, priceTier) =>
+    post('/admin/classify-batch', { target_ids: ids, sector, price_tier: priceTier }),
 
   // fluxo integrado (KL-17)
   scanAndReport: (body) => post('/admin/scan-and-report', body),

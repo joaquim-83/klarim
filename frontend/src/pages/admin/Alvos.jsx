@@ -3,9 +3,10 @@ import { Link } from 'react-router-dom'
 import { admin } from '../../lib/adminApi'
 import { useAsync } from '../../lib/useAsync'
 import {
-  Card, Loading, ErrorBox, Button, Badge, PlatformBadge, StatusBadge, SourceBadge,
+  Card, Loading, ErrorBox, Button, PlatformBadge, StatusBadge, SourceBadge,
   SemaphoreDot, Pagination, relativeTime, STATUS_LABEL,
 } from '../../components/admin/ui'
+import { SectorEditor, SECTOR_OPTIONS } from '../../components/admin/SectorEditor'
 
 const STATUS_OPTS = ['discovered', 'scanned', 'alerted', 'sem_contato', 'unsubscribed', 'descartado']
 const PLATFORM_OPTS = ['duda', 'wordpress', 'cra', 'wix', 'shopify', 'squarespace', 'unknown']
@@ -27,31 +28,6 @@ function Select({ value, onChange, options, allLabel, labels }) {
   )
 }
 
-// Setor com indicador visual de confiança da classificação (refino KL-11):
-//  ≥0.8 badge normal · 0.5–0.79 borda pontilhada (provável) · <0.5 cinza com "?".
-function SectorCell({ sector, confidence }) {
-  const c = confidence == null ? null : Number(confidence)
-  const label = sector || 'outro'
-  const pct = c == null ? null : `${Math.round(c * 100)}%`
-  if (c != null && c < 0.5) {
-    return (
-      <span title={`Classificação incerta${pct ? ` (${pct})` : ''}`}
-        className="inline-block rounded-full border border-klarim-border bg-klarim-border/20 px-2 py-0.5 text-xs font-semibold text-klarim-muted">
-        {label} ?
-      </span>
-    )
-  }
-  if (c != null && c < 0.8) {
-    return (
-      <span title={`Classificação provável (${pct})`}
-        className="inline-block rounded-full border border-dashed border-klarim-alert/70 px-2 py-0.5 text-xs font-semibold text-klarim-text">
-        {label}
-      </span>
-    )
-  }
-  return <span title={pct ? `Confiança ${pct}` : undefined}><Badge>{label}</Badge></span>
-}
-
 export default function Alvos() {
   const [status, setStatus] = useState('')
   const [platform, setPlatform] = useState('')
@@ -64,6 +40,9 @@ export default function Alvos() {
   const [busyId, setBusyId] = useState(null)
   const [showAdd, setShowAdd] = useState(false)
   const [reclassifying, setReclassifying] = useState(false)
+  const [selected, setSelected] = useState(() => new Set())
+  const [bulkSector, setBulkSector] = useState('hotel')
+  const [bulkBusy, setBulkBusy] = useState(false)
 
   const { data, loading, error, reload } = useAsync(
     () => admin.targets({
@@ -72,6 +51,31 @@ export default function Alvos() {
     }),
     [status, platform, sector, source, lowConf, page],
   )
+
+  function toggleSel(id) {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      next.has(id) ? next.delete(id) : next.add(id)
+      return next
+    })
+  }
+
+  async function classifyBulk() {
+    const ids = [...selected]
+    if (ids.length === 0) return
+    setBulkBusy(true)
+    setMsg('')
+    try {
+      const r = await admin.classifyBatch(ids, bulkSector)
+      setMsg(`${r.updated} alvo(s) classificados como ${bulkSector}.`)
+      setSelected(new Set())
+      reload()
+    } catch (e) {
+      setMsg(e.message)
+    } finally {
+      setBulkBusy(false)
+    }
+  }
 
   async function reclassifyDomains() {
     setReclassifying(true)
@@ -139,12 +143,43 @@ export default function Alvos() {
 
       {msg && <div className="text-sm text-klarim-muted">{msg}</div>}
 
+      {/* Ação em massa (aparece ao selecionar alvos) */}
+      {selected.size > 0 && (
+        <div className="flex flex-wrap items-center gap-2 rounded-lg border border-klarim-alert/40 bg-klarim-alert/10 px-3 py-2 text-sm">
+          <span className="font-semibold">{selected.size} selecionado(s)</span>
+          <span className="text-klarim-muted">→ classificar como</span>
+          <select
+            value={bulkSector}
+            onChange={(e) => setBulkSector(e.target.value)}
+            className="rounded border border-klarim-border bg-klarim-surface px-2 py-1 text-sm text-klarim-text outline-none focus:border-klarim-alert"
+          >
+            {SECTOR_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+          <Button variant="primary" disabled={bulkBusy} onClick={classifyBulk}>
+            {bulkBusy ? `Classificando ${selected.size}…` : 'Classificar selecionados'}
+          </Button>
+          <button onClick={() => setSelected(new Set())} className="text-klarim-muted hover:text-klarim-text">Limpar seleção</button>
+        </div>
+      )}
+
       <Card>
         {loading ? <Loading /> : error ? <ErrorBox message={error} /> : (
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="text-left text-xs uppercase text-klarim-muted">
+                  <th className="py-2 pr-2">
+                    <input
+                      type="checkbox"
+                      aria-label="Selecionar todos"
+                      checked={rows.length > 0 && rows.every((t) => selected.has(t.id))}
+                      onChange={(e) => setSelected((prev) => {
+                        const next = new Set(prev)
+                        rows.forEach((t) => e.target.checked ? next.add(t.id) : next.delete(t.id))
+                        return next
+                      })}
+                    />
+                  </th>
                   <th className="py-2 pr-3">Site</th>
                   <th className="py-2 pr-3">Plataforma</th>
                   <th className="py-2 pr-3">Setor</th>
@@ -159,13 +194,27 @@ export default function Alvos() {
               <tbody>
                 {rows.map((t) => (
                   <tr key={t.id} className="border-t border-klarim-border align-middle">
+                    <td className="py-2 pr-2">
+                      <input
+                        type="checkbox"
+                        aria-label={`Selecionar ${t.domain || t.url}`}
+                        checked={selected.has(t.id)}
+                        onChange={() => toggleSel(t.id)}
+                      />
+                    </td>
                     <td className="py-2 pr-3">
                       <a href={t.url} target="_blank" rel="noreferrer" className="font-mono text-xs text-klarim-alert hover:underline">
                         {t.domain || t.url}
                       </a>
                     </td>
                     <td className="py-2 pr-3"><PlatformBadge platform={t.platform} /></td>
-                    <td className="py-2 pr-3"><SectorCell sector={t.sector} confidence={t.classification_confidence} /></td>
+                    <td className="py-2 pr-3">
+                      <SectorEditor
+                        target={t}
+                        onSaved={(_u, note) => { setMsg(note); reload() }}
+                        onError={(m) => setMsg(m)}
+                      />
+                    </td>
                     <td className="py-2 pr-3">
                       {t.last_scan_score != null
                         ? <SemaphoreDot semaphore={t.last_semaphore} score={t.last_scan_score} />
@@ -185,7 +234,7 @@ export default function Alvos() {
                   </tr>
                 ))}
                 {rows.length === 0 && (
-                  <tr><td colSpan={9} className="py-8 text-center text-klarim-muted">Nenhum alvo.</td></tr>
+                  <tr><td colSpan={10} className="py-8 text-center text-klarim-muted">Nenhum alvo.</td></tr>
                 )}
               </tbody>
             </table>
