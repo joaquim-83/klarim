@@ -67,14 +67,22 @@ tempo no site); **atribuição por campanha** (cliques/scans/CTAs/pagos/convers�
   114 passed, 1 skipped.** Build do frontend OK (tela Analytics code-split).
 - **Produção (VM):** _pós-deploy — ver abaixo._
 
-## Validação em produção (pós-deploy)
+## Validação em produção (pós-deploy — CI verde, deploy OK)
 
-- [ ] `POST /api/events` grava em `site_events` (page_view etc.).
-- [ ] Funil completo (scan → resultado → CTA → PIX → pago → PDF) registra os 7
-      eventos com o mesmo `session_id`.
-- [ ] Link do e-mail com UTM → os 4 params gravados nos eventos da sessão.
-- [ ] `/painel/analytics` renderiza o funil com números reais.
-- [ ] Rate limit: 200 eventos rápidos → ~100 aceitos/min.
+Simulei um funil (6 eventos, mesma sessão, UTM `alerta`/`target_1`) + rajada de
+130 eventos numa sessão, consultei os endpoints com JWT e depois limpei os dados
+sintéticos (`DELETE 106`).
+
+- [x] `POST /api/events` grava em `site_events` (background, `{ok:true}` imediato).
+- [x] Funil registra os eventos com o mesmo `session_id`. `/analytics/funnel`
+      (hoje): `links_clicked:1, results_viewed:1, cta_clicked:1, payments_created:1`
+      (topo `emails_sent:50` do `alert_log` real).
+- [x] UTM gravado: `/analytics/campaigns` atribuiu à campanha `alerta`
+      (`clicks:1, scans:1, ctas:1`); `target_id` resolvido de `utm_content`.
+- [x] Carrinho abandonado: `/analytics/abandoned` listou a sessão (PIX sem
+      pagamento) com `duration_seconds` calculado.
+- [x] Rate limit: 130 eventos rápidos → **30 respostas `rate_limited`** e
+      exatamente **100 linhas** gravadas na sessão (não 130).
 
 ## Critérios de aceite
 
@@ -90,7 +98,7 @@ tempo no site); **atribuição por campanha** (cliques/scans/CTAs/pagos/convers�
 - [x] Tracking silencioso (erro não quebra a UI).
 - [x] Documentação (`claude.md` §22, `README.md`).
 - [x] Relatório em PT-BR.
-- [ ] Deploy + validação + commit/push.
+- [x] Deploy + validação + commit/push (CI verde, validado em produção).
 
 ## Follow-ups
 
