@@ -42,6 +42,13 @@ server {
     gzip on;
     gzip_types text/css application/javascript image/svg+xml application/json;
 
+    # Segurança (self-audit): paths sensíveis conhecidos retornam 404 em vez de
+    # 200 com a SPA. Regex tem prioridade sobre os prefixos /assets/ e / abaixo,
+    # mas não intercepta /api/ (sem ponto/extensão) nem as rotas /painel/.
+    location ~ /\. { return 404; }                                            # .env .git .htaccess…
+    location ~* \.(php|sql|bak|log|ya?ml|toml|ini|conf|config)$ { return 404; }
+    location ~* ^/(phpinfo|server-status|server-info|wp-admin|wp-login|administrator|admin\.php) { return 404; }
+
     location /assets/ {
         expires 1y;
         add_header Cache-Control "public, immutable";
@@ -92,6 +99,11 @@ server {
 
     gzip on;
     gzip_types text/css application/javascript image/svg+xml application/json;
+
+    # Segurança (self-audit): mesmos bloqueios de paths sensíveis do host principal.
+    location ~ /\. { return 404; }
+    location ~* \.(php|sql|bak|log|ya?ml|toml|ini|conf|config)$ { return 404; }
+    location ~* ^/(phpinfo|server-status|server-info|wp-admin|wp-login|administrator|admin\.php) { return 404; }
 
     # A raiz do subdomínio vai direto ao login do painel.
     location = / {

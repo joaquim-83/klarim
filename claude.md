@@ -383,6 +383,28 @@ para HTTPS). Em modo sem-cert (`http.conf`, catch-all), o subdomínio também
 funciona e a raiz redireciona ao login. Sem nova regra de firewall (mesmo IP/porta).
 Acesso: `https://painel.klarim.net` (equivalente a `https://klarim.net/painel`).
 
+### Hardening de segurança (auto-auditoria)
+
+O Klarim pratica o que prega — a superfície de ataque real é minimizada:
+
+- **Docs da API desligados em produção.** O FastAPI só expõe `/docs`, `/redoc` e
+  `/openapi.json` quando `KLARIM_DEV_MODE=true` (senão `docs_url/redoc_url/
+  openapi_url=None` ⇒ **404**). Evita mapear a API inteira num request.
+- **Rate limit no login.** `POST /auth/login` limita **5 tentativas/min por IP**
+  (via `X-Real-IP` do Nginx); a 6ª retorna **429** com `Retry-After`. In-memory
+  (`_login_attempts`); mover para Redis se houver múltiplos workers.
+- **Sanitização anti stored-XSS no `/events`.** `_sanitize_str`/`_sanitize_metadata`
+  removem tags HTML e esquemas (`javascript:`/`data:`), limitam tamanho e
+  profundidade antes de gravar. O React já escapa `{}` (sem `dangerouslySetInnerHTML`).
+- **Nginx bloqueia paths sensíveis** (`http.conf` + os blocos 443 do
+  `https.conf.template`): `location` regex retorna **404** para dotfiles
+  (`/.env`, `/.git`…), extensões perigosas (`.php|.sql|.bak|.log|.ya?ml|.toml|
+  .ini|.conf|.config`) e paths de outros frameworks (`phpinfo`, `wp-admin`,
+  `administrator`…) — em vez de 200 com a SPA. O ACME usa `location ^~
+  /.well-known/acme-challenge/` para ter prioridade sobre os regex (não quebra a
+  renovação). `/api/` e `/painel/` **não** são afetados. Valide a sintaxe com
+  `nginx -t` antes de deployar (config ruim derruba o `web`).
+
 ---
 
 ## 11. Pagamento — AbacatePay PIX (`payments/`)

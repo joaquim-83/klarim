@@ -1,0 +1,21 @@
+"""Fixtures compartilhadas dos testes.
+
+O rate limit de login e o de eventos (api/main) guardam estado global em memória.
+Como o TestClient usa sempre o mesmo IP/sessão, sem resetar entre testes um teste
+poderia estourar o limite do outro. Este autouse zera o estado antes de cada teste.
+"""
+
+from __future__ import annotations
+
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _reset_api_rate_limits():
+    try:
+        import api.main as m
+        m._login_attempts.clear()
+        m._event_rl.clear()
+    except Exception:  # noqa: BLE001 - testes que não tocam a API seguem normais
+        pass
+    yield

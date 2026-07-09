@@ -14,6 +14,7 @@ import asyncio
 import hmac
 import json
 import os
+import re
 import secrets
 import time
 from contextlib import asynccontextmanager
@@ -21,7 +22,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from urllib.parse import urlparse
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response, HTMLResponse
 from pydantic import BaseModel
 
@@ -165,11 +166,17 @@ async def lifespan(app: FastAPI):
     yield
 
 
+# Fix de segurança: em produção NÃO expõe Swagger/OpenAPI (mapeariam toda a API
+# sem autenticação). Só liga em dev (KLARIM_DEV_MODE=true).
+_docs_on = _dev_mode()
 app = FastAPI(
     title="Klarim API",
     version="0.1.0",
     description="O alarme que toca antes do ataque — scanner passivo de segurança web.",
     lifespan=lifespan,
+    docs_url="/docs" if _docs_on else None,
+    redoc_url="/redoc" if _docs_on else None,
+    openapi_url="/openapi.json" if _docs_on else None,
 )
 
 
@@ -193,7 +200,42 @@ class LoginBody(BaseModel):
     password: str
 
 
-@app.post("/auth/login")
+# Rate limit do login por IP (anti brute-force). In-memory basta para o MVP
+# single-process; se escalar para múltiplos workers, mover para Redis.
+_LOGIN_RL_MAX = 5            # tentativas por janela
+_LOGIN_RL_WINDOW = 60        # segundos
+_login_attempts: dict = {}   # ip -> [timestamps monotônicos]
+
+
+def _client_ip(request: Request) -> str:
+    """IP real do cliente — o Nginx envia X-Real-IP (senão, o peer da conexão)."""
+    xri = request.headers.get("x-real-ip")
+    if xri:
+        return xri.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+async def _login_rate_limit(request: Request) -> None:
+    ip = _client_ip(request)
+    now = time.monotonic()
+    q = _login_attempts.setdefault(ip, [])
+    cutoff = now - _LOGIN_RL_WINDOW
+    while q and q[0] < cutoff:
+        q.pop(0)
+    if len(q) >= _LOGIN_RL_MAX:
+        retry = int(_LOGIN_RL_WINDOW - (now - q[0])) + 1
+        raise HTTPException(
+            status_code=429,
+            detail=f"Muitas tentativas. Tente novamente em {retry}s.",
+            headers={"Retry-After": str(retry)},
+        )
+    q.append(now)
+    if len(_login_attempts) > 5000:  # limpeza oportunista (não cresce sem limite)
+        for k in [k for k, ts in _login_attempts.items() if not ts or ts[-1] < cutoff]:
+            _login_attempts.pop(k, None)
+
+
+@app.post("/auth/login", dependencies=[Depends(_login_rate_limit)])
 async def auth_login(body: LoginBody) -> dict:
     """Login único do operador (credenciais do .env). Retorna um JWT de 24h."""
     if not _auth_configured():
@@ -980,6 +1022,34 @@ _KNOWN_EVENTS = {
 _EVENT_RL_MAX = 100          # eventos/minuto por sessão
 _event_rl: dict = {}         # session_id -> lista de timestamps (janela de 60s)
 
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _sanitize_str(value, max_length: int = 500):
+    """Remove tags HTML e esquemas perigosos; limita o tamanho. Anti stored-XSS."""
+    if not isinstance(value, str):
+        return value
+    clean = _HTML_TAG_RE.sub("", value)
+    for bad in ("javascript:", "data:", "vbscript:"):
+        clean = clean.replace(bad, "")
+    return clean[:max_length]
+
+
+def _sanitize_metadata(md, _depth: int = 0):
+    """Sanitiza recursivamente as strings de um dict de metadata (profundidade ≤ 4)."""
+    if _depth > 4 or not isinstance(md, dict):
+        return _sanitize_str(md) if isinstance(md, str) else md
+    out = {}
+    for k, v in list(md.items())[:50]:  # teto de chaves — payload não infla o banco
+        key = _sanitize_str(str(k), 100)
+        if isinstance(v, dict):
+            out[key] = _sanitize_metadata(v, _depth + 1)
+        elif isinstance(v, list):
+            out[key] = [_sanitize_str(x) if isinstance(x, str) else x for x in v[:50]]
+        else:
+            out[key] = _sanitize_str(v)
+    return out
+
 
 def _event_rate_ok(session_id: str) -> bool:
     now = time.monotonic()
@@ -1029,6 +1099,15 @@ async def api_track_event(body: EventBody) -> dict:
         return {"ok": True, "recorded": False}
     if not _event_rate_ok(body.session_id):
         return {"ok": True, "recorded": False, "rate_limited": True}
+    # Sanitização anti stored-XSS: o dashboard admin renderiza esses campos.
+    body.page_url = _sanitize_str(body.page_url)
+    body.target_url = _sanitize_str(body.target_url)
+    body.referrer = _sanitize_str(body.referrer)
+    body.utm_source = _sanitize_str(body.utm_source, 100)
+    body.utm_medium = _sanitize_str(body.utm_medium, 100)
+    body.utm_campaign = _sanitize_str(body.utm_campaign, 100)
+    body.utm_content = _sanitize_str(body.utm_content, 200)
+    body.metadata = _sanitize_metadata(body.metadata)
     target_id = _target_id_from_utm(body.utm_content, body.target_id)
     _spawn(_log_event_bg(body, target_id))
     return {"ok": True}
