@@ -74,11 +74,15 @@ class FakeMailer:
 
 
 class FakeStore:
-    def __init__(self, eligible=None, sent_month=0):
+    def __init__(self, eligible=None, sent_month=0, blocked=None, health=None):
         self._eligible = eligible or []
         self._sent_month = sent_month
+        self._blocked = set(blocked or [])
+        self._health = health or {"total": 0, "bounced": 0, "complained": 0, "blocklist": 0}
         self.alerted = []
         self.logged = []
+        self.discarded = []          # via update_status('descartado')
+        self.discarded_by_email = []  # via discard_target_by_email
 
     async def get_scan(self, scan_id):
         return {"score": 86, "semaphore": "amarelo", "fail_count": 2,
@@ -92,6 +96,19 @@ class FakeStore:
 
     async def count_proactive_emails_this_month(self):
         return self._sent_month
+
+    async def email_health(self):
+        return dict(self._health)
+
+    async def is_email_blocked(self, email):
+        return email in self._blocked
+
+    async def update_status(self, target_id, status):
+        self.discarded.append((target_id, status))
+
+    async def discard_target_by_email(self, email, reason="bounced"):
+        self.discarded_by_email.append((email, reason))
+        return 1
 
     async def mark_target_alerted(self, target_id):
         self.alerted.append(target_id)
@@ -152,6 +169,9 @@ def _worker(store):
     w.store = store
     w.batch_size, w.batches_per_cycle, w.batch_pause = 50, 4, 0
     w.monthly_limit = 45000
+    w.validate_mx = False  # sem DNS nos testes de fluxo de batch
+    w.max_bounce_rate = 8.0
+    w.bounce_min_sample = 20
     w._mailer = lambda: FakeMailer()  # noqa: E731
     return w
 
@@ -202,3 +222,38 @@ def test_run_cycle_skips_without_mailer():
     w._mailer = lambda: None  # noqa: E731
     stats = asyncio.run(w.run_cycle())
     assert stats["sent"] == 0 and store.alerted == []
+
+
+# --- bounce handling (KL-24) ----------------------------------------------- #
+
+def test_run_cycle_pauses_when_bounce_rate_critical():
+    # 10/100 = 10% > limite 8% -> pausa (não envia)
+    store = FakeStore(eligible=[_target(1)],
+                      health={"total": 100, "bounced": 10, "complained": 0, "blocklist": 10})
+    stats = asyncio.run(_worker(store).run_cycle())
+    assert stats.get("paused") is True and stats["sent"] == 0
+    assert store.alerted == []
+
+
+def test_run_cycle_no_pause_below_min_sample():
+    # 3/5 = 60% mas amostra < 20 -> não pausa (envia)
+    store = FakeStore(eligible=[_target(1)],
+                      health={"total": 5, "bounced": 3, "complained": 0, "blocklist": 0})
+    stats = asyncio.run(_worker(store).run_cycle())
+    assert not stats.get("paused") and stats["sent"] == 1
+
+
+def test_validate_batch_drops_blocked_and_discards():
+    store = FakeStore(blocked={"c@x.com.br"})
+    w = _worker(store)
+    clean = asyncio.run(w._validate_batch([_target(1, email="c@x.com.br"), _target(2, email="ok@y.com.br")]))
+    assert [t["id"] for t in clean] == [2]
+    assert store.discarded == [(1, "descartado")]  # bloqueado -> descartado
+
+
+def test_run_cycle_validates_before_sending():
+    store = FakeStore(eligible=[_target(1, email="blocked@x.com.br"), _target(2, email="ok@y.com.br")],
+                      blocked={"blocked@x.com.br"})
+    stats = asyncio.run(_worker(store).run_cycle())
+    assert stats["eligible"] == 2 and stats["invalid"] == 1 and stats["sent"] == 1
+    assert store.alerted == [2]  # só o válido recebeu

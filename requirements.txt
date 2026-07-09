@@ -12,6 +12,7 @@ pyjwt>=2.8,<3.0             # JWT do dashboard admin (KL-14)
 # --- Infra clients ---
 redis>=5.0,<6.0             # scan queue (worker) + report cache
 psycopg2-binary>=2.9,<3.0   # PostgreSQL driver (targets/scans/findings)
+dnspython>=2.4,<3.0        # MX record lookup — filtra e-mails que bouncam (KL-24)
 
 # --- Reporting ---
 weasyprint>=62,<64          # server-side PDF generation (executive/technical)

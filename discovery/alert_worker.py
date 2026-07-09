@@ -21,6 +21,7 @@ from notifier import KlarimMailer, build_unsubscribe_link
 from reporter.risk_messages import get_risk_messages
 from .store import get_target_store
 from .heartbeat import publish_heartbeat
+from .contact import email_mx_status
 
 _SEV_MAP = {"CRITICA": "critica", "ALTA": "alta", "MEDIA": "media", "BAIXA": "baixa"}
 
@@ -105,6 +106,10 @@ class AlertWorker:
         self.batches_per_cycle = int(os.environ.get("ALERT_BATCHES_PER_CYCLE", "4"))
         self.batch_pause = float(os.environ.get("ALERT_BATCH_PAUSE", "10"))
         self.monthly_limit = int(os.environ.get("ALERT_MONTHLY_LIMIT", "45000"))
+        # Saúde de bounce (KL-24): pausa automática se a taxa passar do limite.
+        self.max_bounce_rate = float(os.environ.get("ALERT_MAX_BOUNCE_RATE", "8.0"))
+        self.bounce_min_sample = int(os.environ.get("ALERT_BOUNCE_MIN_SAMPLE", "20"))
+        self.validate_mx = os.environ.get("ALERT_VALIDATE_MX", "true").lower() != "false"
         # Intervalo em minutos tem precedência; ALERT_INTERVAL_HOURS é o fallback.
         interval_minutes = int(os.environ.get("ALERT_INTERVAL_MINUTES", "0"))
         if not interval_minutes:
@@ -131,12 +136,57 @@ class AlertWorker:
         key = os.environ.get("RESEND_API_KEY")
         return KlarimMailer(key, os.environ.get("RESEND_FROM") or None) if key else None
 
+    async def _check_bounce_health(self) -> bool:
+        """Safety net (KL-24): pausa envios se o bounce rate passar do limite.
+
+        Só pausa com amostra mínima (evita pausar por 1–2 bounces cedo). Retorna
+        True se é seguro enviar, False se deve pausar.
+        """
+        h = await self.store.email_health()
+        total, bounced = h.get("total", 0), h.get("bounced", 0)
+        if total < self.bounce_min_sample:
+            return True
+        rate = 100.0 * bounced / total if total else 0.0
+        if rate > self.max_bounce_rate:
+            print(f"[alert] ⚠️ envios pausados — bounce rate {rate:.2f}% "
+                  f"(limite {self.max_bounce_rate}%). Corrigir bounces antes de retomar.",
+                  flush=True)
+            return False
+        return True
+
+    async def _validate_batch(self, targets: list) -> list:
+        """Filtra alvos com e-mail inválido antes de montar o batch (KL-24).
+
+        Remove (e marca 'descartado') e-mails na blocklist (bouncaram antes) e
+        domínios sem MX (definitivo). Retorna a lista limpa.
+        """
+        clean = []
+        for t in targets:
+            email = (t.get("contact_email") or "").strip()
+            if not email:
+                continue
+            if await self.store.is_email_blocked(email):
+                await self.store.update_status(t["id"], "descartado")
+                print(f"[alert] descartado {email} — na blocklist", flush=True)
+                continue
+            if self.validate_mx and await asyncio.to_thread(email_mx_status, email) == "no_mx":
+                await self.store.discard_target_by_email(email, reason="no_mx")
+                print(f"[alert] descartado {email} — domínio sem MX", flush=True)
+                continue
+            clean.append(t)
+        return clean
+
     async def run_cycle(self) -> dict:
         stats = {"eligible": 0, "batches": 0, "sent": 0, "failed": 0,
-                 "errors": 0, "skipped": 0}
+                 "errors": 0, "skipped": 0, "invalid": 0}
         mailer = self._mailer()
         if mailer is None:
             print("[alert] RESEND_API_KEY não configurada; ciclo pulado", flush=True)
+            return stats
+
+        # Safety net de bounce (KL-24) — pausa se a taxa estiver crítica.
+        if not await self._check_bounce_health():
+            stats["paused"] = True
             return stats
 
         # Cota mensal GLOBAL (alertas + evolução). Único teto no plano Pro.
@@ -149,8 +199,12 @@ class AlertWorker:
         # Busca só o que cabe no ciclo e na cota mensal restante.
         cycle_cap = self.batch_size * self.batches_per_cycle
         want = min(cycle_cap, self.monthly_limit - sent_month)
-        targets = await self.store.get_eligible_targets_for_alert(limit=want)
-        stats["eligible"] = len(targets)
+        raw_targets = await self.store.get_eligible_targets_for_alert(limit=want)
+        stats["eligible"] = len(raw_targets)
+
+        # Validação pré-envio (KL-24): remove blocklist + domínios sem MX.
+        targets = await self._validate_batch(raw_targets)
+        stats["invalid"] = len(raw_targets) - len(targets)
 
         for bi in range(self.batches_per_cycle):
             chunk = targets[bi * self.batch_size:(bi + 1) * self.batch_size]

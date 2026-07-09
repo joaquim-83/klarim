@@ -453,8 +453,10 @@ relatório** pago (2 PDFs anexados).
   `send_evolution_batch` mandam até **100 e-mails em 1 request** via Resend Batch API
   (`_send_batch_raw` fala com `POST /emails/batch` por httpx, com header
   **`Idempotency-Key`** — `batch_idempotency_key`, determinístico por e-mails+data,
-  anti-duplicata em retry). Templates Jinja2 **table-based** (compatível com
-  Gmail/Outlook), paleta dark.
+  anti-duplicata em retry). **Bounce (KL-24):** `get_email_event(email_id)` (GET
+  `/emails/{id}` → `last_event`) para o backfill, e `verify_resend_signature`
+  (esquema **Svix**) para validar o webhook. Templates Jinja2 **table-based**
+  (compatível com Gmail/Outlook), paleta dark.
 - **Endpoints** (`api/main.py`): `POST /email/test`, `POST /email/send-alert`
   (scan + alerta), `POST /email/send-report` (exige cobrança paga; anexa PDFs).
 - **Formulário de contato (público):** `POST /contact {name?, email, message}` —
@@ -548,7 +550,11 @@ presença de e-mail de contato, registra como alvo e enfileira para scan.
   descarta genéricos (noreply, webmaster) e de terceiros (duda.co, wixpress…);
   prefere o mesmo domínio do site. **`_is_valid_email` (KL-19)** rejeita nomes de
   arquivo (`.css/.js/.png…`), placeholders (`seuemail@`, `email@email.com.br`) e
-  domínios de exemplo — evita bounce/reputação. **Sem e-mail válido ⇒
+  domínios de exemplo. **Validação de MX (KL-24):** `extract_email` só aceita
+  e-mail cujo domínio tem **registro MX** (`email_has_mx`/`_mx_status` via
+  dnspython, cache `lru_cache`, DNS fora do event loop com `to_thread`); tri-estado
+  `ok|no_mx|unknown` — só rejeita `no_mx` (fail-open no timeout/sem lib) para não
+  descartar por engano. Corta a maior fonte de bounce. **Sem e-mail válido ⇒
   `status='sem_contato'`.**
 - **`classifier.py`** — setor + `price_tier` + **confiança** por **cascata de 3
   camadas** (refino do KL-11), da pista mais forte para a mais fraca: **(1)
@@ -640,9 +646,17 @@ escaneados que têm falhas:
 - **API:** `GET /alerts` (histórico), `GET /alerts/stats`, `POST /targets/{id}/alert`
   (dispara manual, ignora throttle/janela), `GET /unsubscribe`.
 
+**Validação pré-envio + safety net de bounce (KL-24).** Antes de montar cada batch,
+`_validate_batch` remove (e marca `descartado`) alvos na **blocklist** (bouncaram
+antes, `is_email_blocked`) e com **domínio sem MX** (`email_mx_status=='no_mx'`,
+`ALERT_VALIDATE_MX`). No início de cada ciclo, `_check_bounce_health` **pausa** os
+envios se o bounce rate passar de `ALERT_MAX_BOUNCE_RATE` (8%) — com amostra ≥
+`ALERT_BOUNCE_MIN_SAMPLE` — protegendo a reputação no Resend/Gmail. Ver seção **23**.
+
 **Regra inviolável:** a **cota mensal** (`ALERT_MONTHLY_LIMIT`) protege a reputação
 do domínio e o custo do plano Resend Pro — nunca remover o teto mensal nem estourar
-os 50k/mês do Pro. Manter sempre a reserva para e-mails transacionais.
+os 50k/mês do Pro. Manter sempre a reserva para e-mails transacionais. **Nunca
+enviar para e-mail na blocklist nem para domínio sem MX** (KL-24).
 
 ## 17. Re-scan Worker + e-mail de evolução (KL-13) — `discovery/rescan_worker.py`
 
@@ -834,3 +848,41 @@ link clicado → resultado visto → CTA → PIX gerado → pago → PDF baixado
   item **Analytics** (entre Re-scans e Sistema).
 - **Contagem do funil:** `COUNT(DISTINCT session_id)` por etapa em `site_events`;
   o topo (e-mails enviados) vem do `alert_log`.
+
+## 23. Controle de bounce (KL-24) — MX + webhook Resend + blocklist + auto-pause
+
+Emergência: bounce rate em **10,67%** (limite seguro < 4%; acima de 10% o Resend
+suspende a conta e provedores blacklistam `klarim.net`). Complaint 0% — o problema
+são **endereços inválidos**, não o conteúdo. Quatro camadas de defesa:
+
+- **Validação de MX na captação (`discovery/contact.py`):** `extract_email` só
+  aceita e-mail cujo domínio tem registro **MX** (`_mx_status` via **dnspython**,
+  cache `lru_cache`, DNS via `to_thread`). Tri-estado `ok|no_mx|unknown` — rejeita
+  só `no_mx` (fail-open no timeout/sem lib). `dnspython` no `requirements.txt`.
+- **Validação pré-envio (`discovery/alert_worker.py`):** `_validate_batch` remove +
+  marca `descartado` os alvos na **blocklist** e com domínio **sem MX** antes de
+  montar o batch. `_check_bounce_health` **pausa** o worker se o bounce rate passar
+  de `ALERT_MAX_BOUNCE_RATE` (8%) com amostra ≥ `ALERT_BOUNCE_MIN_SAMPLE`.
+- **Webhook do Resend (`POST /api/webhooks/resend`, público):** valida a assinatura
+  **Svix** (`verify_resend_signature` + `RESEND_WEBHOOK_SECRET`; 401 se inválida).
+  `email.bounced` **permanente** → `discard_target_by_email` + `block_email` +
+  `alert_log.status='bounced'`; **transitório** (soft/temporary) é ignorado.
+  `email.complained` → `mark_unsubscribed` + `block_email` (spam é mais grave).
+- **Backfill (`POST /api/admin/process-bounces`, JWT):** checa no Resend
+  (`get_email_event`, concorrência limitada a 8) o status de cada alerta enviado e
+  descarta/bloqueia os que bouncaram. Idempotente. **Rodar uma vez na VM após o
+  deploy** para marcar os 37 bounces existentes.
+- **Blocklist (`email_blocklist`):** bloqueio **por e-mail** (guarda o domínio para
+  análise, mas não descarta endereços irmãos do mesmo domínio). `is_email_blocked`,
+  `block_email`, `blocklist_size`.
+- **Dashboard (`GET /api/system/email-health` + `/painel/sistema`):** card com
+  **bounce rate** (🟢 <2% · 🟡 2–4% · 🔴 >4%), bounces permanentes, complaints e
+  tamanho da blocklist. `_bounce_status` classifica; métricas de `store.email_health`.
+- **Store:** `discard_target_by_email`, `block_email`, `is_email_blocked`,
+  `blocklist_size`, `mark_alert_status_by_email_id`, `get_sent_alerts_for_bounce_check`,
+  `email_health`. **Vars** (`.env`): `RESEND_WEBHOOK_SECRET`, `ALERT_VALIDATE_MX`,
+  `ALERT_MAX_BOUNCE_RATE`, `ALERT_BOUNCE_MIN_SAMPLE`.
+
+**Regra inviolável:** nunca reenviar para e-mail na blocklist nem para domínio sem
+MX; nunca remover a pausa automática por bounce rate — a reputação do domínio no
+Resend/Gmail é ativo crítico do funil.

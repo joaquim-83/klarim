@@ -43,15 +43,19 @@ function WorkerCard({ title, alive, children }) {
   )
 }
 
+const BOUNCE_COLOR = { ok: OK, warning: WARN, critical: BAD }
+const BOUNCE_LABEL = { ok: '🟢 Saudável', warning: '🟡 Atenção', critical: '🔴 Crítico' }
+
 export default function Sistema() {
   const [data, setData] = useState(null)
   const [activity, setActivity] = useState([])
+  const [health, setHealth] = useState(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
 
   const load = useCallback(() => {
-    Promise.all([admin.systemStatus(), admin.systemActivity(50)])
-      .then(([s, a]) => { setData(s); setActivity(a.activity || []); setError('') })
+    Promise.all([admin.systemStatus(), admin.systemActivity(50), admin.emailHealth()])
+      .then(([s, a, h]) => { setData(s); setActivity(a.activity || []); setHealth(h); setError('') })
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false))
   }, [])
@@ -136,6 +140,29 @@ export default function Sistema() {
         <StatCard label="Uso mensal" value={em.monthly_usage_pct} accent="#F0C000" />
         <StatCard label="Backlog de alertas" value={em.backlog} />
       </div>
+
+      {/* Saúde de e-mail — bounce/complaint (KL-24) */}
+      {health && (
+        <Card title="Saúde de e-mail (bounce)">
+          <div className="mb-3 flex items-center gap-2">
+            {dot(BOUNCE_COLOR[health.bounce_status] || WARN)}
+            <span className="font-semibold" style={{ color: BOUNCE_COLOR[health.bounce_status] || WARN }}>
+              {BOUNCE_LABEL[health.bounce_status] || health.bounce_status}
+            </span>
+            <span className="text-sm text-klarim-muted">
+              — limite seguro &lt; 4% (o worker pausa &gt; 8%)
+            </span>
+          </div>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+            <StatCard label="Bounce rate" value={`${health.bounce_rate}%`}
+              accent={BOUNCE_COLOR[health.bounce_status]} />
+            <StatCard label="Enviados" value={health.total_sent} />
+            <StatCard label="Bounces perm." value={health.bounced_permanent} accent={BAD} />
+            <StatCard label="Complaints" value={health.complained} accent={BAD} />
+            <StatCard label="Blocklist" value={health.blocklist_size} />
+          </div>
+        </Card>
+      )}
 
       {/* Log de atividade */}
       <Card title={`Atividade recente (${activity.length})`}>

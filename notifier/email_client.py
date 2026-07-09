@@ -79,7 +79,48 @@ def build_unsubscribe_link(email: str, secret: str) -> str:
 
 # Endpoint da Batch API do Resend (envia até 100 e-mails em 1 request — KL-23).
 RESEND_BATCH_URL = "https://api.resend.com/emails/batch"
+RESEND_EMAILS_URL = "https://api.resend.com/emails"  # GET /emails/{id} — status (KL-24)
 BATCH_MAX = 100  # limite da Resend Batch API por request
+
+
+def verify_resend_signature(secret: str, headers: Any, raw_body: Any) -> bool:
+    """Valida a assinatura do webhook do Resend (esquema **Svix**, KL-24).
+
+    O Resend assina via Svix: headers ``svix-id``, ``svix-timestamp``,
+    ``svix-signature``; o conteúdo assinado é ``{id}.{timestamp}.{body}`` e o
+    segredo é ``whsec_<base64>``. O header de assinatura traz itens
+    ``v1,<base64sig>`` separados por espaço. Comparação em tempo constante.
+    ``headers`` pode ser um dict ou os headers do Request (`.get` case-insensitive).
+    """
+    def _h(*names):
+        for n in names:
+            v = headers.get(n)
+            if v:
+                return v
+        return ""
+
+    svix_id = _h("svix-id", "webhook-id")
+    svix_ts = _h("svix-timestamp", "webhook-timestamp")
+    svix_sig = _h("svix-signature", "webhook-signature")
+    if not (secret and svix_id and svix_ts and svix_sig):
+        return False
+
+    body = raw_body.decode("utf-8") if isinstance(raw_body, (bytes, bytearray)) else str(raw_body)
+    signed = f"{svix_id}.{svix_ts}.{body}"
+    key = secret[len("whsec_"):] if secret.startswith("whsec_") else secret
+    try:
+        secret_bytes = base64.b64decode(key)
+    except Exception:  # noqa: BLE001 - segredo não-base64: usa cru
+        secret_bytes = key.encode("utf-8")
+    expected = base64.b64encode(
+        hmac.new(secret_bytes, signed.encode("utf-8"), hashlib.sha256).digest()
+    ).decode("ascii")
+
+    for part in svix_sig.split():
+        sig = part.split(",", 1)[1] if "," in part else part
+        if hmac.compare_digest(sig, expected):
+            return True
+    return False
 
 
 def batch_idempotency_key(items: List[Dict[str, Any]]) -> str:
@@ -168,6 +209,28 @@ class KlarimMailer:
             detail = body.get("message") or body.get("error") or resp.text
             raise KlarimMailerError(f"Falha no batch Resend ({resp.status_code}): {detail}")
         return body if isinstance(body, dict) else {}
+
+    async def get_email_event(self, email_id: str) -> Optional[str]:
+        """Último evento de um e-mail no Resend (KL-24): ``delivered`` / ``bounced`` /
+        ``complained`` / ``delivery_delayed`` … Retorna None em erro/ausência."""
+        import httpx  # import tardio
+
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(
+                    f"{RESEND_EMAILS_URL}/{email_id}",
+                    headers={"Authorization": f"Bearer {self.api_key}"},
+                    timeout=15,
+                )
+        except Exception:  # noqa: BLE001 - erro de rede não deve derrubar o backfill
+            return None
+        if resp.status_code >= 400:
+            return None
+        try:
+            body = resp.json()
+        except Exception:  # noqa: BLE001
+            return None
+        return body.get("last_event") if isinstance(body, dict) else None
 
     # ----- alertas / relatórios ------------------------------------------- #
 

@@ -121,6 +121,10 @@ export const admin = {
   systemStatus: () => get('/system/status'),
   systemActivity: (limit = 50) => get(`/system/activity?limit=${limit}`),
 
+  // saúde de e-mail / bounce (KL-24)
+  emailHealth: () => get('/system/email-health'),
+  processBounces: () => post('/admin/process-bounces'),
+
   // analytics da jornada do lead — KL-21
   analyticsFunnel: (period = '7d') => get(`/analytics/funnel?period=${period}`),
   analyticsAbandoned: (period = '7d') => get(`/analytics/abandoned?period=${period}`),

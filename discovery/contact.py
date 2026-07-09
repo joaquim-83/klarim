@@ -5,7 +5,9 @@ Regra de negócio: sem e-mail extraível, o alvo não vale o custo de scan.
 
 from __future__ import annotations
 
+import asyncio
 import re
+from functools import lru_cache
 from typing import List, Optional
 from urllib.parse import urljoin
 
@@ -54,6 +56,48 @@ _PLACEHOLDER_DOMAINS = {
     "dominio.com.br", "exemplo.com.br", "empresa.com.br",
 }
 _VALID_EMAIL_RE = re.compile(r"^[a-z0-9._%+\-]+@[a-z0-9.\-]+\.[a-z]{2,}$")
+
+
+# --- validação de MX (KL-24) ----------------------------------------------- #
+# Bounce rate alto (10,67%) porque extraímos e-mails sintaticamente válidos cujo
+# domínio não recebe e-mail (staging, CDN, domínio parqueado). Antes de aceitar,
+# checamos se o domínio tem registro MX. Tri-estado para não descartar em falha
+# transitória de DNS: "ok" (tem MX) | "no_mx" (definitivamente não recebe) |
+# "unknown" (timeout/sem lib — fail-open, não rejeita).
+
+
+def _mx_status(domain: str) -> str:
+    """Estado do MX do domínio: 'ok' | 'no_mx' | 'unknown'. Nunca levanta."""
+    try:
+        import dns.resolver  # dnspython
+    except ImportError:
+        return "unknown"  # sem a lib não dá pra checar — não bloqueia (fail-open)
+    try:
+        answers = dns.resolver.resolve(domain, "MX", lifetime=5)
+        return "ok" if len(answers) > 0 else "no_mx"
+    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
+        return "no_mx"  # domínio não existe / não tem MX -> e-mail bounca
+    except Exception:  # noqa: BLE001 - timeout, NoNameservers, etc. -> incerto
+        return "unknown"
+
+
+@lru_cache(maxsize=10000)
+def _mx_status_cached(domain: str) -> str:
+    """Cache em memória por domínio (evita DNS repetido para o mesmo domínio)."""
+    return _mx_status(domain)
+
+
+def email_mx_status(email: str) -> str:
+    domain = (email or "").rsplit("@", 1)[-1].strip().lower()
+    if not domain:
+        return "no_mx"
+    return _mx_status_cached(domain)
+
+
+def email_has_mx(email: str) -> bool:
+    """True se o domínio pode receber e-mail. Só rejeita MX definitivamente ausente
+    ('no_mx'); 'unknown' (timeout/sem lib) passa para não descartar por engano."""
+    return email_mx_status(email) != "no_mx"
 
 
 def _is_valid_email(email: str) -> bool:
@@ -113,20 +157,40 @@ def _collect_emails(html: str) -> List[str]:
     return out
 
 
-def _best_email(emails: List[str], site_domain: str) -> Optional[str]:
+def _ranked_emails(emails: List[str], site_domain: str) -> List[str]:
+    """Candidatos válidos (sintaxe + não-junk), com os do mesmo domínio na frente."""
     candidates = [e for e in emails if _is_valid_email(e) and not _is_junk(e)]
-    if not candidates:
-        return None
-    # Prioriza e-mails no mesmo domínio registrável do site.
     same = [e for e in candidates if registrable_domain(e.split("@", 1)[1]) == site_domain]
-    return (same or candidates)[0]
+    rest = [e for e in candidates if e not in same]
+    return same + rest
 
 
-async def extract_email(html: str, url: str) -> Optional[str]:
-    """Extrai o melhor e-mail de contato. Tenta a página e, se preciso, /contato."""
+def _best_email(emails: List[str], site_domain: str) -> Optional[str]:
+    """Melhor candidato **sintático** (sem checar MX — quem faz isso é o extract)."""
+    ranked = _ranked_emails(emails, site_domain)
+    return ranked[0] if ranked else None
+
+
+async def _pick_with_mx(candidates: List[str], validate_mx: bool) -> Optional[str]:
+    """Primeiro candidato cujo domínio tem MX (KL-24). DNS roda fora do event loop."""
+    for e in candidates:
+        if not validate_mx:
+            return e
+        if await asyncio.to_thread(email_has_mx, e):
+            return e
+        print(f"[contact] rejeitado {e} — domínio sem MX", flush=True)
+    return None
+
+
+async def extract_email(html: str, url: str, validate_mx: bool = True) -> Optional[str]:
+    """Extrai o melhor e-mail de contato. Tenta a página e, se preciso, /contato.
+
+    Com ``validate_mx`` (padrão), só aceita e-mail cujo domínio tem registro MX —
+    corta a maior fonte de bounce (domínios que não recebem e-mail, KL-24).
+    """
     site_domain = registrable_domain(domain_of(url))
 
-    best = _best_email(_collect_emails(html), site_domain)
+    best = await _pick_with_mx(_ranked_emails(_collect_emails(html), site_domain), validate_mx)
     if best:
         return best
 
@@ -138,7 +202,8 @@ async def extract_email(html: str, url: str) -> Optional[str]:
         except (httpx.HTTPError, OSError):
             continue
         if resp.status_code == 200:
-            best = _best_email(_collect_emails(resp.text), site_domain)
+            best = await _pick_with_mx(
+                _ranked_emails(_collect_emails(resp.text), site_domain), validate_mx)
             if best:
                 return best
     return None

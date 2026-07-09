@@ -322,6 +322,16 @@ table-based (Gmail/Outlook), paleta dark.
 - `POST /api/email/send-alert` — escaneia e envia o alerta com semáforo.
 - `POST /api/email/send-report` — envia os 2 PDFs (exige cobrança paga).
 
+**Controle de bounce (KL-24).** Para proteger a reputação do domínio (bounce rate
+precisa ficar < 4%): (1) a captação de e-mail (`discovery/contact.py`) valida
+**MX** do domínio antes de aceitar (dnspython + cache); (2) o Alert Worker filtra
+**blocklist** + domínios sem MX antes de enviar e **pausa** se o bounce rate passar
+de 8%; (3) o webhook `POST /api/webhooks/resend` (assinatura Svix) marca bounces
+permanentes como `descartado` + blocklist e complaints como `unsubscribed`; (4)
+`POST /api/admin/process-bounces` faz o backfill dos bounces já ocorridos. O painel
+**Sistema** mostra o bounce rate com semáforo de risco. Variáveis: `RESEND_WEBHOOK_SECRET`,
+`ALERT_VALIDATE_MX`, `ALERT_MAX_BOUNCE_RATE`.
+
 Na compra, a tela `/pay` pede o e-mail; após o pagamento confirmado (webhook ou
 polling), o relatório é **enviado automaticamente** em background (idempotente;
 se falhar, o cliente ainda baixa no site). A tela `/report` mostra o status do

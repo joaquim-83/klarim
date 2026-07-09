@@ -5,7 +5,11 @@ from __future__ import annotations
 import asyncio
 
 from discovery.fingerprint import detect_platform
-from discovery.contact import extract_email, _is_junk, _best_email, _collect_emails, _is_valid_email
+import discovery.contact as contact
+from discovery.contact import (
+    extract_email, _is_junk, _best_email, _collect_emails, _is_valid_email,
+    email_has_mx, email_mx_status,
+)
 from discovery.ct_client import CTClient
 
 # A cobertura do classificador de setor vive em tests/test_classifier.py (refino KL-11).
@@ -58,10 +62,54 @@ def test_best_email_filters_invalid():
     assert _best_email(["_@x.css", "seuemail@email.com.br"], "hotelx.com.br") is None
 
 
-def test_extract_email_skips_garbage_mailto():
+def test_extract_email_skips_garbage_mailto(monkeypatch):
+    # MX ok (não bate na rede): valida a extração, não o DNS.
+    monkeypatch.setattr(contact, "_mx_status_cached", lambda d: "ok")
     html = ('<a href="mailto:_@astro.dwg1vcjs.css">x</a> '
             'contato: reservas@hotelx.com.br')
     assert asyncio.run(extract_email(html, "https://www.hotelx.com.br")) == "reservas@hotelx.com.br"
+
+
+# --- KL-24: validação de MX ------------------------------------------------ #
+
+def test_email_has_mx_tri_state(monkeypatch):
+    monkeypatch.setattr(contact, "_mx_status_cached",
+                        lambda d: {"tem-mx.com.br": "ok", "sem-mx.com.br": "no_mx"}.get(d, "unknown"))
+    assert email_has_mx("a@tem-mx.com.br") is True
+    assert email_has_mx("a@sem-mx.com.br") is False       # no_mx -> rejeita
+    assert email_has_mx("a@incerto.com.br") is True        # unknown -> fail-open
+
+
+def test_extract_email_rejects_no_mx(monkeypatch):
+    # domínio do site sem MX -> extração devolve None (não aceita e-mail que bounca)
+    monkeypatch.setattr(contact, "_mx_status_cached", lambda d: "no_mx")
+    html = 'contato: reservas@hotelx.com.br'
+    assert asyncio.run(extract_email(html, "https://www.hotelx.com.br")) is None
+
+
+def test_extract_email_skips_no_mx_and_takes_next(monkeypatch):
+    # o do mesmo domínio (sem MX) é pulado; o do outro (com MX) é aceito
+    def _status(domain):
+        return "no_mx" if domain == "hotelx.com.br" else "ok"
+
+    monkeypatch.setattr(contact, "_mx_status_cached", _status)
+    html = 'reservas@hotelx.com.br e geral@grupohotel.com.br'
+    assert asyncio.run(extract_email(html, "https://www.hotelx.com.br")) == "geral@grupohotel.com.br"
+
+
+def test_mx_status_cache_avoids_repeat_lookup(monkeypatch):
+    calls = {"n": 0}
+
+    def _raw(domain):
+        calls["n"] += 1
+        return "ok"
+
+    contact._mx_status_cached.cache_clear()
+    monkeypatch.setattr(contact, "_mx_status", _raw)
+    assert email_mx_status("a@cache-test-kl24.com.br") == "ok"
+    assert email_mx_status("b@cache-test-kl24.com.br") == "ok"  # mesmo domínio
+    assert calls["n"] == 1  # segundo veio do cache
+    contact._mx_status_cached.cache_clear()
 
 
 # --- KL-19: timeout por domínio -------------------------------------------- #

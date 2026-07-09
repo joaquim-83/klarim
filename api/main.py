@@ -46,7 +46,7 @@ from payments import (
     get_store,
     init_store,
 )
-from notifier import KlarimMailer, KlarimMailerError, unsubscribe_token
+from notifier import KlarimMailer, KlarimMailerError, unsubscribe_token, verify_resend_signature
 from discovery.alert_worker import send_alert_for_target
 from discovery.rescan_worker import rescan_target
 from discovery.ingest import ingest_scan, _fetch_html
@@ -421,6 +421,84 @@ async def webhook_abacatepay(request: Request, webhookSecret: str = Query(defaul
             await _maybe_send_report_email(charge)
 
     return {"received": True, "charge_id": charge_id, "event": event}
+
+
+# --------------------------------------------------------------------------- #
+# Webhook do Resend — bounces/complaints automáticos (KL-24)
+# --------------------------------------------------------------------------- #
+
+def _resend_webhook_secret() -> str:
+    return os.environ.get("RESEND_WEBHOOK_SECRET", "")
+
+
+async def _handle_bounce(store, email: str, message: str) -> None:
+    """Bounce permanente: descarta o alvo + adiciona à blocklist + marca no log."""
+    email = (email or "").strip().lower()
+    if not email:
+        return
+    await store.discard_target_by_email(email, reason=f"bounced: {message}"[:200])
+    await store.block_email(email, reason="bounced")
+    print(f"[webhook/resend] bounce {email} — alvo descartado + blocklist", flush=True)
+
+
+async def _handle_complaint(store, email: str) -> None:
+    """Complaint (spam): mais grave que bounce — descadastra + blocklist."""
+    email = (email or "").strip().lower()
+    if not email:
+        return
+    await store.mark_unsubscribed(email)
+    await store.block_email(email, reason="complained")
+    print(f"[webhook/resend] complaint {email} — descadastrado + blocklist", flush=True)
+
+
+@app.post("/webhooks/resend")
+async def webhook_resend(request: Request) -> dict:
+    """Recebe eventos do Resend (KL-24): email.bounced / email.complained.
+
+    Valida a assinatura Svix quando `RESEND_WEBHOOK_SECRET` está configurado
+    (401 se inválida). Só descarta em bounce **permanente** (soft/transient não
+    remove o alvo — pode ser caixa cheia temporária).
+    """
+    raw = await request.body()
+    secret = _resend_webhook_secret()
+    if secret and not verify_resend_signature(secret, request.headers, raw):
+        raise HTTPException(status_code=401, detail="Assinatura Resend inválida.")
+
+    try:
+        payload = json.loads(raw or b"{}")
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Payload inválido.") from exc
+
+    evt_type = str(payload.get("type", ""))
+    data = payload.get("data") or {}
+    email_id = data.get("email_id") or data.get("id")
+    recipients = data.get("to") or []
+    if isinstance(recipients, str):
+        recipients = [recipients]
+    store = get_target_store()
+
+    if evt_type == "email.bounced":
+        bounce = data.get("bounce") or {}
+        btype = str(bounce.get("type", "")).lower()
+        # Só é transitório se explicitamente marcado; o resto trata como permanente.
+        transient = btype in ("transient", "soft", "temporary", "delivery_delayed")
+        message = str(bounce.get("message", "") or bounce.get("subType", ""))
+        if not transient:
+            if email_id:
+                await store.mark_alert_status_by_email_id(email_id, "bounced")
+            for addr in recipients:
+                await _handle_bounce(store, addr, message)
+        else:
+            print(f"[webhook/resend] bounce transitório ignorado ({recipients}, {btype})", flush=True)
+    elif evt_type == "email.complained":
+        if email_id:
+            await store.mark_alert_status_by_email_id(email_id, "complained")
+        for addr in recipients:
+            await _handle_complaint(store, addr)
+    else:
+        print(f"[webhook/resend] evento ignorado: {evt_type}", flush=True)
+
+    return {"received": True, "type": evt_type}
 
 
 def _extract_charge_id(data: dict) -> Optional[str]:
@@ -1071,6 +1149,38 @@ async def api_system_activity(limit: int = Query(default=50, le=200)) -> dict:
     return {"count": min(len(events), limit), "activity": events[:limit]}
 
 
+def _bounce_status(rate: float) -> str:
+    """Semáforo de bounce (KL-24): ok < 2% · warning 2–4% · critical > 4%."""
+    if rate > 4.0:
+        return "critical"
+    if rate >= 2.0:
+        return "warning"
+    return "ok"
+
+
+@app.get("/system/email-health")
+async def api_system_email_health() -> dict:
+    """Saúde de e-mail (KL-24): bounce rate + status de risco + blocklist.
+
+    `bounced`/`complained` refletem o que o webhook/backfill do Resend marcou no
+    `alert_log`. Não distinguimos bounce transitório (não descartamos por isso).
+    """
+    h = await get_target_store().email_health()
+    total = h["total"]
+    bounced, complained = h["bounced"], h["complained"]
+    rate = round(100.0 * bounced / total, 2) if total else 0.0
+    return {
+        "total_sent": total,
+        "delivered": max(total - bounced - complained, 0),
+        "bounced_permanent": bounced,
+        "bounced_transient": 0,  # não rastreado (bounces transitórios não descartam)
+        "complained": complained,
+        "bounce_rate": rate,
+        "bounce_status": _bounce_status(rate),
+        "blocklist_size": h["blocklist"],
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Tracking da jornada do lead (KL-21): eventos públicos + analytics (JWT)
 # --------------------------------------------------------------------------- #
@@ -1384,6 +1494,43 @@ async def api_admin_resend_payment(body: ResendPaymentBody) -> dict:
     await get_store().set_email_status(charge.charge_id, "sending")
     _spawn(_send_report_email_task(charge.charge_id, charge.target_url, charge.buyer_email))
     return {"charge_id": charge.charge_id, "email": charge.buyer_email, "queued": True}
+
+
+@app.post("/admin/process-bounces")
+async def api_admin_process_bounces(limit: int = Query(default=1000, le=5000)) -> dict:
+    """Backfill de bounces (KL-24): checa no Resend o status de cada alerta enviado
+    e descarta/bloqueia os que bouncaram permanentemente.
+
+    Concorrência limitada (não estoura o rate limit do Resend). Idempotente — rodar
+    de novo só reprocessa o que ainda está 'sent'.
+    """
+    _require_email()
+    store = get_target_store()
+    mailer = _mailer()
+    alerts = await store.get_sent_alerts_for_bounce_check(limit=limit)
+
+    sem = asyncio.Semaphore(8)
+    result = {"processed": 0, "bounced": 0, "delivered": 0, "unknown": 0}
+
+    async def _check(alert: dict) -> None:
+        async with sem:
+            event = await mailer.get_email_event(alert["email_id"])
+        result["processed"] += 1
+        if event in ("bounced", "bounce"):
+            await store.mark_alert_status_by_email_id(alert["email_id"], "bounced")
+            await _handle_bounce(store, alert.get("contact_email", ""), "backfill")
+            result["bounced"] += 1
+        elif event in ("complained", "complaint"):
+            await store.mark_alert_status_by_email_id(alert["email_id"], "complained")
+            await _handle_complaint(store, alert.get("contact_email", ""))
+        elif event is None:
+            result["unknown"] += 1
+        else:
+            result["delivered"] += 1
+
+    await asyncio.gather(*[_check(a) for a in alerts])
+    print(f"[admin] process-bounces: {result}", flush=True)
+    return {"candidates": len(alerts), **result}
 
 
 # --------------------------------------------------------------------------- #

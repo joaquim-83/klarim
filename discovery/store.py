@@ -103,6 +103,19 @@ CREATE INDEX IF NOT EXISTS idx_events_session ON site_events(session_id);
 CREATE INDEX IF NOT EXISTS idx_events_date ON site_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_events_target ON site_events(target_id);
 CREATE INDEX IF NOT EXISTS idx_events_utm ON site_events(utm_source, utm_campaign);
+
+-- Blocklist de e-mails que bouncaram/denunciaram (KL-24): nunca reenviar. O
+-- domínio fica guardado para análise, mas o bloqueio é por e-mail (não descarta
+-- endereços irmãos válidos do mesmo domínio por engano).
+CREATE TABLE IF NOT EXISTS email_blocklist (
+    id SERIAL PRIMARY KEY,
+    email VARCHAR(255) UNIQUE,
+    domain VARCHAR(255),
+    reason VARCHAR(50),
+    created_at TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_blocklist_email ON email_blocklist(email);
+CREATE INDEX IF NOT EXISTS idx_blocklist_domain ON email_blocklist(domain);
 """
 
 
@@ -607,6 +620,99 @@ class TargetStore:
                 (email,),
             )
             return cur.rowcount
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- bounce handling / blocklist (KL-24) ------------------------------- #
+
+    async def discard_target_by_email(self, email: str, reason: str = "bounced") -> int:
+        """Marca como 'descartado' todos os alvos com esse e-mail (sai dos ciclos)."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE targets SET status = 'descartado', "
+                "notes = COALESCE(notes || ' | ', '') || %s "
+                "WHERE contact_email = %s AND status != 'descartado'",
+                (reason, email),
+            )
+            return cur.rowcount
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def block_email(self, email: str, reason: str = "bounced") -> None:
+        """Adiciona o e-mail à blocklist (idempotente). Guarda o domínio p/ análise."""
+        email = (email or "").strip().lower()
+        if not email or "@" not in email:
+            return
+        domain = email.rsplit("@", 1)[1]
+
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO email_blocklist (email, domain, reason) VALUES (%s, %s, %s) "
+                "ON CONFLICT (email) DO NOTHING",
+                (email, domain, reason),
+            )
+
+        await asyncio.to_thread(self._run, _fn)
+
+    async def is_email_blocked(self, email: str) -> bool:
+        email = (email or "").strip().lower()
+        if not email:
+            return False
+
+        def _fn(cur):
+            cur.execute("SELECT 1 FROM email_blocklist WHERE email = %s LIMIT 1", (email,))
+            return cur.fetchone() is not None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def blocklist_size(self) -> int:
+        def _fn(cur):
+            cur.execute("SELECT COUNT(*) FROM email_blocklist")
+            return int(cur.fetchone()[0])
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def mark_alert_status_by_email_id(self, email_id: str, status: str) -> int:
+        """Atualiza o status dos envios com esse email_id (ex.: 'bounced'/'complained')."""
+        def _fn(cur):
+            cur.execute("UPDATE alert_log SET status = %s WHERE email_id = %s",
+                        (status, email_id))
+            return cur.rowcount
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_sent_alerts_for_bounce_check(self, limit: int = 1000) -> List[Dict[str, Any]]:
+        """email_id + contact_email distintos dos alertas enviados (p/ checar no Resend)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT DISTINCT ON (email_id) email_id, contact_email "
+                "FROM alert_log WHERE email_id IS NOT NULL AND status = 'sent' "
+                "ORDER BY email_id, sent_at DESC LIMIT %s",
+                (limit,),
+            )
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def email_health(self) -> Dict[str, Any]:
+        """Métricas de bounce (KL-24) a partir do `alert_log` + tamanho da blocklist.
+
+        `bounced`/`complained` refletem o que o webhook/backfill do Resend marcou.
+        `total` = tentativas (sent + bounced + complained).
+        """
+        def _fn(cur):
+            cur.execute(
+                "SELECT "
+                "COUNT(*) FILTER (WHERE status IN ('sent','bounced','complained')), "
+                "COUNT(*) FILTER (WHERE status = 'bounced'), "
+                "COUNT(*) FILTER (WHERE status = 'complained') "
+                "FROM alert_log"
+            )
+            total, bounced, complained = cur.fetchone()
+            cur.execute("SELECT COUNT(*) FROM email_blocklist")
+            blocklist = int(cur.fetchone()[0])
+            return {"total": int(total or 0), "bounced": int(bounced or 0),
+                    "complained": int(complained or 0), "blocklist": blocklist}
 
         return await asyncio.to_thread(self._run, _fn)
 
