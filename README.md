@@ -400,9 +400,9 @@ selecionável.
 **Dashboard operacional (KL-16):** a tela **Sistema** (`/painel/sistema`) mostra em
 tempo real (auto-refresh 30s) o status 🟢/🔴 dos 4 workers (via heartbeat no Redis,
 TTL 10min), o health das dependências (PostgreSQL, Redis, CT logs, Resend,
-AbacatePay), as métricas de e-mail (hoje/semana/mês + uso do throttle) e um log de
-atividade (scans, alertas, re-scans, pagamentos). Endpoints `GET /api/system/status`
-e `/api/system/activity`.
+AbacatePay), as métricas de e-mail (hoje/semana + **cota mensal** e backlog de
+alertas) e um log de atividade (scans, alertas, re-scans, pagamentos). Endpoints
+`GET /api/system/status` e `/api/system/activity`.
 
 **Integração completa (KL-17):** os scans feitos no site público passam a gravar em
 `targets`/`scans` (em background, com `source='public'`), então aparecem no painel;
@@ -413,28 +413,33 @@ pagamentos ficam vinculados aos alvos (link nos dois sentidos + reenvio de
 relatório). Endpoints: `POST /api/admin/scan-and-report`, `/resend-alert`,
 `/send-report`, `/resend-payment`.
 
-### Alert Worker (disparo automático)
+### Alert Worker (disparo automático — envio em lote, KL-23)
 
 No mesmo container do Discovery Worker (via `asyncio.gather`), o **Alert Worker**
-(`discovery/alert_worker.py`) dispara a cada 1h o alerta gratuito por e-mail para
-alvos escaneados **com falhas**: filtra elegíveis (com e-mail, não alertados nos
-últimos 30 dias, não descadastrados), respeita **throttle** (`MAX_ALERTS_PER_HOUR`,
-`MAX_ALERTS_PER_DAY`, pausa de 5s entre envios) para proteger a reputação do
-domínio no Resend, e registra tudo em `alert_log`. Cada alerta traz um link de
-**descadastro** com token HMAC (`GET /api/unsubscribe`). Gestão via API:
-`GET /api/alerts`, `/api/alerts/stats`, `POST /api/targets/{id}/alert` (disparo
-manual, ignora throttle).
+(`discovery/alert_worker.py`) dispara o alerta gratuito por e-mail para alvos
+escaneados **com falhas**: filtra elegíveis (com e-mail, não alertados nos últimos
+30 dias, não descadastrados). Com o **Resend Pro**, o envio é em **lote**
+(`KlarimMailer.send_alert_batch` → Resend Batch API, até 100 e-mails por request,
+com **idempotency key** para não duplicar em retry): cada ciclo manda
+`ALERT_BATCH_SIZE`×`ALERT_BATCHES_PER_CYCLE` alertas (padrão 50×4 = 200/ciclo,
+pausa `ALERT_BATCH_PAUSE` entre batches). O único teto é a **cota mensal**
+(`ALERT_MONTHLY_LIMIT`, padrão 45k — reserva 5k dos 50k/mês do Pro para
+transacionais), compartilhada com os e-mails de evolução. Tudo é registrado em
+`alert_log`. Cada alerta traz um link de **descadastro** com token HMAC
+(`GET /api/unsubscribe`). Gestão via API: `GET /api/alerts`, `/api/alerts/stats`,
+`POST /api/targets/{id}/alert` (disparo manual, ignora a cota).
 
-### Re-scan Worker (evolução de score)
+### Re-scan Worker (evolução de score — e-mail em lote, KL-23)
 
 Terceiro loop no mesmo container (ciclo de 24h). O **Re-scan Worker**
-(`discovery/rescan_worker.py`) reescaneia alvos já engajados a cada **30 dias**,
-compara o score novo com o anterior e envia um e-mail de **evolução**: 🎉 melhorou,
-⚠️ piorou ou 📊 permaneceu igual. Isso reativa a conversão sem descobrir alvos
-novos. Os e-mails de evolução dividem o **mesmo throttle** dos alertas (o total de
-e-mails proativos respeita `MAX_ALERTS_PER_HOUR/DAY`); no teto, o re-scan atualiza
-os dados e o e-mail fica pendente para o próximo ciclo. Histórico em `rescan_log`.
-Gestão via API: `GET /api/rescans`, `/api/rescans/stats`,
+(`discovery/rescan_worker.py`) reescaneia alvos já engajados a cada **30 dias**
+(cada site é varrido individualmente), compara o score novo com o anterior e envia
+um e-mail de **evolução**: 🎉 melhorou, ⚠️ piorou ou 📊 permaneceu igual. Isso
+reativa a conversão sem descobrir alvos novos. Os e-mails de evolução saem em
+**lote** (`send_evolution_batch`) ao fim do ciclo e dividem a **mesma cota mensal**
+(`ALERT_MONTHLY_LIMIT`) dos alertas; no teto, o re-scan atualiza os dados e o
+e-mail fica pendente (`rescan_log.email_id IS NULL`) para o próximo ciclo.
+Histórico em `rescan_log`. Gestão via API: `GET /api/rescans`, `/api/rescans/stats`,
 `POST /api/targets/{id}/rescan` (força re-scan + e-mail).
 
 ---

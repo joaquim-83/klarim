@@ -1,4 +1,4 @@
-"""Testes do Alert Worker (KL-12) — offline, com store e mailer falsos."""
+"""Testes do Alert Worker (KL-12 + KL-23 batch) — offline, com store/mailer falsos."""
 
 from __future__ import annotations
 
@@ -6,15 +6,12 @@ import asyncio
 import hmac
 
 from notifier import unsubscribe_token, build_unsubscribe_link
-import discovery.alert_worker as aw
 from discovery.alert_worker import (
     AlertWorker,
+    build_alert_payload,
     send_alert_for_target,
     severity_counts_from_checks,
 )
-
-# Sem pausa de 5s entre envios nos testes.
-aw.ALERT_PAUSE_SECONDS = 0
 
 
 # --- unsubscribe token ----------------------------------------------------- #
@@ -57,22 +54,29 @@ def test_severity_counts_from_checks():
 # --- fakes ----------------------------------------------------------------- #
 
 class FakeMailer:
-    def __init__(self):
-        self.sent = []
+    def __init__(self, fail=False):
+        self.batches = []
+        self.singles = []
+        self.fail = fail
+
+    async def send_alert_batch(self, alerts):
+        if self.fail:
+            raise RuntimeError("boom")
+        self.batches.append(list(alerts))
+        ids = [f"em_{i}" for i in range(len(alerts))]
+        return {"sent": len(alerts), "failed": 0, "ids": ids}
 
     async def send_alert(self, to_email, target_url, score, semaphore, fail_count,
                          severity_counts, unsubscribe_link=None, risk_messages=None,
                          target_id=None):
-        self.sent.append({"to": to_email, "url": target_url, "unsub": unsubscribe_link,
-                          "risks": risk_messages, "target_id": target_id})
-        return {"email_id": f"em_{len(self.sent)}"}
+        self.singles.append({"to": to_email, "target_id": target_id})
+        return {"email_id": f"single_{len(self.singles)}"}
 
 
 class FakeStore:
-    def __init__(self, eligible=None, sent_hour=0, sent_day=0):
+    def __init__(self, eligible=None, sent_month=0):
         self._eligible = eligible or []
-        self._sent_hour = sent_hour
-        self._sent_day = sent_day
+        self._sent_month = sent_month
         self.alerted = []
         self.logged = []
 
@@ -86,12 +90,8 @@ class FakeStore:
     async def count_eligible_targets_for_alert(self):
         return len(self._eligible)
 
-    async def count_alerts_last_hours(self, hours):
-        return self._sent_day if hours >= 24 else self._sent_hour
-
-    async def count_proactive_emails_last_hours(self, hours):
-        # Throttle global compartilhado (alertas + evolução) — KL-13.
-        return self._sent_day if hours >= 24 else self._sent_hour
+    async def count_proactive_emails_this_month(self):
+        return self._sent_month
 
     async def mark_target_alerted(self, target_id):
         self.alerted.append(target_id)
@@ -103,70 +103,97 @@ class FakeStore:
 
 
 def _target(tid, email="c@x.com.br"):
-    return {"id": tid, "url": f"https://site{tid}.com.br",
-            "contact_email": email, "last_scan_id": 100 + tid}
+    # inclui os campos do JOIN de get_eligible_targets_for_alert (sem get_scan extra)
+    return {"id": tid, "url": f"https://site{tid}.com.br", "contact_email": email,
+            "last_scan_id": 100 + tid, "last_scan_score": 86,
+            "scan_semaphore": "amarelo", "scan_fail_count": 2,
+            "scan_checks": {"results": [{"status": "FAIL", "severity": "ALTA"}]}}
 
 
-# --- send_alert_for_target ------------------------------------------------- #
+# --- build_alert_payload --------------------------------------------------- #
 
-def test_send_alert_for_target_marks_and_logs():
-    store, mailer = FakeStore(), FakeMailer()
-    email_id = asyncio.run(send_alert_for_target(store, mailer, _target(1)))
-    assert email_id == "em_1"
-    assert store.alerted == [1]
-    assert store.logged[0]["status"] == "sent"
-    assert mailer.sent[0]["to"] == "c@x.com.br"
+def test_build_alert_payload_from_join_fields():
+    payload = asyncio.run(build_alert_payload(FakeStore(), _target(7)))
+    assert payload["to_email"] == "c@x.com.br"
+    assert payload["target_id"] == 7 and payload["score"] == 86
+    assert payload["severity_counts"]["alta"] == 1
 
 
-def test_send_alert_for_target_requires_email():
+def test_build_alert_payload_falls_back_to_get_scan():
+    # alvo sem os campos do JOIN -> usa get_scan
+    t = {"id": 1, "url": "https://x.com.br", "contact_email": "c@x.com.br",
+         "last_scan_id": 101}
+    payload = asyncio.run(build_alert_payload(FakeStore(), t))
+    assert payload["score"] == 86 and payload["fail_count"] == 2
+
+
+def test_build_alert_payload_requires_email():
     try:
-        asyncio.run(send_alert_for_target(FakeStore(), FakeMailer(), _target(1, email=None)))
+        asyncio.run(build_alert_payload(FakeStore(), {"id": 1, "url": "x", "contact_email": None}))
         assert False, "esperava ValueError"
     except ValueError:
         pass
 
 
-# --- run_cycle ------------------------------------------------------------- #
+# --- send_alert_for_target (envio único, manual) --------------------------- #
+
+def test_send_alert_for_target_marks_and_logs():
+    store, mailer = FakeStore(), FakeMailer()
+    email_id = asyncio.run(send_alert_for_target(store, mailer, _target(1)))
+    assert email_id == "single_1"
+    assert store.alerted == [1]
+    assert store.logged[0]["status"] == "sent"
+
+
+# --- run_cycle (batch) ----------------------------------------------------- #
 
 def _worker(store):
     w = AlertWorker()
     w.store = store
-    # max_cycle alto por padrão para não interferir nos testes que não o exercitam.
-    w.max_hour, w.max_day, w.max_cycle = 10, 50, 50
+    w.batch_size, w.batches_per_cycle, w.batch_pause = 50, 4, 0
+    w.monthly_limit = 45000
     w._mailer = lambda: FakeMailer()  # noqa: E731
     return w
 
 
-def test_run_cycle_sends_eligible():
+def test_run_cycle_sends_in_one_batch():
     store = FakeStore(eligible=[_target(1), _target(2)])
     stats = asyncio.run(_worker(store).run_cycle())
-    assert stats["eligible"] == 2 and stats["sent"] == 2
+    assert stats["eligible"] == 2 and stats["sent"] == 2 and stats["batches"] == 1
     assert store.alerted == [1, 2]
+    assert all(l["status"] == "sent" for l in store.logged)
 
 
-def test_run_cycle_respects_global_throttle():
-    # já bateu o teto por hora -> não envia nada
-    store = FakeStore(eligible=[_target(1)], sent_hour=10)
+def test_run_cycle_splits_into_batches():
+    # 120 elegíveis, batch 50 -> 3 batches (50 + 50 + 20)
+    store = FakeStore(eligible=[_target(i) for i in range(1, 121)])
+    stats = asyncio.run(_worker(store).run_cycle())
+    assert stats["sent"] == 120 and stats["batches"] == 3
+    assert len(store.alerted) == 120
+
+
+def test_run_cycle_monthly_limit_skips_when_full():
+    store = FakeStore(eligible=[_target(1)], sent_month=45000)
     stats = asyncio.run(_worker(store).run_cycle())
     assert stats["sent"] == 0 and store.alerted == []
 
 
-def test_run_cycle_caps_per_cycle():
-    # 6 elegíveis, mas o cap por ciclo = 4 -> envia exatamente 4
-    store = FakeStore(eligible=[_target(i) for i in range(1, 7)])
+def test_run_cycle_monthly_limit_caps_fetch():
+    # cota mensal deixa só 10 -> envia exatamente 10 e para
+    store = FakeStore(eligible=[_target(i) for i in range(1, 51)], sent_month=44990)
     w = _worker(store)
-    w.max_cycle = 4
     stats = asyncio.run(w.run_cycle())
-    assert stats["sent"] == 4 and store.alerted == [1, 2, 3, 4]
+    assert stats["sent"] == 10 and len(store.alerted) == 10
 
 
-def test_run_cycle_stops_at_hourly_throttle():
-    # teto por hora = 1: envia 1 e para (break no throttle)
-    store = FakeStore(eligible=[_target(1), _target(2), _target(3)])
+def test_run_cycle_batch_failure_logs_failed_not_alerted():
+    store = FakeStore(eligible=[_target(1), _target(2)])
     w = _worker(store)
-    w.max_hour = 1
+    w._mailer = lambda: FakeMailer(fail=True)  # noqa: E731
     stats = asyncio.run(w.run_cycle())
-    assert stats["sent"] == 1
+    assert stats["sent"] == 0 and stats["errors"] == 1
+    assert store.alerted == []  # falha não marca alerted
+    assert all(l["status"] == "failed" for l in store.logged)
 
 
 def test_run_cycle_skips_without_mailer():

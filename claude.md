@@ -448,8 +448,12 @@ Dois usos: **alerta gratuito** (anzol do funil, semáforo) e **entrega do
 relatório** pago (2 PDFs anexados).
 
 - **`notifier/email_client.py`** — `KlarimMailer` com `send_alert`, `send_report`,
-  `send_test`, `send_contact`. SDK `resend` (síncrono) encapsulado em
-  `asyncio.to_thread`. Templates Jinja2 **table-based** (compatível com
+  `send_test`, `send_contact`, `send_evolution`. SDK `resend` (síncrono) encapsulado
+  em `asyncio.to_thread`. **Envio em lote (KL-23):** `send_alert_batch` /
+  `send_evolution_batch` mandam até **100 e-mails em 1 request** via Resend Batch API
+  (`_send_batch_raw` fala com `POST /emails/batch` por httpx, com header
+  **`Idempotency-Key`** — `batch_idempotency_key`, determinístico por e-mails+data,
+  anti-duplicata em retry). Templates Jinja2 **table-based** (compatível com
   Gmail/Outlook), paleta dark.
 - **Endpoints** (`api/main.py`): `POST /email/test`, `POST /email/send-alert`
   (scan + alerta), `POST /email/send-report` (exige cobrança paga; anexa PDFs).
@@ -611,12 +615,19 @@ um site com nota alta mas com falha grave não deve exibir "tudo certo" (verde).
 **Alert Worker** dispara o alerta gratuito (o anzol do funil) para alvos já
 escaneados que têm falhas:
 
-- **`alert_worker.py`** — `AlertWorker.run_cycle()`: busca elegíveis
-  (`status='scanned'`, com e-mail, `fail_count>0`, sem alerta nos últimos 30d, não
-  `unsubscribed`), respeita throttle (`MAX_ALERTS_PER_HOUR=10`,
-  `MAX_ALERTS_PER_DAY=50`, contados no `alert_log`), envia via `KlarimMailer.send_alert`
-  com **pausa de 5s** entre e-mails, marca `status='alerted'` + `last_alert_at` e
-  registra em `alert_log`. Loop a cada `ALERT_INTERVAL_HOURS` (1h).
+- **`alert_worker.py` (envio em lote, KL-23)** — `AlertWorker.run_cycle()`: busca
+  TODOS os elegíveis (`status='scanned'`, com e-mail, `fail_count>0`, sem alerta nos
+  últimos 30d, não `unsubscribed`), agrupa em batches de `ALERT_BATCH_SIZE` (50) e
+  envia cada batch em **1 request** via `KlarimMailer.send_alert_batch` (Resend
+  Batch API, até 100/request, com **idempotency key** anti-duplicata). Por ciclo:
+  `ALERT_BATCH_SIZE`×`ALERT_BATCHES_PER_CYCLE` (50×4 = 200), pausa `ALERT_BATCH_PAUSE`
+  (10s) entre batches. Marca `status='alerted'` + `last_alert_at`, registra em
+  `alert_log`. Loop a cada `ALERT_INTERVAL_MINUTES` (30min). `build_alert_payload`
+  monta o dict do alerta do JOIN de `get_eligible_targets_for_alert` (sem N+1);
+  `send_alert_for_target` (envio único) segue para os disparos manuais da API.
+  **Único teto:** a **cota mensal** `ALERT_MONTHLY_LIMIT` (45k dos 50k/mês do Resend
+  Pro; 5k reservados p/ transacionais), via `store.count_proactive_emails_this_month`
+  — os antigos `MAX_ALERTS_PER_HOUR/DAY/CYCLE` e a pausa de 5s foram removidos.
 - **Mesmo container do Discovery Worker:** `discovery/worker.py` `main()` roda
   `asyncio.gather(DiscoveryWorker().start(), AlertWorker().start())`.
 - **`store.py`** — tabela **`alert_log`** (histórico/throttle) + métodos
@@ -629,8 +640,9 @@ escaneados que têm falhas:
 - **API:** `GET /alerts` (histórico), `GET /alerts/stats`, `POST /targets/{id}/alert`
   (dispara manual, ignora throttle/janela), `GET /unsubscribe`.
 
-**Regra inviolável:** o throttle protege a reputação do domínio no Resend — nunca
-remover os tetos nem a pausa entre envios.
+**Regra inviolável:** a **cota mensal** (`ALERT_MONTHLY_LIMIT`) protege a reputação
+do domínio e o custo do plano Resend Pro — nunca remover o teto mensal nem estourar
+os 50k/mês do Pro. Manter sempre a reserva para e-mails transacionais.
 
 ## 17. Re-scan Worker + e-mail de evolução (KL-13) — `discovery/rescan_worker.py`
 
@@ -638,25 +650,28 @@ Fecha o ciclo de vida do alvo: a cada 30 dias reescaneia sites já engajados,
 compara o score com o anterior e envia um e-mail de evolução (re-engajamento sem
 descobrir alvos novos).
 
-- **`rescan_worker.py`** — `RescanWorker.run_cycle()` (loop 24h,
-  `RESCAN_INTERVAL_HOURS`): (1) reenvia e-mails de evolução pendentes do ciclo
-  anterior (`_flush_pending`); (2) `get_targets_for_rescan` (status `scanned`/
-  `alerted`, com e-mail, `last_scan_at` > `RESCAN_AGE_DAYS`=30); (3) por alvo, com
-  pausa igual ao scan worker (`WORKER_MAX_SCANS_PER_HOUR`): reescaneia, salva em
-  `scans`, atualiza `targets`, **cacheia (KL-9)**, classifica a evolução e envia o
-  e-mail. `classify_evolution` → `improved` / `worsened` / `unchanged` /
-  `first_rescan`. A função `rescan_target()` é compartilhada com a API.
-- **Throttle GLOBAL compartilhado com o Alert Worker:**
-  `count_proactive_emails_last_hours` soma `alert_log` + `rescan_log`. No teto, o
-  re-scan acontece (dados atualizados) e o e-mail fica **pendente**
-  (`rescan_log.email_id IS NULL`) para reenvio no próximo ciclo. Após enviar uma
-  evolução, `mark_target_contacted` seta `last_alert_at` (evita alerta duplicado).
+- **`rescan_worker.py` (e-mail em lote, KL-23)** — `RescanWorker.run_cycle()` (loop
+  24h, `RESCAN_INTERVAL_HOURS`): (1) `get_targets_for_rescan` (status `scanned`/
+  `alerted`, com e-mail, `last_scan_at` > `RESCAN_AGE_DAYS`=30) → por alvo, com pausa
+  igual ao scan worker (`WORKER_MAX_SCANS_PER_HOUR`): reescaneia, salva em `scans`,
+  atualiza `targets`, **cacheia (KL-9)**, classifica a evolução e **loga a evolução
+  com e-mail pendente** (`send_email=False`); (2) `_flush_pending_batch` despacha
+  TODOS os e-mails de evolução pendentes (deste ciclo + de ciclos anteriores) em
+  **lote** via `send_evolution_batch`. `classify_evolution` → `improved` /
+  `worsened` / `unchanged` / `first_rescan`. A função `rescan_target()` é
+  compartilhada com a API (disparo manual continua envio único).
+- **Cota mensal GLOBAL compartilhada com o Alert Worker:**
+  `count_proactive_emails_this_month` soma `alert_log` + `rescan_log` no mês
+  corrente (calendário). Se a cota estourar, o re-scan acontece (dados atualizados)
+  e o e-mail fica **pendente** (`rescan_log.email_id IS NULL`) para o próximo ciclo.
+  Após enviar uma evolução, `mark_target_contacted` seta `last_alert_at` (evita
+  alerta duplicado).
 - **`notifier`** — 3 templates (`evolution_improved/worsened/unchanged.html`) +
   `KlarimMailer.send_evolution` (escolhe o template pelo tipo). Preço do CTA vem de
   `payments.PRICING` pelo `price_tier` do alvo.
 - **`store.py`** — tabela **`rescan_log`** + métodos `get_targets_for_rescan`,
   `log_rescan`, `update_rescan_email`, `get_pending_evolution_emails`,
-  `list_rescans`, `rescan_stats`, `count_proactive_emails_last_hours`,
+  `list_rescans`, `rescan_stats`, `count_proactive_emails_this_month` (KL-23),
   `mark_target_contacted`.
 - **Mesmo container:** `discovery/worker.py` `main()` roda três loops —
   `asyncio.gather(DiscoveryWorker, AlertWorker, RescanWorker)`.

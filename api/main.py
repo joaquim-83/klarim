@@ -974,7 +974,11 @@ async def api_system_status() -> dict:
     eligible = await store.count_rescan_eligible()
     discovered_today = await store.count_discovered_today()
     email = await store.email_metrics()
-    max_day = int(os.environ.get("MAX_ALERTS_PER_DAY", "90"))
+    # Cota mensal (KL-23 / Resend Pro) — substitui o antigo teto diário.
+    monthly_limit = int(os.environ.get("ALERT_MONTHLY_LIMIT", "45000"))
+    sent_month = await store.count_proactive_emails_this_month()
+    backlog = await store.count_eligible_targets_for_alert()
+    usage_pct = round(100.0 * sent_month / monthly_limit, 1) if monthly_limit else 0.0
 
     queue_size = None
     if redis is not None:
@@ -1001,7 +1005,9 @@ async def api_system_status() -> dict:
                 "next_cycle_at": (alert_hb or {}).get("next_cycle_at"),
                 "sent_today": a_stats.get("today", 0),
                 "sent_week": a_stats.get("week", 0),
-                "throttle_limit": max_day,
+                "sent_month": sent_month,
+                "monthly_limit": monthly_limit,
+                "backlog": backlog,
                 "last_cycle_stats": (alert_hb or {}).get("last_cycle_stats"),
             },
             "rescan": {
@@ -1021,7 +1027,14 @@ async def api_system_status() -> dict:
             },
         },
         "dependencies": deps,
-        "email_metrics": {**email, "throttle_used": f"{email['sent_today']}/{max_day}"},
+        "email_metrics": {
+            "sent_today": email["sent_today"],
+            "sent_week": email["sent_week"],
+            "sent_month": sent_month,
+            "monthly_limit": monthly_limit,
+            "monthly_usage_pct": f"{usage_pct}%",
+            "backlog": backlog,
+        },
     }
 
 
@@ -1216,9 +1229,11 @@ async def api_config() -> dict:
         "discovery_batch_size": _i("DISCOVERY_BATCH_SIZE", "100"),
         "discovery_interval_minutes": _i("DISCOVERY_INTERVAL_MINUTES", "30"),
         "alert_interval_minutes": alert_interval_minutes,
-        "max_alerts_per_cycle": _i("MAX_ALERTS_PER_CYCLE", "4"),
-        "max_alerts_per_hour": _i("MAX_ALERTS_PER_HOUR", "8"),
-        "max_alerts_per_day": _i("MAX_ALERTS_PER_DAY", "90"),
+        # Batch sending (KL-23 / Resend Pro): substitui os antigos tetos hora/dia.
+        "alert_batch_size": _i("ALERT_BATCH_SIZE", "50"),
+        "alert_batches_per_cycle": _i("ALERT_BATCHES_PER_CYCLE", "4"),
+        "alert_batch_pause": _i("ALERT_BATCH_PAUSE", "10"),
+        "alert_monthly_limit": _i("ALERT_MONTHLY_LIMIT", "45000"),
         "rescan_interval_hours": _i("RESCAN_INTERVAL_HOURS", "24"),
         "rescan_age_days": _i("RESCAN_AGE_DAYS", "30"),
         "worker_max_scans_per_hour": _i("WORKER_MAX_SCANS_PER_HOUR", "50"),
@@ -1326,6 +1341,8 @@ async def api_admin_resend_alert(body: ResendAlertBody) -> dict:
         raise HTTPException(status_code=404, detail="Alvo não encontrado.")
     if not target.get("contact_email"):
         raise HTTPException(status_code=400, detail="Alvo sem e-mail de contato.")
+    print(f"[alert] reenvio manual (bypass cota mensal) alvo {body.target_id} "
+          f"{target.get('url')}", flush=True)
     try:
         email_id = await send_alert_for_target(store, _mailer(), target)
     except KlarimMailerError as exc:
@@ -1527,6 +1544,8 @@ async def api_target_alert(target_id: int) -> dict:
         raise HTTPException(status_code=404, detail="Alvo não encontrado.")
     if not target.get("contact_email"):
         raise HTTPException(status_code=400, detail="Alvo sem e-mail de contato.")
+    print(f"[alert] envio manual (bypass cota mensal) alvo {target_id} "
+          f"{target.get('url')}", flush=True)
     try:
         email_id = await send_alert_for_target(store, _mailer(), target)
     except KlarimMailerError as exc:

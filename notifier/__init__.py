@@ -9,6 +9,7 @@ from .email_client import (
     site_name,
     unsubscribe_token,
     build_unsubscribe_link,
+    batch_idempotency_key,
 )
 
 __all__ = [
@@ -18,4 +19,5 @@ __all__ = [
     "site_name",
     "unsubscribe_token",
     "build_unsubscribe_link",
+    "batch_idempotency_key",
 ]

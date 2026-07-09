@@ -674,19 +674,18 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
-    async def count_proactive_emails_last_hours(self, hours: int) -> int:
-        """Throttle GLOBAL: alertas (alert_log) + e-mails de evolução (rescan_log).
-
-        Ambos são e-mails proativos e disputam o mesmo teto de reputação do domínio.
+    async def count_proactive_emails_this_month(self) -> int:
+        """Cota mensal GLOBAL (KL-23): alertas (alert_log) + evolução (rescan_log)
+        enviados no mês corrente (calendário). Substitui o antigo throttle horário/
+        diário — com o Resend Pro (50k/mês) o único teto é a cota mensal.
         """
         def _fn(cur):
             cur.execute(
                 "SELECT "
                 "(SELECT COUNT(*) FROM alert_log WHERE status = 'sent' "
-                "  AND sent_at > NOW() - (%s || ' hours')::interval) + "
+                "  AND sent_at >= date_trunc('month', NOW())) + "
                 "(SELECT COUNT(*) FROM rescan_log WHERE email_id IS NOT NULL "
-                "  AND rescanned_at > NOW() - (%s || ' hours')::interval)",
-                (str(hours), str(hours)),
+                "  AND rescanned_at >= date_trunc('month', NOW()))"
             )
             return int(cur.fetchone()[0])
 

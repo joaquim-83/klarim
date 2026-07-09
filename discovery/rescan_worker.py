@@ -5,10 +5,13 @@ reescaneados após 30 dias; o score novo é comparado ao anterior e um e-mail co
 a história (melhorou / piorou / permaneceu igual), reativando a conversão sem
 precisar descobrir alvos novos.
 
-Compartilha o throttle GLOBAL de e-mails proativos com o Alert Worker
-(`count_proactive_emails_last_hours`). Se o teto estiver batido, o re-scan
-acontece mesmo assim (dados atualizados) e o e-mail fica pendente
-(`rescan_log.email_id IS NULL`) para reenvio no próximo ciclo.
+Compartilha a **cota mensal GLOBAL** de e-mails proativos com o Alert Worker
+(`count_proactive_emails_this_month`, KL-23). Os e-mails de evolução são enviados
+em LOTE (`send_evolution_batch`) ao fim do ciclo: cada alvo é reescaneado
+individualmente (é preciso varrer o site), mas o e-mail fica pendente
+(`rescan_log.email_id IS NULL`) e é despachado em batches — incluindo pendências
+de ciclos anteriores. Se a cota mensal estourar, o e-mail continua pendente para
+o próximo ciclo.
 """
 
 from __future__ import annotations
@@ -26,10 +29,6 @@ from payments import PRICING, DEFAULT_TIER, amount_display
 from .heartbeat import publish_heartbeat
 from .store import get_target_store
 from .alert_worker import severity_counts_from_checks
-
-
-# Pausa entre reenvios de e-mails pendentes (protege a reputação do domínio).
-EVOLUTION_PAUSE_SECONDS = float(os.environ.get("EVOLUTION_PAUSE_SECONDS", "5"))
 
 
 def classify_evolution(old_score: Optional[int], new_score: Optional[int]) -> str:
@@ -111,8 +110,10 @@ class RescanWorker:
     def __init__(self) -> None:
         self.interval_hours = int(os.environ.get("RESCAN_INTERVAL_HOURS", "24"))
         self.age_days = int(os.environ.get("RESCAN_AGE_DAYS", "30"))
-        self.max_hour = int(os.environ.get("MAX_ALERTS_PER_HOUR", "10"))
-        self.max_day = int(os.environ.get("MAX_ALERTS_PER_DAY", "50"))
+        # Cota mensal + batch de e-mail compartilhados com o Alert Worker (KL-23).
+        self.monthly_limit = int(os.environ.get("ALERT_MONTHLY_LIMIT", "45000"))
+        self.email_batch_size = int(os.environ.get("ALERT_BATCH_SIZE", "50"))
+        self.batch_pause = float(os.environ.get("ALERT_BATCH_PAUSE", "10"))
         max_scans = int(os.environ.get("WORKER_MAX_SCANS_PER_HOUR", "50"))
         self.pause_s = 3600.0 / max_scans if max_scans > 0 else 0.0
         self.batch = int(os.environ.get("RESCAN_BATCH_SIZE", "50"))
@@ -150,74 +151,89 @@ class RescanWorker:
                 print(f"[rescan] cache indisponível: {exc!r}", flush=True)
         return self._cache_obj
 
-    async def _throttle_ok(self) -> bool:
-        h = await self.store.count_proactive_emails_last_hours(1)
-        d = await self.store.count_proactive_emails_last_hours(24)
-        return h < self.max_hour and d < self.max_day
+    def _evolution_payload(self, p: Dict[str, Any]) -> Dict[str, Any]:
+        """Monta o dict de evolução (para o batch) a partir de uma pendência."""
+        return {
+            "rescan_id": p["rescan_id"], "target_id": p.get("target_id"),
+            "to_email": p["contact_email"], "target_url": p["url"],
+            "old_score": p["old_score"] if p["old_score"] is not None else p["new_score"],
+            "new_score": p["new_score"], "evolution": p["evolution"],
+            "semaphore": p["new_semaphore"], "fail_count": p.get("fail_count") or 0,
+            "severity_counts": severity_counts_from_checks(p.get("checks_json")),
+            "price_display": price_display_for_tier(p.get("price_tier")),
+            "unsubscribe_link": _unsub_link(p["contact_email"]),
+            "risk_messages": get_risk_messages((p.get("checks_json") or {}).get("results", [])),
+        }
 
-    async def _flush_pending(self, mailer: KlarimMailer) -> int:
-        """Reenvia e-mails de evolução que ficaram pendentes por throttle."""
-        pending = await self.store.get_pending_evolution_emails(days=self.age_days, limit=self.batch)
+    async def _flush_pending_batch(self, mailer: KlarimMailer) -> int:
+        """Despacha os e-mails de evolução pendentes em LOTE (KL-23).
+
+        Inclui as pendências recém-criadas neste ciclo e as de ciclos anteriores.
+        Respeita a cota mensal compartilhada; o que não couber fica pendente.
+        """
+        sent_month = await self.store.count_proactive_emails_this_month()
+        room = self.monthly_limit - sent_month
+        if room <= 0:
+            print(f"[rescan] cota mensal atingida ({sent_month}/{self.monthly_limit}); "
+                  f"e-mails de evolução adiados", flush=True)
+            return 0
+
+        cap = self.email_batch_size * int(os.environ.get("ALERT_BATCHES_PER_CYCLE", "4"))
+        pending = await self.store.get_pending_evolution_emails(
+            days=self.age_days, limit=min(cap, room))
         resent = 0
-        for p in pending:
-            if not await self._throttle_ok():
-                break  # ainda no teto; tenta no próximo ciclo
+        for i in range(0, len(pending), self.email_batch_size):
+            if resent >= room:
+                break
+            chunk = pending[i:i + self.email_batch_size][:room - resent]
+            evolutions = [self._evolution_payload(p) for p in chunk]
             try:
-                sev = severity_counts_from_checks(p.get("checks_json"))
-                risks = get_risk_messages((p.get("checks_json") or {}).get("results", []))
-                res = await mailer.send_evolution(
-                    p["contact_email"], p["url"],
-                    p["old_score"] if p["old_score"] is not None else p["new_score"],
-                    p["new_score"], p["evolution"], p["new_semaphore"],
-                    p.get("fail_count") or 0, sev,
-                    price_display_for_tier(p.get("price_tier")),
-                    unsubscribe_link=_unsub_link(p["contact_email"]),
-                    risk_messages=risks, target_id=p.get("target_id"))
-                email_id = res.get("email_id")
+                res = await mailer.send_evolution_batch(evolutions)
+            except Exception as exc:  # noqa: BLE001 - batch ruim não derruba o ciclo
+                print(f"[rescan] batch de evolução falhou: {exc!r}", flush=True)
+                continue
+            ids = res.get("ids") or []
+            for j, e in enumerate(evolutions):
+                email_id = ids[j] if j < len(ids) else None
                 if email_id:
-                    await self.store.update_rescan_email(p["rescan_id"], email_id)
-                    await self.store.mark_target_contacted(p["target_id"])
+                    await self.store.update_rescan_email(e["rescan_id"], email_id)
+                    await self.store.mark_target_contacted(e["target_id"])
                     resent += 1
-                await asyncio.sleep(EVOLUTION_PAUSE_SECONDS)
-            except Exception as exc:  # noqa: BLE001
-                print(f"[rescan] falha ao reenviar pendente {p.get('url')}: {exc!r}", flush=True)
+            print(f"[rescan] batch de evolução: {res.get('sent', 0)} enviados", flush=True)
+            if i + self.email_batch_size < len(pending):
+                await asyncio.sleep(self.batch_pause)
         return resent
 
     async def run_cycle(self) -> dict:
-        stats = {"eligible": 0, "rescanned": 0, "emailed": 0, "deferred": 0,
-                 "errors": 0, "pending_resent": 0}
+        stats = {"eligible": 0, "rescanned": 0, "emailed": 0, "errors": 0}
         mailer = self._mailer()
         cache = await self._cache()
 
-        if mailer is not None:
-            stats["pending_resent"] = await self._flush_pending(mailer)
-
+        # 1. Reescaneia cada alvo (e-mail adiado — sai em batch no passo 2).
         targets = await self.store.get_targets_for_rescan(self.age_days, limit=self.batch)
         stats["eligible"] = len(targets)
-
         for t in targets:
             try:
-                can_email = mailer is not None and await self._throttle_ok()
-                res = await rescan_target(self.store, mailer, cache, t, send_email=can_email)
+                res = await rescan_target(self.store, mailer, cache, t, send_email=False)
                 stats["rescanned"] += 1
-                if res["sent"]:
-                    stats["emailed"] += 1
-                    print(f"[rescan] {t['url']}: {res['old_score']}→{res['new_score']} "
-                          f"({res['evolution']}, e-mail {res['email_id']})", flush=True)
-                elif mailer is not None:
-                    stats["deferred"] += 1  # rescan feito; e-mail adiado (throttle)
-                    print(f"[rescan] {t['url']}: {res['evolution']} — e-mail adiado (throttle)", flush=True)
+                print(f"[rescan] {t['url']}: {res['old_score']}→{res['new_score']} "
+                      f"({res['evolution']})", flush=True)
                 await asyncio.sleep(self.pause_s)  # mesmo rate limit do scan worker
             except Exception as exc:  # noqa: BLE001 - um alvo ruim não derruba o ciclo
                 stats["errors"] += 1
                 print(f"[rescan] erro em {t.get('url')}: {exc!r}", flush=True)
+
+        # 2. Despacha os e-mails de evolução pendentes em batch.
+        if mailer is not None:
+            stats["emailed"] = await self._flush_pending_batch(mailer)
 
         print(f"[rescan] ciclo concluído: {stats}", flush=True)
         return stats
 
     async def start(self) -> None:
         print(f"[rescan] iniciado (idade {self.age_days}d, intervalo {self.interval_hours}h, "
-              f"teto {self.max_hour}/h {self.max_day}/dia)", flush=True)
+              f"batch e-mail {self.email_batch_size}, limite {self.monthly_limit // 1000}k/mês)",
+              flush=True)
         asyncio.create_task(self._heartbeat_loop())
         while True:
             try:

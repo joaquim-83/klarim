@@ -1,4 +1,4 @@
-"""Testes do Re-scan Worker (KL-13) — offline, com scan/store/mailer falsos."""
+"""Testes do Re-scan Worker (KL-13 + KL-23 batch) — offline, com fakes."""
 
 from __future__ import annotations
 
@@ -12,9 +12,6 @@ from discovery.rescan_worker import (
     classify_evolution,
     price_display_for_tier,
 )
-
-# Sem pausa entre reenvios nos testes.
-rw.EVOLUTION_PAUSE_SECONDS = 0
 
 
 # --- classify_evolution ---------------------------------------------------- #
@@ -104,25 +101,36 @@ def _fake_run_scan(new_score, failed=1):
 
 class FakeMailer:
     def __init__(self):
-        self.sent = []
+        self.batches = []
+        self.singles = []
+
+    async def send_evolution_batch(self, evolutions):
+        self.batches.append(list(evolutions))
+        ids = [f"evo_{i}" for i in range(len(evolutions))]
+        return {"sent": len(evolutions), "failed": 0, "ids": ids}
 
     async def send_evolution(self, to_email, target_url, old_score, new_score, evolution,
                              semaphore, fail_count, severity_counts, price_display,
                              unsubscribe_link=None, risk_messages=None, target_id=None):
-        self.sent.append({"to": to_email, "evolution": evolution, "old": old_score,
-                          "new": new_score, "risks": risk_messages, "target_id": target_id})
-        return {"email_id": f"em_{len(self.sent)}"}
+        self.singles.append({"to": to_email, "evolution": evolution, "old": old_score,
+                             "new": new_score, "target_id": target_id})
+        return {"email_id": f"single_{len(self.singles)}"}
 
 
 class FakeStore:
-    def __init__(self, eligible=None, pending=None, hour=0, day=0):
+    """Simula o ciclo real: log_rescan(email_id=None) cria uma pendência que o
+    get_pending_evolution_emails devolve (como o JOIN do Postgres)."""
+
+    def __init__(self, eligible=None, pending=None, sent_month=0):
         self._eligible = eligible or []
-        self._pending = pending or []
-        self._hour, self._day = hour, day
+        self._by_id = {t["id"]: t for t in self._eligible}
+        self._pending = list(pending or [])
+        self._sent_month = sent_month
         self.saved = []
         self.rescans = []
         self.contacted = []
         self.updated_emails = []
+        self._next_rescan_id = 1000
 
     async def save_scan(self, *a, **kw):
         self.saved.append((a, kw))
@@ -133,24 +141,40 @@ class FakeStore:
 
     async def log_rescan(self, target_id, old_score, new_score, evolution,
                          old_sem, new_sem, email_id=None):
-        self.rescans.append({"target_id": target_id, "evolution": evolution,
-                            "email_id": email_id})
-        return len(self.rescans)
+        rid = self._next_rescan_id
+        self._next_rescan_id += 1
+        self.rescans.append({"rescan_id": rid, "target_id": target_id,
+                             "evolution": evolution, "email_id": email_id})
+        if email_id is None:
+            t = self._by_id.get(target_id, {})
+            self._pending.append({
+                "rescan_id": rid, "target_id": target_id,
+                "old_score": old_score, "new_score": new_score,
+                "evolution": evolution, "new_semaphore": new_sem,
+                "url": t.get("url", f"https://site{target_id}.com.br"),
+                "contact_email": t.get("contact_email", "c@x.com.br"),
+                "price_tier": t.get("price_tier", "standard"), "fail_count": 1,
+                "checks_json": {"results": [{"status": "FAIL", "severity": "ALTA"}]},
+            })
+        return rid
 
     async def mark_target_contacted(self, target_id):
         self.contacted.append(target_id)
 
     async def update_rescan_email(self, rescan_id, email_id):
         self.updated_emails.append((rescan_id, email_id))
+        for p in self._pending:
+            if p["rescan_id"] == rescan_id:
+                p["_sent"] = True
 
-    async def count_proactive_emails_last_hours(self, hours):
-        return self._day if hours >= 24 else self._hour
+    async def count_proactive_emails_this_month(self):
+        return self._sent_month
 
     async def get_targets_for_rescan(self, days=30, limit=50):
         return list(self._eligible)
 
     async def get_pending_evolution_emails(self, days=7, limit=50):
-        return list(self._pending)
+        return [p for p in self._pending if not p.get("_sent")][:limit]
 
 
 def _target(tid=1, email="c@x.com.br", old_score=80, tier="standard"):
@@ -158,7 +182,7 @@ def _target(tid=1, email="c@x.com.br", old_score=80, tier="standard"):
             "last_scan_score": old_score, "old_semaphore": "amarelo", "price_tier": tier}
 
 
-# --- rescan_target --------------------------------------------------------- #
+# --- rescan_target (envio único, usado pela API) --------------------------- #
 
 def test_rescan_target_improved_sends_and_logs(monkeypatch):
     monkeypatch.setattr(rw, "run_scan", _fake_run_scan(92, failed=1))
@@ -166,9 +190,9 @@ def test_rescan_target_improved_sends_and_logs(monkeypatch):
     res = asyncio.run(rescan_target(store, mailer, None, _target(old_score=80), send_email=True))
     assert res["evolution"] == "improved" and res["sent"] is True
     assert store.rescans[0]["evolution"] == "improved"
-    assert store.rescans[0]["email_id"] == "em_1"
+    assert store.rescans[0]["email_id"] == "single_1"
     assert store.contacted == [1]  # gate do Alert Worker
-    assert mailer.sent[0]["evolution"] == "improved"
+    assert mailer.singles[0]["evolution"] == "improved"
 
 
 def test_rescan_target_no_email_when_disabled(monkeypatch):
@@ -178,38 +202,42 @@ def test_rescan_target_no_email_when_disabled(monkeypatch):
     assert res["evolution"] == "worsened" and res["sent"] is False
     assert store.rescans[0]["email_id"] is None
     assert store.contacted == []  # sem e-mail -> não marca contato
-    assert mailer.sent == []
+    assert mailer.singles == []
 
 
-# --- run_cycle ------------------------------------------------------------- #
+# --- run_cycle (batch) ----------------------------------------------------- #
 
 def _worker(store):
     w = RescanWorker()
     w.store = store
-    w.max_hour, w.max_day = 10, 50
     w.pause_s = 0
+    w.batch_pause = 0
+    w.email_batch_size = 50
+    w.monthly_limit = 45000
     w._mailer = lambda: FakeMailer()  # noqa: E731
     return w
 
 
-def test_run_cycle_rescans_and_emails(monkeypatch):
+def test_run_cycle_rescans_then_batches_emails(monkeypatch):
     monkeypatch.setattr(rw, "run_scan", _fake_run_scan(92))
     store = FakeStore(eligible=[_target(1), _target(2)])
     stats = asyncio.run(_worker(store).run_cycle())
     assert stats["eligible"] == 2 and stats["rescanned"] == 2 and stats["emailed"] == 2
-    assert stats["deferred"] == 0
+    # os 2 e-mails de evolução saíram, foram vinculados e marcaram contato
+    assert len(store.updated_emails) == 2
+    assert sorted(store.contacted) == [1, 2]
 
 
-def test_run_cycle_defers_email_when_throttled(monkeypatch):
+def test_run_cycle_defers_emails_when_monthly_full(monkeypatch):
     monkeypatch.setattr(rw, "run_scan", _fake_run_scan(92))
-    # já no teto por hora: reescaneia mas adia o e-mail
-    store = FakeStore(eligible=[_target(1)], hour=10)
+    store = FakeStore(eligible=[_target(1)], sent_month=45000)
     stats = asyncio.run(_worker(store).run_cycle())
-    assert stats["rescanned"] == 1 and stats["emailed"] == 0 and stats["deferred"] == 1
-    assert store.rescans[0]["email_id"] is None
+    assert stats["rescanned"] == 1 and stats["emailed"] == 0
+    assert store.updated_emails == []  # e-mail adiado
+    assert store.rescans[0]["email_id"] is None  # continua pendente
 
 
-def test_run_cycle_flushes_pending(monkeypatch):
+def test_run_cycle_flushes_prior_pending(monkeypatch):
     monkeypatch.setattr(rw, "run_scan", _fake_run_scan(92))
     pending = [{"rescan_id": 5, "target_id": 3, "old_score": 80, "new_score": 70,
                 "evolution": "worsened", "new_semaphore": "amarelo",
@@ -217,8 +245,7 @@ def test_run_cycle_flushes_pending(monkeypatch):
                 "price_tier": "standard", "fail_count": 2,
                 "checks_json": {"results": [{"status": "FAIL", "severity": "ALTA"}]}}]
     store = FakeStore(eligible=[], pending=pending)
-    w = _worker(store)
-    stats = asyncio.run(w.run_cycle())
-    assert stats["pending_resent"] == 1
+    stats = asyncio.run(_worker(store).run_cycle())
+    assert stats["emailed"] == 1
     assert store.updated_emails and store.updated_emails[0][0] == 5
     assert store.contacted == [3]

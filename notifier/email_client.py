@@ -11,9 +11,11 @@ import asyncio
 import base64
 import hashlib
 import hmac
+import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from urllib.parse import quote, urlparse
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
@@ -75,6 +77,24 @@ def build_unsubscribe_link(email: str, secret: str) -> str:
     return f"{SITE_BASE}/api/unsubscribe?email={quote(email)}&token={unsubscribe_token(email, secret)}"
 
 
+# Endpoint da Batch API do Resend (envia até 100 e-mails em 1 request — KL-23).
+RESEND_BATCH_URL = "https://api.resend.com/emails/batch"
+BATCH_MAX = 100  # limite da Resend Batch API por request
+
+
+def batch_idempotency_key(items: List[Dict[str, Any]]) -> str:
+    """Chave idempotente determinística por batch (KL-23).
+
+    Baseada nos e-mails do batch + a data (UTC): reenviar o MESMO batch no mesmo
+    dia (retry após timeout/erro de rede) reusa a chave e o Resend não duplica.
+    Válida por 24h no Resend. Cada item deve ter a chave ``to_email``.
+    """
+    emails = sorted(a.get("to_email", "") for a in items)
+    date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    raw = json.dumps(emails, ensure_ascii=False) + date
+    return "batch_" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
 class KlarimMailer:
     def __init__(self, api_key: str, from_address: Optional[str] = None) -> None:
         if not api_key:
@@ -98,9 +118,60 @@ class KlarimMailer:
         email_id = resp.get("id") if isinstance(resp, dict) else getattr(resp, "id", None)
         return {"email_id": email_id, "raw": resp if isinstance(resp, dict) else str(resp)}
 
+    # ----- batch (KL-23) --------------------------------------------------- #
+
+    async def _send_batch(
+        self, payloads: List[Dict[str, Any]], items: List[Dict[str, Any]]
+    ) -> Dict[str, Any]:
+        """Envia os payloads via Batch API (com idempotency key) e conta o resultado.
+
+        ``items`` são os dicts originais (com ``to_email``) usados para derivar a
+        chave idempotente. Os IDs voltam na mesma ordem do input.
+        """
+        key = batch_idempotency_key(items)
+        body = await self._send_batch_raw(payloads, key)
+        data = body.get("data") if isinstance(body, dict) else None
+        ids = [d.get("id") for d in (data or []) if isinstance(d, dict)]
+        sent = len([i for i in ids if i])
+        return {"sent": sent, "failed": len(payloads) - sent, "ids": ids}
+
+    async def _send_batch_raw(
+        self, payloads: List[Dict[str, Any]], idempotency_key: str
+    ) -> Dict[str, Any]:
+        """POST /emails/batch com header ``Idempotency-Key``.
+
+        O SDK Python do Resend não expõe o header de idempotência no
+        ``Batch.send()``, então falamos com a API via httpx diretamente.
+        """
+        import httpx  # import tardio: só no envio real
+
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(
+                    RESEND_BATCH_URL,
+                    json=payloads,
+                    headers={
+                        "Authorization": f"Bearer {self.api_key}",
+                        "Content-Type": "application/json",
+                        "Idempotency-Key": idempotency_key,
+                    },
+                    timeout=30,
+                )
+        except Exception as exc:  # noqa: BLE001 - erro de rede vira erro do mailer
+            raise KlarimMailerError(f"Falha no batch Resend: {exc}") from exc
+
+        try:
+            body = resp.json()
+        except Exception:  # noqa: BLE001
+            body = {}
+        if resp.status_code >= 400:
+            detail = body.get("message") or body.get("error") or resp.text
+            raise KlarimMailerError(f"Falha no batch Resend ({resp.status_code}): {detail}")
+        return body if isinstance(body, dict) else {}
+
     # ----- alertas / relatórios ------------------------------------------- #
 
-    async def send_alert(
+    def _alert_params(
         self,
         to_email: str,
         target_url: str,
@@ -112,7 +183,10 @@ class KlarimMailer:
         risk_messages: Optional[list] = None,
         target_id=None,
     ) -> Dict[str, Any]:
-        """Alerta gratuito (semáforo) — o anzol do funil."""
+        """Monta o payload Resend de um alerta (from/to/subject/html).
+
+        Compartilhado pelo envio único (`send_alert`) e pelo batch (`send_alert_batch`).
+        """
         site = site_name(target_url)
         if unsubscribe_link is None:
             secret = os.environ.get("UNSUBSCRIBE_SECRET")
@@ -130,11 +204,48 @@ class KlarimMailer:
             unsubscribe_link=unsubscribe_link,
         )
         subject = f"⚠️ Encontramos {fail_count} problema(s) de segurança em {site}"
-        return await self._send(
-            {"from": self.from_address, "to": [to_email], "subject": subject, "html": html}
-        )
+        return {"from": self.from_address, "to": [to_email], "subject": subject, "html": html}
 
-    async def send_evolution(
+    async def send_alert(
+        self,
+        to_email: str,
+        target_url: str,
+        score: int,
+        semaphore: str,
+        fail_count: int,
+        severity_counts: Dict[str, int],
+        unsubscribe_link: Optional[str] = None,
+        risk_messages: Optional[list] = None,
+        target_id=None,
+    ) -> Dict[str, Any]:
+        """Alerta gratuito (semáforo) — o anzol do funil."""
+        return await self._send(self._alert_params(
+            to_email, target_url, score, semaphore, fail_count, severity_counts,
+            unsubscribe_link=unsubscribe_link, risk_messages=risk_messages, target_id=target_id))
+
+    async def send_alert_batch(self, alerts: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Envia até 100 alertas em 1 request via Resend Batch API (KL-23).
+
+        Cada item de ``alerts`` é um dict com: ``to_email``, ``target_url``,
+        ``score``, ``semaphore``, ``fail_count``, ``severity_counts``,
+        ``risk_messages``, ``unsubscribe_link`` (e opcionalmente ``target_id``,
+        ``risk_summary`` — ignorado na renderização). Retorna
+        ``{"sent": N, "failed": N, "ids": [...]}`` com os IDs na ordem do input.
+        """
+        batch = list(alerts)[:BATCH_MAX]
+        if not batch:
+            return {"sent": 0, "failed": 0, "ids": []}
+        payloads = [
+            self._alert_params(
+                a["to_email"], a["target_url"], a.get("score", 0), a.get("semaphore", ""),
+                a.get("fail_count", 0), a.get("severity_counts") or {},
+                unsubscribe_link=a.get("unsubscribe_link"),
+                risk_messages=a.get("risk_messages"), target_id=a.get("target_id"))
+            for a in batch
+        ]
+        return await self._send_batch(payloads, batch)
+
+    def _evolution_params(
         self,
         to_email: str,
         target_url: str,
@@ -149,7 +260,11 @@ class KlarimMailer:
         risk_messages: Optional[list] = None,
         target_id=None,
     ) -> Dict[str, Any]:
-        """E-mail de evolução do score (KL-13). Escolhe o template pelo tipo."""
+        """Monta o payload Resend de um e-mail de evolução (KL-13).
+
+        Compartilhado pelo envio único (`send_evolution`) e pelo batch
+        (`send_evolution_batch`). Escolhe o template pelo tipo de evolução.
+        """
         site = site_name(target_url)
         if unsubscribe_link is None:
             secret = os.environ.get("UNSUBSCRIBE_SECRET")
@@ -181,9 +296,52 @@ class KlarimMailer:
             lgpd=LGPD_SHORT,
             unsubscribe_link=unsubscribe_link,
         )
-        return await self._send(
-            {"from": self.from_address, "to": [to_email], "subject": subject, "html": html}
-        )
+        return {"from": self.from_address, "to": [to_email], "subject": subject, "html": html}
+
+    async def send_evolution(
+        self,
+        to_email: str,
+        target_url: str,
+        old_score: int,
+        new_score: int,
+        evolution: str,
+        semaphore: str,
+        fail_count: int,
+        severity_counts: Dict[str, int],
+        price_display: str,
+        unsubscribe_link: Optional[str] = None,
+        risk_messages: Optional[list] = None,
+        target_id=None,
+    ) -> Dict[str, Any]:
+        """E-mail de evolução do score (KL-13). Escolhe o template pelo tipo."""
+        return await self._send(self._evolution_params(
+            to_email, target_url, old_score, new_score, evolution, semaphore,
+            fail_count, severity_counts, price_display, unsubscribe_link=unsubscribe_link,
+            risk_messages=risk_messages, target_id=target_id))
+
+    async def send_evolution_batch(self, evolutions: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Envia até 100 e-mails de evolução em 1 request via Resend Batch API (KL-23).
+
+        Cada item é um dict com: ``to_email``, ``target_url``, ``old_score``,
+        ``new_score``, ``evolution``, ``semaphore``, ``fail_count``,
+        ``severity_counts``, ``price_display``, ``risk_messages``,
+        ``unsubscribe_link`` (e opcionalmente ``target_id``). Chaves extras
+        (ex.: ``rescan_id``) são ignoradas. Retorna ``{"sent", "failed", "ids"}``
+        com os IDs na ordem do input.
+        """
+        batch = list(evolutions)[:BATCH_MAX]
+        if not batch:
+            return {"sent": 0, "failed": 0, "ids": []}
+        payloads = [
+            self._evolution_params(
+                e["to_email"], e["target_url"], e.get("old_score"), e.get("new_score"),
+                e.get("evolution", "unchanged"), e.get("semaphore", ""),
+                e.get("fail_count", 0), e.get("severity_counts") or {},
+                e.get("price_display", ""), unsubscribe_link=e.get("unsubscribe_link"),
+                risk_messages=e.get("risk_messages"), target_id=e.get("target_id"))
+            for e in batch
+        ]
+        return await self._send_batch(payloads, batch)
 
     async def send_report(
         self,

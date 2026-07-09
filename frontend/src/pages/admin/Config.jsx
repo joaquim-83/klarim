@@ -5,8 +5,11 @@ import { Card, Loading, ErrorBox } from '../../components/admin/ui'
 const ROWS = [
   { key: 'discovery_batch_size', label: 'Batch de descoberta', env: 'DISCOVERY_BATCH_SIZE', unit: 'domínios/ciclo' },
   { key: 'discovery_interval_minutes', label: 'Intervalo de descoberta', env: 'DISCOVERY_INTERVAL_MINUTES', unit: 'min' },
-  { key: 'max_alerts_per_hour', label: 'Máx. alertas/hora', env: 'MAX_ALERTS_PER_HOUR', unit: 'e-mails' },
-  { key: 'max_alerts_per_day', label: 'Máx. alertas/dia', env: 'MAX_ALERTS_PER_DAY', unit: 'e-mails' },
+  { key: 'alert_interval_minutes', label: 'Intervalo de alertas', env: 'ALERT_INTERVAL_MINUTES', unit: 'min' },
+  { key: 'alert_batch_size', label: 'Alertas por batch', env: 'ALERT_BATCH_SIZE', unit: 'e-mails' },
+  { key: 'alert_batches_per_cycle', label: 'Batches por ciclo', env: 'ALERT_BATCHES_PER_CYCLE', unit: 'batches' },
+  { key: 'alert_batch_pause', label: 'Pausa entre batches', env: 'ALERT_BATCH_PAUSE', unit: 's' },
+  { key: 'alert_monthly_limit', label: 'Cota mensal de e-mail', env: 'ALERT_MONTHLY_LIMIT', unit: 'e-mails/mês' },
   { key: 'rescan_interval_hours', label: 'Intervalo de re-scan', env: 'RESCAN_INTERVAL_HOURS', unit: 'h' },
   { key: 'rescan_age_days', label: 'Idade para re-scan', env: 'RESCAN_AGE_DAYS', unit: 'dias' },
   { key: 'worker_max_scans_per_hour', label: 'Máx. scans/hora', env: 'WORKER_MAX_SCANS_PER_HOUR', unit: 'scans' },

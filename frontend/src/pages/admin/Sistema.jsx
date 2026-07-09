@@ -91,8 +91,9 @@ export default function Sistema() {
 
         <WorkerCard title="Alert" alive={w.alert.alive}>
           <Row label="Último ciclo" value={w.alert.last_cycle_at ? relativeTime(w.alert.last_cycle_at) : '—'} />
-          <Row label="Enviados hoje" value={`${w.alert.sent_today} / ${w.alert.throttle_limit}`} />
-          <Row label="Enviados semana" value={w.alert.sent_week} />
+          <Row label="Enviados hoje" value={w.alert.sent_today} />
+          <Row label="Este mês" value={`${w.alert.sent_month} / ${w.alert.monthly_limit}`} />
+          <Row label="Backlog de alertas" value={w.alert.backlog} />
         </WorkerCard>
 
         <WorkerCard title="Re-scan" alive={w.rescan.alive}>
@@ -127,12 +128,13 @@ export default function Sistema() {
         </div>
       </Card>
 
-      {/* Métricas de e-mail */}
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      {/* Métricas de e-mail (cota mensal — Resend Pro, KL-23) */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
         <StatCard label="E-mails hoje" value={em.sent_today} accent="#FF6B35" />
         <StatCard label="Esta semana" value={em.sent_week} />
-        <StatCard label="Este mês" value={em.sent_month} />
-        <StatCard label="Uso do throttle" value={em.throttle_used} accent="#F0C000" />
+        <StatCard label="Este mês" value={`${em.sent_month} / ${em.monthly_limit}`} />
+        <StatCard label="Uso mensal" value={em.monthly_usage_pct} accent="#F0C000" />
+        <StatCard label="Backlog de alertas" value={em.backlog} />
       </div>
 
       {/* Log de atividade */}
