@@ -3,10 +3,11 @@ import { useParams, Link, useNavigate } from 'react-router-dom'
 import { admin } from '../../lib/adminApi'
 import { useAsync } from '../../lib/useAsync'
 import {
-  Card, Loading, ErrorBox, Button, Badge, PlatformBadge, StatusBadge, SourceBadge,
+  Card, Loading, ErrorBox, Button, Badge, PlatformBadge, SourceBadge,
   SemaphoreDot, EVOLUTION_META, formatDate, relativeTime,
 } from '../../components/admin/ui'
 import { SectorEditor } from '../../components/admin/SectorEditor'
+import { StatusEditor, EmailEditor } from '../../components/admin/TargetEditors'
 
 const PAY_COLOR = { PAID: '#00D26A', PENDING: '#F0C000', EXPIRED: '#8B949E', CANCELLED: '#F85149' }
 
@@ -61,7 +62,7 @@ export default function AlvoDetalhe() {
       <div className="flex items-center gap-3">
         <Link to="/painel/alvos" className="text-sm text-klarim-muted hover:text-klarim-text">← Alvos</Link>
         <h1 className="text-xl font-bold">{t.domain || t.url}</h1>
-        <StatusBadge status={t.status} />
+        <StatusEditor target={t} onSaved={(_u, note) => { setMsg(note); reload() }} onError={(m) => setMsg(m)} />
       </div>
 
       {/* Ações */}
@@ -87,7 +88,9 @@ export default function AlvoDetalhe() {
             />
           </Field>
           <Field label="Preço (tier)">{t.price_tier || 'standard'}</Field>
-          <Field label="E-mail">{t.contact_email || '—'}</Field>
+          <Field label="E-mail">
+            <EmailEditor target={t} onSaved={(_u, note) => { setMsg(note); reload() }} onError={(m) => setMsg(m)} />
+          </Field>
           <Field label="Origem"><SourceBadge source={t.source} /></Field>
           <Field label="Score atual">{t.last_scan_score ?? '—'}</Field>
           <Field label="Último scan">{t.last_scan_at ? relativeTime(t.last_scan_at) : '—'}</Field>

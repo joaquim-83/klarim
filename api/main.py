@@ -847,11 +847,13 @@ async def api_list_targets(
     sector: Optional[str] = Query(default=None),
     source: Optional[str] = Query(default=None),
     low_confidence: bool = Query(default=False),
+    search: Optional[str] = Query(default=None),
     limit: int = Query(default=50, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> dict:
     rows = await get_target_store().list_targets(
-        status, platform, sector, source, limit, offset, low_confidence=low_confidence)
+        status, platform, sector, source, limit, offset,
+        low_confidence=low_confidence, search=search)
     return {"count": len(rows), "targets": rows}
 
 
@@ -1661,6 +1663,43 @@ async def api_classify_batch(body: ClassifyBatchBody) -> dict:
     sector, tier = _resolve_classification(body.sector, body.price_tier)
     updated = await get_target_store().manual_classify_batch(body.target_ids, sector, tier)
     return {"updated": updated, "sector": sector, "price_tier": tier}
+
+
+# Status válidos de um alvo (edição manual no painel).
+_VALID_STATUSES = {"discovered", "scanned", "alerted", "converted",
+                   "sem_contato", "descartado", "unsubscribed"}
+
+
+class StatusBody(BaseModel):
+    status: str
+
+
+class EmailBody(BaseModel):
+    contact_email: str
+
+
+@app.patch("/targets/{target_id}/status")
+async def api_target_update_status(target_id: int, body: StatusBody) -> dict:
+    """Edição manual do status de um alvo pelo operador. Retorna o alvo atualizado."""
+    if body.status not in _VALID_STATUSES:
+        raise HTTPException(status_code=422, detail=f"Status inválido: {body.status}")
+    updated = await get_target_store().update_target_status(target_id, body.status)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Alvo não encontrado.")
+    return updated
+
+
+@app.patch("/targets/{target_id}/email")
+async def api_target_update_email(target_id: int, body: EmailBody) -> dict:
+    """Edição manual do e-mail de contato. Alvo 'sem_contato' que ganha e-mail
+    volta para 'discovered' (pode ser escaneado/alertado). Retorna o alvo."""
+    email = (body.contact_email or "").strip().lower()
+    if not email or not _EMAIL_RE.match(email):
+        raise HTTPException(status_code=422, detail="E-mail inválido.")
+    updated = await get_target_store().update_target_email(target_id, email)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Alvo não encontrado.")
+    return updated
 
 
 def _payment_row(charge, target_id: Optional[int] = None) -> dict:

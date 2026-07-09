@@ -101,6 +101,8 @@ export const admin = {
   alertTarget: (id) => post(`/targets/${id}/alert`),
   rescanTarget: (id) => post(`/targets/${id}/rescan`),
   discardTarget: (id) => post(`/targets/${id}/discard`),
+  updateStatus: (id, status) => patch(`/targets/${id}/status`, { status }),
+  updateEmail: (id, email) => patch(`/targets/${id}/email`, { contact_email: email }),
 
   // scans
   scans: (params) => get(`/scans${qs(params)}`),

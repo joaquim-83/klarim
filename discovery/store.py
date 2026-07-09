@@ -328,10 +328,40 @@ class TargetStore:
 
         await asyncio.to_thread(self._run, _fn)
 
+    async def update_target_status(self, target_id: int, status: str) -> Optional[Dict[str, Any]]:
+        """Atualiza o status de um alvo (edição manual no painel). Retorna o alvo
+        atualizado (ou None se não existir)."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE targets SET status = %s WHERE id = %s RETURNING *",
+                (status, target_id),
+            )
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def update_target_email(self, target_id: int, email: str) -> Optional[Dict[str, Any]]:
+        """Atualiza o contact_email de um alvo. Se o alvo estava 'sem_contato' e
+        agora ganhou e-mail, volta para 'discovered' (pode ser escaneado/alertado).
+        Retorna o alvo atualizado (ou None se não existir)."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE targets SET contact_email = %s, "
+                "status = CASE WHEN status = 'sem_contato' THEN 'discovered' ELSE status END "
+                "WHERE id = %s RETURNING *",
+                (email, target_id),
+            )
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
     async def list_targets(
         self, status: Optional[str] = None, platform: Optional[str] = None,
         sector: Optional[str] = None, source: Optional[str] = None,
         limit: int = 50, offset: int = 0, low_confidence: bool = False,
+        search: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         def _fn(cur):
             where, params = [], []
@@ -342,6 +372,12 @@ class TargetStore:
                     params.append(val)
             if low_confidence:  # revisão manual: classificação incerta (< 0.5)
                 where.append("t.classification_confidence < 0.5")
+            if search and search.strip():
+                # Busca case-insensitive + parcial em url, domínio e e-mail.
+                like = f"%{search.strip().lower()}%"
+                where.append("(LOWER(t.url) LIKE %s OR LOWER(t.domain) LIKE %s "
+                             "OR LOWER(COALESCE(t.contact_email, '')) LIKE %s)")
+                params.extend([like, like, like])
             clause = ("WHERE " + " AND ".join(where)) if where else ""
             params.extend([limit, offset])
             # JOIN traz o semáforo do último scan (KL-14: lista de alvos no painel).

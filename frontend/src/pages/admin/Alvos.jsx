@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
 import { admin } from '../../lib/adminApi'
-import { useAsync } from '../../lib/useAsync'
+import { useAsync, useDebounce } from '../../lib/useAsync'
 import {
-  Card, Loading, ErrorBox, Button, PlatformBadge, StatusBadge, SourceBadge,
+  Card, Loading, ErrorBox, Button, PlatformBadge, SourceBadge,
   SemaphoreDot, Pagination, relativeTime, STATUS_LABEL,
 } from '../../components/admin/ui'
 import { SectorEditor, SECTOR_OPTIONS } from '../../components/admin/SectorEditor'
+import { StatusEditor, EmailEditor } from '../../components/admin/TargetEditors'
 
 const STATUS_OPTS = ['discovered', 'scanned', 'alerted', 'sem_contato', 'unsubscribed', 'descartado']
 const PLATFORM_OPTS = ['duda', 'wordpress', 'cra', 'wix', 'shopify', 'squarespace', 'unknown']
@@ -44,12 +45,15 @@ export default function Alvos() {
   const [bulkSector, setBulkSector] = useState('hotel')
   const [bulkBusy, setBulkBusy] = useState(false)
 
+  const debouncedSearch = useDebounce(search.trim(), 300)
+
   const { data, loading, error, reload } = useAsync(
     () => admin.targets({
       status, platform, sector, source, low_confidence: lowConf || undefined,
+      search: debouncedSearch || undefined,
       limit: PAGE_SIZE, offset: page * PAGE_SIZE,
     }),
-    [status, platform, sector, source, lowConf, page],
+    [status, platform, sector, source, lowConf, debouncedSearch, page],
   )
 
   function toggleSel(id) {
@@ -105,9 +109,7 @@ export default function Alvos() {
     }
   }
 
-  const rows = (data?.targets || []).filter((t) =>
-    !search || (t.url || '').toLowerCase().includes(search.toLowerCase()),
-  )
+  const rows = data?.targets || []  // busca é server-side (por URL/domínio/e-mail)
 
   return (
     <div className="space-y-4">
@@ -135,8 +137,8 @@ export default function Alvos() {
         </button>
         <input
           value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Buscar por URL…"
+          onChange={(e) => { setSearch(e.target.value); setPage(0) }}
+          placeholder="Buscar por site ou email…"
           className="min-w-40 flex-1 rounded-lg border border-klarim-border bg-klarim-surface px-3 py-1.5 text-sm outline-none focus:border-klarim-alert"
         />
       </div>
@@ -220,9 +222,13 @@ export default function Alvos() {
                         ? <SemaphoreDot semaphore={t.last_semaphore} score={t.last_scan_score} />
                         : <span className="text-klarim-muted">—</span>}
                     </td>
-                    <td className="py-2 pr-3"><StatusBadge status={t.status} /></td>
+                    <td className="py-2 pr-3">
+                      <StatusEditor target={t} onSaved={(_u, note) => { setMsg(note); reload() }} onError={(m) => setMsg(m)} />
+                    </td>
                     <td className="py-2 pr-3"><SourceBadge source={t.source} /></td>
-                    <td className="py-2 pr-3 text-xs text-klarim-muted">{t.contact_email || '—'}</td>
+                    <td className="py-2 pr-3">
+                      <EmailEditor target={t} onSaved={(_u, note) => { setMsg(note); reload() }} onError={(m) => setMsg(m)} />
+                    </td>
                     <td className="py-2 pr-3 text-xs text-klarim-muted">{t.last_scan_at ? relativeTime(t.last_scan_at) : '—'}</td>
                     <td className="py-2">
                       <div className="flex gap-1">

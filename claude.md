@@ -582,6 +582,14 @@ presença de e-mail de contato, registra como alvo e enfileira para scan.
   N`). No painel: edição inline do setor (dropdown ✏️ na lista e no detalhe, com
   🔒 quando manual) + seleção múltipla → "Classificar selecionados"
   (`components/admin/SectorEditor.jsx`).
+  **Edição de status e e-mail (operador):** `PATCH /targets/{id}/status {status}`
+  (valida contra `_VALID_STATUSES`) e `PATCH /targets/{id}/email {contact_email}`
+  (valida formato; alvo `sem_contato` que ganha e-mail volta a `discovered`). No
+  painel: editores inline ✏️ na lista e no detalhe
+  (`components/admin/TargetEditors.jsx` → `StatusEditor`/`EmailEditor`).
+  **Busca de alvos:** `GET /targets?search=` filtra **server-side** (case-insensitive,
+  parcial) em `url`, `domain` **e** `contact_email` — combina com os filtros de
+  status/plataforma/setor. No frontend, o input usa `useDebounce` (300ms).
 - **`store.py`** — `TargetStore` (Postgres): tabelas **`targets`** e **`scans`**
   (criadas no `ensure_schema`, mesmo padrão de `payments`). Conecta por
   `POSTGRES_*` (imune a `/` na senha).

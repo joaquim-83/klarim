@@ -22,3 +22,14 @@ export function useAsync(fn, deps = []) {
 
   return { data, error, loading, reload: run, setData }
 }
+
+// Atrasa a propagação de `value` em `delay` ms — usado na busca (não dispara
+// request a cada tecla, só quando o usuário para de digitar).
+export function useDebounce(value, delay = 300) {
+  const [debounced, setDebounced] = useState(value)
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delay)
+    return () => clearTimeout(timer)
+  }, [value, delay])
+  return debounced
+}
