@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 
 import pytest
 from fastapi import HTTPException
@@ -10,6 +11,13 @@ from fastapi.testclient import TestClient
 
 import api.main as apimain
 import mcp_server.server as srv
+
+
+class _Req:
+    """Stub mínimo de request para testar _authorized (headers/query dict)."""
+    def __init__(self, headers=None, query=None):
+        self.headers = headers or {}
+        self.query_params = query or {}
 
 
 # --- registro de tools ----------------------------------------------------- #
@@ -152,3 +160,100 @@ def test_update_target_status_tool_invalid(fake_store):
     # status inválido -> api_target_update_status levanta 422 -> _guard converte
     res = asyncio.run(srv.update_target_status(5, "banana"))
     assert res.get("status_code") == 422
+
+
+# --- fluxo de auth web (Fix KL-18) ----------------------------------------- #
+
+def test_authorized_accepts_key_and_session(monkeypatch):
+    monkeypatch.setenv("MCP_API_KEY", "the-key")
+    srv._mcp_sessions.clear()
+    assert srv._authorized(_Req(headers={"authorization": "Bearer the-key"})) is True
+    assert srv._authorized(_Req(query={"token": "the-key"})) is True          # key via ?token=
+    tok = srv._new_session()
+    assert srv._authorized(_Req(query={"token": tok})) is True                # session via query
+    assert srv._authorized(_Req(headers={"authorization": f"Bearer {tok}"})) is True
+    assert srv._authorized(_Req(query={"token": "nope"})) is False
+    assert srv._authorized(_Req()) is False                                    # sem token
+
+
+def test_authorized_disabled_without_env(monkeypatch):
+    monkeypatch.delenv("MCP_API_KEY", raising=False)
+    assert srv._authorized(_Req(headers={"authorization": "Bearer x"})) is False
+
+
+def test_session_lifecycle():
+    srv._mcp_sessions.clear()
+    tok = srv._new_session()
+    assert len(tok) == 64 and srv._valid_session(tok) is True      # 256 bits hex
+    srv._mcp_sessions[tok] = time.time() - srv.MCP_SESSION_TTL - 10  # força expiração
+    assert srv._valid_session(tok) is False
+    assert tok not in srv._mcp_sessions                            # removida ao validar
+
+
+def test_safe_callback():
+    assert srv._safe_callback("http://localhost:8765/cb") is True
+    assert srv._safe_callback("http://127.0.0.1:9/cb") is True
+    assert srv._safe_callback("https://claude.ai/x") is True
+    assert srv._safe_callback("https://foo.anthropic.com/x") is True
+    assert srv._safe_callback("https://evil.com/steal") is False   # open-redirect barrado
+    assert srv._safe_callback("javascript:alert(1)") is False
+    assert srv._safe_callback("") is False
+
+
+def test_auth_page_renders(monkeypatch):
+    monkeypatch.setenv("MCP_API_KEY", "the-key")
+    c = TestClient(apimain.app, raise_server_exceptions=False)
+    r = c.get("/mcp/auth")
+    assert r.status_code == 200
+    assert 'type="password"' in r.text and "API Key" in r.text
+    assert "default-src 'none'" in r.headers.get("content-security-policy", "")
+    assert apimain._is_protected("/mcp/auth") is False
+
+
+def test_auth_verify_wrong_key(monkeypatch):
+    monkeypatch.setenv("MCP_API_KEY", "correct-key")
+    srv._verify_attempts.clear()
+    c = TestClient(apimain.app, raise_server_exceptions=False)
+    r = c.post("/mcp/auth/verify", data={"api_key": "wrong", "callback_url": ""})
+    assert r.status_code == 401 and "inválida" in r.text
+
+
+def test_auth_verify_right_key_creates_session(monkeypatch):
+    monkeypatch.setenv("MCP_API_KEY", "correct-key")
+    srv._verify_attempts.clear()
+    srv._mcp_sessions.clear()
+    c = TestClient(apimain.app, raise_server_exceptions=False)
+    r = c.post("/mcp/auth/verify", data={"api_key": "correct-key", "callback_url": ""})
+    assert r.status_code == 200 and "/mcp/sse?token=" in r.text
+    assert len(srv._mcp_sessions) == 1
+
+
+def test_auth_verify_safe_callback_redirects(monkeypatch):
+    monkeypatch.setenv("MCP_API_KEY", "correct-key")
+    srv._verify_attempts.clear()
+    c = TestClient(apimain.app, raise_server_exceptions=False)
+    r = c.post("/mcp/auth/verify",
+               data={"api_key": "correct-key", "callback_url": "http://localhost:9999/cb"},
+               follow_redirects=False)
+    assert r.status_code == 302
+    assert r.headers["location"].startswith("http://localhost:9999/cb?token=")
+
+
+def test_auth_verify_rejects_unsafe_callback(monkeypatch):
+    # callback externo NÃO redireciona (anti open-redirect) — mostra o token na página
+    monkeypatch.setenv("MCP_API_KEY", "correct-key")
+    srv._verify_attempts.clear()
+    c = TestClient(apimain.app, raise_server_exceptions=False)
+    r = c.post("/mcp/auth/verify",
+               data={"api_key": "correct-key", "callback_url": "https://evil.com/steal"},
+               follow_redirects=False)
+    assert r.status_code == 200 and "evil.com" not in r.text
+
+
+def test_auth_verify_rate_limited(monkeypatch):
+    monkeypatch.setenv("MCP_API_KEY", "correct-key")
+    srv._verify_attempts.clear()
+    c = TestClient(apimain.app, raise_server_exceptions=False)
+    codes = [c.post("/mcp/auth/verify", data={"api_key": "wrong"},
+                    headers={"X-Real-IP": "5.5.5.5"}).status_code for _ in range(6)]
+    assert codes[:5] == [401] * 5 and codes[5] == 429

@@ -408,6 +408,16 @@ O Klarim pratica o que prega — a superfície de ataque real é minimizada:
   /.well-known/acme-challenge/` para ter prioridade sobre os regex (não quebra a
   renovação). `/api/` e `/painel/` **não** são afetados. Valide a sintaxe com
   `nginx -t` antes de deployar (config ruim derruba o `web`).
+- **Resolver dinâmico no proxy (`/api/` e `/mcp/`).** O Nginx resolve o hostname do
+  `proxy_pass` **uma vez no boot** e cacheia o IP. Quando o container `api` é
+  recriado (novo IP no bridge do Docker) e o `web` não, o Nginx fica com o IP velho
+  e responde **502** (bug do login do painel: `localhost:8000` respondia 200 mas
+  `painel.klarim.net/api/*` dava 502). Fix: `resolver 127.0.0.11 valid=10s;` (DNS
+  embutido do Docker) + upstream em variável (`set $klarim_api api:8000;
+  proxy_pass http://$klarim_api;`) → o Nginx **re-resolve** o IP por request. Como o
+  `proxy_pass` com variável não faz o strip do prefixo, o `/api/` usa `rewrite
+  ^/api/(.*)$ /$1 break;`; o `/mcp/` é identidade (sem rewrite). Remédio manual
+  imediato se recorrer: `sudo docker compose restart web`.
 
 ---
 
@@ -921,19 +931,26 @@ monitorar o sistema, disparar scans/alertas, tudo por tools.
   prefixa → o cliente recebe `/mcp/messages/`; passar `/mcp/messages/` duplicaria o
   prefixo). Import de `api.main` no fim do arquivo, em `try/except` — se o pacote
   `mcp` faltar, a API sobe sem o MCP.
-- **Autenticação:** `MCP_API_KEY` (header `Authorization: Bearer <chave>`), validada
-  em tempo constante na conexão SSE **e** nos POSTs `/messages/`. **Sem
-  `MCP_API_KEY` ⇒ MCP desligado** (tudo 401). `/mcp/*` **não** está nos prefixos
-  protegidos por JWT (`_admin_auth_mw`) — tem auth própria.
+- **Autenticação (fluxo web + session token):** o Claude Desktop não oferece campo
+  de API key ao adicionar um conector — por isso há um **fluxo web**:
+  `GET /mcp/auth` (página HTML, campo password) → `POST /mcp/auth/verify` (valida a
+  key em tempo constante, rate limit **5/min/IP**) → cria um **session token**
+  (`secrets.token_hex(32)`, **256 bits, TTL 24h**, in-memory `_mcp_sessions`) e
+  devolve a URL pronta `…/mcp/sse?token=<session>`. `_authorized()` aceita, em
+  constant-time: a **API key** (Bearer) OU um **session token** válido (Bearer ou
+  `?token=`), na SSE e nos POSTs `/messages/`. **A API key nunca vai em URL** — só o
+  session token (revogável/expirável). **Sem `MCP_API_KEY` ⇒ MCP desligado** (tudo
+  401). Segurança: `_safe_callback` barra **open-redirect** (só localhost/Anthropic),
+  CSP restritivo nas páginas de auth, `access_log off` no `/mcp/` (não vaza `?token=`).
+  `/mcp/*` não está nos prefixos protegidos por JWT (`_admin_auth_mw`) — tem auth própria.
 - **Nginx:** `location /mcp/` em `http.conf` e nos dois server blocks 443 do
   `https.conf.template`, com **`proxy_buffering off` + `proxy_cache off` +
-  `Connection ''` + `proxy_http_version 1.1`** (sem isso o SSE não flui).
+  `Connection ''` + `proxy_http_version 1.1`** (sem isso o SSE não flui) + `access_log
+  off`. Usa o **resolver dinâmico** (ver seção 10) como o `/api/`.
 - **Dependências (travadas):** `mcp>=1.27,<2`. O `sse-starlette` novo puxaria
   **Starlette 1.x**, que quebra o FastAPI 0.115 — por isso `starlette>=0.40,<0.42`
   e `sse-starlette>=1.6.1,<2.2` estão pinados no `requirements.txt`.
-- **Conectar no Claude Desktop** (`claude_desktop_config.json`):
-  ```json
-  { "mcpServers": { "klarim": {
-      "url": "https://klarim.net/mcp/sse",
-      "headers": { "Authorization": "Bearer <MCP_API_KEY>" } } } }
-  ```
+- **Conectar no Claude Desktop:** abra `https://klarim.net/mcp/auth`, cole a
+  `MCP_API_KEY`, copie a URL `https://klarim.net/mcp/sse?token=<session>` e use-a
+  como URL do conector personalizado. (Alternativa por header, se o cliente
+  suportar: `Authorization: Bearer <MCP_API_KEY>` em `https://klarim.net/mcp/sse`.)

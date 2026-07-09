@@ -59,8 +59,16 @@ server {
         try_files $uri /index.html;
     }
 
+    # Proxy da API com resolver dinâmico (DNS do Docker) + upstream em variável:
+    # o Nginx re-resolve o IP do `api` a cada request (TTL 10s) em vez de cachear
+    # no boot. Evita o 502 quando o container `api` é recriado (novo IP) e o `web`
+    # não (bug do login do painel). O rewrite faz o strip do prefixo /api/ (o
+    # proxy_pass com variável não o faz automaticamente).
     location /api/ {
-        proxy_pass http://api:8000/;
+        resolver 127.0.0.11 valid=10s ipv6=off;
+        set $klarim_api api:8000;
+        rewrite ^/api/(.*)$ /$1 break;
+        proxy_pass http://$klarim_api;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -72,9 +80,12 @@ server {
     }
 
     # Servidor MCP (KL-18) — SSE de longa duração. Buffering/cache DESLIGADOS +
-    # Connection '' são obrigatórios (senão o Nginx bufferiza os eventos).
+    # Connection '' obrigatórios. Mesmo resolver dinâmico. `access_log off`: a auth
+    # do MCP pode vir em ?token= — não deve vazar nos logs. Identidade (sem rewrite).
     location /mcp/ {
-        proxy_pass http://api:8000/mcp/;
+        resolver 127.0.0.11 valid=10s ipv6=off;
+        set $klarim_api api:8000;
+        proxy_pass http://$klarim_api;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -85,6 +96,7 @@ server {
         proxy_cache off;
         chunked_transfer_encoding off;
         proxy_read_timeout 300s;
+        access_log off;
     }
 }
 
@@ -136,8 +148,16 @@ server {
         try_files $uri /index.html;
     }
 
+    # Proxy da API com resolver dinâmico (DNS do Docker) + upstream em variável:
+    # o Nginx re-resolve o IP do `api` a cada request (TTL 10s) em vez de cachear
+    # no boot. Evita o 502 quando o container `api` é recriado (novo IP) e o `web`
+    # não (bug do login do painel). O rewrite faz o strip do prefixo /api/ (o
+    # proxy_pass com variável não o faz automaticamente).
     location /api/ {
-        proxy_pass http://api:8000/;
+        resolver 127.0.0.11 valid=10s ipv6=off;
+        set $klarim_api api:8000;
+        rewrite ^/api/(.*)$ /$1 break;
+        proxy_pass http://$klarim_api;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -149,9 +169,12 @@ server {
     }
 
     # Servidor MCP (KL-18) — SSE de longa duração. Buffering/cache DESLIGADOS +
-    # Connection '' são obrigatórios (senão o Nginx bufferiza os eventos).
+    # Connection '' obrigatórios. Mesmo resolver dinâmico. `access_log off`: a auth
+    # do MCP pode vir em ?token= — não deve vazar nos logs. Identidade (sem rewrite).
     location /mcp/ {
-        proxy_pass http://api:8000/mcp/;
+        resolver 127.0.0.11 valid=10s ipv6=off;
+        set $klarim_api api:8000;
+        proxy_pass http://$klarim_api;
         proxy_http_version 1.1;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -162,5 +185,6 @@ server {
         proxy_cache off;
         chunked_transfer_encoding off;
         proxy_read_timeout 300s;
+        access_log off;
     }
 }

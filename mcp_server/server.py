@@ -14,7 +14,11 @@ from __future__ import annotations
 
 import hmac
 import os
+import secrets
+import time
+from html import escape
 from typing import Optional
+from urllib.parse import urlparse
 
 from fastapi import HTTPException
 from mcp.server.fastmcp import FastMCP
@@ -292,8 +296,44 @@ async def classify_targets_batch(target_ids: list[int], sector: str) -> dict:
 # Montagem no FastAPI (SSE) + autenticação
 # --------------------------------------------------------------------------- #
 
+# Sessões MCP (in-memory) criadas pelo fluxo web de auth: token efêmero (256 bits)
+# que substitui a API key nas conexões do Claude, com TTL de 24h. A **API key
+# nunca** viaja em URL — só o session token (revogável/expirável) vai em ?token=.
+MCP_SESSION_TTL = 24 * 3600
+_mcp_sessions: dict[str, float] = {}  # session_token -> created_at (epoch)
+
+# Rate limit da verificação de API key (anti brute-force), 5/min por IP.
+_VERIFY_RL_MAX = 5
+_VERIFY_RL_WINDOW = 60
+_verify_attempts: dict[str, list[float]] = {}
+
+
+def _cleanup_sessions() -> None:
+    """Remove sessões MCP expiradas (>24h)."""
+    now = time.time()
+    for t in [t for t, created in _mcp_sessions.items() if now - created > MCP_SESSION_TTL]:
+        _mcp_sessions.pop(t, None)
+
+
+def _new_session() -> str:
+    _cleanup_sessions()
+    token = secrets.token_hex(32)  # 256 bits, CSPRNG
+    _mcp_sessions[token] = time.time()
+    return token
+
+
+def _valid_session(token: str) -> bool:
+    created = _mcp_sessions.get(token)
+    if created is None:
+        return False
+    if time.time() - created > MCP_SESSION_TTL:
+        _mcp_sessions.pop(token, None)  # expirada
+        return False
+    return True
+
+
 def _key_ok(auth_header: str) -> bool:
-    """Valida o header Authorization contra MCP_API_KEY (constant-time).
+    """Valida um header Authorization direto contra MCP_API_KEY (constant-time).
     Sem MCP_API_KEY configurada, o MCP fica desligado (tudo 401)."""
     expected = os.environ.get("MCP_API_KEY", "")
     if not expected:
@@ -303,15 +343,129 @@ def _key_ok(auth_header: str) -> bool:
     return bool(token) and hmac.compare_digest(token, expected)
 
 
-def mount_mcp(app) -> None:
-    """Monta o transporte SSE do MCP no FastAPI, em `/mcp/sse` (+ `/mcp/messages/`).
+def _extract_token(request) -> str:
+    """Token de auth do request: header Authorization: Bearer <x> ou ?token=<x>."""
+    h = request.headers.get("authorization", "") or ""
+    token = h[7:].strip() if h[:7].lower() == "bearer " else h.strip()
+    if not token:
+        token = (request.query_params.get("token") or "").strip()
+    return token
 
-    Cada requisição é autenticada por MCP_API_KEY. Segue o padrão canônico do
-    FastMCP (connect_sse + `_mcp_server.run`).
+
+def _authorized(request) -> bool:
+    """Autoriza uma conexão MCP. Aceita (constant-time): a **API key** direta OU um
+    **session token** válido (do fluxo web), no header Bearer ou em ?token=.
+    Sem MCP_API_KEY ⇒ MCP desligado (nunca autoriza)."""
+    expected = os.environ.get("MCP_API_KEY", "")
+    if not expected:
+        return False
+    token = _extract_token(request)
+    if not token:
+        return False
+    if hmac.compare_digest(token, expected):
+        return True
+    return _valid_session(token)
+
+
+def _verify_rl_ok(request) -> bool:
+    """Rate limit da verificação de API key: 5/min por IP (janela deslizante)."""
+    xri = request.headers.get("x-real-ip", "")
+    ip = xri.split(",")[0].strip() if xri else (request.client.host if request.client else "unknown")
+    now = time.time()
+    q = _verify_attempts.setdefault(ip, [])
+    cutoff = now - _VERIFY_RL_WINDOW
+    while q and q[0] < cutoff:
+        q.pop(0)
+    if len(q) >= _VERIFY_RL_MAX:
+        return False
+    q.append(now)
+    return True
+
+
+def _safe_callback(url: str) -> bool:
+    """Anti open-redirect: só redireciona o session token para destinos confiáveis
+    (localhost do Claude Desktop OU domínios da Anthropic). Qualquer outro ⇒ ignora
+    o callback e mostra o token na página (o usuário copia manualmente)."""
+    if not url:
+        return False
+    try:
+        p = urlparse(url)
+    except Exception:  # noqa: BLE001
+        return False
+    if p.scheme not in ("http", "https"):
+        return False
+    host = (p.hostname or "").lower()
+    return (host in ("localhost", "127.0.0.1")
+            or host == "claude.ai" or host.endswith(".claude.ai")
+            or host == "anthropic.com" or host.endswith(".anthropic.com"))
+
+
+# CSP restritivo para as páginas de auth (sem JS; só o próprio formulário).
+_AUTH_CSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'"
+
+
+def _auth_page_html(callback_url: str = "", error: str = "") -> str:
+    """Página de autenticação do MCP (HTML puro, sem React). Campo password."""
+    err_html = (f'<p style="color:#FF4D4D;font-size:14px;margin:8px 0">{escape(error)}</p>'
+                if error else "")
+    return f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Klarim MCP — Autenticação</title>
+</head>
+<body style="margin:0;background:#0D1117;color:#E6EDF3;font-family:Arial,Helvetica,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh">
+  <div style="max-width:400px;width:90%;text-align:center;padding:24px">
+    <h1 style="letter-spacing:2px;font-size:28px">KLA<span style="color:#FF6B35">R</span>IM</h1>
+    <p style="color:#8B949E;font-size:15px;line-height:1.5">Cole sua <b>API Key</b> para conectar o Klarim ao Claude via MCP.</p>
+    {err_html}
+    <form method="POST" action="/mcp/auth/verify" autocomplete="off">
+      <input type="hidden" name="callback_url" value="{escape(callback_url)}">
+      <input type="password" name="api_key" placeholder="Cole sua API Key aqui" required autofocus
+             style="width:100%;box-sizing:border-box;padding:12px;border:1px solid #30363D;border-radius:6px;background:#161B22;color:#E6EDF3;margin:16px 0;font-size:14px">
+      <button type="submit"
+              style="width:100%;padding:12px;background:#FF6B35;color:#0D1117;border:none;border-radius:6px;cursor:pointer;font-weight:bold;font-size:15px">
+        Conectar
+      </button>
+    </form>
+    <p style="color:#484F58;font-size:12px;margin-top:24px">Conexão segura (HTTPS). Sua API Key não é registrada em logs.</p>
+  </div>
+</body>
+</html>"""
+
+
+def _auth_success_html(sse_url: str, token: str) -> str:
+    """Página de sucesso: mostra a URL pronta (com session token) para o Claude."""
+    return f"""<!DOCTYPE html>
+<html lang="pt-BR">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Klarim MCP — Conectado</title></head>
+<body style="margin:0;background:#0D1117;color:#E6EDF3;font-family:Arial,Helvetica,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh">
+  <div style="max-width:520px;width:90%;text-align:center;padding:24px">
+    <h1 style="color:#00D26A;font-size:24px">✅ Conectado</h1>
+    <p style="color:#8B949E;font-size:15px;line-height:1.5">Use esta URL no conector personalizado do Claude Desktop
+    (válida por 24h):</p>
+    <code style="display:block;word-break:break-all;background:#161B22;border:1px solid #30363D;border-radius:6px;padding:12px;margin:16px 0;color:#FF6B35;font-size:13px">{escape(sse_url)}</code>
+    <p style="color:#484F58;font-size:12px">Este é um token de sessão temporário — não é a sua API Key.</p>
+  </div>
+</body>
+</html>"""
+
+
+def mount_mcp(app) -> None:
+    """Monta o MCP no FastAPI em `/mcp/sse` (+ `/mcp/messages/`) e o fluxo de auth
+    web em `/mcp/auth` (+ `/mcp/auth/verify`).
+
+    Autenticação (Fix KL-18): o Claude Desktop não oferece campo de API key ao
+    adicionar um conector — por isso o fluxo web. O usuário abre `/mcp/auth`, cola a
+    API key, recebe um **session token** de 24h e usa a URL
+    `…/mcp/sse?token=<session>` no Claude. As conexões aceitam a API key (Bearer) OU
+    o session token (Bearer ou ?token=). Segue o padrão canônico do FastMCP.
     """
     from starlette.applications import Starlette
     from starlette.requests import Request
-    from starlette.responses import JSONResponse, Response
+    from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
     from starlette.routing import Mount, Route
 
     # Caminho RELATIVO ao sub-app montado em /mcp — o transporte prefixa o
@@ -319,8 +473,10 @@ def mount_mcp(app) -> None:
     transport = SseServerTransport("/messages/")
 
     async def sse_endpoint(request: Request) -> Response:
-        if not _key_ok(request.headers.get("authorization", "")):
-            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        if not _authorized(request):
+            return JSONResponse(
+                {"error": "unauthorized", "auth_url": "/mcp/auth"},
+                status_code=401, headers={"WWW-Authenticate": "Bearer"})
         async with transport.connect_sse(
             request.scope, request.receive, request._send,
         ) as streams:
@@ -331,12 +487,40 @@ def mount_mcp(app) -> None:
         return Response()
 
     async def messages_asgi(scope, receive, send) -> None:
-        if not _key_ok(Request(scope).headers.get("authorization", "")):
+        if not _authorized(Request(scope)):
             await JSONResponse({"error": "unauthorized"}, status_code=401)(scope, receive, send)
             return
         await transport.handle_post_message(scope, receive, send)
 
+    async def auth_page(request: Request) -> HTMLResponse:
+        callback = request.query_params.get("callback_url", "")
+        return HTMLResponse(_auth_page_html(callback),
+                            headers={"Content-Security-Policy": _AUTH_CSP})
+
+    async def auth_verify(request: Request) -> Response:
+        if not _verify_rl_ok(request):
+            return HTMLResponse(
+                _auth_page_html(error="Muitas tentativas. Aguarde um minuto."),
+                status_code=429, headers={"Content-Security-Policy": _AUTH_CSP,
+                                          "Retry-After": str(_VERIFY_RL_WINDOW)})
+        form = await request.form()
+        api_key = (form.get("api_key") or "").strip()
+        callback = (form.get("callback_url") or "").strip()
+        expected = os.environ.get("MCP_API_KEY", "")
+        if not expected or not hmac.compare_digest(api_key, expected):
+            return HTMLResponse(_auth_page_html(callback, "API Key inválida."),
+                                status_code=401, headers={"Content-Security-Policy": _AUTH_CSP})
+        token = _new_session()
+        if _safe_callback(callback):
+            sep = "&" if "?" in callback else "?"
+            return RedirectResponse(f"{callback}{sep}token={token}", status_code=302)
+        host = request.headers.get("host", "klarim.net")
+        return HTMLResponse(_auth_success_html(f"https://{host}/mcp/sse?token={token}", token),
+                            headers={"Content-Security-Policy": _AUTH_CSP})
+
     sse_app = Starlette(routes=[
+        Route("/auth", endpoint=auth_page, methods=["GET"]),
+        Route("/auth/verify", endpoint=auth_verify, methods=["POST"]),
         Route("/sse", endpoint=sse_endpoint, methods=["GET"]),
         Route("/sse/", endpoint=sse_endpoint, methods=["GET"]),
         Mount("/messages/", app=messages_asgi),
