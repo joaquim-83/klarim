@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 
 import discovery.ingest as ing
+import discovery.contact as contact
 
 
 class FakeScore:
@@ -44,6 +45,9 @@ class FakeStore:
 
 
 def test_ingest_registers_enriches_and_tags_source(monkeypatch):
+    # MX ok (hermético — não bate no DNS; KL-24 exige MX no extract_email).
+    monkeypatch.setattr(contact, "_mx_status_cached", lambda d: "ok")
+
     async def fake_html(url):
         return '<a href="mailto:contato@hotelx.com.br">x</a> hotel pousada reserva diária check-in'
     monkeypatch.setattr(ing, "_fetch_html", fake_html)

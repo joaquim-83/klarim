@@ -155,7 +155,9 @@ def test_collect_emails_mailto_and_text():
     assert "contato@x.com.br" in got and "vendas@x.com.br" in got
 
 
-def test_extract_email_from_html_no_network():
+def test_extract_email_from_html_no_network(monkeypatch):
+    # MX ok (não bate na rede — o CI tem DNS e hotelx.com.br não existe).
+    monkeypatch.setattr(contact, "_mx_status_cached", lambda d: "ok")
     html = '<a href="mailto:reservas@hotelx.com.br">reservar</a>'
     assert asyncio.run(extract_email(html, "https://www.hotelx.com.br")) == "reservas@hotelx.com.br"
 
