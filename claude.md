@@ -112,6 +112,8 @@ klarim/
 │   └── templates/          # alert.html + report_delivery.html (table-based)
 ├── api/                    # API HTTP (FastAPI)
 │   └── main.py             # semáforo + PDFs + fluxo de pagamento PIX
+├── mcp_server/             # servidor MCP (KL-18) — operar o Klarim via Claude
+│   └── server.py           # FastMCP + tools (leitura/escrita) + mount SSE em /mcp
 └── tests/                  # pytest
     ├── test_checks.py      # unit tests dos checks + teste online opt-in
     ├── test_reporter.py    # geração de PDF (offline, guardado por libs nativas)
@@ -894,3 +896,44 @@ são **endereços inválidos**, não o conteúdo. Quatro camadas de defesa:
 **Regra inviolável:** nunca reenviar para e-mail na blocklist nem para domínio sem
 MX; nunca remover a pausa automática por bounce rate — a reputação do domínio no
 Resend/Gmail é ativo crítico do funil.
+
+## 24. Servidor MCP (KL-18) — operar o Klarim via Claude — `mcp_server/`
+
+Wrapper **fino** sobre a API (nenhuma lógica duplicada): permite operar o Klarim
+por linguagem natural no Claude — reaproveitar os ~1.900 alvos `sem_contato`,
+monitorar o sistema, disparar scans/alertas, tudo por tools.
+
+- **`mcp_server/server.py`** — `FastMCP(name="klarim")` com **25 tools** (17 de
+  leitura + 8 de escrita). Cada tool chama uma função de endpoint do `api.main`
+  (import **lazy** — evita ciclo, já que `api.main` importa `mount_mcp`) ou um
+  método do `store`. `_guard()` converte exceções (incl. `HTTPException`) num dict
+  `{"error", "status_code"}` — a tool nunca derruba a sessão.
+  - **Leitura:** `get_system_status`, `get_email_health`, `get_discovery_status`,
+    `get_config`, `list_targets`, `get_target`, `get_target_stats`, `search_targets`,
+    `list_scans`, `get_scan`, `get_scan_stats`, `list_alerts`, `get_alert_stats`,
+    `list_payments`, `get_payment_stats`, `get_funnel`, `get_rescan_stats`.
+  - **Escrita:** `scan_url`, `add_target`, `update_target_email`,
+    `update_target_status`, `update_target_sector`, `send_alert_to_target`,
+    `send_report_to_email`, `classify_targets_batch`.
+- **Montagem (`mount_mcp(app)`):** transporte **SSE** montado no MESMO FastAPI em
+  **`/mcp/sse`** (+ `/mcp/messages/`). O `SseServerTransport` recebe o caminho
+  **relativo** `/messages/` (o mount em `/mcp` vira o `root_path`, que o transporte
+  prefixa → o cliente recebe `/mcp/messages/`; passar `/mcp/messages/` duplicaria o
+  prefixo). Import de `api.main` no fim do arquivo, em `try/except` — se o pacote
+  `mcp` faltar, a API sobe sem o MCP.
+- **Autenticação:** `MCP_API_KEY` (header `Authorization: Bearer <chave>`), validada
+  em tempo constante na conexão SSE **e** nos POSTs `/messages/`. **Sem
+  `MCP_API_KEY` ⇒ MCP desligado** (tudo 401). `/mcp/*` **não** está nos prefixos
+  protegidos por JWT (`_admin_auth_mw`) — tem auth própria.
+- **Nginx:** `location /mcp/` em `http.conf` e nos dois server blocks 443 do
+  `https.conf.template`, com **`proxy_buffering off` + `proxy_cache off` +
+  `Connection ''` + `proxy_http_version 1.1`** (sem isso o SSE não flui).
+- **Dependências (travadas):** `mcp>=1.27,<2`. O `sse-starlette` novo puxaria
+  **Starlette 1.x**, que quebra o FastAPI 0.115 — por isso `starlette>=0.40,<0.42`
+  e `sse-starlette>=1.6.1,<2.2` estão pinados no `requirements.txt`.
+- **Conectar no Claude Desktop** (`claude_desktop_config.json`):
+  ```json
+  { "mcpServers": { "klarim": {
+      "url": "https://klarim.net/mcp/sse",
+      "headers": { "Authorization": "Bearer <MCP_API_KEY>" } } } }
+  ```

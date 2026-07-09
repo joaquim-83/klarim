@@ -1896,3 +1896,17 @@ async def _safe_pdf(fn, report, url: str) -> bytes:
         return await fn(report, url)
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"Falha ao gerar PDF: {exc!r}") from exc
+
+
+# --------------------------------------------------------------------------- #
+# Servidor MCP (KL-18) — operar o Klarim via Claude. Montado no MESMO FastAPI
+# em /mcp/sse (SSE), autenticado por MCP_API_KEY. Opcional: se o pacote `mcp`
+# não estiver instalado, a API sobe normalmente sem o MCP.
+# --------------------------------------------------------------------------- #
+try:
+    from mcp_server.server import mount_mcp
+
+    mount_mcp(app)
+    print("[mcp] servidor MCP montado em /mcp/sse", flush=True)
+except Exception as exc:  # noqa: BLE001 - MCP é opcional; a API sobe mesmo assim
+    print(f"[mcp] não montado ({exc!r})", flush=True)
