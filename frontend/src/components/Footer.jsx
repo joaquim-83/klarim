@@ -10,8 +10,8 @@ export default function Footer() {
       <div className="mx-auto max-w-3xl px-4 py-6 text-center text-sm text-klarim-muted">
         <p>Klarim Scanner — Varredura 100% passiva. Nenhum dado é acessado.</p>
         <nav className="mt-2 flex flex-wrap justify-center gap-4">
-          <a href="#" className="text-klarim-muted hover:text-klarim-text">Sobre</a>
-          <a href="#" className="text-klarim-muted hover:text-klarim-text">Parceiros</a>
+          <Link to="/sobre" className="text-klarim-muted hover:text-klarim-text">Sobre</Link>
+          <Link to="/parceiros" className="text-klarim-muted hover:text-klarim-text">Parceiros</Link>
           <button
             onClick={() => setShowContact(true)}
             className="text-klarim-muted hover:text-klarim-text"

@@ -171,9 +171,9 @@ export default function Report() {
         {/* Referral */}
         <div className="mx-auto mt-10 max-w-md rounded-lg border border-dashed border-klarim-alert bg-klarim-surface p-5">
           <p className="font-bold">Precisa de ajuda para corrigir?</p>
-          <a href="#" className="mt-1 inline-block font-bold text-klarim-alert">
+          <Link to="/parceiros" className="mt-1 inline-block font-bold text-klarim-alert">
             Conheça nossos parceiros
-          </a>
+          </Link>
         </div>
 
         <div className="mt-8">

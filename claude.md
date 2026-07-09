@@ -331,7 +331,9 @@ Frontend **React + Vite + Tailwind v4**, servido como build estático pelo
 
 - **Telas:** `Landing` (`/`, input de scan), `Scan` (`/scan?url=`, loading com
   mensagens rotativas), `Result` (`/result?url=`, semáforo + severidades + LGPD +
-  CTA), `Report` (`/report?url=`, download dos dois PDFs). Roteamento client-side
+  CTA), `Report` (`/report?url=`, download dos dois PDFs), `Sobre` (`/sobre`) e
+  `Parceiros` (`/parceiros`) — páginas de conteúdo institucional (o e-mail no texto
+  abre o `ContactModal` via `ContactEmail`, sem `mailto`). Roteamento client-side
   com `react-router-dom`; SPA fallback no Nginx (`try_files … /index.html`).
 - **API:** todas as chamadas vão para `/api/...`. Em produção o Nginx encaminha
   para `http://api:8000/`; em dev o proxy do Vite faz o mesmo (`vite.config.js`).

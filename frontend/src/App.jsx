@@ -8,6 +8,8 @@ import Payment from './pages/Payment'
 import Report from './pages/Report'
 import Recuperar from './pages/Recuperar'
 import RecuperarAcesso from './pages/RecuperarAcesso'
+import Sobre from './pages/Sobre'
+import Parceiros from './pages/Parceiros'
 import ProtectedRoute from './components/admin/ProtectedRoute'
 
 // Dashboard admin (KL-14) — carregado sob demanda (code-split), para o site
@@ -61,6 +63,8 @@ export default function App() {
       <Route path="/report" element={<Report />} />
       <Route path="/recuperar" element={<Recuperar />} />
       <Route path="/recuperar/acesso" element={<RecuperarAcesso />} />
+      <Route path="/sobre" element={<Sobre />} />
+      <Route path="/parceiros" element={<Parceiros />} />
 
       {/* Dashboard admin */}
       <Route
