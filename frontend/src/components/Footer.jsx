@@ -8,7 +8,7 @@ export default function Footer() {
         <nav className="mt-2 flex flex-wrap justify-center gap-4">
           <a href="#" className="text-klarim-muted hover:text-klarim-text">Sobre</a>
           <a href="#" className="text-klarim-muted hover:text-klarim-text">Parceiros</a>
-          <a href="#" className="text-klarim-muted hover:text-klarim-text">Contato</a>
+          <a href="mailto:scan@klarim.net" className="text-klarim-muted hover:text-klarim-text">Contato</a>
           <Link to="/recuperar" className="text-klarim-muted hover:text-klarim-text">Recuperar relatórios</Link>
         </nav>
       </div>
