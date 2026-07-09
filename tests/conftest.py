@@ -16,6 +16,7 @@ def _reset_api_rate_limits():
         import api.main as m
         m._login_attempts.clear()
         m._event_rl.clear()
+        m._contact_attempts.clear()
     except Exception:  # noqa: BLE001 - testes que não tocam a API seguem normais
         pass
     yield

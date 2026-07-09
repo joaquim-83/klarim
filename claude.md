@@ -446,10 +446,16 @@ Dois usos: **alerta gratuito** (anzol do funil, semáforo) e **entrega do
 relatório** pago (2 PDFs anexados).
 
 - **`notifier/email_client.py`** — `KlarimMailer` com `send_alert`, `send_report`,
-  `send_test`. SDK `resend` (síncrono) encapsulado em `asyncio.to_thread`.
-  Templates Jinja2 **table-based** (compatível com Gmail/Outlook), paleta dark.
+  `send_test`, `send_contact`. SDK `resend` (síncrono) encapsulado em
+  `asyncio.to_thread`. Templates Jinja2 **table-based** (compatível com
+  Gmail/Outlook), paleta dark.
 - **Endpoints** (`api/main.py`): `POST /email/test`, `POST /email/send-alert`
   (scan + alerta), `POST /email/send-report` (exige cobrança paga; anexa PDFs).
+- **Formulário de contato (público):** `POST /contact {name?, email, message}` —
+  encaminha para `scan@klarim.net` via `send_contact` (com `reply_to` do
+  remetente). Sanitiza os campos, valida e-mail, rate limit **3/h por IP**. No
+  frontend, o link "Contato" do footer abre o **`ContactModal`** (e-mail com botão
+  copiar + formulário inline) — **sem `mailto:`**, o visitante não sai do site.
 - **Envio automático:** ao confirmar pagamento (webhook **ou** polling), se a
   cobrança tem `buyer_email` e ainda não enviou, dispara o e-mail do relatório em
   **background** (`asyncio.create_task`), idempotente (`report_email_sent`). Falha

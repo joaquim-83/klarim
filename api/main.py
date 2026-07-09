@@ -613,6 +613,53 @@ async def _safe_email(coro) -> dict:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
+# --- Formulário de contato do site (público) ------------------------------- #
+
+class ContactBody(BaseModel):
+    name: Optional[str] = None
+    email: str
+    message: str
+
+
+_CONTACT_RL_MAX = 3          # mensagens por IP por hora
+_CONTACT_RL_WINDOW = 3600
+_contact_attempts: dict = {}  # ip -> [timestamps monotônicos]
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
+
+
+@app.post("/contact")
+async def api_contact(body: ContactBody, request: Request) -> dict:
+    """Recebe o formulário de contato do site e encaminha para o time via Resend.
+    Público (sem JWT), com sanitização e rate limit de 3/h por IP."""
+    email = _sanitize_str((body.email or "").strip(), 200)
+    message = _sanitize_str((body.message or "").strip(), 5000)
+    name = _sanitize_str((body.name or "").strip(), 200)
+    if not email or not _EMAIL_RE.match(email):
+        raise HTTPException(status_code=422, detail="E-mail inválido.")
+    if not message:
+        raise HTTPException(status_code=422, detail="Mensagem obrigatória.")
+
+    # Rate limit por IP (janela deslizante de 1h).
+    ip = _client_ip(request)
+    now = time.monotonic()
+    q = _contact_attempts.setdefault(ip, [])
+    cutoff = now - _CONTACT_RL_WINDOW
+    while q and q[0] < cutoff:
+        q.pop(0)
+    if len(q) >= _CONTACT_RL_MAX:
+        retry = int(_CONTACT_RL_WINDOW - (now - q[0])) + 1
+        raise HTTPException(status_code=429, detail="Muitas mensagens. Tente novamente mais tarde.",
+                            headers={"Retry-After": str(retry)})
+    q.append(now)
+    if len(_contact_attempts) > 5000:
+        for k in [k for k, ts in _contact_attempts.items() if not ts or ts[-1] < cutoff]:
+            _contact_attempts.pop(k, None)
+
+    _require_email()
+    await _safe_email(_mailer().send_contact(name, email, message))
+    return {"ok": True}
+
+
 # --------------------------------------------------------------------------- #
 # Recuperação de relatórios (token temporário por e-mail)
 # --------------------------------------------------------------------------- #

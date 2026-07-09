@@ -238,6 +238,39 @@ class KlarimMailer:
             {"from": self.from_address, "to": [to_email], "subject": "Teste — Klarim", "html": html}
         )
 
+    async def send_contact(
+        self, name: str, email: str, message: str, to_address: str = "scan@klarim.net"
+    ) -> Dict[str, Any]:
+        """Encaminha uma mensagem do formulário de contato do site para o time.
+
+        `reply_to` aponta para o remetente, então basta responder o e-mail. Os
+        valores já chegam validados/sanitizados pelo endpoint; ainda assim faz
+        escape de HTML (defense-in-depth).
+        """
+        import html as _html
+
+        safe_name = _html.escape(name or "").strip() or "—"
+        safe_email = _html.escape(email or "")
+        safe_message = _html.escape(message or "").replace("\n", "<br>")
+        body = (
+            "<div style=\"font-family:Arial,sans-serif;background:#0D1117;color:#E6EDF3;"
+            "padding:24px;border-radius:8px\">"
+            "<h2 style=\"color:#FF6B35\">Nova mensagem de contato — klarim.net</h2>"
+            f"<p><b>Nome:</b> {safe_name}</p>"
+            f"<p><b>E-mail:</b> {safe_email}</p>"
+            f"<p><b>Mensagem:</b><br>{safe_message}</p>"
+            "</div>"
+        )
+        params = {
+            "from": self.from_address,
+            "to": [to_address],
+            "subject": f"[Contato Klarim] {safe_name if safe_name != '—' else safe_email}",
+            "html": body,
+        }
+        if email:
+            params["reply_to"] = email
+        return await self._send(params)
+
     # ----- helpers --------------------------------------------------------- #
 
     def _score_ctx(self, score: int, semaphore: str) -> Dict[str, Any]:
