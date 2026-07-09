@@ -12,6 +12,7 @@ para evitar import circular (o `api.main` importa `mount_mcp` deste módulo).
 
 from __future__ import annotations
 
+import contextlib
 import hmac
 import os
 import secrets
@@ -26,8 +27,12 @@ from mcp.server.sse import SseServerTransport
 
 from discovery.store import get_target_store
 
+# stateless_http=True: cada request do Streamable HTTP é independente (sem estado
+# de sessão persistido) — combina com deploy simples atrás de proxy e é o que o
+# Claude Desktop usa.
 mcp = FastMCP(
     name="klarim",
+    stateless_http=True,
     instructions=(
         "Klarim é um scanner passivo de segurança web para PMEs brasileiras. "
         "Use estas tools para monitorar o sistema, gerenciar alvos, disparar scans "
@@ -37,6 +42,15 @@ mcp = FastMCP(
         "Todas as ações de escrita são operadas pelo dono do Klarim."
     ),
 )
+
+# Desliga a proteção de DNS rebinding do transporte (Streamable HTTP + SSE). O
+# default só permite Host localhost/127.0.0.1 — atrás do Nginx o Host é
+# `klarim.net`/`painel.klarim.net` e seria rejeitado ("Invalid Host header").
+# É seguro: estamos atrás do Nginx e a auth é por MCP_API_KEY/session token.
+from mcp.server.transport_security import TransportSecuritySettings  # noqa: E402
+
+mcp.settings.transport_security = TransportSecuritySettings(
+    enable_dns_rebinding_protection=False)
 
 
 # --------------------------------------------------------------------------- #
@@ -435,27 +449,48 @@ def _auth_page_html(callback_url: str = "", error: str = "") -> str:
 </html>"""
 
 
-def _auth_success_html(sse_url: str, token: str) -> str:
-    """Página de sucesso: mostra a URL pronta (com session token) para o Claude."""
+def _auth_success_html(connect_url: str, host: str, token: str) -> str:
+    """Página de sucesso: URL pronta (com session token) para o Claude Desktop.
+    Streamable HTTP (`/mcp/`) é o primário; SSE (`/mcp/sse`) fica como alternativa."""
+    sse_url = f"https://{host}/mcp/sse?token={token}"
     return f"""<!DOCTYPE html>
 <html lang="pt-BR">
 <head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Klarim MCP — Conectado</title></head>
 <body style="margin:0;background:#0D1117;color:#E6EDF3;font-family:Arial,Helvetica,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh">
-  <div style="max-width:520px;width:90%;text-align:center;padding:24px">
+  <div style="max-width:560px;width:90%;text-align:center;padding:24px">
     <h1 style="color:#00D26A;font-size:24px">✅ Conectado</h1>
-    <p style="color:#8B949E;font-size:15px;line-height:1.5">Use esta URL no conector personalizado do Claude Desktop
+    <p style="color:#8B949E;font-size:15px;line-height:1.5">Cole esta URL no conector personalizado do Claude Desktop
     (válida por 24h):</p>
-    <code style="display:block;word-break:break-all;background:#161B22;border:1px solid #30363D;border-radius:6px;padding:12px;margin:16px 0;color:#FF6B35;font-size:13px">{escape(sse_url)}</code>
-    <p style="color:#484F58;font-size:12px">Este é um token de sessão temporário — não é a sua API Key.</p>
+    <code style="display:block;word-break:break-all;background:#161B22;border:1px solid #30363D;border-radius:6px;padding:12px;margin:16px 0;color:#FF6B35;font-size:13px">{escape(connect_url)}</code>
+    <p style="color:#8B949E;font-size:12px;line-height:1.5;margin-top:20px">Alternativa (SSE, para clients legados):</p>
+    <code style="display:block;word-break:break-all;background:#161B22;border:1px solid #30363D;border-radius:6px;padding:10px;margin:8px 0;color:#8B949E;font-size:12px">{escape(sse_url)}</code>
+    <p style="color:#484F58;font-size:12px;margin-top:16px">Este é um token de sessão temporário — não é a sua API Key.</p>
   </div>
 </body>
 </html>"""
 
 
+# Session manager do Streamable HTTP (criado em mount_mcp). Precisa rodar dentro
+# de um contexto async — ativado no lifespan do FastAPI via `lifespan_cm()`.
+_session_manager = None
+
+
+@contextlib.asynccontextmanager
+async def lifespan_cm():
+    """Contexto do session manager do Streamable HTTP para o lifespan do FastAPI.
+    No-op se o Streamable HTTP não foi montado (ex.: pacote `mcp` ausente)."""
+    if _session_manager is None:
+        yield
+        return
+    async with _session_manager.run():
+        yield
+
+
 def mount_mcp(app) -> None:
-    """Monta o MCP no FastAPI em `/mcp/sse` (+ `/mcp/messages/`) e o fluxo de auth
-    web em `/mcp/auth` (+ `/mcp/auth/verify`).
+    """Monta o MCP no FastAPI: **Streamable HTTP** em `/mcp/` (o que o Claude Desktop
+    usa) + **SSE** em `/mcp/sse` (legado/curl) + fluxo de auth web em `/mcp/auth`
+    (+ `/mcp/auth/verify`).
 
     Autenticação (Fix KL-18): o Claude Desktop não oferece campo de API key ao
     adicionar um conector — por isso o fluxo web. O usuário abre `/mcp/auth`, cola a
@@ -463,6 +498,7 @@ def mount_mcp(app) -> None:
     `…/mcp/sse?token=<session>` no Claude. As conexões aceitam a API key (Bearer) OU
     o session token (Bearer ou ?token=). Segue o padrão canônico do FastMCP.
     """
+    global _session_manager
     from starlette.applications import Starlette
     from starlette.requests import Request
     from starlette.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
@@ -515,14 +551,39 @@ def mount_mcp(app) -> None:
             sep = "&" if "?" in callback else "?"
             return RedirectResponse(f"{callback}{sep}token={token}", status_code=302)
         host = request.headers.get("host", "klarim.net")
-        return HTMLResponse(_auth_success_html(f"https://{host}/mcp/sse?token={token}", token),
+        # URL do conector: Streamable HTTP (/mcp/) — o transporte do Claude Desktop.
+        return HTMLResponse(_auth_success_html(f"https://{host}/mcp/?token={token}", host, token),
                             headers={"Content-Security-Policy": _AUTH_CSP})
 
-    sse_app = Starlette(routes=[
+    # Streamable HTTP (KL-18): o transporte que o Claude Desktop usa. Inicializa o
+    # session manager do FastMCP (lazy) e o embrulha com autenticação. É um objeto
+    # callable ASGI — o Route do Starlette só trata instância de classe como app
+    # ASGI (uma função async(scope,…) viraria endpoint request-response).
+    streamable_asgi = None
+    try:
+        mcp.streamable_http_app()          # cria o session manager (side-effect)
+        _session_manager = mcp.session_manager
+
+        class _AuthStreamable:
+            async def __call__(self, scope, receive, send):
+                if scope.get("type") == "http" and not _authorized(Request(scope)):
+                    await JSONResponse({"error": "unauthorized"}, status_code=401)(scope, receive, send)
+                    return
+                await _session_manager.handle_request(scope, receive, send)
+
+        streamable_asgi = _AuthStreamable()
+    except Exception as exc:  # noqa: BLE001 - sem Streamable HTTP, o SSE continua
+        print(f"[mcp] Streamable HTTP indisponível ({exc!r}); só SSE", flush=True)
+
+    routes = [
         Route("/auth", endpoint=auth_page, methods=["GET"]),
         Route("/auth/verify", endpoint=auth_verify, methods=["POST"]),
         Route("/sse", endpoint=sse_endpoint, methods=["GET"]),
         Route("/sse/", endpoint=sse_endpoint, methods=["GET"]),
         Mount("/messages/", app=messages_asgi),
-    ])
-    app.mount("/mcp", sse_app)
+    ]
+    if streamable_asgi is not None:
+        # Root do sub-app => /mcp/ (GET/POST/DELETE). Fica por último para não
+        # sombrear as rotas específicas acima.
+        routes.append(Route("/", endpoint=streamable_asgi))
+    app.mount("/mcp", Starlette(routes=routes))

@@ -460,13 +460,15 @@ Klarim por linguagem natural no Claude: **25 tools** (17 de leitura — sistema,
 alvos, scans, alertas, pagamentos, analytics, saúde de e-mail; 8 de escrita —
 scan, adicionar alvo, editar e-mail/status/setor, disparar alerta, enviar
 relatório, classificar em lote). Cada tool é um wrapper fino sobre a API/`store`
-existente. Autenticação por `MCP_API_KEY`; sem a chave, o MCP fica desligado.
+existente. Dois transportes no mesmo endpoint: **Streamable HTTP** em `/mcp/` (o que
+o Claude Desktop usa) e **SSE** em `/mcp/sse` (legado). Autenticação por
+`MCP_API_KEY`; sem a chave, o MCP fica desligado.
 
 **Conectar no Claude Desktop** (fluxo web): abra `https://klarim.net/mcp/auth`, cole
-a `MCP_API_KEY` e copie a URL gerada — `https://klarim.net/mcp/sse?token=<session>`
-(token de sessão de 24h) — e use-a como URL do conector personalizado. A conexão
-aceita tanto a API key (header `Authorization: Bearer <MCP_API_KEY>`) quanto o
-session token (Bearer ou `?token=`); **a API key nunca trafega em URL**.
+a `MCP_API_KEY` e copie a URL gerada — `https://klarim.net/mcp/?token=<session>`
+(Streamable HTTP, token de sessão de 24h) — e use-a como URL do conector
+personalizado. A conexão aceita a API key (header `Authorization: Bearer <MCP_API_KEY>`)
+ou o session token (Bearer ou `?token=`); **a API key nunca trafega em URL**.
 
 ---
 

@@ -925,32 +925,53 @@ monitorar o sistema, disparar scans/alertas, tudo por tools.
   - **Escrita:** `scan_url`, `add_target`, `update_target_email`,
     `update_target_status`, `update_target_sector`, `send_alert_to_target`,
     `send_report_to_email`, `classify_targets_batch`.
-- **Montagem (`mount_mcp(app)`):** transporte **SSE** montado no MESMO FastAPI em
-  **`/mcp/sse`** (+ `/mcp/messages/`). O `SseServerTransport` recebe o caminho
-  **relativo** `/messages/` (o mount em `/mcp` vira o `root_path`, que o transporte
-  prefixa → o cliente recebe `/mcp/messages/`; passar `/mcp/messages/` duplicaria o
-  prefixo). Import de `api.main` no fim do arquivo, em `try/except` — se o pacote
-  `mcp` faltar, a API sobe sem o MCP.
+- **Dois transportes (`mount_mcp(app)`), montados no MESMO FastAPI sob `/mcp`:**
+  - **Streamable HTTP** em **`/mcp/`** — o transporte do **Claude Desktop** e clients
+    modernos. `FastMCP(stateless_http=True)`; o `session_manager` do FastMCP é
+    inicializado (via `mcp.streamable_http_app()`) e embrulhado num ASGI callable
+    com auth, montado no **root** do sub-app (`Route("/")` — o Starlette só trata
+    **instância de classe** como app ASGI; função `async(scope,…)` viraria
+    request-response). Aceita GET/POST/DELETE. Precisa do `session_manager.run()`
+    **ativo** — rodado no **lifespan** do FastAPI (`lifespan_cm()` → `_mcp_streamable_cm()`).
+  - **SSE** em **`/mcp/sse`** (+ `/mcp/messages/`) — legado/curl. O `SseServerTransport`
+    recebe o caminho **relativo** `/messages/` (o mount em `/mcp` vira o `root_path`,
+    que o transporte prefixa → cliente recebe `/mcp/messages/`).
+  - **Host validation OFF:** `mcp.settings.transport_security =
+    TransportSecuritySettings(enable_dns_rebinding_protection=False)` — o default só
+    permite Host `localhost/127.0.0.1` e rejeitaria `klarim.net` atrás do Nginx
+    ("Invalid Host header"). Seguro: Nginx + auth por `MCP_API_KEY`/session token.
+  - Import de `api.main` no fim do arquivo, em `try/except` — se o pacote `mcp`
+    faltar, a API sobe sem o MCP.
 - **Autenticação (fluxo web + session token):** o Claude Desktop não oferece campo
   de API key ao adicionar um conector — por isso há um **fluxo web**:
   `GET /mcp/auth` (página HTML, campo password) → `POST /mcp/auth/verify` (valida a
   key em tempo constante, rate limit **5/min/IP**) → cria um **session token**
   (`secrets.token_hex(32)`, **256 bits, TTL 24h**, in-memory `_mcp_sessions`) e
-  devolve a URL pronta `…/mcp/sse?token=<session>`. `_authorized()` aceita, em
-  constant-time: a **API key** (Bearer) OU um **session token** válido (Bearer ou
-  `?token=`), na SSE e nos POSTs `/messages/`. **A API key nunca vai em URL** — só o
+  devolve a URL pronta `…/mcp/?token=<session>` (Streamable HTTP; a de SSE fica como
+  alternativa). `_authorized()` aceita, em constant-time: a **API key** (Bearer) OU um
+  **session token** válido (Bearer ou `?token=`), nos **dois transportes**. **A API
+  key nunca vai em URL** — só o
   session token (revogável/expirável). **Sem `MCP_API_KEY` ⇒ MCP desligado** (tudo
   401). Segurança: `_safe_callback` barra **open-redirect** (só localhost/Anthropic),
   CSP restritivo nas páginas de auth, `access_log off` no `/mcp/` (não vaza `?token=`).
   `/mcp/*` não está nos prefixos protegidos por JWT (`_admin_auth_mw`) — tem auth própria.
 - **Nginx:** `location /mcp/` em `http.conf` e nos dois server blocks 443 do
   `https.conf.template`, com **`proxy_buffering off` + `proxy_cache off` +
-  `Connection ''` + `proxy_http_version 1.1`** (sem isso o SSE não flui) + `access_log
-  off`. Usa o **resolver dinâmico** (ver seção 10) como o `/api/`.
+  `Connection ''` + `proxy_http_version 1.1`** (sem isso o stream não flui) +
+  `access_log off`, e o **resolver dinâmico** (ver seção 10) como o `/api/`. O
+  endpoint é `/mcp/` (com barra); o `/mcp` **pelado** cairia no `location /` (SPA),
+  então `location = /mcp { return 308 /mcp/$is_args$args; }` redireciona preservando
+  a query (`?token=`).
 - **Dependências (travadas):** `mcp>=1.27,<2`. O `sse-starlette` novo puxaria
   **Starlette 1.x**, que quebra o FastAPI 0.115 — por isso `starlette>=0.40,<0.42`
   e `sse-starlette>=1.6.1,<2.2` estão pinados no `requirements.txt`.
 - **Conectar no Claude Desktop:** abra `https://klarim.net/mcp/auth`, cole a
-  `MCP_API_KEY`, copie a URL `https://klarim.net/mcp/sse?token=<session>` e use-a
-  como URL do conector personalizado. (Alternativa por header, se o cliente
-  suportar: `Authorization: Bearer <MCP_API_KEY>` em `https://klarim.net/mcp/sse`.)
+  `MCP_API_KEY` e copie a URL **`https://klarim.net/mcp/?token=<session>`** (Streamable
+  HTTP) para o conector personalizado. Alternativas: SSE em
+  `https://klarim.net/mcp/sse?token=<session>` (clients legados); header
+  `Authorization: Bearer <MCP_API_KEY>` (se o cliente suportar); ou, como ponte
+  local, `mcp-remote`:
+  ```json
+  { "mcpServers": { "klarim": { "command": "npx",
+      "args": ["-y", "mcp-remote", "https://klarim.net/mcp/?token=<session>"] } } }
+  ```

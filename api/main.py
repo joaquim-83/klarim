@@ -155,6 +155,17 @@ async def _init_cache() -> None:
         _cache = None
 
 
+def _mcp_streamable_cm():
+    """Contexto do session manager do Streamable HTTP do MCP (KL-18). No-op se o MCP
+    não montou ou o pacote `mcp` faltar."""
+    try:
+        from mcp_server.server import lifespan_cm
+        return lifespan_cm()
+    except Exception:  # noqa: BLE001 - MCP é opcional; a API sobe mesmo assim
+        from contextlib import nullcontext
+        return nullcontext()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_store()
@@ -163,7 +174,9 @@ async def lifespan(app: FastAPI):
         await get_target_store().ensure_schema()
     except Exception as exc:  # noqa: BLE001 - targets/scans opcionais; API sobe mesmo assim
         print(f"[targets] schema indisponível ({exc!r})", flush=True)
-    yield
+    # Streamable HTTP do MCP precisa do session manager rodando durante o app.
+    async with _mcp_streamable_cm():
+        yield
 
 
 # Fix de segurança: em produção NÃO expõe Swagger/OpenAPI (mapeariam toda a API

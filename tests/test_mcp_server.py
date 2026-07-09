@@ -257,3 +257,28 @@ def test_auth_verify_rate_limited(monkeypatch):
     codes = [c.post("/mcp/auth/verify", data={"api_key": "wrong"},
                     headers={"X-Real-IP": "5.5.5.5"}).status_code for _ in range(6)]
     assert codes[:5] == [401] * 5 and codes[5] == 429
+
+
+# --- Streamable HTTP (transporte que o Claude Desktop usa) ------------------ #
+
+def test_streamable_http_initialize_and_tools(monkeypatch):
+    monkeypatch.setenv("MCP_API_KEY", "the-key")
+    hdrs = {"Authorization": "Bearer the-key", "Content-Type": "application/json",
+            "Accept": "application/json, text/event-stream"}
+    init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-06-18", "capabilities": {},
+                       "clientInfo": {"name": "t", "version": "1"}}}
+    # `with` entra no lifespan -> o session manager do Streamable HTTP fica ativo.
+    with TestClient(apimain.app, raise_server_exceptions=False) as c:
+        assert c.post("/mcp/", json=init).status_code == 401          # sem auth
+        r = c.post("/mcp/", headers=hdrs, json=init)                  # com auth
+        assert r.status_code == 200
+        assert "klarim" in r.text and "serverInfo" in r.text
+        r2 = c.post("/mcp/", headers=hdrs,
+                    json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
+        assert "get_system_status" in r2.text and "scan_url" in r2.text
+
+
+def test_streamable_http_session_manager_wired():
+    # mount_mcp inicializou o session manager (Streamable HTTP disponível).
+    assert srv._session_manager is not None

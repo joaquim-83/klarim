@@ -79,9 +79,13 @@ server {
         proxy_send_timeout 120s;
     }
 
-    # Servidor MCP (KL-18) — SSE de longa duração. Buffering/cache DESLIGADOS +
-    # Connection '' obrigatórios. Mesmo resolver dinâmico. `access_log off`: a auth
-    # do MCP pode vir em ?token= — não deve vazar nos logs. Identidade (sem rewrite).
+    # Streamable HTTP do MCP: o endpoint é /mcp/ (com barra). O /mcp "pelado" cairia
+    # no location / (SPA) — redireciona para /mcp/ preservando a query (?token=).
+    location = /mcp { return 308 /mcp/$is_args$args; }
+
+    # Servidor MCP (KL-18) — Streamable HTTP (/mcp/) + SSE (/mcp/sse). Buffering/cache
+    # DESLIGADOS + Connection '' obrigatórios. Mesmo resolver dinâmico. `access_log
+    # off`: a auth pode vir em ?token= — não deve vazar nos logs. Identidade (sem rewrite).
     location /mcp/ {
         resolver 127.0.0.11 valid=10s ipv6=off;
         set $klarim_api api:8000;
@@ -168,9 +172,13 @@ server {
         proxy_send_timeout 120s;
     }
 
-    # Servidor MCP (KL-18) — SSE de longa duração. Buffering/cache DESLIGADOS +
-    # Connection '' obrigatórios. Mesmo resolver dinâmico. `access_log off`: a auth
-    # do MCP pode vir em ?token= — não deve vazar nos logs. Identidade (sem rewrite).
+    # Streamable HTTP do MCP: o endpoint é /mcp/ (com barra). O /mcp "pelado" cairia
+    # no location / (SPA) — redireciona para /mcp/ preservando a query (?token=).
+    location = /mcp { return 308 /mcp/$is_args$args; }
+
+    # Servidor MCP (KL-18) — Streamable HTTP (/mcp/) + SSE (/mcp/sse). Buffering/cache
+    # DESLIGADOS + Connection '' obrigatórios. Mesmo resolver dinâmico. `access_log
+    # off`: a auth pode vir em ?token= — não deve vazar nos logs. Identidade (sem rewrite).
     location /mcp/ {
         resolver 127.0.0.11 valid=10s ipv6=off;
         set $klarim_api api:8000;
