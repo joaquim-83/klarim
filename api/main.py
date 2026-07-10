@@ -155,17 +155,6 @@ async def _init_cache() -> None:
         _cache = None
 
 
-def _mcp_streamable_cm():
-    """Contexto do session manager do Streamable HTTP do MCP (KL-18). No-op se o MCP
-    não montou ou o pacote `mcp` faltar."""
-    try:
-        from mcp_server.server import lifespan_cm
-        return lifespan_cm()
-    except Exception:  # noqa: BLE001 - MCP é opcional; a API sobe mesmo assim
-        from contextlib import nullcontext
-        return nullcontext()
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_store()
@@ -174,9 +163,7 @@ async def lifespan(app: FastAPI):
         await get_target_store().ensure_schema()
     except Exception as exc:  # noqa: BLE001 - targets/scans opcionais; API sobe mesmo assim
         print(f"[targets] schema indisponível ({exc!r})", flush=True)
-    # Streamable HTTP do MCP precisa do session manager rodando durante o app.
-    async with _mcp_streamable_cm():
-        yield
+    yield
 
 
 # Fix de segurança: em produção NÃO expõe Swagger/OpenAPI (mapeariam toda a API
@@ -1912,14 +1899,15 @@ async def _safe_pdf(fn, report, url: str) -> bytes:
 
 
 # --------------------------------------------------------------------------- #
-# Servidor MCP (KL-18) — operar o Klarim via Claude. Montado no MESMO FastAPI
-# em /mcp/sse (SSE), autenticado por MCP_API_KEY. Opcional: se o pacote `mcp`
-# não estiver instalado, a API sobe normalmente sem o MCP.
+# Servidor MCP (KL-18) — operar o Klarim via Claude. SSE em /mcp/sse, autenticado
+# pela MCPAuthMiddleware (MCP_API_KEY, fail-closed). Modelo Traka: middleware ASGI
+# envolvendo o mcp_app. Opcional: se o pacote `mcp` faltar, a API sobe sem o MCP.
 # --------------------------------------------------------------------------- #
 try:
-    from mcp_server.server import mount_mcp
+    from mcp_server.server import mcp_app
+    from mcp_server.auth import MCPAuthMiddleware
 
-    mount_mcp(app)
-    print("[mcp] servidor MCP montado em /mcp/sse", flush=True)
+    app.mount("/mcp", MCPAuthMiddleware(mcp_app))
+    print("[mcp] servidor MCP montado em /mcp/sse (SSE, auth por MCP_API_KEY)", flush=True)
 except Exception as exc:  # noqa: BLE001 - MCP é opcional; a API sobe mesmo assim
     print(f"[mcp] não montado ({exc!r})", flush=True)

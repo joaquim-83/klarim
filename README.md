@@ -460,15 +460,15 @@ Klarim por linguagem natural no Claude: **25 tools** (17 de leitura — sistema,
 alvos, scans, alertas, pagamentos, analytics, saúde de e-mail; 8 de escrita —
 scan, adicionar alvo, editar e-mail/status/setor, disparar alerta, enviar
 relatório, classificar em lote). Cada tool é um wrapper fino sobre a API/`store`
-existente. Dois transportes no mesmo endpoint: **Streamable HTTP** em `/mcp/` (o que
-o Claude Desktop usa) e **SSE** em `/mcp/sse` (legado). Autenticação por
-`MCP_API_KEY`; sem a chave, o MCP fica desligado.
+existente. Transporte **SSE** em `/mcp/sse` (modelo Traka), com autenticação por
+`MCPAuthMiddleware` (`MCP_API_KEY`, fail-closed, constant-time, `Authorization:
+Bearer` ou `?token=`). O endpoint SSE **propaga o token** para os POSTs de mensagens,
+o que faz a conexão funcionar no Claude.ai web.
 
-**Conectar no Claude Desktop** (fluxo web): abra `https://klarim.net/mcp/auth`, cole
-a `MCP_API_KEY` e copie a URL gerada — `https://klarim.net/mcp/?token=<session>`
-(Streamable HTTP, token de sessão de 24h) — e use-a como URL do conector
-personalizado. A conexão aceita a API key (header `Authorization: Bearer <MCP_API_KEY>`)
-ou o session token (Bearer ou `?token=`); **a API key nunca trafega em URL**.
+**Conectar** (URL única com a chave no `?token=`):
+- **Claude.ai web:** Configurações → Conectores → Add → `https://klarim.net/mcp/sse?token=<MCP_API_KEY>`
+- **Claude Desktop:** `{"mcpServers":{"klarim":{"url":"https://klarim.net/mcp/sse","headers":{"Authorization":"Bearer <MCP_API_KEY>"}}}}`
+- **Claude Code:** `claude mcp add klarim --transport sse https://klarim.net/mcp/sse --header "Authorization: Bearer <MCP_API_KEY>"`
 
 ---
 

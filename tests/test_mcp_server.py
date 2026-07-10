@@ -1,26 +1,23 @@
-"""Testes do servidor MCP (KL-18) — registro de tools, auth, guard e reuso. Offline."""
+"""Testes do servidor MCP (KL-18, modelo Traka) — auth middleware, propagação de
+token, registro e execução das tools. Offline."""
 
 from __future__ import annotations
 
 import asyncio
-import time
 
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 import api.main as apimain
+from mcp_server._base import mcp, _guard, _store, _api  # noqa: F401
+from mcp_server.auth import MCPAuthMiddleware
 import mcp_server.server as srv
+import mcp_server.tools.targets as targets_tools
+import mcp_server.tools.system as system_tools
 
 
-class _Req:
-    """Stub mínimo de request para testar _authorized (headers/query dict)."""
-    def __init__(self, headers=None, query=None):
-        self.headers = headers or {}
-        self.query_params = query or {}
-
-
-# --- registro de tools ----------------------------------------------------- #
+# --- registro das 25 tools ------------------------------------------------- #
 
 READ_TOOLS = [
     "get_system_status", "get_email_health", "get_discovery_status", "get_config",
@@ -35,54 +32,108 @@ WRITE_TOOLS = [
 ]
 
 
-def test_all_tools_registered():
-    names = {t.name for t in asyncio.run(srv.mcp.list_tools())}
+def test_all_25_tools_registered():
+    names = {t.name for t in asyncio.run(mcp.list_tools())}
     assert len(names) >= 25
     missing = [t for t in READ_TOOLS + WRITE_TOOLS if t not in names]
     assert not missing, f"faltam tools: {missing}"
 
 
 def test_tools_have_descriptions():
-    for t in asyncio.run(srv.mcp.list_tools()):
+    for t in asyncio.run(mcp.list_tools()):
         assert t.description and len(t.description) > 10
 
 
-# --- autenticação ---------------------------------------------------------- #
-
-def test_key_ok(monkeypatch):
-    monkeypatch.setenv("MCP_API_KEY", "s3cr3t")
-    assert srv._key_ok("Bearer s3cr3t") is True
-    assert srv._key_ok("s3cr3t") is True            # sem prefixo Bearer também vale
-    assert srv._key_ok("Bearer errado") is False
-    assert srv._key_ok("") is False
+def test_mcp_app_routes():
+    paths = [getattr(r, "path", "") for r in srv.mcp_app.routes]
+    assert "/sse" in paths and "/messages" in paths
 
 
-def test_key_ok_disabled_without_env(monkeypatch):
+# --- MCPAuthMiddleware ----------------------------------------------------- #
+
+def _scope(headers=None, query=b""):
+    return {"type": "http", "headers": headers or [], "query_string": query}
+
+
+def test_auth_middleware_check(monkeypatch):
+    monkeypatch.setenv("MCP_API_KEY", "the-key")
+    mw = MCPAuthMiddleware(app=None)
+    # Bearer header
+    assert mw._check(_scope(headers=[(b"authorization", b"Bearer the-key")])) is True
+    # query ?token=
+    assert mw._check(_scope(query=b"token=the-key")) is True
+    assert mw._check(_scope(query=b"session_id=x&token=the-key")) is True
+    # errado / ausente
+    assert mw._check(_scope(headers=[(b"authorization", b"Bearer nope")])) is False
+    assert mw._check(_scope(query=b"token=nope")) is False
+    assert mw._check(_scope()) is False
+
+
+def test_auth_middleware_fail_closed(monkeypatch):
     monkeypatch.delenv("MCP_API_KEY", raising=False)
-    assert srv._key_ok("Bearer qualquer") is False   # sem chave => MCP desligado
+    mw = MCPAuthMiddleware(app=None)
+    assert mw._check(_scope(query=b"token=whatever")) is False  # sem chave => 401
 
 
-def test_mcp_sse_requires_auth(monkeypatch):
-    monkeypatch.setenv("MCP_API_KEY", "s3cr3t")
+def test_mcp_sse_401_with_www_authenticate(monkeypatch):
+    monkeypatch.setenv("MCP_API_KEY", "the-key")
     c = TestClient(apimain.app, raise_server_exceptions=False)
-    assert c.get("/mcp/sse").status_code == 401                        # sem header
-    assert c.get("/mcp/sse", headers={"Authorization": "Bearer x"}).status_code == 401
-    assert apimain._is_protected("/mcp/sse") is False                  # não é rota admin
+    r = c.get("/mcp/sse")
+    assert r.status_code == 401
+    assert r.headers.get("www-authenticate") == 'Bearer realm="klarim-mcp"'
+    assert c.get("/mcp/sse", headers={"Authorization": "Bearer wrong"}).status_code == 401
+    # POST /messages/ sem token também é barrado pela middleware
+    assert c.post("/mcp/messages/?session_id=x").status_code == 401
+    assert apimain._is_protected("/mcp/sse") is False  # auth própria, não JWT
+
+
+# --- propagação de token (o fix que faz o Claude.ai conectar) --------------- #
+
+def test_token_propagation_appends_to_endpoint_event():
+    captured = []
+
+    async def fake_send(message):
+        captured.append(message)
+
+    wrapped = srv._token_propagating_send(fake_send, "MYTOKEN")
+    body = b"event: endpoint\r\ndata: /mcp/messages/?session_id=abc123def456\r\n\r\n"
+    asyncio.run(wrapped({"type": "http.response.body", "body": body}))
+    out = captured[0]["body"]
+    assert b"session_id=abc123def456&token=MYTOKEN" in out
+
+
+def test_token_propagation_only_first_endpoint_event():
+    sent = []
+
+    async def fake_send(m):
+        sent.append(m.get("body", b""))
+
+    wrapped = srv._token_propagating_send(fake_send, "T")
+    # 2º chunk (resposta de tool) não deve ser alterado
+    asyncio.run(wrapped({"type": "http.response.body",
+                         "body": b"event: endpoint\r\ndata: /mcp/messages/?session_id=aa11\r\n\r\n"}))
+    asyncio.run(wrapped({"type": "http.response.body", "body": b"event: message\r\ndata: {}\r\n\r\n"}))
+    assert b"token=T" in sent[0] and b"token=T" not in sent[1]
+
+
+def test_token_from_scope():
+    assert srv._token_from_scope(_scope(headers=[(b"authorization", b"Bearer abc")])) == "abc"
+    assert srv._token_from_scope(_scope(query=b"token=xyz")) == "xyz"
+    assert srv._token_from_scope(_scope()) == ""
 
 
 # --- _guard ---------------------------------------------------------------- #
 
 def test_guard_converts_httpexception():
     async def boom():
-        raise HTTPException(status_code=404, detail="Alvo não encontrado.")
-    assert asyncio.run(srv._guard(boom)) == {"error": "Alvo não encontrado.", "status_code": 404}
+        raise HTTPException(status_code=404, detail="Não encontrado.")
+    assert asyncio.run(_guard(boom)) == {"error": "Não encontrado.", "status_code": 404}
 
 
 def test_guard_converts_generic_error():
     async def boom():
         raise ValueError("xyz")
-    res = asyncio.run(srv._guard(boom))
-    assert res["error"].startswith("ValueError")
+    assert asyncio.run(_guard(boom))["error"].startswith("ValueError")
 
 
 # --- execução de tools (store falso) --------------------------------------- #
@@ -93,8 +144,8 @@ class FakeStore:
 
     async def list_targets(self, **kw):
         self.kw = kw
-        return [{"id": 1, "url": "https://verdegreen.com.br", "domain": "verdegreen.com.br",
-                 "contact_email": None, "status": "sem_contato"}]
+        return [{"id": 1, "url": "https://verdegreen.com.br", "contact_email": None,
+                 "status": "sem_contato"}]
 
     async def count_targets(self, status=None):
         return 1
@@ -114,192 +165,42 @@ class FakeStore:
     async def stats(self):
         return {"by_status": {"sem_contato": 1900}}
 
-    async def update_target_status(self, target_id, status):
-        return None if target_id == 999 else {"id": target_id, "status": status}
-
 
 @pytest.fixture
 def fake_store(monkeypatch):
     store = FakeStore()
-    monkeypatch.setattr(srv, "get_target_store", lambda: store)
+    # o helper _store() (em _base) e o get_target_store do api.main
+    monkeypatch.setattr("mcp_server._base.get_target_store", lambda: store)
     monkeypatch.setattr(apimain, "get_target_store", lambda: store)
     return store
 
 
 def test_list_targets_tool(fake_store):
-    res = asyncio.run(srv.list_targets(status="sem_contato", limit=5))
+    res = asyncio.run(targets_tools.list_targets(status="sem_contato", limit=5))
     assert res["total"] == 1 and len(res["targets"]) == 1
     assert fake_store.kw["status"] == "sem_contato" and fake_store.kw["limit"] == 5
 
 
 def test_search_targets_tool(fake_store):
-    res = asyncio.run(srv.search_targets("verde"))
+    res = asyncio.run(targets_tools.search_targets("verde"))
     assert res["count"] == 1 and fake_store.kw["search"] == "verde"
 
 
 def test_get_target_tool_aggregates(fake_store):
-    res = asyncio.run(srv.get_target(3))
+    res = asyncio.run(targets_tools.get_target(3))
     assert res["target"]["id"] == 3
     assert "recent_scans" in res and "alerts" in res and "rescans" in res
 
 
 def test_get_target_tool_not_found(fake_store):
-    assert asyncio.run(srv.get_target(999)).get("error")
+    assert asyncio.run(targets_tools.get_target(999)).get("error")
 
 
 def test_get_target_stats_tool(fake_store):
-    assert asyncio.run(srv.get_target_stats())["by_status"]["sem_contato"] == 1900
+    assert asyncio.run(targets_tools.get_target_stats())["by_status"]["sem_contato"] == 1900
 
 
-def test_update_target_status_tool_valid(fake_store):
-    res = asyncio.run(srv.update_target_status(5, "scanned"))
-    assert res["status"] == "scanned"
-
-
-def test_update_target_status_tool_invalid(fake_store):
+def test_update_target_status_tool_invalid(fake_store, monkeypatch):
     # status inválido -> api_target_update_status levanta 422 -> _guard converte
-    res = asyncio.run(srv.update_target_status(5, "banana"))
+    res = asyncio.run(targets_tools.update_target_status(5, "banana"))
     assert res.get("status_code") == 422
-
-
-# --- fluxo de auth web (Fix KL-18) ----------------------------------------- #
-
-def test_authorized_accepts_key_and_session(monkeypatch):
-    monkeypatch.setenv("MCP_API_KEY", "the-key")
-    srv._mcp_sessions.clear()
-    assert srv._authorized(_Req(headers={"authorization": "Bearer the-key"})) is True
-    assert srv._authorized(_Req(query={"token": "the-key"})) is True          # key via ?token=
-    tok = srv._new_session()
-    assert srv._authorized(_Req(query={"token": tok})) is True                # session via query
-    assert srv._authorized(_Req(headers={"authorization": f"Bearer {tok}"})) is True
-    assert srv._authorized(_Req(query={"token": "nope"})) is False
-    assert srv._authorized(_Req()) is False                                    # sem token
-
-
-def test_authorized_disabled_without_env(monkeypatch):
-    monkeypatch.delenv("MCP_API_KEY", raising=False)
-    assert srv._authorized(_Req(headers={"authorization": "Bearer x"})) is False
-
-
-def test_session_lifecycle():
-    srv._mcp_sessions.clear()
-    tok = srv._new_session()
-    assert len(tok) == 64 and srv._valid_session(tok) is True      # 256 bits hex
-    srv._mcp_sessions[tok] = time.time() - srv.MCP_SESSION_TTL - 10  # força expiração
-    assert srv._valid_session(tok) is False
-    assert tok not in srv._mcp_sessions                            # removida ao validar
-
-
-def test_safe_callback():
-    assert srv._safe_callback("http://localhost:8765/cb") is True
-    assert srv._safe_callback("http://127.0.0.1:9/cb") is True
-    assert srv._safe_callback("https://claude.ai/x") is True
-    assert srv._safe_callback("https://foo.anthropic.com/x") is True
-    assert srv._safe_callback("https://evil.com/steal") is False   # open-redirect barrado
-    assert srv._safe_callback("javascript:alert(1)") is False
-    assert srv._safe_callback("") is False
-
-
-def test_auth_page_renders(monkeypatch):
-    monkeypatch.setenv("MCP_API_KEY", "the-key")
-    c = TestClient(apimain.app, raise_server_exceptions=False)
-    r = c.get("/mcp/auth")
-    assert r.status_code == 200
-    assert 'type="password"' in r.text and "API Key" in r.text
-    assert "default-src 'none'" in r.headers.get("content-security-policy", "")
-    assert apimain._is_protected("/mcp/auth") is False
-
-
-def test_auth_verify_wrong_key(monkeypatch):
-    monkeypatch.setenv("MCP_API_KEY", "correct-key")
-    srv._verify_attempts.clear()
-    c = TestClient(apimain.app, raise_server_exceptions=False)
-    r = c.post("/mcp/auth/verify", data={"api_key": "wrong", "callback_url": ""})
-    assert r.status_code == 401 and "inválida" in r.text
-
-
-def test_auth_verify_right_key_creates_session(monkeypatch):
-    monkeypatch.setenv("MCP_API_KEY", "correct-key")
-    srv._verify_attempts.clear()
-    srv._mcp_sessions.clear()
-    c = TestClient(apimain.app, raise_server_exceptions=False)
-    r = c.post("/mcp/auth/verify", data={"api_key": "correct-key", "callback_url": ""})
-    assert r.status_code == 200 and "/mcp/sse?token=" in r.text
-    assert len(srv._mcp_sessions) == 1
-
-
-def test_auth_verify_safe_callback_redirects(monkeypatch):
-    monkeypatch.setenv("MCP_API_KEY", "correct-key")
-    srv._verify_attempts.clear()
-    c = TestClient(apimain.app, raise_server_exceptions=False)
-    r = c.post("/mcp/auth/verify",
-               data={"api_key": "correct-key", "callback_url": "http://localhost:9999/cb"},
-               follow_redirects=False)
-    assert r.status_code == 302
-    assert r.headers["location"].startswith("http://localhost:9999/cb?token=")
-
-
-def test_auth_page_reflected_xss_blocked():
-    # payload de XSS refletido -> não aparece no HTML (escapado E não refletido)
-    html = srv._auth_page_html('"><script>alert(1)</script>')
-    assert "<script>alert" not in html
-    assert 'name="callback_url" value=""' in html          # callback inseguro -> vazio
-    assert 'value=""' in srv._auth_page_html("javascript:alert(1)")
-
-
-def test_auth_page_reflects_only_safe_callback():
-    # callback confiável (localhost do Claude Desktop) é refletido (escapado)
-    assert "localhost:8765" in srv._auth_page_html("http://localhost:8765/cb")
-
-
-def test_auth_page_xss_via_endpoint(monkeypatch):
-    monkeypatch.setenv("MCP_API_KEY", "k")
-    c = TestClient(apimain.app, raise_server_exceptions=False)
-    r = c.get('/mcp/auth?callback_url="><script>alert(1)</script>')
-    assert r.status_code == 200 and "<script>alert" not in r.text
-    assert 'name="callback_url" value=""' in r.text
-
-
-def test_auth_verify_rejects_unsafe_callback(monkeypatch):
-    # callback externo NÃO redireciona (anti open-redirect) — mostra o token na página
-    monkeypatch.setenv("MCP_API_KEY", "correct-key")
-    srv._verify_attempts.clear()
-    c = TestClient(apimain.app, raise_server_exceptions=False)
-    r = c.post("/mcp/auth/verify",
-               data={"api_key": "correct-key", "callback_url": "https://evil.com/steal"},
-               follow_redirects=False)
-    assert r.status_code == 200 and "evil.com" not in r.text
-
-
-def test_auth_verify_rate_limited(monkeypatch):
-    monkeypatch.setenv("MCP_API_KEY", "correct-key")
-    srv._verify_attempts.clear()
-    c = TestClient(apimain.app, raise_server_exceptions=False)
-    codes = [c.post("/mcp/auth/verify", data={"api_key": "wrong"},
-                    headers={"X-Real-IP": "5.5.5.5"}).status_code for _ in range(6)]
-    assert codes[:5] == [401] * 5 and codes[5] == 429
-
-
-# --- Streamable HTTP (transporte que o Claude Desktop usa) ------------------ #
-
-def test_streamable_http_initialize_and_tools(monkeypatch):
-    monkeypatch.setenv("MCP_API_KEY", "the-key")
-    hdrs = {"Authorization": "Bearer the-key", "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream"}
-    init = {"jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {"protocolVersion": "2025-06-18", "capabilities": {},
-                       "clientInfo": {"name": "t", "version": "1"}}}
-    # `with` entra no lifespan -> o session manager do Streamable HTTP fica ativo.
-    with TestClient(apimain.app, raise_server_exceptions=False) as c:
-        assert c.post("/mcp/", json=init).status_code == 401          # sem auth
-        r = c.post("/mcp/", headers=hdrs, json=init)                  # com auth
-        assert r.status_code == 200
-        assert "klarim" in r.text and "serverInfo" in r.text
-        r2 = c.post("/mcp/", headers=hdrs,
-                    json={"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
-        assert "get_system_status" in r2.text and "scan_url" in r2.text
-
-
-def test_streamable_http_session_manager_wired():
-    # mount_mcp inicializou o session manager (Streamable HTTP disponível).
-    assert srv._session_manager is not None

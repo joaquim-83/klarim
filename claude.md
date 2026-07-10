@@ -112,8 +112,11 @@ klarim/
 │   └── templates/          # alert.html + report_delivery.html (table-based)
 ├── api/                    # API HTTP (FastAPI)
 │   └── main.py             # semáforo + PDFs + fluxo de pagamento PIX
-├── mcp_server/             # servidor MCP (KL-18) — operar o Klarim via Claude
-│   └── server.py           # FastMCP + tools (leitura/escrita) + mount SSE em /mcp
+├── mcp_server/             # servidor MCP (KL-18) — operar o Klarim via Claude (SSE)
+│   ├── _base.py            # instância FastMCP + helpers (_guard/_api/_store)
+│   ├── server.py           # app SSE (mcp_app) + propagação de token
+│   ├── auth.py             # MCPAuthMiddleware (ASGI, fail-closed, Bearer/?token=)
+│   └── tools/              # as 25 tools por domínio (system/targets/scans/…)
 └── tests/                  # pytest
     ├── test_checks.py      # unit tests dos checks + teste online opt-in
     ├── test_reporter.py    # geração de PDF (offline, guardado por libs nativas)
@@ -924,67 +927,49 @@ Wrapper **fino** sobre a API (nenhuma lógica duplicada): permite operar o Klari
 por linguagem natural no Claude — reaproveitar os ~1.900 alvos `sem_contato`,
 monitorar o sistema, disparar scans/alertas, tudo por tools.
 
-- **`mcp_server/server.py`** — `FastMCP(name="klarim")` com **25 tools** (17 de
-  leitura + 8 de escrita). Cada tool chama uma função de endpoint do `api.main`
-  (import **lazy** — evita ciclo, já que `api.main` importa `mount_mcp`) ou um
-  método do `store`. `_guard()` converte exceções (incl. `HTTPException`) num dict
-  `{"error", "status_code"}` — a tool nunca derruba a sessão.
-  - **Leitura:** `get_system_status`, `get_email_health`, `get_discovery_status`,
-    `get_config`, `list_targets`, `get_target`, `get_target_stats`, `search_targets`,
-    `list_scans`, `get_scan`, `get_scan_stats`, `list_alerts`, `get_alert_stats`,
-    `list_payments`, `get_payment_stats`, `get_funnel`, `get_rescan_stats`.
-  - **Escrita:** `scan_url`, `add_target`, `update_target_email`,
-    `update_target_status`, `update_target_sector`, `send_alert_to_target`,
-    `send_report_to_email`, `classify_targets_batch`.
-- **Dois transportes (`mount_mcp(app)`), montados no MESMO FastAPI sob `/mcp`:**
-  - **Streamable HTTP** em **`/mcp/`** — o transporte do **Claude Desktop** e clients
-    modernos. `FastMCP(stateless_http=True)`; o `session_manager` do FastMCP é
-    inicializado (via `mcp.streamable_http_app()`) e embrulhado num ASGI callable
-    com auth, montado no **root** do sub-app (`Route("/")` — o Starlette só trata
-    **instância de classe** como app ASGI; função `async(scope,…)` viraria
-    request-response). Aceita GET/POST/DELETE. Precisa do `session_manager.run()`
-    **ativo** — rodado no **lifespan** do FastAPI (`lifespan_cm()` → `_mcp_streamable_cm()`).
-  - **SSE** em **`/mcp/sse`** (+ `/mcp/messages/`) — legado/curl. O `SseServerTransport`
-    recebe o caminho **relativo** `/messages/` (o mount em `/mcp` vira o `root_path`,
-    que o transporte prefixa → cliente recebe `/mcp/messages/`).
-  - **Host validation OFF:** `mcp.settings.transport_security =
-    TransportSecuritySettings(enable_dns_rebinding_protection=False)` — o default só
-    permite Host `localhost/127.0.0.1` e rejeitaria `klarim.net` atrás do Nginx
-    ("Invalid Host header"). Seguro: Nginx + auth por `MCP_API_KEY`/session token.
-  - Import de `api.main` no fim do arquivo, em `try/except` — se o pacote `mcp`
-    faltar, a API sobe sem o MCP.
-- **Autenticação (fluxo web + session token):** o Claude Desktop não oferece campo
-  de API key ao adicionar um conector — por isso há um **fluxo web**:
-  `GET /mcp/auth` (página HTML, campo password) → `POST /mcp/auth/verify` (valida a
-  key em tempo constante, rate limit **5/min/IP**) → cria um **session token**
-  (`secrets.token_hex(32)`, **256 bits, TTL 24h**, in-memory `_mcp_sessions`) e
-  devolve a URL pronta `…/mcp/?token=<session>` (Streamable HTTP; a de SSE fica como
-  alternativa). `_authorized()` aceita, em constant-time: a **API key** (Bearer) OU um
-  **session token** válido (Bearer ou `?token=`), nos **dois transportes**. **A API
-  key nunca vai em URL** — só o
-  session token (revogável/expirável). **Sem `MCP_API_KEY` ⇒ MCP desligado** (tudo
-  401). Segurança: `_safe_callback` barra **open-redirect** (só localhost/Anthropic) e
-  o `callback_url` **não é refletido** na página de auth se não for confiável (além do
-  `escape()` — anti reflected-XSS), CSP restritivo nas páginas de auth, `access_log
-  off` no `/mcp/` (não vaza `?token=`). `/mcp/*` não está nos prefixos protegidos por
-  JWT (`_admin_auth_mw`) — tem auth própria.
-- **Nginx:** `location /mcp/` em `http.conf` e nos dois server blocks 443 do
-  `https.conf.template`, com **`proxy_buffering off` + `proxy_cache off` +
-  `Connection ''` + `proxy_http_version 1.1`** (sem isso o stream não flui) +
-  `access_log off`, e o **resolver dinâmico** (ver seção 10) como o `/api/`. O
-  endpoint é `/mcp/` (com barra); o `/mcp` **pelado** cairia no `location /` (SPA),
-  então `location = /mcp { return 308 /mcp/$is_args$args; }` redireciona preservando
-  a query (`?token=`).
-- **Dependências (travadas):** `mcp>=1.27,<2`. O `sse-starlette` novo puxaria
-  **Starlette 1.x**, que quebra o FastAPI 0.115 — por isso `starlette>=0.40,<0.42`
-  e `sse-starlette>=1.6.1,<2.2` estão pinados no `requirements.txt`.
-- **Conectar no Claude Desktop:** abra `https://klarim.net/mcp/auth`, cole a
-  `MCP_API_KEY` e copie a URL **`https://klarim.net/mcp/?token=<session>`** (Streamable
-  HTTP) para o conector personalizado. Alternativas: SSE em
-  `https://klarim.net/mcp/sse?token=<session>` (clients legados); header
-  `Authorization: Bearer <MCP_API_KEY>` (se o cliente suportar); ou, como ponte
-  local, `mcp-remote`:
-  ```json
-  { "mcpServers": { "klarim": { "command": "npx",
-      "args": ["-y", "mcp-remote", "https://klarim.net/mcp/?token=<session>"] } } }
-  ```
+**Modelo Traka (SSE puro + auth middleware ASGI).** Estrutura em módulos:
+`mcp_server/_base.py` (instância `FastMCP` + helpers), `server.py` (app SSE +
+propagação de token), `auth.py` (`MCPAuthMiddleware`), `tools/` (as 25 tools por
+domínio). Montado no FastAPI em **3 linhas**: `app.mount("/mcp",
+MCPAuthMiddleware(mcp_app))`.
+
+- **`_base.py`** — `mcp = FastMCP(name="klarim")` + `_guard`/`_api`/`_store`. As tools
+  chamam funções de endpoint do `api.main` (import **lazy** via `_api()`, evita ciclo)
+  ou métodos do `store`; `_guard()` converte exceções (incl. `HTTPException`) num dict
+  `{"error", "status_code"}` — a tool nunca derruba a sessão. `transport_security`
+  com DNS-rebinding **OFF** (senão o Host `klarim.net` atrás do Nginx seria rejeitado).
+- **`tools/`** — 25 tools organizadas por domínio (`system.py`, `targets.py`,
+  `scans.py`, `alerts.py`, `payments.py`, `analytics.py`), cada uma
+  `from mcp_server._base import mcp, _guard, _api, _store` + `@mcp.tool()`. Importar
+  `mcp_server.tools` registra todas. **17 leitura** (`get_system_status`,
+  `get_email_health`, `get_discovery_status`, `get_config`, `list_targets`,
+  `get_target`, `get_target_stats`, `search_targets`, `list_scans`, `get_scan`,
+  `get_scan_stats`, `list_alerts`, `get_alert_stats`, `list_payments`,
+  `get_payment_stats`, `get_funnel`, `get_rescan_stats`) + **8 escrita** (`scan_url`,
+  `add_target`, `update_target_email`, `update_target_status`, `update_target_sector`,
+  `send_alert_to_target`, `send_report_to_email`, `classify_targets_batch`).
+- **`server.py` — SSE + propagação de token.** `mcp_app` (Starlette) com o
+  `SseServerTransport` em `/sse` (+ `/messages/`). **O fix que faz o Claude.ai
+  conectar:** o transporte anuncia `data: /mcp/messages/?session_id=<hex>` **sem** a
+  auth; sem o token, os POSTs do Claude bateriam na middleware e levariam 401 na 2ª
+  fase. `_token_propagating_send` reescreve o evento `endpoint` para incluir
+  `&token=<token>` (o mesmo com que o cliente abriu o SSE) → os POSTs chegam
+  autenticados.
+- **`auth.py` — `MCPAuthMiddleware`** (ASGI, envolve o `mcp_app` inteiro):
+  **fail-closed** (sem `MCP_API_KEY` ⇒ tudo 401), **constant-time**
+  (`hmac.compare_digest`), aceita `Authorization: Bearer <chave>` **ou** `?token=<chave>`,
+  header `WWW-Authenticate: Bearer realm="klarim-mcp"` em toda 401. `/mcp/*` **não**
+  está nos prefixos protegidos por JWT (`_admin_auth_mw`) — tem auth própria.
+- **Nginx:** `location /mcp/` inalterado — `proxy_buffering off` + `proxy_cache off` +
+  `Connection ''` + `proxy_http_version 1.1` (sem isso o SSE não flui) + `access_log
+  off` + resolver dinâmico (seção 10). A auth vem no `?token=`, por isso `access_log
+  off` importa.
+- **SDK mantido:** `mcp>=1.27,<2` (o v1.x já tem SSE) — **sem** trocar para
+  `fastmcp` 3.x (que forçaria Starlette 1.x + bump FastAPI 0.115→0.139, alto risco). Os
+  pins `starlette>=0.40,<0.42` e `sse-starlette>=1.6.1,<2.2` continuam.
+- **Conectar (URL única, com a chave no `?token=`):**
+  - **Claude.ai web:** Configurações → Conectores → Add → `https://klarim.net/mcp/sse?token=<MCP_API_KEY>`.
+  - **Claude Desktop:** `{"mcpServers": {"klarim": {"url": "https://klarim.net/mcp/sse",
+    "headers": {"Authorization": "Bearer <MCP_API_KEY>"}}}}`.
+  - **Claude Code:** `claude mcp add klarim --transport sse https://klarim.net/mcp/sse
+    --header "Authorization: Bearer <MCP_API_KEY>"`.
