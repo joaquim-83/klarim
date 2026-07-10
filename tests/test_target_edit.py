@@ -19,6 +19,9 @@ class FakeStore:
             return None
         return {"id": target_id, "status": status}
 
+    async def update_status(self, target_id, status):  # usado pelo clean-emails
+        self.calls.append(("status", target_id, status))
+
     async def update_target_email(self, target_id, email):
         self.calls.append(("email", target_id, email))
         if target_id == 999:
@@ -30,6 +33,13 @@ class FakeStore:
                            limit=50, offset=0, low_confidence=False, search=None):
         self.list_kwargs = {"status": status, "search": search, "limit": limit}
         return [{"id": 1, "url": "https://verdegreen.com.br", "domain": "verdegreen.com.br"}]
+
+    async def list_target_emails(self):
+        return [
+            {"id": 1, "contact_email": "%20contato@envioz.com.br"},  # sujo -> limpa
+            {"id": 2, "contact_email": "ok@hotel.com.br"},           # já limpo -> ignora
+            {"id": 3, "contact_email": "lixo sem arroba"},           # irrecuperável -> descarta
+        ]
 
 
 @pytest.fixture
@@ -93,9 +103,36 @@ def test_patch_email_invalid(client):
         assert r.status_code == 422, bad
 
 
+def test_patch_email_cleans_url_encoded(client):
+    # %20 no início é limpo (o bug que envenenava o batch)
+    r = client.patch("/targets/5/email", json={"contact_email": "%20contato@envioz.com.br"},
+                     headers=_auth(client))
+    assert r.status_code == 200
+    assert client._store.calls[-1] == ("email", 5, "contato@envioz.com.br")
+
+
 def test_patch_email_not_found(client):
     r = client.patch("/targets/999/email", json={"contact_email": "a@b.com.br"}, headers=_auth(client))
     assert r.status_code == 404
+
+
+# --- limpeza de e-mails sujos (POST /admin/clean-emails) ------------------- #
+
+def test_clean_emails_endpoint(client):
+    assert m._is_protected("/admin/clean-emails") is True
+    r = client.post("/admin/clean-emails", headers=_auth(client))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total"] == 3 and body["cleaned"] == 1 and body["discarded"] == 1
+    # o alvo 1 foi consertado (%20contato -> contato); o 3 (sem @) descartado
+    assert ("email", 1, "contato@envioz.com.br") in client._store.calls
+    assert ("status", 3, "descartado") in client._store.calls
+
+
+def test_clean_emails_protected():
+    from fastapi.testclient import TestClient
+    assert TestClient(m.app, raise_server_exceptions=False).post(
+        "/admin/clean-emails").status_code == 401
 
 
 # --- busca ----------------------------------------------------------------- #

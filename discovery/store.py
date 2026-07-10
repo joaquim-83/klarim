@@ -357,6 +357,14 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    async def list_target_emails(self) -> List[Dict[str, Any]]:
+        """(id, contact_email) de todos os alvos com e-mail — p/ limpeza em massa."""
+        def _fn(cur):
+            cur.execute("SELECT id, contact_email FROM targets WHERE contact_email IS NOT NULL")
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
     async def list_targets(
         self, status: Optional[str] = None, platform: Optional[str] = None,
         sector: Optional[str] = None, source: Optional[str] = None,

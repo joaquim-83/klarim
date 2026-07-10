@@ -54,14 +54,18 @@ def test_severity_counts_from_checks():
 # --- fakes ----------------------------------------------------------------- #
 
 class FakeMailer:
-    def __init__(self, fail=False):
+    def __init__(self, fail=False, bad=None):
         self.batches = []
         self.singles = []
         self.fail = fail
+        self.bad = set(bad or [])  # e-mails que fazem o batch 422
 
     async def send_alert_batch(self, alerts):
         if self.fail:
             raise RuntimeError("boom")
+        if any(a["to_email"] in self.bad for a in alerts):
+            from notifier import KlarimMailerError
+            raise KlarimMailerError("Falha no batch Resend (422): Invalid 'to' field")
         self.batches.append(list(alerts))
         ids = [f"em_{i}" for i in range(len(alerts))]
         return {"sent": len(alerts), "failed": 0, "ids": ids}
@@ -83,6 +87,7 @@ class FakeStore:
         self.logged = []
         self.discarded = []          # via update_status('descartado')
         self.discarded_by_email = []  # via discard_target_by_email
+        self.email_updates = []       # via update_target_email (self-heal)
 
     async def get_scan(self, scan_id):
         return {"score": 86, "semaphore": "amarelo", "fail_count": 2,
@@ -105,6 +110,10 @@ class FakeStore:
 
     async def update_status(self, target_id, status):
         self.discarded.append((target_id, status))
+
+    async def update_target_email(self, target_id, email):
+        self.email_updates.append((target_id, email))
+        return {"id": target_id, "contact_email": email}
 
     async def discard_target_by_email(self, email, reason="bounced"):
         self.discarded_by_email.append((email, reason))
@@ -257,3 +266,59 @@ def test_run_cycle_validates_before_sending():
     stats = asyncio.run(_worker(store).run_cycle())
     assert stats["eligible"] == 2 and stats["invalid"] == 1 and stats["sent"] == 1
     assert store.alerted == [2]  # só o válido recebeu
+
+
+# --- e-mail sujo / batch resiliente (fix) ---------------------------------- #
+
+def test_validate_batch_cleans_dirty_email():
+    # %20contato@... é limpo, consertado no banco e mantido no batch
+    store = FakeStore()
+    w = _worker(store)
+    clean = asyncio.run(w._validate_batch([_target(1, email="%20contato@envioz.com.br")]))
+    assert len(clean) == 1
+    assert clean[0]["contact_email"] == "contato@envioz.com.br"   # usado no batch
+    assert store.email_updates == [(1, "contato@envioz.com.br")]  # self-heal no banco
+
+
+def test_validate_batch_discards_invalid_email():
+    store = FakeStore()
+    w = _worker(store)
+    clean = asyncio.run(w._validate_batch([_target(1, email="isto nao eh email"),
+                                           _target(2, email="ok@y.com.br")]))
+    assert [t["id"] for t in clean] == [2]
+    assert (1, "descartado") in store.discarded
+
+
+def test_send_with_split_isolates_bad_email():
+    store = FakeStore()
+    w = _worker(store)
+    mailer = FakeMailer(bad={"bad@x.com.br"})
+    alerts = [{"to_email": f"ok{i}@x.com.br", "target_id": i} for i in range(3)]
+    alerts.append({"to_email": "bad@x.com.br", "target_id": 99})
+    sent_pairs, bad = asyncio.run(w._send_with_split(mailer, alerts))
+    assert len(sent_pairs) == 3 and [a["target_id"] for a, _ in sent_pairs] == [0, 1, 2]
+    assert [a["target_id"] for a in bad] == [99]
+
+
+def test_send_with_split_reraises_infra_error():
+    store = FakeStore()
+    w = _worker(store)
+    mailer = FakeMailer(fail=True)  # RuntimeError, não 422
+    try:
+        asyncio.run(w._send_with_split(mailer, [{"to_email": "a@x.com.br", "target_id": 1}]))
+        assert False, "esperava exceção de infra propagada"
+    except RuntimeError:
+        pass
+
+
+def test_run_cycle_isolates_bad_email_in_batch():
+    # 2 bons + 1 ruim no mesmo batch: os 2 bons enviam, o ruim é descartado
+    store = FakeStore(eligible=[_target(1, email="ok1@x.com.br"),
+                                _target(2, email="ok2@x.com.br"),
+                                _target(3, email="bad@x.com.br")])
+    w = _worker(store)
+    w._mailer = lambda: FakeMailer(bad={"bad@x.com.br"})  # noqa: E731
+    stats = asyncio.run(w.run_cycle())
+    assert stats["sent"] == 2 and stats["failed"] == 1
+    assert sorted(store.alerted) == [1, 2]
+    assert (3, "descartado") in store.discarded

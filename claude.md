@@ -576,12 +576,15 @@ presença de e-mail de contato, registra como alvo e enfileira para scan.
   descarta genéricos (noreply, webmaster) e de terceiros (duda.co, wixpress…);
   prefere o mesmo domínio do site. **`_is_valid_email` (KL-19)** rejeita nomes de
   arquivo (`.css/.js/.png…`), placeholders (`seuemail@`, `email@email.com.br`) e
-  domínios de exemplo. **Validação de MX (KL-24):** `extract_email` só aceita
-  e-mail cujo domínio tem **registro MX** (`email_has_mx`/`_mx_status` via
-  dnspython, cache `lru_cache`, DNS fora do event loop com `to_thread`); tri-estado
-  `ok|no_mx|unknown` — só rejeita `no_mx` (fail-open no timeout/sem lib) para não
-  descartar por engano. Corta a maior fonte de bounce. **Sem e-mail válido ⇒
-  `status='sem_contato'`.**
+  domínios de exemplo. **`_clean_email` (fix):** `_collect_emails` **URL-decoda**
+  (`%20`→espaço, `%40`→@) e tira espaços/tabs/quebras/nbsp + lowercase antes de
+  validar — corta o lixo tipo `%20contato@x.com.br` (o `%` passa no regex do
+  local-part) que **envenenava o batch do Resend** (1 e-mail inválido faz o Batch
+  API rejeitar os 50). **Validação de MX (KL-24):** `extract_email` só aceita e-mail
+  cujo domínio tem **registro MX** (`email_has_mx`/`_mx_status` via dnspython, cache
+  `lru_cache`, DNS fora do event loop com `to_thread`); tri-estado `ok|no_mx|unknown`
+  — só rejeita `no_mx` (fail-open no timeout/sem lib). Corta a maior fonte de bounce.
+  **Sem e-mail válido ⇒ `status='sem_contato'`.**
 - **`classifier.py`** — setor + `price_tier` + **confiança** por **cascata de 3
   camadas** (refino do KL-11), da pista mais forte para a mais fraca: **(1)
   domínio** (o dono batizou o site — `hotelverdegreen`→hotel, conf 0.9; 2 padrões
@@ -681,11 +684,17 @@ escaneados que têm falhas:
   (dispara manual, ignora throttle/janela), `GET /unsubscribe`.
 
 **Validação pré-envio + safety net de bounce (KL-24).** Antes de montar cada batch,
-`_validate_batch` remove (e marca `descartado`) alvos na **blocklist** (bouncaram
-antes, `is_email_blocked`) e com **domínio sem MX** (`email_mx_status=='no_mx'`,
-`ALERT_VALIDATE_MX`). No início de cada ciclo, `_check_bounce_health` **pausa** os
+`_validate_batch`: **(1)** limpa o e-mail (`_clean_email`: URL-decode + tira lixo) e,
+se mudou, **conserta no banco** (self-healing) e usa o limpo; **(2)** rejeita
+**formato inválido** (`_EMAIL_RE`) — evita o **422** que derruba o batch inteiro do
+Resend; **(3)** remove **blocklist** (`is_email_blocked`) e **(4)** domínio sem MX
+(`email_mx_status=='no_mx'`). **Rede de segurança (`_send_with_split`):** se o batch
+ainda der 422, divide ao meio e retenta recursivamente para **isolar** o e-mail ruim
+(envia os 49 bons, descarta o 1); erro de infra (não-422) propaga e loga tudo como
+`failed` sem descartar. No início de cada ciclo, `_check_bounce_health` **pausa** os
 envios se o bounce rate passar de `ALERT_MAX_BOUNCE_RATE` (8%) — com amostra ≥
-`ALERT_BOUNCE_MIN_SAMPLE` — protegendo a reputação no Resend/Gmail. Ver seção **23**.
+`ALERT_BOUNCE_MIN_SAMPLE`. Limpeza de e-mails sujos já no banco:
+`POST /api/admin/clean-emails`. Ver seção **23**.
 
 **Regra inviolável:** a **cota mensal** (`ALERT_MONTHLY_LIMIT`) protege a reputação
 do domínio e o custo do plano Resend Pro — nunca remover o teto mensal nem estourar

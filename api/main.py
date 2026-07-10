@@ -1498,6 +1498,35 @@ async def api_admin_resend_payment(body: ResendPaymentBody) -> dict:
     return {"charge_id": charge.charge_id, "email": charge.buyer_email, "queued": True}
 
 
+@app.post("/admin/clean-emails")
+async def api_admin_clean_emails() -> dict:
+    """Limpa e-mails sujos já no banco (URL-encoded, espaços, lixo). Aplica
+    `_clean_email` a cada alvo com e-mail: conserta os que mudaram e ficaram
+    válidos; descarta os irrecuperáveis (formato inválido após limpar)."""
+    from discovery.contact import _clean_email
+
+    store = get_target_store()
+    rows = await store.list_target_emails()
+    cleaned, discarded, examples = 0, 0, []
+    for r in rows:
+        raw = r.get("contact_email") or ""
+        clean = _clean_email(raw)
+        if clean == raw:
+            continue
+        if clean and _EMAIL_RE.match(clean):
+            await store.update_target_email(r["id"], clean)
+            cleaned += 1
+            if len(examples) < 10:
+                examples.append({"id": r["id"], "from": raw, "to": clean})
+        else:
+            await store.update_status(r["id"], "descartado")
+            discarded += 1
+    print(f"[admin] clean-emails: {cleaned} corrigidos, {discarded} descartados "
+          f"de {len(rows)}", flush=True)
+    return {"total": len(rows), "cleaned": cleaned, "discarded": discarded,
+            "examples": examples}
+
+
 @app.post("/admin/process-bounces")
 async def api_admin_process_bounces(limit: int = Query(default=1000, le=5000)) -> dict:
     """Backfill de bounces (KL-24): checa no Resend o status de cada alerta enviado
@@ -1693,7 +1722,9 @@ async def api_target_update_status(target_id: int, body: StatusBody) -> dict:
 async def api_target_update_email(target_id: int, body: EmailBody) -> dict:
     """Edição manual do e-mail de contato. Alvo 'sem_contato' que ganha e-mail
     volta para 'discovered' (pode ser escaneado/alertado). Retorna o alvo."""
-    email = (body.contact_email or "").strip().lower()
+    from discovery.contact import _clean_email
+
+    email = _clean_email(body.contact_email or "")  # URL-decode + tira espaços/lixo
     if not email or not _EMAIL_RE.match(email):
         raise HTTPException(status_code=422, detail="E-mail inválido.")
     updated = await get_target_store().update_target_email(target_id, email)

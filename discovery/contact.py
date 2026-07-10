@@ -9,11 +9,25 @@ import asyncio
 import re
 from functools import lru_cache
 from typing import List, Optional
-from urllib.parse import urljoin
+from urllib.parse import unquote, urljoin
 
 import httpx
 
 from scanner.checks.base import fetch, base_url, registrable_domain, domain_of
+
+
+def _clean_email(raw: str) -> str:
+    """Limpa um e-mail extraído do HTML antes de validar/usar.
+
+    URL-decode (`%20`→espaço, `%40`→@) + remove espaços/tabs/quebras/nbsp +
+    lowercase. Corrige o lixo tipo ``%20contato@x.com.br`` que passava pelo regex
+    (o `%` é permitido no local-part) e envenenava o batch do Resend — 1 e-mail
+    inválido faz o Batch API rejeitar TODOS os 50 (`422: Invalid 'to' field`).
+    """
+    email = unquote((raw or "").strip())
+    for ch in (" ", "\t", "\n", "\r", "\xa0"):
+        email = email.replace(ch, "")
+    return email.lower()
 
 _EMAIL_RE = re.compile(r"[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}")
 _MAILTO_RE = re.compile(r"mailto:([^\"'?>\s]+)", re.IGNORECASE)
@@ -147,11 +161,11 @@ def _collect_emails(html: str) -> List[str]:
         if _EMAIL_RE.fullmatch(m.strip()):
             found.append(m.strip())
     found.extend(_EMAIL_RE.findall(html or ""))
-    # dedup preservando ordem, tudo em lowercase
+    # limpa (URL-decode + tira espaços/lixo) e deduplica preservando a ordem.
     seen, out = set(), []
     for e in found:
-        e = e.lower()
-        if e not in seen:
+        e = _clean_email(e)
+        if e and e not in seen:
             seen.add(e)
             out.append(e)
     return out

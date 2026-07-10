@@ -14,14 +14,19 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
-from notifier import KlarimMailer, build_unsubscribe_link
+from notifier import KlarimMailer, KlarimMailerError, build_unsubscribe_link
 from reporter.risk_messages import get_risk_messages
 from .store import get_target_store
 from .heartbeat import publish_heartbeat
-from .contact import email_mx_status
+from .contact import email_mx_status, _clean_email
+
+# Formato de e-mail aceito no batch. 1 e-mail malformado faz o Resend Batch API
+# rejeitar os 50 inteiros (422) — por isso validamos antes de montar o batch.
+_EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$")
 
 _SEV_MAP = {"CRITICA": "critica", "ALTA": "alta", "MEDIA": "media", "BAIXA": "baixa"}
 
@@ -155,16 +160,26 @@ class AlertWorker:
         return True
 
     async def _validate_batch(self, targets: list) -> list:
-        """Filtra alvos com e-mail inválido antes de montar o batch (KL-24).
+        """Filtra alvos com e-mail inválido antes de montar o batch (KL-24 + fix).
 
-        Remove (e marca 'descartado') e-mails na blocklist (bouncaram antes) e
-        domínios sem MX (definitivo). Retorna a lista limpa.
+        Ordem: (1) limpa o e-mail (URL-decode + tira espaços/lixo); se mudou,
+        conserta no banco (self-healing) e usa o limpo no batch; (2) rejeita
+        formato inválido (regex) — evita o 422 que derruba o batch inteiro; (3)
+        blocklist; (4) domínio sem MX. Alvos ruins são marcados 'descartado'.
         """
         clean = []
         for t in targets:
-            email = (t.get("contact_email") or "").strip()
-            if not email:
+            raw = (t.get("contact_email") or "").strip()
+            email = _clean_email(raw)
+            if not email or not _EMAIL_RE.match(email):
+                await self.store.update_status(t["id"], "descartado")
+                print(f"[alert] descartado — e-mail inválido {raw!r} (alvo {t['id']})", flush=True)
                 continue
+            if email != raw:
+                # tinha lixo (ex.: %20contato@…) — conserta no banco e usa o limpo.
+                await self.store.update_target_email(t["id"], email)
+                t["contact_email"] = email
+                print(f"[alert] e-mail limpo: {raw!r} -> {email} (alvo {t['id']})", flush=True)
             if await self.store.is_email_blocked(email):
                 await self.store.update_status(t["id"], "descartado")
                 print(f"[alert] descartado {email} — na blocklist", flush=True)
@@ -175,6 +190,29 @@ class AlertWorker:
                 continue
             clean.append(t)
         return clean
+
+    async def _send_with_split(self, mailer, alerts: list):
+        """Envia o batch; em 422 (e-mail inválido), divide ao meio e retenta para
+        **isolar** o culpado (rede de segurança da Solução B). Erro de infra (não-422)
+        propaga. Retorna (sent_pairs, bad_alerts): sent_pairs=[(alert, email_id)],
+        bad_alerts=[alert] (os que falharam individualmente)."""
+        if not alerts:
+            return [], []
+        try:
+            res = await mailer.send_alert_batch(alerts)
+        except KlarimMailerError as exc:
+            msg = str(exc).lower()
+            if "422" not in msg and "invalid" not in msg:
+                raise  # erro de infra (5xx/rede) — não é e-mail ruim; propaga
+            if len(alerts) == 1:
+                return [], list(alerts)  # o único e-mail é o culpado
+            mid = len(alerts) // 2
+            s1, b1 = await self._send_with_split(mailer, alerts[:mid])
+            s2, b2 = await self._send_with_split(mailer, alerts[mid:])
+            return s1 + s2, b1 + b2
+        ids = res.get("ids") or []
+        pairs = [(a, ids[i] if i < len(ids) else None) for i, a in enumerate(alerts)]
+        return pairs, []
 
     async def run_cycle(self) -> dict:
         stats = {"eligible": 0, "batches": 0, "sent": 0, "failed": 0,
@@ -231,27 +269,33 @@ class AlertWorker:
                 continue
 
             try:
-                res = await mailer.send_alert_batch(alerts)
-            except Exception as exc:  # noqa: BLE001 - batch ruim não derruba o ciclo
+                # Split-retry: em 422 isola o e-mail ruim sem derrubar os outros 49.
+                sent_pairs, bad_alerts = await self._send_with_split(mailer, alerts)
+            except Exception as exc:  # noqa: BLE001 - erro de infra não derruba o ciclo
                 stats["errors"] += 1
-                print(f"[alert] batch {bi + 1} falhou: {exc!r}", flush=True)
+                print(f"[alert] batch {bi + 1} falhou (infra): {exc!r}", flush=True)
                 for a in alerts:
                     await self.store.log_alert(
                         a["target_id"], a["to_email"], a.get("score"),
                         a.get("semaphore"), a.get("fail_count"), None, status="failed")
                 continue
 
-            # Resposta 2xx => todos os e-mails foram aceitos (batch é atômico no Resend).
-            ids = res.get("ids") or []
-            for i, a in enumerate(alerts):
-                email_id = ids[i] if i < len(ids) else None
+            for a, email_id in sent_pairs:
                 await self.store.mark_target_alerted(a["target_id"])
                 await self.store.log_alert(a["target_id"], a["to_email"], a.get("score"),
                                            a.get("semaphore"), a.get("fail_count"), email_id)
+            for a in bad_alerts:  # e-mails que o Resend rejeitou (isolados no split)
+                await self.store.log_alert(a["target_id"], a["to_email"], a.get("score"),
+                                           a.get("semaphore"), a.get("fail_count"), None,
+                                           status="failed")
+                await self.store.update_status(a["target_id"], "descartado")
+                stats["invalid"] += 1
+                print(f"[alert] descartado — Resend rejeitou {a['to_email']!r}", flush=True)
             stats["batches"] += 1
-            stats["sent"] += res.get("sent", 0)
-            stats["failed"] += res.get("failed", 0)
-            print(f"[alert] batch {stats['batches']}: {res.get('sent', 0)} enviados", flush=True)
+            stats["sent"] += len(sent_pairs)
+            stats["failed"] += len(bad_alerts)
+            print(f"[alert] batch {stats['batches']}: {len(sent_pairs)} enviados"
+                  + (f", {len(bad_alerts)} rejeitados" if bad_alerts else ""), flush=True)
 
             if bi < self.batches_per_cycle - 1:
                 await asyncio.sleep(self.batch_pause)

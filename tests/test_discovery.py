@@ -8,7 +8,7 @@ from discovery.fingerprint import detect_platform
 import discovery.contact as contact
 from discovery.contact import (
     extract_email, _is_junk, _best_email, _collect_emails, _is_valid_email,
-    email_has_mx, email_mx_status,
+    email_has_mx, email_mx_status, _clean_email,
 )
 from discovery.ct_client import CTClient
 
@@ -39,6 +39,25 @@ def test_contact_junk_and_best():
     assert _best_email(emails, "hotelx.com.br") == "reservas@hotelx.com.br"
     # só junk -> None
     assert _best_email(["noreply@hotelx.com.br", "a@wixpress.com"], "hotelx.com.br") is None
+
+
+def test_clean_email():
+    # o bug de produção: %20 no início envenenava o batch do Resend
+    assert _clean_email("%20contato@envioz.com.br") == "contato@envioz.com.br"
+    assert _clean_email("contato@test.com\n") == "contato@test.com"
+    assert _clean_email(" Contato@Test.COM ") == "contato@test.com"
+    assert _clean_email("a%40b.com") == "a@b.com"          # %40 -> @
+    assert _clean_email("x\ty@z.com") == "xy@z.com"        # tab removido
+    assert _clean_email("x\xa0@z.com") == "x@z.com"        # nbsp removido
+    assert _clean_email("") == ""
+
+
+def test_collect_emails_cleans_url_encoded():
+    # o e-mail sujo extraído do HTML sai limpo (sem %20)
+    html = 'contato: %20contato@envioz.com.br e reservas@hotelx.com.br'
+    got = _collect_emails(html)
+    assert "contato@envioz.com.br" in got
+    assert not any("%20" in e or " " in e for e in got)
 
 
 def test_is_valid_email_rejects_garbage_and_placeholders():
