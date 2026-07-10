@@ -11,11 +11,15 @@ def _fail(check_id, severity):
     return {"check_id": check_id, "status": "FAIL", "severity": severity}
 
 
-def test_all_15_checks_mapped():
-    ids = {f"check_{i:02d}_" for i in range(1, 16)}
-    mapped_prefixes = {k[:9] for k in RISK_MESSAGES}
-    assert len(RISK_MESSAGES) == 15
-    assert ids <= mapped_prefixes  # cada check_NN_ tem mensagem
+def test_all_checks_mapped():
+    # O conjunto de checks cresce (KL-22 levou a 29); asserção no contrato, não no número.
+    from scanner import ALL_CHECKS
+
+    registered = {cid for cid, _ in ALL_CHECKS}
+    assert len(RISK_MESSAGES) == len(registered)
+    assert registered == set(RISK_MESSAGES)  # cada check registrado tem mensagem de risco
+    for entry in RISK_MESSAGES.values():
+        assert entry.get("headline") and entry.get("risk") and entry.get("icon")
 
 
 def test_get_risk_messages_orders_by_severity_and_limits():

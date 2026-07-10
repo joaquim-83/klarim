@@ -5,12 +5,13 @@
 Scanner passivo de superfície de ataque para PMEs e desenvolvedores. O Klarim
 executa **verificações passivas de segurança** comprováveis — sem invasão —
 contra um site público, calcula um **score de 0 a 100** e gera um relatório
-acionável. O conjunto de checks é **dinâmico e cresce continuamente** (hoje 15).
+acionável. O conjunto de checks é **dinâmico e cresce continuamente** (hoje 29).
 
 > ⚖️ **Passivo e legal por design.** O Klarim faz apenas requisições HTTP
-> `GET`/`HEAD` a URLs públicas e lê certificados TLS públicos. Ele **nunca**
-> envia payloads de ataque (SQLi/XSS), não faz brute-force, não acessa áreas
-> autenticadas e não explora vulnerabilidades. Ver [Framework legal](#framework-legal).
+> `GET`/`HEAD` a URLs públicas, consultas DNS públicas e APIs públicas de leitura,
+> e lê certificados TLS públicos. Ele **nunca** envia payloads de ataque
+> (SQLi/XSS), não faz brute-force, não acessa áreas autenticadas e não explora
+> vulnerabilidades. Ver [Framework legal](#framework-legal).
 
 ---
 
@@ -18,7 +19,7 @@ acionável. O conjunto de checks é **dinâmico e cresce continuamente** (hoje 1
 
 O número de checks **não é fixo** — novos módulos `check_*.py` são descobertos
 automaticamente (ver [Como adicionar um check](#como-adicionar-um-check)).
-Conjunto atual (15):
+Conjunto atual (29):
 
 | # | Check | Módulo | Severidade |
 |---|-------|--------|-----------|
@@ -37,11 +38,33 @@ Conjunto atual (15):
 | 13 | SRI ausente em scripts externos (>50%) | `check_sri.py` | 🟠 Alta |
 | 14 | Scripts de fontes arriscadas (GitHub Pages, S3, paste) | `check_risky_sources.py` | 🟠 Alta |
 | 15 | Domínios externos em excesso carregando scripts | `check_external_domains.py` | 🟡 Média / 🟠 Alta |
+| 16 | Documentação de API exposta (Swagger/OpenAPI/GraphQL) | `check_16_api_docs.py` | 🟠 Alta |
+| 17 | Cookies de sessão sem `Secure`/`HttpOnly`/`SameSite` | `check_17_cookies.py` | 🟡 Média |
+| 18 | CORS permissivo (`Access-Control-Allow-Origin: *`) | `check_18_cors.py` | 🟠 Alta |
+| 19 | Redirect para domínio registrável diferente | `check_19_redirect_domain.py` | 🟡 Média |
+| 20 | 403 (em vez de 404) em paths sensíveis | `check_20_info_disclosure.py` | 🔵 Baixa |
+| 21 | SPF ausente ou sem política restritiva | `check_21_spf.py` | 🟠 Alta |
+| 22 | DKIM ausente (seletores comuns) | `check_22_dkim.py` | 🟡 Média |
+| 23 | DMARC ausente ou permissivo (`p=none`) | `check_23_dmarc.py` | 🟠 Alta |
+| 24 | Mixed content (recursos HTTP em página HTTPS) | `check_24_mixed_content.py` | 🟡 Média |
+| 25 | Formulários inseguros (action HTTP/cross-origin) | `check_25_form_security.py` | 🟠 Alta |
+| 26 | Subdomínios sensíveis expostos (CT logs / crt.sh) | `check_26_subdomains.py` | 🟡 Média |
+| 27 | Dangling CNAME (risco de subdomain takeover) | `check_27_dangling_cname.py` | 🔴 Crítica |
+| 28 | Domínio em vazamentos conhecidos (HIBP) | `check_28_hibp.py` | 🟡 Média |
+| 29 | Site flagado pelo Google Safe Browsing | `check_29_safe_browsing.py` | 🔴 Crítica |
 
 Os checks 13–15 cobrem **supply chain / third-party risk** (KL-2). Eles fazem um
 parse **passivo do HTML servido** (via `html.parser` da stdlib) — scripts
 injetados dinamicamente por JavaScript em runtime não são vistos por uma
 requisição HTTP simples.
+
+Os checks 16–29 (KL-22) adicionam cinco blocos passivos: **web** (16–20),
+**DNS/e-mail** (21–23: SPF/DKIM/DMARC via `dns_util.py`/dnspython), **conteúdo**
+(24–25), **infra passiva** (26–27: subdomínios via crt.sh e dangling CNAME) e
+**OSINT** (28–29: Have I Been Pwned e Google Safe Browsing, APIs públicas
+gratuitas). Checks que dependem de API/DNS externo degradam para **`INCONCLUSO`**
+(nunca erro) quando indisponíveis, sob rate limit ou sem chave.
+`GOOGLE_SAFE_BROWSING_KEY` é **opcional** — sem ela, o check 29 é `INCONCLUSO`.
 
 Cada check implementa a mesma interface:
 
@@ -91,6 +114,7 @@ klarim/
 │   ├── scoring.py          # cálculo do score 0-100 + semáforo
 │   └── checks/
 │       ├── base.py         # CheckResult, rate limit, HTTP helper, HTML parse
+│       ├── dns_util.py     # helpers DNS mockáveis (SPF/DKIM/DMARC/CNAME — KL-22)
 │       └── check_*.py      # os checks (descobertos dinamicamente)
 ├── reporter/               # geração de PDF (WeasyPrint + Jinja2)
 │   ├── generator.py        # generate_executive_pdf / generate_technical_pdf

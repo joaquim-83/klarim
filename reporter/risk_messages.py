@@ -107,16 +107,106 @@ RISK_MESSAGES: Dict[str, Dict[str, str]] = {
                 "comprometido, seu site é afetado diretamente — e seus clientes também.",
         "icon": "🌐",
     },
+    "check_16_api_docs": {
+        "headline": "A documentação da sua API está exposta publicamente",
+        "risk": "A documentação completa da sua API está acessível. Um atacante pode mapear "
+                "todos os endpoints e parâmetros do seu sistema.",
+        "icon": "📖",
+    },
+    "check_17_cookies": {
+        "headline": "Cookies do seu site não têm proteção",
+        "risk": "Cookies do seu site podem ser roubados por scripts maliciosos e usados para "
+                "se passar por seus clientes.",
+        "icon": "🍪",
+    },
+    "check_18_cors": {
+        "headline": "Qualquer site pode chamar a sua API",
+        "risk": "Qualquer site na internet pode fazer requisições ao seu servidor e acessar "
+                "dados dos seus clientes.",
+        "icon": "🌍",
+    },
+    "check_19_redirect_domain": {
+        "headline": "Seu site redireciona para outro domínio",
+        "risk": "Se o domínio original expirar, qualquer pessoa pode registrá-lo e se passar "
+                "por você.",
+        "icon": "↪️",
+    },
+    "check_20_info_disclosure": {
+        "headline": "Seu servidor confirma a existência de arquivos internos",
+        "risk": "Seu servidor confirma a existência de arquivos internos mesmo ao bloqueá-los. "
+                "Um atacante sabe exatamente o que procurar.",
+        "icon": "🔎",
+    },
+    "check_21_spf": {
+        "headline": "Qualquer um pode enviar e-mail fingindo ser você",
+        "risk": "Qualquer pessoa na internet pode enviar e-mails fingindo ser do seu domínio. "
+                "Seus clientes podem receber golpes com o nome da sua empresa.",
+        "icon": "📧",
+    },
+    "check_22_dkim": {
+        "headline": "Seus e-mails não têm assinatura digital",
+        "risk": "E-mails enviados pelo seu domínio não têm assinatura digital. Provedores como "
+                "Gmail podem marcá-los como suspeitos ou spam.",
+        "icon": "✉️",
+    },
+    "check_23_dmarc": {
+        "headline": "Seu domínio não tem proteção contra phishing",
+        "risk": "Golpistas podem enviar e-mails como se fossem da sua empresa e seus clientes "
+                "não têm como distinguir.",
+        "icon": "🎣",
+    },
+    "check_24_mixed_content": {
+        "headline": "Seu site seguro carrega arquivos de fontes inseguras",
+        "risk": "Seu site seguro (HTTPS) carrega arquivos de fontes inseguras (HTTP). Esses "
+                "arquivos podem ser interceptados e substituídos por código malicioso.",
+        "icon": "🔀",
+    },
+    "check_25_form_security": {
+        "headline": "Formulários do seu site enviam dados sem criptografia",
+        "risk": "Qualquer pessoa na mesma rede pode interceptar senhas, e-mails e dados "
+                "pessoais que seus clientes digitam nos formulários.",
+        "icon": "📝",
+    },
+    "check_26_subdomains": {
+        "headline": "Seus ambientes internos estão visíveis publicamente",
+        "risk": "Ambientes internos (staging, admin, API) estão visíveis publicamente. Um "
+                "atacante pode usá-los como porta de entrada — eles costumam ter menos proteção.",
+        "icon": "🕸️",
+    },
+    "check_27_dangling_cname": {
+        "headline": "Um subdomínio seu pode ser sequestrado",
+        "risk": "Um subdomínio aponta para um serviço que não existe mais. Qualquer pessoa pode "
+                "registrá-lo e publicar conteúdo como se fosse você.",
+        "icon": "👻",
+    },
+    "check_28_hibp": {
+        "headline": "Seu domínio aparece em vazamentos de dados",
+        "risk": "O domínio da sua empresa aparece em vazamentos conhecidos. Credenciais de "
+                "funcionários ou clientes podem estar circulando na internet.",
+        "icon": "💧",
+    },
+    "check_29_safe_browsing": {
+        "headline": "O Google marcou seu site como perigoso",
+        "risk": "Navegadores mostram um alerta vermelho antes de seus clientes acessarem — seu "
+                "site perde visitas e credibilidade.",
+        "icon": "☠️",
+    },
 }
 
 _SEV_ORDER = {"CRITICA": 0, "ALTA": 1, "MEDIA": 2, "BAIXA": 3}
 
 # Categorias de risco (por check_id) para compor a frase-resumo.
 _CAT_VAZAMENTO = {"check_01_https", "check_02_hsts", "check_04_tls",
-                  "check_09_sourcemaps", "check_10_sensitive"}
-_CAT_GOLPES = {"check_05_csp", "check_06_xfo", "check_14_risky_sources"}
-_CAT_INVASAO = {"check_08_server", "check_11_dirlist", "check_10_sensitive"}
-_CAT_SUPPLY = {"check_13_sri", "check_14_risky_sources", "check_15_external_domains"}
+                  "check_09_sourcemaps", "check_10_sensitive",
+                  "check_17_cookies", "check_18_cors", "check_25_form_security",
+                  "check_28_hibp"}
+_CAT_GOLPES = {"check_05_csp", "check_06_xfo", "check_14_risky_sources",
+               "check_19_redirect_domain", "check_21_spf", "check_22_dkim",
+               "check_23_dmarc", "check_27_dangling_cname", "check_29_safe_browsing"}
+_CAT_INVASAO = {"check_08_server", "check_11_dirlist", "check_10_sensitive",
+                "check_16_api_docs", "check_20_info_disclosure", "check_26_subdomains"}
+_CAT_SUPPLY = {"check_13_sri", "check_14_risky_sources", "check_15_external_domains",
+               "check_24_mixed_content"}
 
 
 def _get(item: Any, key: str) -> Any:

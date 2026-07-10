@@ -93,6 +93,7 @@ klarim/
 │   ├── scoring.py          # cálculo de score 0–100 + semáforo
 │   └── checks/             # um módulo por check
 │       ├── base.py         # CheckResult, rate limit, helper HTTP, parse HTML
+│       ├── dns_util.py     # helpers DNS mockáveis (SPF/DKIM/DMARC/CNAME — KL-22)
 │       └── check_*.py      # os checks (descobertos dinamicamente)
 ├── reporter/               # geração de PDF (WeasyPrint + Jinja2)
 │   ├── generator.py        # generate_executive_pdf() / generate_technical_pdf()
@@ -119,6 +120,7 @@ klarim/
 │   └── tools/              # as 25 tools por domínio (system/targets/scans/…)
 └── tests/                  # pytest
     ├── test_checks.py      # unit tests dos checks + teste online opt-in
+    ├── test_checks_16_29.py # unit tests dos checks 16–29 (KL-22, rede mockada)
     ├── test_reporter.py    # geração de PDF (offline, guardado por libs nativas)
     └── test_payments.py    # client/store/gating de pagamento (offline)
 ```
@@ -162,7 +164,7 @@ async def check(url: str) -> CheckResult
   `PASS`. `INCONCLUSO` é neutro no score.
 
 **O número de checks é dinâmico e cresce com o projeto** — nunca trate um número
-específico como identidade do produto. Conjunto atual (**15**):
+específico como identidade do produto. Conjunto atual (**29**):
 
 | # | Check | Módulo | Severidade |
 |---|-------|--------|-----------|
@@ -181,9 +183,34 @@ específico como identidade do produto. Conjunto atual (**15**):
 | 13 | SRI ausente em scripts externos | `check_sri.py` | Alta |
 | 14 | Scripts de fontes arriscadas | `check_risky_sources.py` | Alta |
 | 15 | Domínios externos em excesso | `check_external_domains.py` | Média/Alta |
+| 16 | Documentação de API exposta | `check_16_api_docs.py` | Alta |
+| 17 | Cookies sem flags de segurança | `check_17_cookies.py` | Média |
+| 18 | CORS permissivo | `check_18_cors.py` | Alta |
+| 19 | Redirect para domínio diferente | `check_19_redirect_domain.py` | Média |
+| 20 | Diferenciação 403/404 em paths sensíveis | `check_20_info_disclosure.py` | Baixa |
+| 21 | SPF ausente/fraco | `check_21_spf.py` | Alta |
+| 22 | DKIM ausente | `check_22_dkim.py` | Média |
+| 23 | DMARC ausente/permissivo | `check_23_dmarc.py` | Alta |
+| 24 | Mixed content | `check_24_mixed_content.py` | Média |
+| 25 | Formulários inseguros | `check_25_form_security.py` | Alta |
+| 26 | Subdomínios expostos (CT logs) | `check_26_subdomains.py` | Média |
+| 27 | Dangling CNAME (subdomain takeover) | `check_27_dangling_cname.py` | Crítica |
+| 28 | Vazamentos de dados (HIBP) | `check_28_hibp.py` | Média |
+| 29 | Google Safe Browsing | `check_29_safe_browsing.py` | Crítica |
 
 Checks 13–15 (supply chain, KL-2) fazem parse **passivo do HTML servido**;
 scripts injetados por JavaScript em runtime não são vistos por um GET simples.
+
+Checks 16–29 (KL-22) são organizados em blocos: **web** (16–20: docs de API,
+cookies, CORS, redirect cross-domain, 403/404), **DNS/e-mail** (21–23: SPF, DKIM,
+DMARC — via `dns_util.py`/dnspython, síncrono em `asyncio.to_thread`, mockável),
+**conteúdo** (24–25: mixed content, formulários), **infra passiva** (26–27:
+subdomínios via crt.sh, dangling CNAME) e **OSINT** (28–29: HIBP e Google Safe
+Browsing — APIs públicas gratuitas). Os checks que dependem de API externa
+degradam para **`INCONCLUSO`** (nunca erro) quando a API está fora, com rate limit,
+ou sem chave. **`GOOGLE_SAFE_BROWSING_KEY`** é opcional (sem ela, o check 29 é
+`INCONCLUSO`). Nenhum check 16–29 envia payload de ataque, faz brute-force ou
+acessa área autenticada — só GET/HEAD, DNS público e APIs públicas de leitura.
 
 ### 4.3 Rede
 

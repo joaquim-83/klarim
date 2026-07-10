@@ -96,6 +96,20 @@ ACCESSIBLE: Dict[str, str] = {
     "check_13_sri": "Scripts de terceiros são carregados sem verificação de integridade.",
     "check_14_risky_sources": "Seu site carrega código de fontes não confiáveis.",
     "check_15_external_domains": "Seu site carrega scripts de um número elevado de domínios externos.",
+    "check_16_api_docs": "A documentação técnica da sua API está acessível publicamente.",
+    "check_17_cookies": "Cookies de sessão do seu site não têm todas as flags de segurança.",
+    "check_18_cors": "Sua API aceita requisições de qualquer site (CORS permissivo).",
+    "check_19_redirect_domain": "Seu site redireciona para um domínio diferente do original.",
+    "check_20_info_disclosure": "Seu servidor confirma a existência de arquivos internos ao bloqueá-los.",
+    "check_21_spf": "Seu domínio não protege contra o envio de e-mails falsos em seu nome (SPF).",
+    "check_22_dkim": "Os e-mails do seu domínio não têm assinatura digital (DKIM).",
+    "check_23_dmarc": "Seu domínio não tem política de proteção contra phishing (DMARC).",
+    "check_24_mixed_content": "Seu site seguro (HTTPS) carrega arquivos por conexão insegura (HTTP).",
+    "check_25_form_security": "Formulários do seu site enviam dados de forma insegura.",
+    "check_26_subdomains": "Ambientes internos (staging/admin/API) estão expostos publicamente.",
+    "check_27_dangling_cname": "Um subdomínio aponta para um serviço inexistente (risco de sequestro).",
+    "check_28_hibp": "O domínio da sua empresa aparece em vazamentos de dados conhecidos.",
+    "check_29_safe_browsing": "O Google marcou seu site como perigoso (malware/phishing).",
 }
 
 
@@ -178,6 +192,76 @@ TECHNICAL: Dict[str, Dict[str, str]] = {
         "impact": "Cada domínio externo que carrega script é mais um elo na cadeia de suprimentos e mais uma superfície de ataque.",
         "fix": "Reduza dependências de terceiros, consolide provedores e audite periodicamente os scripts carregados.",
         "fix_code": "",
+    },
+    "check_16_api_docs": {
+        "impact": "Documentação (Swagger/OpenAPI/GraphQL) exposta mapeia todos os endpoints e parâmetros para um atacante.",
+        "fix": "Desabilite a documentação em produção.",
+        "fix_code": "# FastAPI\napp = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)",
+    },
+    "check_17_cookies": {
+        "impact": "Cookies de sessão sem Secure/HttpOnly/SameSite podem ser roubados via XSS ou enviados por HTTP.",
+        "fix": "Adicione as flags de segurança aos cookies de sessão.",
+        "fix_code": "Set-Cookie: session=...; Secure; HttpOnly; SameSite=Strict",
+    },
+    "check_18_cors": {
+        "impact": "Access-Control-Allow-Origin: * permite que qualquer site faça requisições autenticadas à API.",
+        "fix": "Restrinja o CORS a origens confiáveis.",
+        "fix_code": "Access-Control-Allow-Origin: https://seusite.com.br",
+    },
+    "check_19_redirect_domain": {
+        "impact": "Redirect para outro domínio: se o domínio original expirar, pode ser registrado e usado para se passar por você.",
+        "fix": "Mantenha o site no mesmo domínio, ou proteja ambos com HTTPS e renovação automática.",
+        "fix_code": "",
+    },
+    "check_20_info_disclosure": {
+        "impact": "Um 403 (em vez de 404) confirma que o arquivo existe no servidor — information disclosure.",
+        "fix": "Retorne 404 para caminhos internos, sem revelar a existência.",
+        "fix_code": "# nginx\nlocation ~ /\\.(git|env) { return 404; }",
+    },
+    "check_21_spf": {
+        "impact": "Sem SPF restritivo, qualquer servidor pode enviar e-mails falsos em nome do domínio (spoofing).",
+        "fix": "Publique um registro SPF (TXT) apontando o(s) provedor(es) de e-mail e terminando em ~all/-all.",
+        "fix_code": "v=spf1 include:_spf.google.com ~all",
+    },
+    "check_22_dkim": {
+        "impact": "Sem DKIM, os e-mails do domínio não têm assinatura criptográfica e são mais facilmente marcados como spam.",
+        "fix": "Ative o DKIM no provedor de e-mail e publique o registro TXT do seletor no DNS.",
+        "fix_code": "selector._domainkey  IN TXT  \"v=DKIM1; k=rsa; p=...\"",
+    },
+    "check_23_dmarc": {
+        "impact": "Sem DMARC (ou com p=none), não há bloqueio de e-mails falsificados — só monitoramento.",
+        "fix": "Publique um registro DMARC com política quarantine ou reject.",
+        "fix_code": "_dmarc  IN TXT  \"v=DMARC1; p=quarantine; rua=mailto:dmarc@seudominio.com.br\"",
+    },
+    "check_24_mixed_content": {
+        "impact": "Recursos carregados via HTTP em uma página HTTPS podem ser interceptados e substituídos por código malicioso.",
+        "fix": "Atualize todas as referências de recursos para HTTPS.",
+        "fix_code": "<script src=\"https://cdn.exemplo.com/lib.js\"></script>",
+    },
+    "check_25_form_security": {
+        "impact": "Formulários com action HTTP (ou cross-origin) enviam dados dos usuários sem criptografia.",
+        "fix": "Envie todos os formulários por HTTPS, para o mesmo domínio.",
+        "fix_code": "<form action=\"https://seusite.com.br/enviar\" method=\"post\">",
+    },
+    "check_26_subdomains": {
+        "impact": "Subdomínios de teste/admin/API expostos ampliam a superfície de ataque — costumam ter menos proteção.",
+        "fix": "Revise os subdomínios expostos e remova certificados de ambientes que não precisam ser públicos.",
+        "fix_code": "",
+    },
+    "check_27_dangling_cname": {
+        "impact": "Um CNAME apontando para um serviço desativado permite que outra pessoa registre o serviço e assuma o subdomínio (takeover).",
+        "fix": "Remova o registro CNAME órfão ou reative o serviço de destino.",
+        "fix_code": "# remova o CNAME de blog.seusite.com.br -> servico-morto.herokuapp.com",
+    },
+    "check_28_hibp": {
+        "impact": "O domínio aparece em vazamentos conhecidos — credenciais de clientes/funcionários podem estar circulando.",
+        "fix": "Verifique quais contas foram comprometidas e force a troca de senhas dos afetados.",
+        "fix_code": "",
+    },
+    "check_29_safe_browsing": {
+        "impact": "O Google flagou o site como malware/phishing — navegadores mostram alerta vermelho antes de acessar.",
+        "fix": "Remova o conteúdo malicioso e solicite revisão no Google Search Console.",
+        "fix_code": "# https://search.google.com/search-console/security-issues",
     },
 }
 

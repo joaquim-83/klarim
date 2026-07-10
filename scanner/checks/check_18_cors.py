@@ -1,0 +1,56 @@
+"""Check 18 — CORS permissivo (Severidade: ALTA).
+
+Passivo: um preflight ``OPTIONS`` (sem payload) com ``Origin`` forjado. Se a
+resposta libera ``Access-Control-Allow-Origin: *`` ou reflete a origem forjada,
+qualquer site pode chamar a API. Sem ACAO / 405 / 404 = CORS não liberado = PASS.
+"""
+
+from __future__ import annotations
+
+import httpx
+
+from .base import CheckResult, Status, Severity, with_scheme, USER_AGENT, REQUEST_TIMEOUT
+
+ORDER = 18
+CHECK_ID = "check_18_cors"
+NAME = "CORS permissivo"
+
+_EVIL = "https://evil-test.example"
+
+
+async def _probe(url: str, method: str) -> httpx.Response:
+    headers = {"User-Agent": USER_AGENT, "Origin": _EVIL,
+               "Access-Control-Request-Method": "GET"}
+    async with httpx.AsyncClient(verify=False, follow_redirects=True,
+                                 timeout=REQUEST_TIMEOUT, headers=headers) as client:
+        return await client.request(method, url)
+
+
+async def check(url: str) -> CheckResult:
+    https_url = with_scheme(url, "https")
+    acao = None
+    for method in ("OPTIONS", "GET"):  # alguns servidores só refletem no GET
+        try:
+            resp = await _probe(https_url, method)
+        except (httpx.HTTPError, OSError):
+            continue
+        val = resp.headers.get("access-control-allow-origin")
+        if val:
+            acao = val.strip()
+            break
+
+    if acao is None:
+        return CheckResult(name=NAME, status=Status.PASS, severity=Severity.ALTA,
+                           evidence="CORS não libera origens externas (sem Access-Control-Allow-Origin).")
+
+    if acao == "*" or acao.lower() == _EVIL:
+        creds = ""  # nota extra se também permite credenciais
+        return CheckResult(
+            name=NAME, status=Status.FAIL, severity=Severity.ALTA,
+            evidence=f"CORS permissivo: Access-Control-Allow-Origin: {acao} — "
+                     f"qualquer site pode fazer requisições à sua API.{creds}",
+            details={"acao": acao})
+
+    return CheckResult(name=NAME, status=Status.PASS, severity=Severity.ALTA,
+                       evidence=f"CORS restrito a origem específica (Access-Control-Allow-Origin: {acao}).",
+                       details={"acao": acao})
