@@ -29,10 +29,12 @@ async def _fetch_html(url: str) -> Optional[str]:
     return resp.text if resp.status_code < 400 else None
 
 
-async def ingest_scan(store, url: str, report, source: str) -> Dict[str, Any]:
+async def ingest_scan(store, url: str, report, source: str,
+                      scanned_by_email: Optional[str] = None) -> Dict[str, Any]:
     """Registra/atualiza o alvo e salva o scan (com origem). Retorna metadados.
 
-    Retorna: target_id, scan_id, platform, sector, contact_email.
+    ``scanned_by_email`` (KL-25): e-mail do visitante que pediu o scan público —
+    liga o scan ao lead. Retorna: target_id, scan_id, platform, sector, contact_email.
     """
     domain = registrable_domain(domain_of(url))
     platform, email = "unknown", None
@@ -52,7 +54,8 @@ async def ingest_scan(store, url: str, report, source: str) -> Dict[str, Any]:
     if s is not None:
         scan_id = await store.save_scan(
             target_id, url, s.score, s.semaphore, s.passed, s.failed,
-            s.inconclusive, report.to_dict(), source=source)
+            s.inconclusive, report.to_dict(), source=source,
+            scanned_by_email=scanned_by_email)
         await store.update_scan_result(target_id, scan_id, s.score)
 
     return {

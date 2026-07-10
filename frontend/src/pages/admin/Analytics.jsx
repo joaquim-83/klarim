@@ -64,10 +64,10 @@ export default function Analytics() {
     () => Promise.all([
       admin.analyticsFunnel(period), admin.analyticsAbandoned(period),
       admin.analyticsCampaigns(period), admin.analyticsPages(period),
-      admin.analyticsEvents(50),
-    ]).then(([funnel, abandoned, campaigns, pages, events]) => ({
+      admin.analyticsEvents(50), admin.publicScans(),
+    ]).then(([funnel, abandoned, campaigns, pages, events, publicScans]) => ({
       funnel, abandoned: abandoned.abandoned, campaigns: campaigns.campaigns,
-      pages: pages.pages, events: events.events,
+      pages: pages.pages, events: events.events, publicScans,
     })),
     [period],
   )
@@ -88,6 +88,24 @@ export default function Analytics() {
 
       {loading ? <Loading /> : error ? <ErrorBox message={error} /> : (
         <>
+          {/* Scans públicos verificados (KL-25) */}
+          <Card title="Scans públicos (verificação por e-mail)">
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
+              {[
+                ['Códigos enviados', data.publicScans.codes_sent],
+                ['Verificados', data.publicScans.verified],
+                ['E-mails distintos', data.publicScans.distinct_emails],
+                ['Scans grátis usados', data.publicScans.free_scans_used],
+                ['Scans públicos', data.publicScans.public_scans],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-lg border border-klarim-border bg-klarim-bg px-3 py-2 text-center">
+                  <div className="text-lg font-bold">{value ?? 0}</div>
+                  <div className="text-xs text-klarim-muted">{label}</div>
+                </div>
+              ))}
+            </div>
+          </Card>
+
           {/* Funil */}
           <Card title="Funil de conversão">
             {(() => {

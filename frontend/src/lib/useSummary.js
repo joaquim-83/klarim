@@ -1,11 +1,13 @@
 import { useEffect, useState } from 'react'
-import { useLocation } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { fetchSummary } from './api'
 
 // Obtém o resumo do scan: usa o que veio via navegação (state) ou, se a página
-// foi aberta diretamente por link, refaz a varredura.
+// foi aberta diretamente por link, busca o resultado já existente. Sem verificação
+// de e-mail e sem resultado em cache, redireciona à home para verificar (KL-25).
 export function useSummary(url) {
   const location = useLocation()
+  const navigate = useNavigate()
   const initial = location.state?.summary || null
   const [summary, setSummary] = useState(initial)
   const [loading, setLoading] = useState(!initial)
@@ -16,7 +18,10 @@ export function useSummary(url) {
     setLoading(true)
     fetchSummary(url)
       .then(setSummary)
-      .catch((e) => setError(e.message || 'Erro ao escanear.'))
+      .catch((e) => {
+        if (e.message === 'auth_required') { navigate(`/?url=${encodeURIComponent(url)}`, { replace: true }); return }
+        setError(e.message || 'Erro ao escanear.')
+      })
       .finally(() => setLoading(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [url])

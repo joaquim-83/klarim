@@ -37,7 +37,11 @@ export default function Scan() {
           state: { summary },
         })
       })
-      .catch((e) => setError(e.message || 'Erro ao escanear.'))
+      .catch((e) => {
+        // Sem verificação de e-mail (token) -> volta à home para verificar (KL-25).
+        if (e.message === 'auth_required') { navigate('/', { replace: true }); return }
+        setError(e.message || 'Erro ao escanear.')
+      })
   }, [url, navigate])
 
   if (error) {

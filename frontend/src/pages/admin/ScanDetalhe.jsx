@@ -50,7 +50,10 @@ export default function ScanDetalhe() {
         <SemaphoreDotBig semaphore={data.semaphore} score={data.score} />
         <div className="text-sm text-klarim-muted">
           <div>{data.pass_count} PASS · {data.fail_count} FAIL · {data.inconclusive_count} inconclusivo(s)</div>
-          <div>{formatDate(data.scanned_at)}</div>
+          <div>{formatDate(data.scanned_at)}{data.source ? ` · origem: ${data.source}` : ''}</div>
+          {data.scanned_by_email && (
+            <div>solicitado por <span className="text-klarim-text">{data.scanned_by_email}</span></div>
+          )}
         </div>
         <div className="flex flex-wrap gap-2">
           <Button variant="primary" disabled={busy === 'executive'} onClick={() => genPdf('executive')}>PDF executivo</Button>

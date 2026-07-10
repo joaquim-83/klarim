@@ -265,7 +265,9 @@ reais gerados para os 3 hotéis Duda estão em
 Frontend **React + Vite + Tailwind v4** em [`frontend/`](./frontend/), servido
 como build estático pelo **Nginx** (que também faz proxy de `/api` → API). Telas:
 
-- **Landing** (`/`) — input de scan self-service + seções informativas.
+- **Landing** (`/`) — scan self-service com **verificação de e-mail** (KL-25):
+  URL + e-mail → código de 6 dígitos → scan. **1 scan gratuito por e-mail**; o 2º
+  (outra URL) pede o relatório pago. Captura o lead e corta bot/curioso.
 - **Scan** (`/scan?url=`) — loading com feedback enquanto a varredura roda (~30s).
 - **Result** (`/result?url=`) — semáforo, contagem por severidade, LGPD e CTA.
 - **Report** (`/report?url=`) — download dos relatórios executivo e técnico (PDF).

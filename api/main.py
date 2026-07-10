@@ -11,6 +11,8 @@ Run local:
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import hmac
 import json
 import os
@@ -290,11 +292,207 @@ async def scan_full(url: str = Query(..., description="URL alvo (http/https)."))
     return JSONResponse(report.to_dict())
 
 
+# --------------------------------------------------------------------------- #
+# Verificação de e-mail (código 6 dígitos) antes do scan público — KL-25
+# --------------------------------------------------------------------------- #
+
+_SCAN_TOKEN_TTL = 3600  # 1h
+_SCAN_EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$")
+
+
+def _clean_scan_email(email: str) -> str:
+    from discovery.contact import _clean_email
+    return _clean_email(email or "")
+
+
+def _norm_scan_url(url: str) -> str:
+    """Normaliza a URL para casar crédito/cache (scheme + host lowercase, sem '/' final)."""
+    url = (url or "").strip()
+    if not url:
+        return ""
+    if "://" not in url:
+        url = "https://" + url
+    p = urlparse(url)
+    host = (p.hostname or "").lower()
+    if not host:
+        return url
+    scheme = p.scheme or "https"
+    path = (p.path or "").rstrip("/")
+    return f"{scheme}://{host}{path}"
+
+# Rate limits in-memory (anti brute-force/spam) — o teto real é o crédito no banco.
+_CODE_RL_EMAIL_MAX, _CODE_RL_EMAIL_WIN = 3, 3600      # 3 códigos/e-mail/hora
+_CODE_RL_IP_MAX, _CODE_RL_IP_WIN = 5, 3600            # 5 códigos/IP/hora
+_VERIFY_RL_MAX, _VERIFY_RL_WIN = 5, 600               # 5 tentativas/e-mail/10min
+_code_email_hits: dict = {}
+_code_ip_hits: dict = {}
+_verify_hits: dict = {}
+
+
+def _rl_ok(store: dict, key: str, limit: int, window: int) -> bool:
+    now = time.monotonic()
+    q = store.setdefault(key, [])
+    cutoff = now - window
+    while q and q[0] < cutoff:
+        q.pop(0)
+    if len(q) >= limit:
+        return False
+    q.append(now)
+    if len(store) > 10000:  # limpeza oportunista
+        for k in [k for k, ts in store.items() if not ts or ts[-1] < cutoff]:
+            store.pop(k, None)
+    return True
+
+
+def _scan_token_secret() -> str:
+    return os.environ.get("JWT_SECRET", "") or os.environ.get("UNSUBSCRIBE_SECRET", "")
+
+
+def _make_scan_token(email: str, url: str) -> str:
+    """Token HMAC-assinado que autoriza 1 scan da URL pelo e-mail (expira 1h)."""
+    payload = {"email": email, "url": url, "exp": int(time.time()) + _SCAN_TOKEN_TTL}
+    raw = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode()
+    sig = hmac.new(_scan_token_secret().encode(), raw.encode(), hashlib.sha256).hexdigest()[:32]
+    return f"{raw}.{sig}"
+
+
+def _verify_scan_token(token: str) -> Optional[dict]:
+    secret = _scan_token_secret()
+    if not token or not secret:
+        return None
+    try:
+        raw, sig = token.rsplit(".", 1)
+        expected = hmac.new(secret.encode(), raw.encode(), hashlib.sha256).hexdigest()[:32]
+        if not hmac.compare_digest(sig, expected):
+            return None
+        payload = json.loads(base64.urlsafe_b64decode(raw))
+        if int(payload.get("exp", 0)) < int(time.time()):
+            return None
+        return payload
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _is_admin_request(request: Request) -> bool:
+    """True se o request traz um JWT de admin válido (bypass do token de scan)."""
+    auth = request.headers.get("authorization", "")
+    token = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
+    if not token:
+        return False
+    try:
+        _verify_token(token)
+        return True
+    except Exception:  # noqa: BLE001
+        return False
+
+
+class ScanCodeBody(BaseModel):
+    email: str
+    url: str
+
+
+class ScanVerifyBody(BaseModel):
+    email: str
+    code: str
+    url: str
+
+
+@app.post("/scan/check-credit")
+async def scan_check_credit(body: ScanCodeBody) -> dict:
+    """Estado do crédito de scan gratuito do e-mail para a URL (sem enviar código)."""
+    email = _clean_scan_email(body.email)
+    url = _norm_scan_url(body.url)
+    if not _SCAN_EMAIL_RE.match(email):
+        raise HTTPException(status_code=422, detail="E-mail inválido.")
+    credit = await get_target_store().get_scan_credit(email)
+    used = int(credit["free_scans_used"]) if credit else 0
+    same_url = bool(credit and credit.get("first_scan_url") == url)
+    return {"has_free_scan": used == 0, "same_url_scanned": same_url, "free_scans_used": used}
+
+
+@app.post("/scan/request-code")
+async def scan_request_code(body: ScanCodeBody, request: Request) -> dict:
+    """Envia um código de 6 dígitos para o e-mail antes de liberar o scan (KL-25)."""
+    email = _clean_scan_email(body.email)
+    url = _norm_scan_url(body.url)
+    if not _SCAN_EMAIL_RE.match(email):
+        raise HTTPException(status_code=422, detail="E-mail inválido.")
+    if not url:
+        raise HTTPException(status_code=422, detail="URL inválida.")
+    if not _email_enabled():
+        raise HTTPException(status_code=503, detail="Envio de e-mail não configurado.")
+
+    store = get_target_store()
+    credit = await store.get_scan_credit(email)
+    if credit:
+        if credit.get("first_scan_url") == url:
+            return {"status": "already_scanned", "message": "Você já escaneou este site."}
+        return {"status": "limit_reached",
+                "message": "Você já utilizou seu scan gratuito para outro site. "
+                           "Para escanear este, adquira o relatório completo."}
+
+    ip = _client_ip(request)
+    if not _rl_ok(_code_email_hits, email, _CODE_RL_EMAIL_MAX, _CODE_RL_EMAIL_WIN):
+        raise HTTPException(status_code=429, detail="Muitos códigos para este e-mail. Aguarde 1h.",
+                            headers={"Retry-After": "3600"})
+    if not _rl_ok(_code_ip_hits, ip, _CODE_RL_IP_MAX, _CODE_RL_IP_WIN):
+        raise HTTPException(status_code=429, detail="Muitas solicitações. Aguarde 1h.",
+                            headers={"Retry-After": "3600"})
+
+    code = f"{secrets.randbelow(900000) + 100000:06d}"  # CSPRNG, 6 dígitos
+    await store.create_scan_verification(email, code, url, ttl_minutes=10, ip_address=ip)
+    domain = urlparse(url).hostname or url
+    try:
+        await _mailer().send_verification_code(email, code, domain)
+    except KlarimMailerError as exc:
+        raise HTTPException(status_code=502, detail=f"Falha ao enviar o código: {exc}") from exc
+    return {"status": "code_sent", "expires_in": 600}
+
+
+@app.post("/scan/verify-code")
+async def scan_verify_code(body: ScanVerifyBody) -> dict:
+    """Valida o código, consome o scan gratuito e devolve um scan token (1h)."""
+    email = _clean_scan_email(body.email)
+    url = _norm_scan_url(body.url)
+    code = (body.code or "").strip()
+    if not _rl_ok(_verify_hits, email, _VERIFY_RL_MAX, _VERIFY_RL_WIN):
+        raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde alguns minutos.",
+                            headers={"Retry-After": "600"})
+    store = get_target_store()
+    if not await store.verify_scan_code(email, code, url):
+        return {"status": "invalid", "message": "Código inválido ou expirado."}
+    await store.record_free_scan(email, url)  # consome o gratuito
+    return {"status": "verified", "scan_token": _make_scan_token(email, url),
+            "expires_in": _SCAN_TOKEN_TTL}
+
+
 @app.get("/scan/summary")
-async def scan_summary(url: str = Query(..., description="URL alvo.")) -> dict:
-    """Semáforo executivo gratuito — score + contagens, sem detalhe por check."""
-    # KL-17: scan público grava o alvo + scan no banco (background, source='public').
-    report = await _safe_scan(url, ingest_source="public")
+async def scan_summary(url: str = Query(..., description="URL alvo."),
+                       request: Request = None) -> dict:
+    """Semáforo executivo — score + contagens. Exige verificação de e-mail (scan
+    token) para **disparar** um scan novo (KL-25); leituras de scans já feitos
+    (cache/banco) são livres. Admin (JWT) sempre passa."""
+    url = _norm_scan_url(url)
+    scanned_by = None
+    is_admin = request is not None and _is_admin_request(request)
+    if not is_admin:
+        token = request.headers.get("x-scan-token", "") if request is not None else ""
+        payload = _verify_scan_token(token)
+        if payload and _norm_scan_url(payload.get("url", "")) == url:
+            scanned_by = _clean_scan_email(payload.get("email", "")) or None
+        else:
+            # Sem token válido: só devolve resultado já existente (não escaneia).
+            recent = await get_recent_only(url)
+            if recent is None:
+                return {"status": "auth_required",
+                        "message": "Verifique seu e-mail para escanear este site."}
+            return _summary_payload(recent)
+
+    report = await _safe_scan(url, ingest_source="public", scanned_by_email=scanned_by)
+    return _summary_payload(report)
+
+
+def _summary_payload(report: ScanReport) -> dict:
     score = report.score
     sev = score.fails_by_severity if score else {}
     risk_messages = get_risk_messages(report)
@@ -1190,6 +1388,8 @@ async def api_system_email_health() -> dict:
 _KNOWN_EVENTS = {
     "page_view", "scan_started", "scan_completed", "result_viewed", "cta_clicked",
     "payment_created", "payment_completed", "report_downloaded", "email_link_clicked",
+    # KL-25 — verificação de e-mail antes do scan público
+    "code_requested", "code_verified", "code_failed", "scan_limit_reached",
 }
 _EVENT_RL_MAX = 100          # eventos/minuto por sessão
 _event_rl: dict = {}         # session_id -> lista de timestamps (janela de 60s)
@@ -1299,6 +1499,13 @@ async def _log_event_bg(body: EventBody, target_id: Optional[int]) -> None:
 @app.get("/analytics/funnel")
 async def api_analytics_funnel(period: str = Query(default="7d")) -> dict:
     return await get_target_store().analytics_funnel(period)
+
+
+@app.get("/analytics/public-scans")
+async def api_analytics_public_scans() -> dict:
+    """Funil do scan público verificado (KL-25): códigos enviados, verificados,
+    e-mails distintos, scans gratuitos usados, scans públicos."""
+    return await get_target_store().public_scan_stats()
 
 
 @app.get("/analytics/abandoned")
@@ -1866,7 +2073,8 @@ def _pdf_response(pdf: bytes, filename: str) -> Response:
     )
 
 
-async def get_or_scan(url: str, ingest_source: Optional[str] = None) -> ScanReport:
+async def get_or_scan(url: str, ingest_source: Optional[str] = None,
+                      scanned_by_email: Optional[str] = None) -> ScanReport:
     """Retorna o scan reusando o dado mais recente; só escaneia em último caso.
 
     Prioridade (fix — carregamento rápido pelo link do e-mail):
@@ -1901,21 +2109,45 @@ async def get_or_scan(url: str, ingest_source: Optional[str] = None) -> ScanRepo
     if _cache is not None:
         await _cache.set(url, report)
     if ingest_source:
-        _spawn(_ingest_scan_bg(url, report, ingest_source))
+        _spawn(_ingest_scan_bg(url, report, ingest_source, scanned_by_email))
     return report
 
 
-async def _ingest_scan_bg(url: str, report: ScanReport, source: str) -> None:
+async def get_recent_only(url: str) -> Optional[ScanReport]:
+    """Retorna um scan RECENTE (cache Redis ou banco < 1h) SEM reescanear. Usado no
+    /scan/summary quando não há token de verificação — nunca dispara scan novo (KL-25)."""
+    if _cache is not None:
+        cached = await _cache.get(url)
+        if cached is not None:
+            return cached
     try:
-        await ingest_scan(get_target_store(), url, report, source)
+        checks = await get_target_store().get_recent_scan_checks(url, 60)
+    except Exception:  # noqa: BLE001
+        checks = None
+    if checks:
+        try:
+            report = ScanReport.from_dict(checks)
+            if _cache is not None:
+                await _cache.set(url, report)
+            return report
+        except Exception:  # noqa: BLE001
+            return None
+    return None
+
+
+async def _ingest_scan_bg(url: str, report: ScanReport, source: str,
+                          scanned_by_email: Optional[str] = None) -> None:
+    try:
+        await ingest_scan(get_target_store(), url, report, source, scanned_by_email)
         print(f"[ingest] {url} registrado no banco (source={source})", flush=True)
     except Exception as exc:  # noqa: BLE001 - ingestão é best-effort, não quebra o scan
         print(f"[ingest] falha ao registrar {url} ({exc!r})", flush=True)
 
 
-async def _safe_scan(url: str, ingest_source: Optional[str] = None):
+async def _safe_scan(url: str, ingest_source: Optional[str] = None,
+                     scanned_by_email: Optional[str] = None):
     try:
-        return await get_or_scan(url, ingest_source)
+        return await get_or_scan(url, ingest_source, scanned_by_email)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"URL inválida: {exc}") from exc
     except Exception as exc:  # noqa: BLE001

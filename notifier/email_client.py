@@ -434,6 +434,16 @@ class KlarimMailer:
             "html": html, "attachments": attachments,
         })
 
+    async def send_verification_code(self, to_email: str, code: str, domain: str) -> Dict[str, Any]:
+        """Envia o código de 6 dígitos para verificar o e-mail antes do scan (KL-25)."""
+        html = _env.get_template("verification_code.html").render(code=code, domain=domain)
+        return await self._send({
+            "from": self.from_address,
+            "to": [to_email],
+            "subject": f"🔐 Seu código Klarim: {code}",
+            "html": html,
+        })
+
     async def send_recovery_link(self, to_email: str, recovery_url: str) -> Dict[str, Any]:
         """Envia o link temporário de recuperação de relatórios."""
         sep = "&" if "?" in recovery_url else "?"

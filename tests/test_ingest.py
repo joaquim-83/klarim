@@ -36,8 +36,10 @@ class FakeStore:
         return 42
 
     async def save_scan(self, target_id, url, score, semaphore, pass_count, fail_count,
-                        inconclusive_count, checks_json, source="discovery"):
-        self.scans.append({"target_id": target_id, "score": score, "source": source})
+                        inconclusive_count, checks_json, source="discovery",
+                        scanned_by_email=None):
+        self.scans.append({"target_id": target_id, "score": score, "source": source,
+                           "scanned_by_email": scanned_by_email})
         return 100
 
     async def update_scan_result(self, target_id, scan_id, score):
@@ -77,3 +79,15 @@ def test_ingest_without_html_is_graceful(monkeypatch):
     assert meta["contact_email"] is None and meta["platform"] == "unknown"
     assert store.registered[0]["source"] == "public"
     assert store.scans[0]["source"] == "public"
+
+
+def test_ingest_records_scanned_by_email(monkeypatch):
+    # KL-25: o e-mail do visitante que pediu o scan público chega no save_scan
+    async def none_html(url):
+        return None
+    monkeypatch.setattr(ing, "_fetch_html", none_html)
+    store = FakeStore()
+    report = FakeReport(FakeScore(80, "amarelo", 5, 3, 1))
+    asyncio.run(ing.ingest_scan(store, "https://x.com.br", report, "public",
+                                scanned_by_email="visitor@x.com"))
+    assert store.scans[0]["scanned_by_email"] == "visitor@x.com"

@@ -982,3 +982,41 @@ MCPAuthMiddleware(mcp_app))`.
     "headers": {"Authorization": "Bearer <MCP_API_KEY>"}}}}`.
   - **Claude Code:** `claude mcp add klarim --transport sse https://klarim.net/mcp/sse
     --header "Authorization: Bearer <MCP_API_KEY>"`.
+
+## 25. Scan público verificado por e-mail (KL-25) — código 6 dígitos + 1 grátis/e-mail
+
+O scan público passou a **exigir e-mail confirmado** (código de 6 dígitos) e dar **1
+scan gratuito por e-mail** — captura o lead e corta bot/curioso. Fluxo: URL + e-mail
+→ código no e-mail → digita o código → scan roda → resultado. 2º scan (outra URL) →
+"limite atingido" + CTA de pagamento; mesma URL → resultado anterior (sem gastar o
+crédito).
+
+- **Tabelas (`store.py`):** `scan_verifications` (código, url, `verified`, `expires_at`
+  10min, ip) e `scan_credits` (`email` unique, `free_scans_used`, `first_scan_url`).
+  Coluna `scans.scanned_by_email` liga o scan ao lead.
+- **Endpoints (`api/main.py`, públicos):**
+  - `POST /scan/request-code {email, url}` — checa o crédito (→ `already_scanned` /
+    `limit_reached`), gera código **CSPRNG** (`secrets.randbelow`), grava (TTL 10min),
+    envia via Resend. **Rate limit** 3/e-mail/h + 5/IP/h (in-memory).
+  - `POST /scan/verify-code {email, code, url}` — valida (não usado, não expirado),
+    consome o gratuito (`record_free_scan`), devolve um **scan token** HMAC (email+url+
+    exp, 1h). Rate limit 5/e-mail/10min.
+  - `POST /scan/check-credit` — estado do crédito sem enviar código.
+  - `GET /scan/summary` — exige o **`X-Scan-Token`** (ou JWT de admin) para **disparar**
+    um scan novo (`_verify_scan_token`, url tem que casar); sem token, só devolve
+    resultado **já existente** (`get_recent_only`: cache/banco, nunca reescaneia) ou
+    `{"status":"auth_required"}`. O e-mail do token vira `scanned_by_email` no scan.
+- **Token:** HMAC-SHA256 assinado com `JWT_SECRET`, payload base64 (email/url/exp).
+- **E-mail:** `KlarimMailer.send_verification_code` + `verification_code.html` (dark,
+  código grande). `send_verification_code` só roda se `RESEND_API_KEY` configurada.
+- **Frontend (`Landing.jsx`):** 3 estados — **form** (URL+e-mail) → **code** (código +
+  reenviar 45s) → **limit** (CTA pagamento). Ao verificar, guarda o token
+  (`sessionStorage`, `api.setScanToken`) e vai para `/scan` (que escaneia com o token
+  via `fetchSummary` → `X-Scan-Token`). `useSummary`/`Scan.jsx` redirecionam à home em
+  `auth_required`.
+- **Tracking (KL-21):** eventos `code_requested`, `code_verified`, `code_failed`,
+  `scan_limit_reached`.
+- **Dashboard:** `GET /analytics/public-scans` (card em `/painel/analytics`) e
+  `scanned_by_email` no detalhe do scan.
+- **Limpeza:** `create_scan_verification` apaga os códigos expirados a cada gravação
+  (sem cron).

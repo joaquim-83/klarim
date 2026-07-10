@@ -116,6 +116,34 @@ CREATE TABLE IF NOT EXISTS email_blocklist (
 );
 CREATE INDEX IF NOT EXISTS idx_blocklist_email ON email_blocklist(email);
 CREATE INDEX IF NOT EXISTS idx_blocklist_domain ON email_blocklist(domain);
+
+-- Quem pediu o scan público (KL-25): liga o scan ao lead.
+ALTER TABLE scans ADD COLUMN IF NOT EXISTS scanned_by_email VARCHAR(255);
+
+-- Verificação de e-mail por código de 6 dígitos antes do scan público (KL-25).
+CREATE TABLE IF NOT EXISTS scan_verifications (
+    id SERIAL PRIMARY KEY,
+    email VARCHAR(255) NOT NULL,
+    code VARCHAR(6) NOT NULL,
+    url TEXT NOT NULL,
+    verified BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMP DEFAULT NOW(),
+    expires_at TIMESTAMP NOT NULL,
+    ip_address VARCHAR(45)
+);
+CREATE INDEX IF NOT EXISTS idx_sv_email ON scan_verifications(email);
+CREATE INDEX IF NOT EXISTS idx_sv_code ON scan_verifications(email, code);
+
+-- Crédito de scan gratuito por e-mail (KL-25): 1 scan grátis por e-mail.
+CREATE TABLE IF NOT EXISTS scan_credits (
+    id SERIAL PRIMARY KEY,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    free_scans_used INTEGER DEFAULT 0,
+    first_scan_url TEXT,
+    first_scan_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_sc_email ON scan_credits(email);
 """
 
 
@@ -446,19 +474,106 @@ class TargetStore:
     async def save_scan(
         self, target_id: Optional[int], url: str, score: int, semaphore: str,
         pass_count: int, fail_count: int, inconclusive_count: int, checks_json: dict,
-        source: str = "discovery",
+        source: str = "discovery", scanned_by_email: Optional[str] = None,
     ) -> int:
         def _fn(cur):
             cur.execute(
                 """
                 INSERT INTO scans (target_id, url, score, semaphore, pass_count,
-                                   fail_count, inconclusive_count, checks_json, source)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+                                   fail_count, inconclusive_count, checks_json, source,
+                                   scanned_by_email)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
                 """,
                 (target_id, url, score, semaphore, pass_count, fail_count,
-                 inconclusive_count, json.dumps(checks_json), source),
+                 inconclusive_count, json.dumps(checks_json), source, scanned_by_email),
             )
             return cur.fetchone()[0]
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- verificação de e-mail + crédito de scan público (KL-25) ----------- #
+
+    async def create_scan_verification(
+        self, email: str, code: str, url: str, ttl_minutes: int = 10,
+        ip_address: Optional[str] = None,
+    ) -> None:
+        """Grava um código de verificação (TTL 10min) e limpa os expirados do e-mail."""
+        def _fn(cur):
+            cur.execute("DELETE FROM scan_verifications WHERE expires_at < NOW()")
+            cur.execute(
+                "INSERT INTO scan_verifications (email, code, url, expires_at, ip_address) "
+                "VALUES (%s, %s, %s, NOW() + (%s || ' minutes')::interval, %s)",
+                (email, code, url, str(ttl_minutes), ip_address),
+            )
+
+        await asyncio.to_thread(self._run, _fn)
+
+    async def count_verifications_since(
+        self, email: Optional[str] = None, ip: Optional[str] = None, hours: int = 1
+    ) -> int:
+        """Códigos enviados por e-mail OU por IP na última janela (rate limit)."""
+        def _fn(cur):
+            if email is not None:
+                cur.execute(
+                    "SELECT COUNT(*) FROM scan_verifications WHERE email = %s "
+                    "AND created_at > NOW() - (%s || ' hours')::interval", (email, str(hours)))
+            else:
+                cur.execute(
+                    "SELECT COUNT(*) FROM scan_verifications WHERE ip_address = %s "
+                    "AND created_at > NOW() - (%s || ' hours')::interval", (ip, str(hours)))
+            return int(cur.fetchone()[0])
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def verify_scan_code(self, email: str, code: str, url: str) -> bool:
+        """Marca a verificação válida (não usada, não expirada) como verified.
+        Retorna True se casou; False se código inválido/expirado."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE scan_verifications SET verified = TRUE "
+                "WHERE id = (SELECT id FROM scan_verifications "
+                "  WHERE email = %s AND code = %s AND url = %s "
+                "    AND verified = FALSE AND expires_at > NOW() "
+                "  ORDER BY created_at DESC LIMIT 1) RETURNING id",
+                (email, code, url),
+            )
+            return cur.fetchone() is not None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_scan_credit(self, email: str) -> Optional[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute("SELECT * FROM scan_credits WHERE email = %s", (email,))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def record_free_scan(self, email: str, url: str) -> None:
+        """Consome o scan gratuito do e-mail (idempotente por e-mail — o 1º grava)."""
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO scan_credits (email, free_scans_used, first_scan_url, first_scan_at) "
+                "VALUES (%s, 1, %s, NOW()) ON CONFLICT (email) DO NOTHING",
+                (email, url),
+            )
+
+        await asyncio.to_thread(self._run, _fn)
+
+    async def public_scan_stats(self) -> Dict[str, Any]:
+        """Métricas do funil de verificação pública (KL-25) para o dashboard."""
+        def _fn(cur):
+            cur.execute("SELECT COUNT(*), COUNT(*) FILTER (WHERE verified) FROM scan_verifications")
+            codes_sent, verified = cur.fetchone()
+            cur.execute("SELECT COUNT(DISTINCT email) FROM scan_verifications")
+            emails = int(cur.fetchone()[0])
+            cur.execute("SELECT COUNT(*) FROM scan_credits")
+            credits = int(cur.fetchone()[0])
+            cur.execute("SELECT COUNT(*) FROM scans WHERE scanned_by_email IS NOT NULL")
+            public_scans = int(cur.fetchone()[0])
+            return {"codes_sent": int(codes_sent or 0), "verified": int(verified or 0),
+                    "distinct_emails": emails, "free_scans_used": credits,
+                    "public_scans": public_scans}
 
         return await asyncio.to_thread(self._run, _fn)
 

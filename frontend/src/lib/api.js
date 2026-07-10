@@ -2,15 +2,59 @@
 // Em dev, o proxy do Vite faz o mesmo (ver vite.config.js).
 const BASE = import.meta.env.VITE_API_BASE || '/api'
 
+// Token de scan (KL-25): emitido pela verificação de e-mail; autoriza 1 scan.
+const SCAN_TOKEN_KEY = 'klarim_scan_token'
+export function setScanToken(token) {
+  try { sessionStorage.setItem(SCAN_TOKEN_KEY, token) } catch { /* noop */ }
+}
+function getScanToken() {
+  try { return sessionStorage.getItem(SCAN_TOKEN_KEY) || '' } catch { return '' }
+}
+
+function jsonPost(path, body) {
+  return fetch(`${BASE}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  }).then(async (r) => ({ status: r.status, data: await r.json().catch(() => ({})) }))
+}
+
+// Estado do crédito de scan gratuito do e-mail para a URL (sem enviar código).
+export async function checkCredit(email, url) {
+  const { data } = await jsonPost('/scan/check-credit', { email, url })
+  return data  // { has_free_scan, same_url_scanned, free_scans_used }
+}
+
+// Envia o código de 6 dígitos. Retorna { status, ... }.
+export async function requestCode(email, url) {
+  const { status, data } = await jsonPost('/scan/request-code', { email, url })
+  if (status === 429) throw new Error(data.detail || 'Muitas solicitações. Tente mais tarde.')
+  return data  // { status: code_sent | limit_reached | already_scanned }
+}
+
+// Verifica o código. Em sucesso guarda o scan token. Retorna { status, ... }.
+export async function verifyCode(email, code, url) {
+  const { status, data } = await jsonPost('/scan/verify-code', { email, code, url })
+  if (status === 429) throw new Error(data.detail || 'Muitas tentativas. Aguarde.')
+  if (data.status === 'verified' && data.scan_token) setScanToken(data.scan_token)
+  return data  // { status: verified | invalid, scan_token? }
+}
+
 // Executa o scan e retorna o resumo executivo (score, semáforo, contagens).
-// Atenção: o scan leva ~25-30s (rate limit de 1 req/s por domínio).
+// Envia o scan token (se houver). auth_required => lança 'auth_required' (o
+// visitante precisa verificar o e-mail). Atenção: o scan leva ~25-30s.
 export async function fetchSummary(url) {
-  const resp = await fetch(`${BASE}/scan/summary?url=${encodeURIComponent(url)}`)
+  const token = getScanToken()
+  const resp = await fetch(`${BASE}/scan/summary?url=${encodeURIComponent(url)}`, {
+    headers: token ? { 'X-Scan-Token': token } : {},
+  })
   if (!resp.ok) {
     const detail = await resp.text().catch(() => '')
     throw new Error(`Falha na varredura (${resp.status}). ${detail}`)
   }
-  return resp.json()
+  const data = await resp.json()
+  if (data && data.status === 'auth_required') throw new Error('auth_required')
+  return data
 }
 
 // Cria uma cobrança PIX para a URL escaneada. Retorna { charge_id, br_code,

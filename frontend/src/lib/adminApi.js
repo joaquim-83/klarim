@@ -133,6 +133,7 @@ export const admin = {
   analyticsCampaigns: (period = '7d') => get(`/analytics/campaigns?period=${period}`),
   analyticsPages: (period = '7d') => get(`/analytics/pages?period=${period}`),
   analyticsEvents: (limit = 50) => get(`/analytics/events?limit=${limit}`),
+  publicScans: () => get('/analytics/public-scans'),  // KL-25
 
   // reclassificação de setor (refino KL-11)
   reclassifyDomains: () => post('/admin/reclassify-domains'),
