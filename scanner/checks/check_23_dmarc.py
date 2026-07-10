@@ -1,7 +1,9 @@
-"""Check 23 — DMARC ausente ou permissivo (Severidade: ALTA).
+"""Check 23 — DMARC ausente, duplicado ou permissivo (Severidade: ALTA).
 
-Passivo: TXT de `_dmarc.{domain}`. Ausente → FAIL. `p=none` (só monitora, não
-bloqueia) → FAIL. `p=quarantine`/`p=reject` → PASS. Erro de DNS → INCONCLUSO.
+Passivo: TXT de `_dmarc.{domain}`. Ausente → FAIL. **Múltiplos** registros DMARC →
+FAIL (RFC 7489 §6.6.3: receptores ignoram todos, o DMARC fica sem efeito). `p=none`
+(só monitora) → FAIL. `p=quarantine`/`p=reject` (registro único) → PASS. Erro de DNS
+→ INCONCLUSO.
 """
 
 from __future__ import annotations
@@ -24,13 +26,27 @@ async def check(url: str) -> CheckResult:
         return CheckResult(name=NAME, status=Status.INCONCLUSO, severity=Severity.ALTA,
                            evidence=f"Não foi possível consultar o DNS de _dmarc.{domain}.")
 
-    dmarc = next((r for r in records if r.lower().startswith("v=dmarc1")), None)
-    if dmarc is None:
+    # Todos os registros DMARC (não só o primeiro que o DNS retornou).
+    dmarc_records = [r.strip() for r in records if r.strip().lower().startswith("v=dmarc1")]
+
+    if len(dmarc_records) > 1:
+        # RFC 7489 §6.6.3: com múltiplos registros DMARC, receptores ignoram TODOS
+        # — o DMARC fica sem efeito (e o resultado antes oscilava com a ordem do DNS).
+        listing = "; ".join(dmarc_records[:3])
+        return CheckResult(
+            name=NAME, status=Status.FAIL, severity=Severity.ALTA,
+            evidence=f"Múltiplos registros DMARC em {domain} ({len(dmarc_records)}). "
+                     f"Pela RFC 7489, receptores ignoram todos — o DMARC está sem efeito. "
+                     f"Registros: {listing}.",
+            details={"domain": domain, "count": len(dmarc_records), "records": dmarc_records})
+
+    if not dmarc_records:
         return CheckResult(
             name=NAME, status=Status.FAIL, severity=Severity.ALTA,
             evidence=f"DMARC ausente em {domain} — sem política contra falsificação de e-mail.",
             details={"domain": domain})
 
+    dmarc = dmarc_records[0]
     m = re.search(r"p\s*=\s*(none|quarantine|reject)", dmarc, re.IGNORECASE)
     policy = (m.group(1).lower() if m else "none")
     if policy in ("quarantine", "reject"):

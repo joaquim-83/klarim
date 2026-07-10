@@ -195,7 +195,7 @@ específico como identidade do produto. Conjunto atual (**29**):
 | 20 | Diferenciação 403/404 em paths sensíveis | `check_20_info_disclosure.py` | Baixa |
 | 21 | SPF ausente/fraco | `check_21_spf.py` | Alta |
 | 22 | DKIM ausente | `check_22_dkim.py` | Média |
-| 23 | DMARC ausente/permissivo | `check_23_dmarc.py` | Alta |
+| 23 | DMARC ausente/duplicado/permissivo | `check_23_dmarc.py` | Alta |
 | 24 | Mixed content | `check_24_mixed_content.py` | Média |
 | 25 | Formulários inseguros | `check_25_form_security.py` | Alta |
 | 26 | Subdomínios expostos (CT logs) | `check_26_subdomains.py` | Média |

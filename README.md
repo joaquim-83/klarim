@@ -45,7 +45,7 @@ Conjunto atual (29):
 | 20 | 403 (em vez de 404) em paths sensíveis | `check_20_info_disclosure.py` | 🔵 Baixa |
 | 21 | SPF ausente ou sem política restritiva | `check_21_spf.py` | 🟠 Alta |
 | 22 | DKIM ausente (seletores comuns) | `check_22_dkim.py` | 🟡 Média |
-| 23 | DMARC ausente ou permissivo (`p=none`) | `check_23_dmarc.py` | 🟠 Alta |
+| 23 | DMARC ausente, duplicado (RFC 7489) ou permissivo | `check_23_dmarc.py` | 🟠 Alta |
 | 24 | Mixed content (recursos HTTP em página HTTPS) | `check_24_mixed_content.py` | 🟡 Média |
 | 25 | Formulários inseguros (action HTTP/cross-origin) | `check_25_form_security.py` | 🟠 Alta |
 | 26 | Subdomínios sensíveis expostos (CT logs / crt.sh) | `check_26_subdomains.py` | 🟡 Média |

@@ -323,6 +323,35 @@ def test_check23_pass_reject(monkeypatch):
     assert r.status == Status.PASS
 
 
+def test_check23_single_dmarc_quarantine_pass(monkeypatch):
+    # Registro ÚNICO com p=quarantine → PASS (inalterado). KL-30.
+    monkeypatch.setattr(dns_util, "resolve_txt",
+                        _txt_returning(["v=DMARC1; p=quarantine; rua=mailto:x@y.com"]))
+    r = _run(check_23_dmarc.check(URL))
+    assert r.status == Status.PASS
+    assert r.details.get("policy") == "quarantine"
+
+
+def test_check23_multiple_dmarc_records_fail(monkeypatch):
+    # KL-30: múltiplos registros DMARC = FAIL (RFC 7489), mesmo com um quarantine.
+    monkeypatch.setattr(dns_util, "resolve_txt",
+                        _txt_returning(["v=DMARC1; p=none",
+                                        "v=DMARC1; p=quarantine; rua=mailto:x@y.com"]))
+    r = _run(check_23_dmarc.check(URL))
+    assert r.status == Status.FAIL and r.severity == Severity.ALTA
+    assert "ltiplos" in r.evidence  # "Múltiplos"
+    assert r.details.get("count") == 2
+
+
+def test_check23_ignores_non_dmarc_txt(monkeypatch):
+    # Um único DMARC entre outros TXT (ex.: SPF/verificação) → avalia só o DMARC (KL-30).
+    monkeypatch.setattr(dns_util, "resolve_txt",
+                        _txt_returning(["some-verification=abc",
+                                        "v=DMARC1; p=reject"]))
+    r = _run(check_23_dmarc.check(URL))
+    assert r.status == Status.PASS
+
+
 def test_check23_inconclusive_on_dns_error(monkeypatch):
     monkeypatch.setattr(dns_util, "resolve_txt", _txt_returning(None))
     r = _run(check_23_dmarc.check(URL))
