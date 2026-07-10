@@ -6,7 +6,13 @@ from dataclasses import dataclass, asdict
 from typing import Optional
 
 
-# Faixas de preço por setor (em centavos). MVP usa sempre 'standard' (R$ 29).
+# Preço ÚNICO do relatório completo (KL-27): R$ 19 para todos os setores. É o
+# preço de impulso do funil bottom-up. O `price_tier`/`PRICING` por setor fica só
+# para analytics de classificação (qual setor compra mais) — NÃO define o preço.
+PRICE_AMOUNT = 1900          # centavos — sempre cobrado no /payment/create
+PRICE_DISPLAY = "R$ 19"
+
+# Faixas de preço por setor (em centavos). Mantidas só para analytics/classificação.
 PRICING = {
     "basic": 1900,         # comércio local, blogs, portfólios
     "standard": 2900,      # hotéis, pousadas, restaurantes

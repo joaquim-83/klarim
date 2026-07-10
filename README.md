@@ -175,7 +175,8 @@ uvicorn api.main:app --reload --port 8000
 ```
 
 - `GET /scan?url=…` — relatório técnico completo (JSON).
-- `GET /scan/summary?url=…` — semáforo executivo gratuito (score + contagens).
+- `GET /scan/summary?url=…` — resultado gratuito (KL-27): score + semáforo +
+  contagem + `free_checks` (15, ✅/❌) + `paid_checks` (14, `locked`). Sem detalhes.
 - `GET /report/executive?url=…` — relatório executivo em **PDF**.
 - `GET /report/technical?url=…` — relatório técnico em **PDF**.
 
@@ -321,14 +322,20 @@ Referrer-Policy) — o Klarim pratica o que prega. Renovação automática via
 ## Pagamento (PIX via AbacatePay)
 
 O relatório completo é liberado após pagamento **PIX** (módulo
-[`payments/`](./payments/), integração AbacatePay). Fluxo: semáforo grátis →
-"Ver relatório completo — R$ 29" → **QR code PIX inline** → polling do status →
-pago → download dos PDFs. Um **webhook** confirma o pagamento server-side.
+[`payments/`](./payments/), integração AbacatePay). Fluxo (funil KL-27): scan
+**gratuito** (15 checks, semáforo + lista sem detalhes, 14 checks bloqueados) →
+"Fazer scan completo — **R$ 19**" → **QR code PIX inline** → polling do status →
+pago → scan **completo (29)** + download dos PDFs + **1 re-verificação gratuita**.
+Um **webhook** confirma o pagamento server-side.
 
-- `POST /api/payment/create` → cria a cobrança e retorna `br_code` + `qr_code_base64`.
+- `POST /api/payment/create` → cria a cobrança (**R$ 19 fixo**) e retorna `br_code`
+  + `qr_code_base64`.
 - `GET /api/payment/status?charge_id=` → polling (`{status, paid}`).
 - `POST /api/webhooks/abacatepay?webhookSecret=…` → confirmação server-side.
-- `GET /api/report/{executive,technical}?url=…&charge_id=…` → **402** sem cobrança paga.
+- `GET /api/report/{executive,technical}?url=…&charge_id=…` → **402** sem cobrança
+  paga (ou `scan_token` de re-verificação).
+- `POST /api/scan/rescan {email, code, url}` → re-verificação gratuita pós-compra:
+  scan completo + comparação antes/depois (**"retorno médico"**).
 
 **Modo livre:** com `KLARIM_DEV_MODE=true` **ou** sem `ABACATEPAY_API_KEY`
 configurada, os PDFs ficam liberados (o site funciona antes de configurar o

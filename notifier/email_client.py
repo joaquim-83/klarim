@@ -255,18 +255,17 @@ class KlarimMailer:
             secret = os.environ.get("UNSUBSCRIBE_SECRET")
             if secret:
                 unsubscribe_link = build_unsubscribe_link(to_email, secret)
+        # KL-27: e-mail sem preço, sem cards de risco e sem contagem por severidade —
+        # profissional e neutro. Score + semáforo + contagem + CTA "Veja o relatório".
         html = _env.get_template("alert.html").render(
             **self._score_ctx(score, semaphore),
             site_name=site,
             target_url=target_url,
             fail_count=fail_count,
-            sev=severity_counts or {},
-            risk_messages=(risk_messages or [])[:3],  # KL-20: máx 3 riscos no e-mail
             result_link=utm_result_link(target_url, "alerta", target_id),
-            lgpd=LGPD_SHORT,
             unsubscribe_link=unsubscribe_link,
         )
-        subject = f"⚠️ Encontramos {fail_count} problema(s) de segurança em {site}"
+        subject = f"{site} — resultado da avaliação de segurança"
         return {"from": self.from_address, "to": [to_email], "subject": subject, "html": html}
 
     async def send_alert(
@@ -334,17 +333,12 @@ class KlarimMailer:
             if secret:
                 unsubscribe_link = build_unsubscribe_link(to_email, secret)
 
-        templates = {
-            "improved": ("evolution_improved.html",
-                         f"🎉 Seu site melhorou! {site} — de {old_score} para {new_score}"),
-            "worsened": ("evolution_worsened.html",
-                         f"⚠️ Novos problemas encontrados — {site} caiu de {old_score} para {new_score}"),
-        }
-        # unchanged / first_rescan caem no template mensal.
-        template_name, subject = templates.get(
-            evolution,
-            ("evolution_unchanged.html", f"📊 Varredura mensal — {site} permanece em {new_score}/100"),
-        )
+        template_name = {
+            "improved": "evolution_improved.html",
+            "worsened": "evolution_worsened.html",
+        }.get(evolution, "evolution_unchanged.html")  # unchanged / first_rescan
+        # KL-27: assunto neutro e único, sem preço e sem detalhes de risco.
+        subject = f"{site} — atualização da avaliação de segurança"
         html = _env.get_template(template_name).render(
             **self._score_ctx(new_score, semaphore),
             old_score=old_score,
@@ -352,11 +346,7 @@ class KlarimMailer:
             site_name=site,
             target_url=target_url,
             fail_count=fail_count,
-            sev=severity_counts or {},
-            risk_messages=(risk_messages or [])[:3],  # KL-20
             result_link=utm_result_link(target_url, f"evolucao_{evolution}", target_id),
-            price_display=price_display,
-            lgpd=LGPD_SHORT,
             unsubscribe_link=unsubscribe_link,
         )
         return {"from": self.from_address, "to": [to_email], "subject": subject, "html": html}

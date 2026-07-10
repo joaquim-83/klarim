@@ -4,7 +4,7 @@ import Layout from '../components/Layout'
 import { Beacon } from '../components/Logo'
 import { normalizeUrl, isValidUrl } from '../lib/url'
 import { trackEvent } from '../lib/tracker'
-import { requestCode, verifyCode } from '../lib/api'
+import { requestCode, verifyCode, checkCredit, rescanScan } from '../lib/api'
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/
 
@@ -37,6 +37,7 @@ export default function Landing() {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [resendIn, setResendIn] = useState(0)
+  const [isRescan, setIsRescan] = useState(false) // re-verificação gratuita (KL-27)
   const navigate = useNavigate()
 
   // Contador do "reenviar código".
@@ -70,13 +71,24 @@ export default function Landing() {
     }
   }
 
-  function onSubmit(e) {
+  async function onSubmit(e) {
     e.preventDefault()
     if (!isValidUrl(url)) return setError('Digite uma URL válida, ex.: exemplo.com.br')
     if (!EMAIL_RE.test(email.trim())) return setError('Digite um e-mail válido.')
     setError('')
-    setUrl(normalizeUrl(url))
-    askCode(normalizeUrl(url))
+    const target = normalizeUrl(url)
+    setUrl(target)
+    // KL-27: detecta re-verificação gratuita (retorno médico) antes de pedir o código.
+    setBusy(true)
+    try {
+      const credit = await checkCredit(email.trim(), target)
+      setIsRescan(!!credit.can_rescan)
+    } catch {
+      setIsRescan(false)
+    } finally {
+      setBusy(false)
+    }
+    askCode(target)
   }
 
   async function onVerify(e) {
@@ -85,6 +97,20 @@ export default function Landing() {
     setBusy(true)
     setError('')
     try {
+      if (isRescan) {
+        // Re-verificação: roda o scan completo e mostra a comparação antes/depois.
+        const r = await rescanScan(email.trim(), code.trim(), url)
+        if (r.status === 'ok') {
+          trackEvent('code_verified', { url, rescan: true }, url)
+          navigate(`/result?url=${encodeURIComponent(url)}`, { state: { summary: r } })
+        } else if (r.status === 'no_credit') {
+          setError('Você não tem re-verificações gratuitas disponíveis.')
+        } else {
+          trackEvent('code_failed', { url }, url)
+          setError(r.message || 'Código inválido ou expirado.')
+        }
+        return
+      }
       const r = await verifyCode(email.trim(), code.trim(), url)
       if (r.status === 'verified') {
         trackEvent('code_verified', { url }, url)
@@ -111,8 +137,9 @@ export default function Landing() {
           O alarme que toca antes do ataque.
         </h1>
         <p className="mx-auto mt-3 max-w-xl text-klarim-muted sm:text-lg">
-          Descubra as vulnerabilidades do seu site em segundos.{' '}
-          <span className="font-semibold text-klarim-ok">Gratuito.</span>
+          Analisamos 29 pontos de segurança do seu site.{' '}
+          <span className="font-semibold text-klarim-ok">Scan básico gratuito</span>
+          {' '}+ relatório completo por R$ 19.
         </p>
 
         <div className="mx-auto mt-8 max-w-xl">
@@ -135,6 +162,11 @@ export default function Landing() {
 
           {step === 'code' && (
             <form onSubmit={onVerify} className="space-y-3 text-left">
+              {isRescan && (
+                <p className="rounded-lg border border-klarim-ok bg-klarim-surface px-4 py-2 text-center text-sm text-klarim-ok">
+                  Re-verificação gratuita — rodaremos o scan completo (29 pontos).
+                </p>
+              )}
               <p className="text-center text-sm text-klarim-muted">
                 Código enviado para <span className="text-klarim-text">{email}</span>
               </p>
@@ -144,7 +176,7 @@ export default function Landing() {
                 placeholder="______"
                 className={`${inputCls} text-center text-2xl tracking-[0.5em]`} />
               <button type="submit" disabled={busy} className={btnCls}>
-                {busy ? 'Verificando…' : 'Verificar e escanear'}
+                {busy ? 'Verificando…' : isRescan ? 'Verificar e re-escanear' : 'Verificar e escanear'}
               </button>
               <div className="text-center text-xs text-klarim-muted">
                 {resendIn > 0 ? (

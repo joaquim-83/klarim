@@ -19,7 +19,6 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
 from notifier import KlarimMailer, KlarimMailerError, build_unsubscribe_link
-from reporter.risk_messages import get_risk_messages
 from .store import get_target_store
 from .heartbeat import publish_heartbeat
 from .contact import email_mx_status, _clean_email
@@ -65,14 +64,13 @@ async def build_alert_payload(store, target: Dict[str, Any]) -> Dict[str, Any]:
         fail_count = scan.get("fail_count") if fail_count is None else fail_count
         score = scan.get("score") if score is None else score
 
-    sev = severity_counts_from_checks(checks)
-    risks = get_risk_messages((checks or {}).get("results", []))
+    # KL-27: o e-mail não mostra mais riscos/severidade — só score + contagem + CTA.
     secret = os.environ.get("UNSUBSCRIBE_SECRET")
     unsub = build_unsubscribe_link(email, secret) if secret else None
     return {
         "target_id": target["id"], "to_email": email, "target_url": target["url"],
         "score": score or 0, "semaphore": semaphore or "", "fail_count": fail_count or 0,
-        "severity_counts": sev, "risk_messages": risks, "unsubscribe_link": unsub,
+        "unsubscribe_link": unsub,
     }
 
 
@@ -90,14 +88,12 @@ async def send_alert_for_target(store, mailer: KlarimMailer, target: Dict[str, A
         raise ValueError("alvo sem scan")
 
     score, semaphore, fail_count = scan["score"], scan["semaphore"], scan["fail_count"]
-    sev = severity_counts_from_checks(scan.get("checks_json"))
-    risks = get_risk_messages((scan.get("checks_json") or {}).get("results", []))
     secret = os.environ.get("UNSUBSCRIBE_SECRET")
     unsub = build_unsubscribe_link(email, secret) if secret else None
 
-    res = await mailer.send_alert(email, target["url"], score, semaphore, fail_count, sev,
-                                  unsubscribe_link=unsub, risk_messages=risks,
-                                  target_id=target["id"])
+    # KL-27: sem severidade/risco no e-mail (severity_counts fica {} — ignorado).
+    res = await mailer.send_alert(email, target["url"], score, semaphore, fail_count, {},
+                                  unsubscribe_link=unsub, target_id=target["id"])
     email_id = res.get("email_id")
     await store.mark_target_alerted(target["id"])
     await store.log_alert(target["id"], email, score, semaphore, fail_count, email_id)

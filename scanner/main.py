@@ -122,8 +122,10 @@ async def _worker_loop() -> None:
                 await asyncio.sleep(wait)
         last = loop.time()
         try:
-            report = await run_scan(url)
-            await cache.set(url, report)  # cache do KL-9 (PDF/summary instantâneos)
+            # KL-27: discovery/público = tier gratuito (15); admin/manual = completo (29).
+            full = source not in ("discovery", "public")
+            report = await run_scan(url, full=full)
+            await cache.set(url, report, full=full)  # cache do KL-9 (por tier)
             s = report.score
             if store is not None and target_id is not None and s is not None:
                 scan_id = await store.save_scan(

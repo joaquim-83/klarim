@@ -65,9 +65,11 @@ async def rescan_target(store, mailer: Optional[KlarimMailer], cache: Optional[S
     old_score = target.get("last_scan_score")
     old_semaphore = target.get("old_semaphore")
 
-    report = await run_scan(url)
+    # Re-scan do funil de re-engajamento: tier GRATUITO (15 checks, KL-27) — o
+    # score de evolução tem que ser comparável ao do alerta (também 15).
+    report = await run_scan(url, full=False)
     if cache is not None:
-        await cache.set(url, report)
+        await cache.set(url, report, full=False)
     s = report.score
     new_score = s.score if s else None
     new_semaphore = s.semaphore if s else None

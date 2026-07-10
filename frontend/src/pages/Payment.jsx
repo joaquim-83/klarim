@@ -113,10 +113,12 @@ export default function Payment() {
     return (
       <Layout>
         <div className="mx-auto max-w-md pt-6 text-center">
-          <h1 className="text-2xl font-bold">Relatório completo — R$ 29</h1>
+          <h1 className="text-2xl font-bold">Relatório completo — R$ 19</h1>
           <p className="mt-2 text-klarim-muted">
-            Informe seu e-mail. Enviaremos os relatórios (executivo + técnico) assim
-            que o pagamento for confirmado.
+            Todos os 29 pontos de segurança, com evidências e correções. Inclui
+            <span className="text-klarim-text"> 1 re-verificação gratuita</span> após você
+            corrigir as falhas. Informe seu e-mail — enviaremos os relatórios (executivo +
+            técnico) assim que o pagamento for confirmado.
           </p>
           <form onSubmit={submitEmail} className="mt-8 text-left">
             <label className="text-sm text-klarim-muted">Seu e-mail</label>

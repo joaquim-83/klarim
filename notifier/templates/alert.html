@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Alerta de Segurança — Klarim</title>
+<title>Avaliação de Segurança — Klarim</title>
 </head>
 <body style="margin:0; padding:0; background-color:#0D1117;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#0D1117;">
@@ -19,7 +19,7 @@
                   <td style="font-size:22px; font-weight:bold; letter-spacing:2px; color:#E6EDF3;">
                     KLA<span style="color:#FF6B35;">R</span>IM
                   </td>
-                  <td align="right" style="font-size:13px; color:#8B949E;">Alerta de Segurança</td>
+                  <td align="right" style="font-size:13px; color:#8B949E;">Avaliação de Segurança</td>
                 </tr>
               </table>
             </td>
@@ -37,73 +37,20 @@
             </td>
           </tr>
 
-          <!-- Resumo -->
+          <!-- Resumo (sem detalhes, sem preço) -->
           <tr>
-            <td style="padding:12px 28px; color:#E6EDF3; font-size:15px; line-height:1.6;">
-              Realizamos uma varredura passiva no seu site
+            <td style="padding:16px 28px 8px 28px; color:#E6EDF3; font-size:15px; line-height:1.6;">
+              Realizamos uma avaliação de segurança no seu site
               <a href="{{ target_url }}" style="color:#FF6B35; text-decoration:none;">{{ site_name }}</a>
-              e encontramos <strong>{{ fail_count }}</strong> problema(s) de segurança.
-            </td>
-          </tr>
-
-          <!-- Contagem por severidade -->
-          <tr>
-            <td style="padding:6px 28px 16px 28px;">
-              <table role="presentation" cellpadding="0" cellspacing="0" width="100%">
-                <tr>
-                  <td align="center" style="padding:8px; background-color:#0D1117; border:1px solid #30363D; border-radius:6px;">
-                    <div style="font-size:18px; font-weight:bold; color:#FF4D4D;">{{ sev.critica or 0 }}</div>
-                    <div style="font-size:10px; color:#8B949E; text-transform:uppercase;">Críticos</div>
-                  </td>
-                  <td width="8"></td>
-                  <td align="center" style="padding:8px; background-color:#0D1117; border:1px solid #30363D; border-radius:6px;">
-                    <div style="font-size:18px; font-weight:bold; color:#FF6B35;">{{ sev.alta or 0 }}</div>
-                    <div style="font-size:10px; color:#8B949E; text-transform:uppercase;">Altos</div>
-                  </td>
-                  <td width="8"></td>
-                  <td align="center" style="padding:8px; background-color:#0D1117; border:1px solid #30363D; border-radius:6px;">
-                    <div style="font-size:18px; font-weight:bold; color:#F2C744;">{{ sev.media or 0 }}</div>
-                    <div style="font-size:10px; color:#8B949E; text-transform:uppercase;">Médios</div>
-                  </td>
-                  <td width="8"></td>
-                  <td align="center" style="padding:8px; background-color:#0D1117; border:1px solid #30363D; border-radius:6px;">
-                    <div style="font-size:18px; font-weight:bold; color:#58A6FF;">{{ sev.baixa or 0 }}</div>
-                    <div style="font-size:10px; color:#8B949E; text-transform:uppercase;">Baixos</div>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
-
-          <!-- Riscos concretos (KL-20) -->
-          {% if risk_messages %}
-          <tr>
-            <td style="padding:0 28px 4px 28px;">
-              <div style="color:#FF6B35; font-weight:bold; font-size:15px; margin-bottom:8px;">
-                O que pode acontecer com o seu site:
-              </div>
-              {% for risk in risk_messages %}
-              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#0D1117; border-left:4px solid #FF6B35; border-radius:4px; margin-bottom:8px;">
-                <tr><td style="padding:10px 14px;">
-                  <div style="color:#E6EDF3; font-weight:bold; font-size:14px;">{{ risk.icon }} {{ risk.headline }}</div>
-                  <div style="color:#8B949E; font-size:13px; line-height:1.5; margin-top:2px;">{{ risk.risk }}</div>
-                </td></tr>
-              </table>
-              {% endfor %}
-            </td>
-          </tr>
-          {% endif %}
-          <tr>
-            <td style="padding:0 28px 12px 28px; color:#8B949E; font-size:11px; line-height:1.5;">
-              Nota: falhas de segurança também podem resultar em sanções e multas pela LGPD.
+              e encontramos <strong>{{ fail_count }}</strong> ponto(s) que precisam de atenção.
             </td>
           </tr>
 
           <!-- CTA -->
           <tr>
-            <td align="center" style="padding:8px 28px 24px 28px;">
-              <a href="{{ result_link }}" style="display:inline-block; background-color:#FF6B35; color:#0D1117; font-size:16px; font-weight:bold; text-decoration:none; padding:14px 28px; border-radius:8px;">
-                Ver detalhes e corrigir — a partir de R$ 19
+            <td align="center" style="padding:16px 28px 28px 28px;">
+              <a href="{{ result_link }}" style="display:inline-block; background-color:#FF6B35; color:#0D1117; font-size:16px; font-weight:bold; text-decoration:none; padding:14px 32px; border-radius:8px;">
+                Veja o relatório
               </a>
             </td>
           </tr>

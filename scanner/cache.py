@@ -22,14 +22,18 @@ class ScanCache:
         self.redis = redis_client
         self.ttl = ttl
 
-    def _key(self, url: str) -> str:
+    def _key(self, url: str, full: bool = True) -> str:
+        # Namespace por tier (KL-27): o scan gratuito (15 checks) e o completo (29)
+        # têm resultados diferentes e NÃO podem compartilhar chave. Ambos casam
+        # `scan:*` para o flush operacional na VM.
         normalized = url.strip().lower().rstrip("/")
-        return f"scan:{hashlib.sha256(normalized.encode()).hexdigest()[:16]}"
+        tier = "full" if full else "free"
+        return f"scan:{tier}:{hashlib.sha256(normalized.encode()).hexdigest()[:16]}"
 
-    async def get(self, url: str) -> Optional[ScanReport]:
-        """Busca scan cacheado. Retorna None em miss, erro ou dado inválido."""
+    async def get(self, url: str, full: bool = True) -> Optional[ScanReport]:
+        """Busca scan cacheado do tier. Retorna None em miss, erro ou dado inválido."""
         try:
-            raw = await self.redis.get(self._key(url))
+            raw = await self.redis.get(self._key(url, full))
         except Exception:  # noqa: BLE001 - Redis indisponível -> sem cache
             return None
         if not raw:
@@ -39,11 +43,11 @@ class ScanCache:
         except Exception:  # noqa: BLE001 - dado corrompido/incompatível -> ignora
             return None
 
-    async def set(self, url: str, report: ScanReport) -> None:
-        """Salva o scan no cache com TTL. Falha silenciosa (cache é best-effort)."""
+    async def set(self, url: str, report: ScanReport, full: bool = True) -> None:
+        """Salva o scan no cache do tier com TTL. Falha silenciosa (best-effort)."""
         try:
             await self.redis.set(
-                self._key(url), json.dumps(report.to_dict()), ex=self.ttl
+                self._key(url, full), json.dumps(report.to_dict()), ex=self.ttl
             )
         except Exception:  # noqa: BLE001 - não deixar o cache quebrar o fluxo
             pass

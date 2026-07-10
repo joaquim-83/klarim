@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from .runner import ScanReport, run_scan, scan, format_report
 from .scoring import ScoreBreakdown, compute_score, summarize_fails
-from .checks import ALL_CHECKS
+from .checks import ALL_CHECKS, FREE_CHECKS, CHECK_META, FREE_CHECK_MAX_ORDER
 from .checks.base import CheckResult, Status, Severity
 
 __all__ = [
@@ -25,6 +25,9 @@ __all__ = [
     "compute_score",
     "summarize_fails",
     "ALL_CHECKS",
+    "FREE_CHECKS",
+    "CHECK_META",
+    "FREE_CHECK_MAX_ORDER",
     "CheckResult",
     "Status",
     "Severity",

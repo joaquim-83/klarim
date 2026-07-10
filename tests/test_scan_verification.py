@@ -200,7 +200,7 @@ def test_scan_summary_with_token_scans(env, monkeypatch):
     store = FakeStore()
     c = _client(monkeypatch, store)
 
-    async def fake_safe_scan(url, ingest_source=None, scanned_by_email=None):
+    async def fake_safe_scan(url, full=True, ingest_source=None, scanned_by_email=None):
         fake_safe_scan.email = scanned_by_email
         return _FakeReport()
     monkeypatch.setattr(m, "_safe_scan", fake_safe_scan)
@@ -216,7 +216,7 @@ def test_scan_summary_no_token_returns_cached(env, monkeypatch):
     store = FakeStore(recent={"results": []})
     c = _client(monkeypatch, store)
 
-    async def fake_recent(url):
+    async def fake_recent(url, full=False):
         return _FakeReport()
     monkeypatch.setattr(m, "get_recent_only", fake_recent)
     r = c.get("/scan/summary?url=x.com.br")

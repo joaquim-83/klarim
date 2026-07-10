@@ -135,15 +135,18 @@ CREATE INDEX IF NOT EXISTS idx_sv_email ON scan_verifications(email);
 CREATE INDEX IF NOT EXISTS idx_sv_code ON scan_verifications(email, code);
 
 -- Crédito de scan gratuito por e-mail (KL-25): 1 scan grátis por e-mail.
+-- KL-27: rescan_credits = re-verificações gratuitas (1 por compra, "retorno médico").
 CREATE TABLE IF NOT EXISTS scan_credits (
     id SERIAL PRIMARY KEY,
     email VARCHAR(255) UNIQUE NOT NULL,
     free_scans_used INTEGER DEFAULT 0,
     first_scan_url TEXT,
     first_scan_at TIMESTAMP,
+    rescan_credits INTEGER DEFAULT 0,
     created_at TIMESTAMP DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_sc_email ON scan_credits(email);
+ALTER TABLE scan_credits ADD COLUMN IF NOT EXISTS rescan_credits INTEGER DEFAULT 0;
 """
 
 
@@ -560,6 +563,42 @@ class TargetStore:
 
         await asyncio.to_thread(self._run, _fn)
 
+    async def grant_rescan_credit(self, email: str, amount: int = 1) -> None:
+        """Concede N re-verificações gratuitas ao e-mail (KL-27, 1 por compra).
+
+        Cria a linha de crédito se não existir (comprador pode nunca ter feito o
+        scan gratuito). Somamos o crédito — comprador recorrente ganha mais de um.
+        """
+        email = (email or "").strip().lower()
+        if not email:
+            return
+
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO scan_credits (email, rescan_credits) VALUES (%s, %s) "
+                "ON CONFLICT (email) DO UPDATE "
+                "SET rescan_credits = scan_credits.rescan_credits + EXCLUDED.rescan_credits",
+                (email, amount),
+            )
+
+        await asyncio.to_thread(self._run, _fn)
+
+    async def consume_rescan_credit(self, email: str) -> bool:
+        """Consome 1 re-verificação. Retorna True se havia crédito (decrementou)."""
+        email = (email or "").strip().lower()
+        if not email:
+            return False
+
+        def _fn(cur):
+            cur.execute(
+                "UPDATE scan_credits SET rescan_credits = rescan_credits - 1 "
+                "WHERE email = %s AND rescan_credits > 0",
+                (email,),
+            )
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
     async def public_scan_stats(self) -> Dict[str, Any]:
         """Métricas do funil de verificação pública (KL-25) para o dashboard."""
         def _fn(cur):
@@ -709,6 +748,22 @@ class TargetStore:
             )
             row = cur.fetchone()
             return row[0] if row else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_last_scan_score(self, url: str) -> Optional[int]:
+        """Score do scan mais recente da URL (qualquer idade), ou None. Usado na
+        comparação antes/depois do re-scan (KL-27)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT score FROM scans "
+                "WHERE lower(rtrim(url, '/')) = lower(rtrim(%s, '/')) "
+                "  AND score IS NOT NULL "
+                "ORDER BY scanned_at DESC LIMIT 1",
+                (url,),
+            )
+            row = cur.fetchone()
+            return int(row[0]) if row and row[0] is not None else None
 
         return await asyncio.to_thread(self._run, _fn)
 

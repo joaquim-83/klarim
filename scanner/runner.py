@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import List, Optional
 
-from .checks import ALL_CHECKS
+from .checks import ALL_CHECKS, FREE_CHECKS
 from .checks.base import CheckResult, Status, Severity, normalize_url
 from .scoring import ScoreBreakdown, compute_score
 
@@ -54,15 +54,21 @@ class ScanReport:
         )
 
 
-async def run_scan(url: str) -> ScanReport:
-    """Run all registered checks against ``url`` sequentially and score them."""
+async def run_scan(url: str, full: bool = True) -> ScanReport:
+    """Run the registered checks against ``url`` sequentially and score them.
+
+    ``full=True`` (padrão) roda todos os checks (tier pago, 29). ``full=False`` roda
+    só o tier gratuito (15 primeiros, KL-27) — economiza tempo de scan e requests
+    DNS/API do funil público.
+    """
     target = normalize_url(url)
     loop = asyncio.get_event_loop()
     started_at = datetime.now(timezone.utc)
     t0 = loop.time()
 
+    checks = ALL_CHECKS if full else FREE_CHECKS
     results: List[CheckResult] = []
-    for check_id, check_fn in ALL_CHECKS:
+    for check_id, check_fn in checks:
         try:
             result = await check_fn(target)
         except Exception as exc:  # noqa: BLE001 - one bad check must not kill the scan
@@ -89,9 +95,9 @@ async def run_scan(url: str) -> ScanReport:
     )
 
 
-def scan(url: str) -> ScanReport:
+def scan(url: str, full: bool = True) -> ScanReport:
     """Synchronous convenience wrapper around :func:`run_scan`."""
-    return asyncio.run(run_scan(url))
+    return asyncio.run(run_scan(url, full=full))
 
 
 # --------------------------------------------------------------------------- #

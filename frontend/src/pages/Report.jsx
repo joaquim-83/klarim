@@ -168,6 +168,16 @@ export default function Report() {
           A geração de cada PDF executa uma nova varredura e leva ~30 segundos.
         </p>
 
+        {/* Re-verificação gratuita incluída (retorno médico — KL-27) */}
+        <div className="mx-auto mt-8 max-w-md rounded-lg border border-klarim-ok bg-klarim-surface p-5 text-left">
+          <p className="font-bold text-klarim-ok">Você tem 1 re-verificação gratuita incluída.</p>
+          <p className="mt-1 text-sm text-klarim-muted">
+            Depois de corrigir as falhas apontadas no relatório, volte à página inicial e
+            escaneie a mesma URL com este e-mail: rodaremos o scan completo de novo, sem custo,
+            e mostraremos a evolução do seu score.
+          </p>
+        </div>
+
         {/* Referral */}
         <div className="mx-auto mt-10 max-w-md rounded-lg border border-dashed border-klarim-alert bg-klarim-surface p-5">
           <p className="font-bold">Precisa de ajuda para corrigir?</p>

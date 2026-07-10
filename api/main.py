@@ -28,7 +28,8 @@ from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response, HTMLResponse
 from pydantic import BaseModel
 
-from scanner import run_scan, summarize_fails, Severity, ScanReport
+from scanner import (run_scan, summarize_fails, Severity, ScanReport,
+                     ALL_CHECKS, FREE_CHECKS, CHECK_META, FREE_CHECK_MAX_ORDER)
 from scanner import __version__ as scanner_version
 from scanner.cache import ScanCache
 from scanner.checks.base import normalize_url, registrable_domain, domain_of
@@ -41,6 +42,8 @@ from payments import (
     verify_webhook_signature,
     Charge,
     PaymentStatus,
+    PRICE_AMOUNT,
+    PRICE_DISPLAY,
     PRICING,
     DEFAULT_TIER,
     amount_display,
@@ -348,9 +351,14 @@ def _scan_token_secret() -> str:
     return os.environ.get("JWT_SECRET", "") or os.environ.get("UNSUBSCRIBE_SECRET", "")
 
 
-def _make_scan_token(email: str, url: str) -> str:
-    """Token HMAC-assinado que autoriza 1 scan da URL pelo e-mail (expira 1h)."""
-    payload = {"email": email, "url": url, "exp": int(time.time()) + _SCAN_TOKEN_TTL}
+def _make_scan_token(email: str, url: str, full: bool = False) -> str:
+    """Token HMAC-assinado que autoriza 1 scan da URL pelo e-mail (expira 1h).
+
+    ``full=True`` (re-verificação paga, KL-27) autoriza o scan completo de 29 checks
+    e serve de bypass de pagamento nos PDFs; ``full=False`` é o scan gratuito (15).
+    """
+    payload = {"email": email, "url": url, "full": bool(full),
+               "exp": int(time.time()) + _SCAN_TOKEN_TTL}
     raw = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode()
     sig = hmac.new(_scan_token_secret().encode(), raw.encode(), hashlib.sha256).hexdigest()[:32]
     return f"{raw}.{sig}"
@@ -407,7 +415,10 @@ async def scan_check_credit(body: ScanCodeBody) -> dict:
     credit = await get_target_store().get_scan_credit(email)
     used = int(credit["free_scans_used"]) if credit else 0
     same_url = bool(credit and credit.get("first_scan_url") == url)
-    return {"has_free_scan": used == 0, "same_url_scanned": same_url, "free_scans_used": used}
+    rescan_credits = int(credit.get("rescan_credits") or 0) if credit else 0
+    return {"has_free_scan": used == 0, "same_url_scanned": same_url,
+            "free_scans_used": used, "rescan_credits": rescan_credits,
+            "can_rescan": rescan_credits > 0}
 
 
 @app.post("/scan/request-code")
@@ -424,7 +435,10 @@ async def scan_request_code(body: ScanCodeBody, request: Request) -> dict:
 
     store = get_target_store()
     credit = await store.get_scan_credit(email)
-    if credit:
+    has_rescan = bool(credit and int(credit.get("rescan_credits") or 0) > 0)
+    # KL-27: quem tem crédito de re-verificação pode pedir um código mesmo já tendo
+    # escaneado — é a re-verificação paga (retorno médico), não o scan gratuito.
+    if credit and not has_rescan:
         if credit.get("first_scan_url") == url:
             return {"status": "already_scanned", "message": "Você já escaneou este site."}
         return {"status": "limit_reached",
@@ -462,8 +476,63 @@ async def scan_verify_code(body: ScanVerifyBody) -> dict:
     if not await store.verify_scan_code(email, code, url):
         return {"status": "invalid", "message": "Código inválido ou expirado."}
     await store.record_free_scan(email, url)  # consome o gratuito
-    return {"status": "verified", "scan_token": _make_scan_token(email, url),
+    return {"status": "verified", "scan_token": _make_scan_token(email, url, full=False),
             "expires_in": _SCAN_TOKEN_TTL}
+
+
+def _evolution_label(old: Optional[int], new: Optional[int]) -> str:
+    if old is None or new is None:
+        return "first_rescan"
+    if new > old:
+        return "improved"
+    if new < old:
+        return "worsened"
+    return "unchanged"
+
+
+class ScanRescanBody(BaseModel):
+    email: str
+    code: str
+    url: str
+
+
+@app.post("/scan/rescan")
+async def scan_rescan(body: ScanRescanBody) -> dict:
+    """Re-verificação gratuita pós-compra (retorno médico — KL-27).
+
+    Valida o código, **consome 1 crédito** de re-scan, roda o scan COMPLETO (29) e
+    devolve o resultado completo + comparação antes/depois. Também devolve um scan
+    token ``full`` para baixar os PDFs atualizados.
+    """
+    email = _clean_scan_email(body.email)
+    url = _norm_scan_url(body.url)
+    code = (body.code or "").strip()
+    if not _rl_ok(_verify_hits, email, _VERIFY_RL_MAX, _VERIFY_RL_WIN):
+        raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde alguns minutos.",
+                            headers={"Retry-After": "600"})
+    store = get_target_store()
+    if not await store.verify_scan_code(email, code, url):
+        return {"status": "invalid", "message": "Código inválido ou expirado."}
+    if not await store.consume_rescan_credit(email):
+        return {"status": "no_credit",
+                "message": "Você não tem re-verificações gratuitas disponíveis."}
+
+    old_score = await store.get_last_scan_score(url)
+    report = await _safe_scan(url, full=True, ingest_source="rescan", scanned_by_email=email)
+    new_score = report.score.score if report.score else None
+    payload = _summary_payload(report, full=True)
+    payload.update({
+        "status": "ok",
+        "scan_token": _make_scan_token(email, url, full=True),
+        "comparison": {
+            "old_score": old_score,
+            "new_score": new_score,
+            "delta": ((new_score - old_score)
+                      if (old_score is not None and new_score is not None) else None),
+            "evolution": _evolution_label(old_score, new_score),
+        },
+    })
+    return payload
 
 
 @app.get("/scan/summary")
@@ -475,49 +544,76 @@ async def scan_summary(url: str = Query(..., description="URL alvo."),
     url = _norm_scan_url(url)
     scanned_by = None
     is_admin = request is not None and _is_admin_request(request)
+    # Admin vê o completo (29); o público vê o gratuito (15 checks) com os 14 pagos
+    # bloqueados no payload (KL-27).
+    full = is_admin
     if not is_admin:
         token = request.headers.get("x-scan-token", "") if request is not None else ""
         payload = _verify_scan_token(token)
         if payload and _norm_scan_url(payload.get("url", "")) == url:
             scanned_by = _clean_scan_email(payload.get("email", "")) or None
+            full = bool(payload.get("full"))  # token de re-verificação → completo (29)
         else:
             # Sem token válido: só devolve resultado já existente (não escaneia).
-            recent = await get_recent_only(url)
+            recent = await get_recent_only(url, full=False)
             if recent is None:
                 return {"status": "auth_required",
                         "message": "Verifique seu e-mail para escanear este site."}
-            return _summary_payload(recent)
+            return _summary_payload(recent, full=False)
 
-    report = await _safe_scan(url, ingest_source="public", scanned_by_email=scanned_by)
-    return _summary_payload(report)
+    report = await _safe_scan(url, full=full, ingest_source="public",
+                              scanned_by_email=scanned_by)
+    return _summary_payload(report, full=full)
 
 
-def _summary_payload(report: ScanReport) -> dict:
+# Metadados dos checks para o resultado gratuito (KL-27): nome + tier, sem chamar
+# os checks. Os 14 pagos aparecem como `locked` (o visitante vê que existem, não o
+# resultado).
+_FREE_META = [m for m in CHECK_META if not m["paid"]]
+_PAID_META = [m for m in CHECK_META if m["paid"]]
+
+
+def _summary_payload(report: ScanReport, full: bool = False) -> dict:
+    """Payload do resultado gratuito (KL-27): score + semáforo + contagem + lista dos
+    15 checks (PASS/FAIL) + os 14 pagos **bloqueados** (`status: "locked"`). NÃO
+    expõe headlines de risco, evidências, impacto ou correção — isso é do relatório
+    pago. ``full=True`` (admin) devolve o status real também dos 14."""
     score = report.score
-    sev = score.fails_by_severity if score else {}
-    risk_messages = get_risk_messages(report)
+    by_id = {r.check_id: r.status for r in report.results}
+
+    free_checks = [
+        {"check_id": m["check_id"], "name": m["name"],
+         "status": by_id.get(m["check_id"], "INCONCLUSO")}
+        for m in _FREE_META
+    ]
+    paid_checks = [
+        {"check_id": m["check_id"], "name": m["name"],
+         "status": (by_id.get(m["check_id"], "locked") if full else "locked")}
+        for m in _PAID_META
+    ]
+
     return {
         "url": report.url,
         "score": score.score if score else None,
         "semaphore": score.semaphore if score else None,
         "grade_icon": score.grade_icon if score else None,
-        "summary": summarize_fails(report.results),
-        "risk_summary": get_risk_summary(risk_messages),
-        "risk_messages": risk_messages,
-        "problems": score.failed if score else 0,
+        # Texto-resumo genérico (categoria de risco), sem detalhar cada falha.
+        "risk_summary": get_risk_summary(get_risk_messages(report)),
+        "fail_count": score.failed if score else 0,
+        "problems": score.failed if score else 0,   # compat com clientes antigos
         "passed": score.passed if score else 0,
         "inconclusive": score.inconclusive if score else 0,
-        "severity_counts": {
-            "critica": sev.get(Severity.CRITICA, 0),
-            "alta": sev.get(Severity.ALTA, 0),
-            "media": sev.get(Severity.MEDIA, 0),
-            "baixa": sev.get(Severity.BAIXA, 0),
-        },
-        "price": PRICING[DEFAULT_TIER],
-        "price_display": amount_display(PRICING[DEFAULT_TIER]),
+        "free_checks": free_checks,
+        "paid_checks": paid_checks,
+        "free_count": len(_FREE_META),
+        "paid_count": len(_PAID_META),
+        "total_checks": len(_FREE_META) + len(_PAID_META),
+        "is_full": full,
+        "price": PRICE_AMOUNT,
+        "price_display": PRICE_DISPLAY,
         "message": (
             "Encaminhe este resumo ao responsável pelo seu site. "
-            "Relatório técnico completo disponível na versão paga."
+            "Relatório completo com os 29 pontos de segurança na versão paga."
         ),
     }
 
@@ -538,7 +634,7 @@ async def payment_create(body: PaymentCreateBody) -> dict:
         raise HTTPException(status_code=503, detail="Pagamentos não configurados.")
 
     host = urlparse(body.url if "://" in body.url else "https://" + body.url).hostname or body.url
-    amount = PRICING[DEFAULT_TIER]
+    amount = PRICE_AMOUNT  # KL-27: preço único R$ 19, independente do setor
     description = f"Relatório de Segurança Klarim - {host}"
 
     client = AbacatePayClient(_api_key())
@@ -730,23 +826,35 @@ async def _refresh_charge(charge: Charge) -> None:
 
 
 async def _maybe_send_report_email(charge: Charge) -> None:
-    """Dispara (uma vez) o e-mail do relatório após o pagamento, em background.
+    """Pós-pagamento (uma vez): concede o crédito de re-scan (KL-27) e dispara o
+    e-mail do relatório completo em background.
 
-    Marca ``report_email_sent`` ANTES de agendar para evitar duplicação
-    (webhook + polling). Se o envio falhar, o cliente ainda baixa o PDF no site
-    (fallback) — o erro é apenas registrado.
+    Usa ``report_email_sent`` como marca de idempotência ÚNICA (webhook + polling):
+    é setada ANTES de agendar qualquer coisa. Se o envio de e-mail falhar, o cliente
+    ainda baixa o PDF no site (fallback) — o erro é apenas registrado.
     """
     if not (charge.is_paid and charge.buyer_email and not charge.report_email_sent):
         return
+    # Marca já (idempotência do webhook + polling) e concede o crédito de
+    # re-verificação gratuita — independe do e-mail estar configurado.
+    await get_store().mark_email_sent(charge.charge_id)
+    charge.report_email_sent = True
+    _spawn(_grant_rescan_credit(charge.buyer_email))
+
     if not _email_enabled():
         return
-    # Marca "enviado" (idempotência) + "sending" ANTES de agendar, para evitar
-    # disparo duplicado (webhook + polling) e dar feedback imediato ao frontend.
-    await get_store().mark_email_sent(charge.charge_id)
     await get_store().set_email_status(charge.charge_id, "sending")
-    charge.report_email_sent = True
     charge.email_status = "sending"
     _spawn(_send_report_email_task(charge.charge_id, charge.target_url, charge.buyer_email))
+
+
+async def _grant_rescan_credit(email: str) -> None:
+    """Concede 1 re-verificação gratuita ao comprador (retorno médico — KL-27)."""
+    try:
+        await get_target_store().grant_rescan_credit(email)
+        print(f"[rescan] crédito de re-verificação concedido a {email}", flush=True)
+    except Exception as exc:  # noqa: BLE001 - best-effort; não derruba o pagamento
+        print(f"[rescan] falha ao conceder crédito a {email}: {exc!r}", flush=True)
 
 
 # Mantém referência às tasks de background: sem isso o Python pode coletá-las
@@ -762,7 +870,8 @@ def _spawn(coro) -> None:
 
 async def _send_report_email_task(charge_id: str, target_url: str, to_email: str) -> None:
     try:
-        report = await get_or_scan(target_url)  # cache hit -> instantâneo
+        # Relatório PAGO → scan COMPLETO (29 checks, KL-27); ingere como 'paid'.
+        report = await get_or_scan(target_url, full=True, ingest_source="paid")
         executive = await generate_executive_pdf(report, target_url)
         technical = await generate_technical_pdf(report, target_url)
         score = report.score.score if report.score else 0
@@ -778,13 +887,25 @@ async def _send_report_email_task(charge_id: str, target_url: str, to_email: str
 # Relatórios PDF (protegidos por pagamento)
 # --------------------------------------------------------------------------- #
 
+def _has_full_scan_token(url: str, scan_token: Optional[str]) -> bool:
+    """True se ``scan_token`` é um token de re-verificação (full) válido para a URL
+    — autoriza o PDF sem cobrança (KL-27, retorno médico)."""
+    if not scan_token:
+        return False
+    payload = _verify_scan_token(scan_token)
+    return bool(payload and payload.get("full")
+                and _norm_scan_url(payload.get("url", "")) == _norm_scan_url(url))
+
+
 @app.get("/report/executive")
 async def report_executive(
     url: str = Query(..., description="URL alvo."),
     charge_id: Optional[str] = Query(default=None, description="ID da cobrança paga."),
+    scan_token: Optional[str] = Query(default=None, description="Token de re-verificação (full)."),
 ) -> Response:
-    await _require_paid(charge_id)
-    report = await _safe_scan(url)
+    if not _has_full_scan_token(url, scan_token):
+        await _require_paid(charge_id)
+    report = await _safe_scan(url, full=True)
     pdf = await _safe_pdf(generate_executive_pdf, report, url)
     return _pdf_response(pdf, pdf_filename("executive", url, report.started_at))
 
@@ -793,9 +914,11 @@ async def report_executive(
 async def report_technical(
     url: str = Query(..., description="URL alvo."),
     charge_id: Optional[str] = Query(default=None, description="ID da cobrança paga."),
+    scan_token: Optional[str] = Query(default=None, description="Token de re-verificação (full)."),
 ) -> Response:
-    await _require_paid(charge_id)
-    report = await _safe_scan(url)
+    if not _has_full_scan_token(url, scan_token):
+        await _require_paid(charge_id)
+    report = await _safe_scan(url, full=True)
     pdf = await _safe_pdf(generate_technical_pdf, report, url)
     return _pdf_response(pdf, pdf_filename("technical", url, report.started_at))
 
@@ -2073,20 +2196,31 @@ def _pdf_response(pdf: bytes, filename: str) -> Response:
     )
 
 
-async def get_or_scan(url: str, ingest_source: Optional[str] = None,
+def _tier_ok(report: ScanReport, full: bool) -> bool:
+    """Um report cacheado/do-banco serve o tier pedido? (KL-27)
+
+    O completo exige os 29 checks; o gratuito basta ter os 15 (um scan completo
+    também satisfaz o gratuito). Evita servir um scan de 15 checks como se fosse
+    o relatório pago de 29 — e vice-versa.
+    """
+    n = len(report.results)
+    return n >= len(ALL_CHECKS) if full else n >= len(FREE_CHECKS)
+
+
+async def get_or_scan(url: str, full: bool = True, ingest_source: Optional[str] = None,
                       scanned_by_email: Optional[str] = None) -> ScanReport:
-    """Retorna o scan reusando o dado mais recente; só escaneia em último caso.
+    """Retorna o scan do tier reusando o dado mais recente; só escaneia em último caso.
 
     Prioridade (fix — carregamento rápido pelo link do e-mail):
-      1. **Cache Redis** (KL-9) — instantâneo.
+      1. **Cache Redis** (KL-9, por tier KL-27) — instantâneo.
       2. **Tabela `scans`** (Postgres) — reconstrói o `ScanReport` de um scan < 1h
-         e reaquece o cache, sem reescanear.
-      3. **Scan novo** — só se não houver nada recente; se ``ingest_source``,
+         **do tier certo** e reaquece o cache, sem reescanear.
+      3. **Scan novo** — só se não houver nada recente compatível; se ``ingest_source``,
          grava alvo+scan no Postgres em background (KL-17).
     """
     if _cache is not None:
-        cached = await _cache.get(url)
-        if cached is not None:
+        cached = await _cache.get(url, full)
+        if cached is not None and _tier_ok(cached, full):
             return cached
 
     # 2. Scan recente no banco → reconstrói e reaquece o cache (sem reescanear).
@@ -2098,27 +2232,28 @@ async def get_or_scan(url: str, ingest_source: Optional[str] = None,
     if checks:
         try:
             report = ScanReport.from_dict(checks)
-            if _cache is not None:
-                await _cache.set(url, report)
-            return report
+            if _tier_ok(report, full):
+                if _cache is not None:
+                    await _cache.set(url, report, full)
+                return report
         except Exception as exc:  # noqa: BLE001 - checks_json corrompido → reescaneia
             print(f"[get_or_scan] from_dict falhou ({exc!r}); reescaneando", flush=True)
 
-    # 3. Scan novo.
-    report = await run_scan(url)
+    # 3. Scan novo (do tier pedido).
+    report = await run_scan(url, full=full)
     if _cache is not None:
-        await _cache.set(url, report)
+        await _cache.set(url, report, full)
     if ingest_source:
         _spawn(_ingest_scan_bg(url, report, ingest_source, scanned_by_email))
     return report
 
 
-async def get_recent_only(url: str) -> Optional[ScanReport]:
-    """Retorna um scan RECENTE (cache Redis ou banco < 1h) SEM reescanear. Usado no
-    /scan/summary quando não há token de verificação — nunca dispara scan novo (KL-25)."""
+async def get_recent_only(url: str, full: bool = False) -> Optional[ScanReport]:
+    """Retorna um scan RECENTE do tier (cache Redis ou banco < 1h) SEM reescanear.
+    Usado no /scan/summary quando não há token — nunca dispara scan novo (KL-25)."""
     if _cache is not None:
-        cached = await _cache.get(url)
-        if cached is not None:
+        cached = await _cache.get(url, full)
+        if cached is not None and _tier_ok(cached, full):
             return cached
     try:
         checks = await get_target_store().get_recent_scan_checks(url, 60)
@@ -2127,8 +2262,10 @@ async def get_recent_only(url: str) -> Optional[ScanReport]:
     if checks:
         try:
             report = ScanReport.from_dict(checks)
+            if not _tier_ok(report, full):
+                return None
             if _cache is not None:
-                await _cache.set(url, report)
+                await _cache.set(url, report, full)
             return report
         except Exception:  # noqa: BLE001
             return None
@@ -2144,10 +2281,10 @@ async def _ingest_scan_bg(url: str, report: ScanReport, source: str,
         print(f"[ingest] falha ao registrar {url} ({exc!r})", flush=True)
 
 
-async def _safe_scan(url: str, ingest_source: Optional[str] = None,
+async def _safe_scan(url: str, full: bool = True, ingest_source: Optional[str] = None,
                      scanned_by_email: Optional[str] = None):
     try:
-        return await get_or_scan(url, ingest_source, scanned_by_email)
+        return await get_or_scan(url, full, ingest_source, scanned_by_email)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"URL inválida: {exc}") from exc
     except Exception as exc:  # noqa: BLE001

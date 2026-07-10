@@ -53,23 +53,28 @@ def _send_evolution(monkeypatch, evolution, old, new, semaphore, fail_count):
     return res, captured
 
 
+# KL-27: assunto neutro e único (sem preço, sem "melhorou"/"caiu"), corpo sem preço.
+_EVO_SUBJECT = "hotelx.com.br — atualização da avaliação de segurança"
+
+
 def test_evolution_improved_email(monkeypatch):
     res, cap = _send_evolution(monkeypatch, "improved", 80, 92, "verde", 1)
     assert res["email_id"] == "em_evo"
-    assert "melhorou" in cap["subject"] and "de 80 para 92" in cap["subject"]
+    assert cap["subject"] == _EVO_SUBJECT
     assert "Parabéns" in cap["html"] and "descadastrar" in cap["html"]
+    assert "R$" not in cap["html"]
 
 
 def test_evolution_worsened_email(monkeypatch):
     res, cap = _send_evolution(monkeypatch, "worsened", 92, 60, "amarelo", 3)
-    assert "caiu de 92 para 60" in cap["subject"]
-    assert "Novos problemas" in cap["html"] and "LGPD" in cap["html"]
+    assert cap["subject"] == _EVO_SUBJECT
+    assert "Novos problemas" in cap["html"] and "R$" not in cap["html"]
 
 
 def test_evolution_unchanged_email(monkeypatch):
     res, cap = _send_evolution(monkeypatch, "unchanged", 80, 80, "amarelo", 2)
-    assert "permanece em 80/100" in cap["subject"]
-    assert "permanece em" in cap["html"]
+    assert cap["subject"] == _EVO_SUBJECT
+    assert "permanece em" in cap["html"] and "R$" not in cap["html"]
 
 
 # --- fakes ----------------------------------------------------------------- #
@@ -93,7 +98,7 @@ def _fake_run_scan(new_score, failed=1):
     results = [{"status": "FAIL", "severity": "ALTA"}] * failed
     sem = "verde" if new_score >= 90 and failed == 0 else ("amarelo" if new_score >= 50 else "vermelho")
 
-    async def _run(url):
+    async def _run(url, full=True):
         return FakeReport(FakeScore(new_score, sem, 14 - failed, failed, 1), results)
 
     return _run

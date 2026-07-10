@@ -29,8 +29,9 @@ export function useSummary(url) {
   return { summary, loading, error }
 }
 
-export function problemLine(n) {
-  if (!n) return 'Nenhum problema de segurança foi encontrado no seu site.'
-  if (n === 1) return 'Encontramos 1 problema de segurança no seu site.'
-  return `Encontramos ${n} problemas de segurança no seu site.`
+export function problemLine(n, total = 15) {
+  const base = `Analisamos ${total} pontos de segurança do seu site`
+  if (!n) return `${base} e nenhuma vulnerabilidade foi encontrada.`
+  if (n === 1) return `${base} e encontramos 1 vulnerabilidade.`
+  return `${base} e encontramos ${n} vulnerabilidades.`
 }

@@ -24,10 +24,15 @@ níveis:
 - **Relatório técnico** — para dev/agência; detalhe de cada check, headers,
   paths testados e recomendações de correção.
 
-**Modelo de negócio (bottom-up):** vende barato ao dono do negócio (**R$ 19–49**,
-decisão de impulso). O dono encaminha o relatório para a **agência** que fez o
-site. Quando várias agências recebem relatórios de vários clientes, elas procuram
-o Klarim organicamente — a venda B2B acontece **sem prospecção**.
+**Modelo de negócio (bottom-up, funil KL-27):** o scan **gratuito** roda os 15
+primeiros checks e mostra só score + semáforo + contagem + a lista de verificações
+(✅/❌, sem detalhes) — os outros 14 aparecem **bloqueados** (🔒). O **relatório
+completo** (29 checks, com evidências e correções) custa **R$ 19** (preço único,
+todos os setores — decisão de impulso) e inclui **1 re-verificação gratuita**
+("retorno médico"). O dono encaminha o relatório para a **agência** que fez o site.
+Quando várias agências recebem relatórios de vários clientes, elas procuram o
+Klarim organicamente — a venda B2B acontece **sem prospecção**. Detalhes do funil
+na seção **26**.
 
 A especificação completa de produto vive em [`klarim_mvp_spec.md`](./klarim_mvp_spec.md).
 
@@ -472,8 +477,10 @@ status → PAID → libera o download dos PDFs. Webhook confirma server-side (re
   Timeout 15s, retry/backoff em 5xx. Valores em **centavos**.
 - **`payments/store.py`** — persistência de cobranças em **PostgreSQL** (tabela
   `payments`, psycopg2 em thread) com **fallback em memória** se não houver DB.
-- **`payments/models.py`** — `Charge`, `PaymentStatus`, `PRICING` (MVP usa
-  `standard` = R$ 29).
+- **`payments/models.py`** — `Charge`, `PaymentStatus`, **`PRICE_AMOUNT = 1900`**
+  / **`PRICE_DISPLAY = "R$ 19"`** (preço ÚNICO cobrado no `/payment/create`, KL-27).
+  `PRICING`/`DEFAULT_TIER` por setor ficam **só para analytics** de classificação —
+  não definem mais o preço.
 
 **Endpoints** (`api/main.py`): `POST /payment/create` (retorna QR), `GET
 /payment/status?charge_id=` (polling), `POST /webhooks/abacatepay` (query-secret
@@ -1047,3 +1054,56 @@ crédito).
   `scanned_by_email` no detalhe do scan.
 - **Limpeza:** `create_scan_verification` apaga os códigos expirados a cada gravação
   (sem cron).
+
+## 26. Funil de conversão — free 15 / pago 29, R$ 19, re-verificação (KL-27)
+
+Reestruturação do funil (o antigo entregava detalhe demais no grátis, e-mail com
+preço/alarme, e sem gancho de retorno — 0 conversões em 1.418 alertas).
+
+**Tiering do scanner.** `scanner/checks/__init__.py`: `FREE_CHECK_MAX_ORDER=15`,
+`discover_checks(full)`, `ALL_CHECKS` (29) / `FREE_CHECKS` (15) / `CHECK_META`
+(`{check_id,name,order,paid}` — metadados leves, **sem** rodar os checks pagos).
+`run_scan(url, full=True)` escolhe o conjunto. **Cache por tier** (`scanner/cache.py`):
+`scan:free:<hash>` e `scan:full:<hash>` (ambas casam `scan:*` no flush). Em
+`api.get_or_scan(url, full=…)`, `_tier_ok` exige ≥29 (full) / ≥15 (free) — scan do
+tier errado força re-scan. **Default `full=True`**; só `/scan/summary` público e
+`get_recent_only` usam `full=False`. **Onde roda:** discovery/público = free;
+pós-pagamento, admin, `/report/*`, recuperação e re-verificação = full; o re-scan de
+re-engajamento (KL-13) roda **free** (score de evolução comparável ao do alerta).
+
+**Resultado gratuito sem detalhes.** `_summary_payload(report, full=False)` →
+`score`, `semaphore`, `risk_summary` (genérico), `fail_count`,
+`free_checks:[{check_id,name,status}]` (15), `paid_checks:[{…,status:"locked"}]`
+(14), `price:1900`, `price_display:"R$ 19"`, `is_full`. **Removidos do grátis:**
+`risk_messages`, `severity_counts`, evidências, impacto, correção. Token de
+re-verificação (`full`) ou JWT admin revela o status real dos 14.
+
+**E-mail sem preço/alarme.** Assunto `dominio — resultado da avaliação de segurança`
+(evolução: `… — atualização da avaliação de segurança`); corpo só com score +
+semáforo + contagem + CTA **"Veja o relatório"**. `alert.html`/`evolution_*.html`,
+`email_client`, `alert_worker`/`rescan_worker` não computam/renderizam risco/preço.
+
+**Preço único R$ 19.** `PRICE_AMOUNT=1900`/`PRICE_DISPLAY` em `payments/models.py`;
+`/payment/create` cobra 1900. `PRICING`/`PRICE_TIERS` só para analytics.
+
+**Pós-pagamento.** `_maybe_send_report_email` (idempotente via `report_email_sent`):
+concede **1 crédito de re-scan** ao `buyer_email` (`grant_rescan_credit`) e roda o
+scan **completo (29)** + 2 PDFs. `scan_credits.rescan_credits` (coluna nova).
+
+**Re-verificação ("retorno médico").** `check-credit` → `{…, rescan_credits,
+can_rescan}`; `request-code` libera código a quem tem crédito mesmo já tendo
+escaneado; **`POST /scan/rescan {email,code,url}`** valida o código, **consome 1
+crédito**, roda o scan completo e devolve o resultado + **comparação antes/depois**
++ um **scan token `full`**. Esse token (claim `full:true`, HMAC) autoriza os PDFs
+sem cobrança (`/report/*` aceita `scan_token`, `_has_full_scan_token`).
+
+**Frontend.** `Landing` (hero "29 pontos… R$ 19"; `check-credit` decide re-verificação
+→ `/scan/rescan` → `/result` com a comparação), `Result` (15 ✅/❌ + 14 🔒 + CTA
+"Fazer scan completo — R$ 19"; com `is_full` mostra os 29 reais + comparação + PDFs),
+`Payment`/`Report` (R$ 19 + nota da re-verificação), `lib/api.js` (`rescanScan`,
+`reportUrl` anexa o scan token).
+
+**Regra inviolável:** o grátis **nunca** vaza detalhe dos checks (headline, evidência,
+impacto, correção) nem o resultado dos 14 pagos; o e-mail **nunca** menciona preço.
+Ao adicionar um check, ele entra no tier certo pelo `ORDER` (≤15 grátis) e ganha
+entrada em `RISK_MESSAGES`/`ACCESSIBLE`/`TECHNICAL` (seção 4.2 / KL-22).

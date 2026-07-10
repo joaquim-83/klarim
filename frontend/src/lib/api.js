@@ -19,10 +19,21 @@ function jsonPost(path, body) {
   }).then(async (r) => ({ status: r.status, data: await r.json().catch(() => ({})) }))
 }
 
-// Estado do crédito de scan gratuito do e-mail para a URL (sem enviar código).
+// Estado do crédito de scan gratuito + re-verificação do e-mail para a URL.
 export async function checkCredit(email, url) {
   const { data } = await jsonPost('/scan/check-credit', { email, url })
-  return data  // { has_free_scan, same_url_scanned, free_scans_used }
+  // { has_free_scan, same_url_scanned, free_scans_used, rescan_credits, can_rescan }
+  return data
+}
+
+// Re-verificação gratuita pós-compra (KL-27): valida o código, consome 1 crédito,
+// roda o scan COMPLETO (29) e devolve o resultado completo + comparação. Guarda o
+// scan token (full) para baixar os PDFs atualizados.
+export async function rescanScan(email, code, url) {
+  const { status, data } = await jsonPost('/scan/rescan', { email, code, url })
+  if (status === 429) throw new Error(data.detail || 'Muitas tentativas. Aguarde.')
+  if (data.status === 'ok' && data.scan_token) setScanToken(data.scan_token)
+  return data  // { status: ok | invalid | no_credit, ...summary, comparison, scan_token }
 }
 
 // Envia o código de 6 dígitos. Retorna { status, ... }.
@@ -80,9 +91,13 @@ export async function getPaymentStatus(chargeId) {
 }
 
 // URL absoluta de um relatório PDF (kind = "executive" | "technical").
+// Anexa o scan token guardado (se houver): um token de re-verificação (full)
+// autoriza o PDF sem cobrança (KL-27); tokens gratuitos são ignorados pelo backend.
 export function reportUrl(kind, url, chargeId) {
   let u = `${BASE}/report/${kind}?url=${encodeURIComponent(url)}`
   if (chargeId) u += `&charge_id=${encodeURIComponent(chargeId)}`
+  const token = getScanToken()
+  if (token) u += `&scan_token=${encodeURIComponent(token)}`
   return u
 }
 

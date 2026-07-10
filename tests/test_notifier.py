@@ -31,7 +31,8 @@ def test_templates_render():
         fail_count=2, sev={"critica": 0, "alta": 2, "media": 0, "baixa": 0},
         result_link="https://klarim.net/result?url=x", lgpd="LGPD…", **ctx,
     )
-    assert "Ver detalhes" in alert and "VERDE" in alert
+    assert "Veja o relatório" in alert and "VERDE" in alert
+    assert "R$" not in alert  # KL-27: alerta sem preço
     report = _env.get_template("report_delivery.html").render(**ctx)
     assert "Executivo" in report and "Técnico" in report
 
@@ -134,7 +135,7 @@ def test_send_alert_batch_counts_and_ids(monkeypatch):
     # renderizou 1 payload por alerta, com subject e html
     assert len(captured["payloads"]) == 3
     assert "site1.com.br" in captured["payloads"][0]["subject"]
-    assert "Ver detalhes" in captured["payloads"][0]["html"]
+    assert "Veja o relatório" in captured["payloads"][0]["html"]
     assert captured["key"].startswith("batch_")
 
 
@@ -177,8 +178,10 @@ def test_send_evolution_batch_counts(monkeypatch):
     ]
     res = asyncio.run(m.send_evolution_batch(evos))
     assert res["sent"] == 2 and res["ids"] == ["evo_1", "evo_2"]
-    assert "melhorou" in captured["payloads"][0]["subject"]
-    assert "caiu de 90 para 60" in captured["payloads"][1]["subject"]
+    # KL-27: assunto neutro e único (sem "melhorou"/"caiu"), sem preço no corpo.
+    assert captured["payloads"][0]["subject"] == "a.com.br — atualização da avaliação de segurança"
+    assert captured["payloads"][1]["subject"] == "b.com.br — atualização da avaliação de segurança"
+    assert "R$" not in captured["payloads"][0]["html"]
 
 
 def test_send_batch_raw_sends_idempotency_header(monkeypatch):

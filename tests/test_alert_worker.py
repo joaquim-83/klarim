@@ -142,7 +142,8 @@ def test_build_alert_payload_from_join_fields():
     payload = asyncio.run(build_alert_payload(FakeStore(), _target(7)))
     assert payload["to_email"] == "c@x.com.br"
     assert payload["target_id"] == 7 and payload["score"] == 86
-    assert payload["severity_counts"]["alta"] == 1
+    # KL-27: o alerta não carrega mais severidade/risco (e-mail sem detalhes).
+    assert "severity_counts" not in payload and "risk_messages" not in payload
 
 
 def test_build_alert_payload_falls_back_to_get_scan():
