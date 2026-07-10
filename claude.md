@@ -403,11 +403,22 @@ O Klarim pratica o que prega — a superfície de ataque real é minimizada:
 - **Nginx bloqueia paths sensíveis** (`http.conf` + os blocos 443 do
   `https.conf.template`): `location` regex retorna **404** para dotfiles
   (`/.env`, `/.git`…), extensões perigosas (`.php|.sql|.bak|.log|.ya?ml|.toml|
-  .ini|.conf|.config`) e paths de outros frameworks (`phpinfo`, `wp-admin`,
-  `administrator`…) — em vez de 200 com a SPA. O ACME usa `location ^~
+  .ini|.conf|.config`), paths de outros frameworks (`phpinfo`, `wp-admin`,
+  `administrator`…) e **diretórios "suspeitos"** que scanners sondam
+  (`backup|uploads|admin|internal|debug|test|staging|tmp|temp|logs|private|secret|dump`,
+  regex `^/(…)(/|$)`) — em vez de 200 com a SPA. A âncora `^/` **não** casa
+  `/api/admin/*` (é `/api/…`) nem `/painel/`. O ACME usa `location ^~
   /.well-known/acme-challenge/` para ter prioridade sobre os regex (não quebra a
-  renovação). `/api/` e `/painel/` **não** são afetados. Valide a sintaxe com
-  `nginx -t` antes de deployar (config ruim derruba o `web`).
+  renovação). Valide a sintaxe com `nginx -t` antes de deployar (config ruim
+  derruba o `web`).
+- **Security headers e a herança do Nginx (auditoria pós-MCP).** Os headers
+  (`Strict-Transport-Security`, CSP, `X-Frame-Options`, `X-Content-Type-Options`,
+  `Referrer-Policy`) ficam no `server` block **com `always`** (aparecem até em
+  4xx/5xx). ⚠️ **Gotcha:** um `add_header` **próprio** num `location` **quebra a
+  herança** de todos os do `server`. Como `location /assets/` tem
+  `add_header Cache-Control`, ele **repete os 5 headers de segurança** — senão os
+  JS/CSS sairiam sem HSTS/CSP (a regressão que a auditoria pegou). Ao adicionar um
+  `add_header` a qualquer `location` novo, **repita os de segurança lá**.
 - **Resolver dinâmico no proxy (`/api/` e `/mcp/`).** O Nginx resolve o hostname do
   `proxy_pass` **uma vez no boot** e cacheia o IP. Quando o container `api` é
   recriado (novo IP no bridge do Docker) e o `web` não, o Nginx fica com o IP velho
@@ -952,9 +963,11 @@ monitorar o sistema, disparar scans/alertas, tudo por tools.
   **session token** válido (Bearer ou `?token=`), nos **dois transportes**. **A API
   key nunca vai em URL** — só o
   session token (revogável/expirável). **Sem `MCP_API_KEY` ⇒ MCP desligado** (tudo
-  401). Segurança: `_safe_callback` barra **open-redirect** (só localhost/Anthropic),
-  CSP restritivo nas páginas de auth, `access_log off` no `/mcp/` (não vaza `?token=`).
-  `/mcp/*` não está nos prefixos protegidos por JWT (`_admin_auth_mw`) — tem auth própria.
+  401). Segurança: `_safe_callback` barra **open-redirect** (só localhost/Anthropic) e
+  o `callback_url` **não é refletido** na página de auth se não for confiável (além do
+  `escape()` — anti reflected-XSS), CSP restritivo nas páginas de auth, `access_log
+  off` no `/mcp/` (não vaza `?token=`). `/mcp/*` não está nos prefixos protegidos por
+  JWT (`_admin_auth_mw`) — tem auth própria.
 - **Nginx:** `location /mcp/` em `http.conf` e nos dois server blocks 443 do
   `https.conf.template`, com **`proxy_buffering off` + `proxy_cache off` +
   `Connection ''` + `proxy_http_version 1.1`** (sem isso o stream não flui) +

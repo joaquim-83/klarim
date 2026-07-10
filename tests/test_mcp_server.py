@@ -239,6 +239,27 @@ def test_auth_verify_safe_callback_redirects(monkeypatch):
     assert r.headers["location"].startswith("http://localhost:9999/cb?token=")
 
 
+def test_auth_page_reflected_xss_blocked():
+    # payload de XSS refletido -> não aparece no HTML (escapado E não refletido)
+    html = srv._auth_page_html('"><script>alert(1)</script>')
+    assert "<script>alert" not in html
+    assert 'name="callback_url" value=""' in html          # callback inseguro -> vazio
+    assert 'value=""' in srv._auth_page_html("javascript:alert(1)")
+
+
+def test_auth_page_reflects_only_safe_callback():
+    # callback confiável (localhost do Claude Desktop) é refletido (escapado)
+    assert "localhost:8765" in srv._auth_page_html("http://localhost:8765/cb")
+
+
+def test_auth_page_xss_via_endpoint(monkeypatch):
+    monkeypatch.setenv("MCP_API_KEY", "k")
+    c = TestClient(apimain.app, raise_server_exceptions=False)
+    r = c.get('/mcp/auth?callback_url="><script>alert(1)</script>')
+    assert r.status_code == 200 and "<script>alert" not in r.text
+    assert 'name="callback_url" value=""' in r.text
+
+
 def test_auth_verify_rejects_unsafe_callback(monkeypatch):
     # callback externo NÃO redireciona (anti open-redirect) — mostra o token na página
     monkeypatch.setenv("MCP_API_KEY", "correct-key")

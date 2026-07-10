@@ -419,7 +419,13 @@ _AUTH_CSP = "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; 
 
 
 def _auth_page_html(callback_url: str = "", error: str = "") -> str:
-    """Página de autenticação do MCP (HTML puro, sem React). Campo password."""
+    """Página de autenticação do MCP (HTML puro, sem React). Campo password.
+
+    Defense-in-depth contra XSS refletido: além do `escape()` (que já neutraliza
+    aspas/tags), um `callback_url` que não passa no `_safe_callback` (só
+    localhost/Anthropic) NÃO é refletido — vira string vazia."""
+    if callback_url and not _safe_callback(callback_url):
+        callback_url = ""
     err_html = (f'<p style="color:#FF4D4D;font-size:14px;margin:8px 0">{escape(error)}</p>'
                 if error else "")
     return f"""<!DOCTYPE html>

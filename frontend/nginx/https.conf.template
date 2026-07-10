@@ -48,10 +48,21 @@ server {
     location ~ /\. { return 404; }                                            # .env .git .htaccess…
     location ~* \.(php|sql|bak|log|ya?ml|toml|ini|conf|config)$ { return 404; }
     location ~* ^/(phpinfo|server-status|server-info|wp-admin|wp-login|administrator|admin\.php) { return 404; }
+    # Diretórios "suspeitos" que scanners sondam — 404 em vez de 200 com a SPA. NÃO
+    # afeta /api/, /mcp/ (prefixos, e a âncora ^/ não casa /api/admin) nem /painel/.
+    location ~* ^/(backup|uploads|admin|internal|debug|test|staging|tmp|temp|logs|private|secret|dump)(/|$) { return 404; }
 
     location /assets/ {
         expires 1y;
         add_header Cache-Control "public, immutable";
+        # Um add_header próprio quebra a herança dos headers do server block — por
+        # isso repetimos os de segurança aqui, senão os assets (JS/CSS) sairiam sem
+        # HSTS/CSP (regressão flagrada na auditoria pós-MCP).
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'" always;
         try_files $uri =404;
     }
 
@@ -136,6 +147,9 @@ server {
     location ~ /\. { return 404; }
     location ~* \.(php|sql|bak|log|ya?ml|toml|ini|conf|config)$ { return 404; }
     location ~* ^/(phpinfo|server-status|server-info|wp-admin|wp-login|administrator|admin\.php) { return 404; }
+    # Diretórios "suspeitos" que scanners sondam — 404 em vez de 200 com a SPA. NÃO
+    # afeta /api/, /mcp/ (prefixos, e a âncora ^/ não casa /api/admin) nem /painel/.
+    location ~* ^/(backup|uploads|admin|internal|debug|test|staging|tmp|temp|logs|private|secret|dump)(/|$) { return 404; }
 
     # A raiz do subdomínio vai direto ao login do painel.
     location = / {
@@ -145,6 +159,14 @@ server {
     location /assets/ {
         expires 1y;
         add_header Cache-Control "public, immutable";
+        # Um add_header próprio quebra a herança dos headers do server block — por
+        # isso repetimos os de segurança aqui, senão os assets (JS/CSS) sairiam sem
+        # HSTS/CSP (regressão flagrada na auditoria pós-MCP).
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'" always;
         try_files $uri =404;
     }
 
