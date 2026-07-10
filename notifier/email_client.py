@@ -434,6 +434,37 @@ class KlarimMailer:
             "html": html,
         })
 
+    async def send_monitor_offer(self, to_email: str, domain: str,
+                                 approve_url: str) -> Dict[str, Any]:
+        """Oferta de monitoramento gratuito para um site que atingiu score 100 (KL-29)."""
+        html = _env.get_template("monitor_offer.html").render(
+            domain=domain, approve_url=approve_url, site_base=SITE_BASE)
+        return await self._send({
+            "from": self.from_address, "to": [to_email],
+            "subject": f"{domain} — monitoramento de segurança gratuito",
+            "html": html})
+
+    async def send_monitor_alert(self, to_email: str, domain: str, score: int,
+                                 result_url: str, remove_url: str) -> Dict[str, Any]:
+        """Alerta: o score do site monitorado caiu abaixo de 100 (KL-29)."""
+        html = _env.get_template("monitor_alert.html").render(
+            domain=domain, score=score, result_url=result_url,
+            remove_url=remove_url, site_base=SITE_BASE)
+        return await self._send({
+            "from": self.from_address, "to": [to_email],
+            "subject": f"{domain} — o score de segurança caiu para {score}/100",
+            "html": html})
+
+    async def send_monitor_restored(self, to_email: str, domain: str,
+                                    result_url: str, remove_url: str) -> Dict[str, Any]:
+        """Restauração: o site voltou a 100/100 e ao selo (KL-29)."""
+        html = _env.get_template("monitor_restored.html").render(
+            domain=domain, result_url=result_url, remove_url=remove_url, site_base=SITE_BASE)
+        return await self._send({
+            "from": self.from_address, "to": [to_email],
+            "subject": f"{domain} — voltou a 100/100 e ao selo Klarim",
+            "html": html})
+
     async def send_recovery_link(self, to_email: str, recovery_url: str) -> Dict[str, Any]:
         """Envia o link temporário de recuperação de relatórios."""
         sep = "&" if "?" in recovery_url else "?"

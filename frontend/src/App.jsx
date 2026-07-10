@@ -10,6 +10,8 @@ import Recuperar from './pages/Recuperar'
 import RecuperarAcesso from './pages/RecuperarAcesso'
 import Sobre from './pages/Sobre'
 import Parceiros from './pages/Parceiros'
+import Monitorados from './pages/Monitorados'
+import MonitorarAprovar from './pages/MonitorarAprovar'
 import ProtectedRoute from './components/admin/ProtectedRoute'
 
 // Dashboard admin (KL-14) — carregado sob demanda (code-split), para o site
@@ -26,6 +28,7 @@ const Alertas = lazy(() => import('./pages/admin/Alertas'))
 const Pagamentos = lazy(() => import('./pages/admin/Pagamentos'))
 const Rescans = lazy(() => import('./pages/admin/Rescans'))
 const Analytics = lazy(() => import('./pages/admin/Analytics'))
+const MonitoradosAdmin = lazy(() => import('./pages/admin/Monitorados'))
 const Sistema = lazy(() => import('./pages/admin/Sistema'))
 const Config = lazy(() => import('./pages/admin/Config'))
 
@@ -65,6 +68,8 @@ export default function App() {
       <Route path="/recuperar/acesso" element={<RecuperarAcesso />} />
       <Route path="/sobre" element={<Sobre />} />
       <Route path="/parceiros" element={<Parceiros />} />
+      <Route path="/monitorados" element={<Monitorados />} />
+      <Route path="/monitorados/aprovar" element={<MonitorarAprovar />} />
 
       {/* Dashboard admin */}
       <Route
@@ -91,6 +96,7 @@ export default function App() {
         <Route path="pagamentos" element={<Pagamentos />} />
         <Route path="rescans" element={<Rescans />} />
         <Route path="analytics" element={<Analytics />} />
+        <Route path="monitorados" element={<MonitoradosAdmin />} />
         <Route path="sistema" element={<Sistema />} />
         <Route path="config" element={<Config />} />
       </Route>

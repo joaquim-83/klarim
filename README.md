@@ -556,6 +556,15 @@ disclaimer claro em todos os relatórios.
 - [x] Dashboard operacional (`/painel/sistema`) — status dos workers, health, atividade
 - [x] Interface web (React + Vite + Tailwind + Nginx) — scan self-service
 - [x] Pagamento PIX (AbacatePay) para liberar o relatório completo
+- [x] Sites Monitorados (KL-29) — selo + seção pública `/monitorados` para score 100,
+      re-scan semanal, suspensão/restauração automática
 - [ ] Pagamento por cartão (Stripe)
+
+**Sites Monitorados (`/monitorados`).** Sites que atingem **score 100/100** no scan
+completo podem ativar **monitoramento gratuito**: aparecem numa seção pública com
+selo 🔒, são reescaneados semanalmente (29 checks) e, se o score cair, o dono é
+alertado e o selo é suspenso até corrigir (restaura sozinho ao voltar a 100). A
+listagem pública (`GET /api/monitoring/sites`) nunca expõe e-mail/token; a oferta só
+vale para score 100 comprovado no servidor.
 
 Ver `klarim_mvp_spec.md` para a especificação completa do produto.

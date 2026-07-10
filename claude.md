@@ -1139,3 +1139,39 @@ entrada em `RISK_MESSAGES`/`ACCESSIBLE`/`TECHNICAL` (seção 4.2 / KL-22).
   `payments/stats`** (filtro `charge_id NOT LIKE 'demo\_%'`). ⚠️ **NÃO** apontar
   `DEMO_URL` para `klarim.net` (liberaria relatório grátis do site real) — usar
   domínio de teste. Vars no `.env` da VM: `DEMO_EMAIL`, `DEMO_URL`.
+
+## 27. Sites Monitorados (KL-29) — selo de segurança para score 100
+
+Credibilidade real + retenção + viralidade: sites com **score 100/100** (scan
+completo, 29 checks) ganham monitoramento gratuito e aparecem numa seção pública
+(`/monitorados`). Score cai → alerta + selo suspenso; volta a 100 → restaura.
+
+**Tabela `monitored_sites`** (`discovery/store.py`): `domain` UNIQUE, `contact_email`,
+`approval_token` (uso único), `status` (`pending`→`active`→`suspended`→`active`/
+`removed`), `last_check_score/at`, `logo_url`, `display_name`. Métodos:
+`upsert_monitoring_offer` (idempotente por domínio, não rebaixa active/suspended),
+`approve_monitored_site`, `get_active_monitored_sites`, `get_monitored_for_rescan`,
+`suspend`/`restore_monitored_site`, `monitored_stats`, etc.
+
+**Endpoints (`api/main.py`):** públicos — `POST /monitoring/offer {url,email}`
+(**confere score 100 no servidor** via `get_recent_only(full=True)`, 409 senão; rate
+limit 10/h/IP; cria `pending` + `approval_token`), `GET /monitoring/status`,
+`POST /monitoring/approve {token,display_name?}` (uso único + favicon como logo),
+`GET /monitoring/remove?domain=&token=` (HMAC por domínio), `GET /monitoring/sites`
+(**sem** e-mail/target_id/token — `_public_monitored`). Admin (prefixo
+**`/monitoring/admin`** protegido por JWT): `list`, `stats`, `POST /{id}/status`.
+
+**Re-scan semanal (`rescan_worker.py`):** `RescanWorker._monitor_cycle` (loop
+`_monitor_loop`, `MONITOR_INTERVAL_DAYS=7`) roda o scan **completo (29)** de cada site
+active/suspended: <100 → `suspend` + `send_monitor_alert`; suspended que volta a 100 →
+`restore` + `send_monitor_restored`. **Auto-oferta:** `_maybe_offer_monitoring` — quando
+o re-scan de re-engajamento (free 15) bate 100, confirma no completo e oferta.
+
+**E-mails:** `monitor_offer/alert/restored.html` + `KlarimMailer.send_monitor_*`.
+**Frontend:** `/monitorados` (grid), `/monitorados/aprovar?token=` (aprovação),
+oferta no `Result` (score 100), prévia na landing, link no footer, painel
+`/painel/monitorados`. **MCP:** `list_monitored_sites`, `offer_monitoring(target_id)`.
+
+**Regra inviolável:** a listagem pública **nunca** expõe `contact_email`/`target_id`/
+`approval_token`; a oferta só vale para score 100 **comprovado no servidor**; o token
+de aprovação é **uso único**. Vars: `MONITOR_INTERVAL_DAYS`, `SITE_BASE`.

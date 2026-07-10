@@ -17,18 +17,77 @@ o próximo ciclo.
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import os
+import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
+from urllib.parse import quote
 
 from scanner import run_scan
+from scanner.checks.base import registrable_domain, domain_of
 from scanner.cache import ScanCache
 from notifier import KlarimMailer, build_unsubscribe_link
 from reporter.risk_messages import get_risk_messages
 from payments import PRICING, DEFAULT_TIER, amount_display
 from .heartbeat import publish_heartbeat
 from .store import get_target_store
-from .alert_worker import severity_counts_from_checks, alerts_stopped
+from .alert_worker import severity_counts_from_checks, alerts_stopped, is_demo_target
+
+_SITE_BASE = os.environ.get("SITE_BASE", "https://klarim.net")
+
+
+def _monitor_secret() -> str:
+    return os.environ.get("JWT_SECRET", "") or os.environ.get("UNSUBSCRIBE_SECRET", "")
+
+
+def _monitor_removal_token(domain: str) -> str:
+    # DEVE casar com api.main._monitor_removal_token (link de remoção nos e-mails).
+    return hmac.new(_monitor_secret().encode(), f"remove:{domain}".encode(),
+                    hashlib.sha256).hexdigest()[:32]
+
+
+def _monitor_result_url(url: str) -> str:
+    return f"{_SITE_BASE}/result?url={quote(url, safe='')}"
+
+
+def _monitor_remove_url(domain: str) -> str:
+    return f"{_SITE_BASE}/api/monitoring/remove?domain={quote(domain, safe='')}&token={_monitor_removal_token(domain)}"
+
+
+def _monitor_approve_url(token: str) -> str:
+    return f"{_SITE_BASE}/monitorados/aprovar?token={quote(token, safe='')}"
+
+
+async def _maybe_offer_monitoring(store, mailer, target: Dict[str, Any]) -> bool:
+    """Site engajado que voltou a 100 no re-scan → confere no scan COMPLETO (29) e,
+    se 100 e ainda não monitorado, cria a oferta + envia o e-mail (KL-29)."""
+    url = target["url"]
+    email = (target.get("contact_email") or "").strip()
+    if not email or mailer is None or is_demo_target(email=email, url=url):
+        return False
+    domain = registrable_domain(domain_of(url))
+    existing = await store.get_monitored_by_domain(domain)
+    if existing and existing["status"] in ("active", "suspended", "pending"):
+        return False  # já ofertado/monitorado
+    report = await run_scan(url, full=True)  # confirma no completo
+    score = report.score.score if report.score else 0
+    if score != 100:
+        return False
+    token = secrets.token_urlsafe(48)
+    site = await store.upsert_monitoring_offer(
+        domain=domain, url=url, contact_email=email, approval_token=token,
+        target_id=target.get("id"), score=100)
+    if not site or site["status"] != "pending":
+        return False
+    try:
+        await mailer.send_monitor_offer(email, domain, _monitor_approve_url(site["approval_token"]))
+        print(f"[monitor] oferta enviada a {email} ({domain})", flush=True)
+        return True
+    except Exception as exc:  # noqa: BLE001 - best-effort
+        print(f"[monitor] falha ao ofertar {domain}: {exc!r}", flush=True)
+        return False
 
 
 def classify_evolution(old_score: Optional[int], new_score: Optional[int]) -> str:
@@ -101,9 +160,18 @@ async def rescan_target(store, mailer: Optional[KlarimMailer], cache: Optional[S
         # Evita alerta duplicado do Alert Worker dentro da janela de 30 dias.
         await store.mark_target_contacted(target_id)
 
+    # KL-29: atingiu 100 no re-scan → confere no completo e oferece monitoramento.
+    offered = False
+    if new_score == 100:
+        try:
+            offered = await _maybe_offer_monitoring(store, mailer, target)
+        except Exception as exc:  # noqa: BLE001 - oferta é best-effort
+            print(f"[monitor] erro na oferta de {url}: {exc!r}", flush=True)
+
     return {"target_id": target_id, "url": url, "evolution": evolution,
             "old_score": old_score, "new_score": new_score,
-            "email_id": email_id, "sent": email_id is not None}
+            "email_id": email_id, "sent": email_id is not None,
+            "monitoring_offered": offered}
 
 
 class RescanWorker:
@@ -119,11 +187,14 @@ class RescanWorker:
         max_scans = int(os.environ.get("WORKER_MAX_SCANS_PER_HOUR", "50"))
         self.pause_s = 3600.0 / max_scans if max_scans > 0 else 0.0
         self.batch = int(os.environ.get("RESCAN_BATCH_SIZE", "50"))
+        # KL-29: re-scan semanal dos sites monitorados (score 100).
+        self.monitor_interval_days = int(os.environ.get("MONITOR_INTERVAL_DAYS", "7"))
         self.store = get_target_store()
         self._cache_obj: Optional[ScanCache] = None
         self._last_cycle_at = None
         self._next_cycle_at = None
         self._last_cycle_stats: dict = {}
+        self._last_monitor_stats: dict = {}
 
     def _hb_payload(self) -> dict:
         return {
@@ -237,11 +308,69 @@ class RescanWorker:
         print(f"[rescan] ciclo concluído: {stats}", flush=True)
         return stats
 
+    # --- ciclo de monitoramento (KL-29) ------------------------------------ #
+
+    async def _monitor_cycle(self) -> dict:
+        """Re-scan COMPLETO (29) semanal dos sites monitorados: <100 suspende +
+        alerta; suspenso que volta a 100 é restaurado + e-mail."""
+        stats = {"checked": 0, "suspended": 0, "restored": 0, "errors": 0}
+        mailer = self._mailer()
+        try:
+            sites = await self.store.get_monitored_for_rescan()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[monitor] falha ao listar sites monitorados: {exc!r}", flush=True)
+            return stats
+
+        for site in sites:
+            try:
+                report = await run_scan(site["url"], full=True)
+                score = report.score.score if report.score else 0
+                await self.store.update_monitor_check(site["id"], score)
+                stats["checked"] += 1
+                email = site.get("contact_email")
+                domain = site["domain"]
+
+                if score < 100 and site["status"] == "active":
+                    await self.store.suspend_monitored_site(
+                        site["id"], f"Score caiu para {score}/100")
+                    stats["suspended"] += 1
+                    print(f"[monitor] {domain} suspenso (score {score})", flush=True)
+                    if mailer and email:
+                        await mailer.send_monitor_alert(
+                            email, domain, score, _monitor_result_url(site["url"]),
+                            _monitor_remove_url(domain))
+                elif score == 100 and site["status"] == "suspended":
+                    if await self.store.restore_monitored_site(site["id"]):
+                        stats["restored"] += 1
+                        print(f"[monitor] {domain} restaurado (100/100)", flush=True)
+                        if mailer and email:
+                            await mailer.send_monitor_restored(
+                                email, domain, _monitor_result_url(site["url"]),
+                                _monitor_remove_url(domain))
+                await asyncio.sleep(self.pause_s)
+            except Exception as exc:  # noqa: BLE001 - um site ruim não derruba o ciclo
+                stats["errors"] += 1
+                print(f"[monitor] erro em {site.get('domain')}: {exc!r}", flush=True)
+
+        self._last_monitor_stats = stats
+        print(f"[monitor] ciclo concluído: {stats}", flush=True)
+        return stats
+
+    async def _monitor_loop(self) -> None:
+        while True:
+            try:
+                await self._monitor_cycle()
+            except Exception as exc:  # noqa: BLE001
+                print(f"[monitor] ciclo falhou: {exc!r}", flush=True)
+            await asyncio.sleep(self.monitor_interval_days * 86400)
+
     async def start(self) -> None:
         print(f"[rescan] iniciado (idade {self.age_days}d, intervalo {self.interval_hours}h, "
-              f"batch e-mail {self.email_batch_size}, limite {self.monthly_limit // 1000}k/mês)",
+              f"batch e-mail {self.email_batch_size}, limite {self.monthly_limit // 1000}k/mês; "
+              f"monitor a cada {self.monitor_interval_days}d)",
               flush=True)
         asyncio.create_task(self._heartbeat_loop())
+        asyncio.create_task(self._monitor_loop())
         while True:
             try:
                 self._last_cycle_stats = await self.run_cycle()

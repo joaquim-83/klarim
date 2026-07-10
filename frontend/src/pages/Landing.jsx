@@ -1,10 +1,10 @@
 import { useState, useEffect } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams, Link } from 'react-router-dom'
 import Layout from '../components/Layout'
 import { Beacon } from '../components/Logo'
 import { normalizeUrl, isValidUrl } from '../lib/url'
 import { trackEvent } from '../lib/tracker'
-import { requestCode, verifyCode, checkCredit, rescanScan } from '../lib/api'
+import { requestCode, verifyCode, checkCredit, rescanScan, monitoringSites } from '../lib/api'
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/
 
@@ -39,7 +39,12 @@ export default function Landing() {
   const [busy, setBusy] = useState(false)
   const [resendIn, setResendIn] = useState(0)
   const [isRescan, setIsRescan] = useState(false) // re-verificação gratuita (KL-27)
+  const [monitoredCount, setMonitoredCount] = useState(0) // sites monitorados (KL-29)
   const navigate = useNavigate()
+
+  useEffect(() => {
+    monitoringSites().then((d) => setMonitoredCount(d.total || 0)).catch(() => {})
+  }, [])
 
   // Contador do "reenviar código".
   useEffect(() => {
@@ -209,6 +214,15 @@ export default function Landing() {
 
           {error && <p className="mt-3 text-center text-sm text-klarim-fail">{error}</p>}
         </div>
+
+        {/* Prévia dos sites monitorados (KL-29) */}
+        {monitoredCount > 0 && (
+          <p className="mt-6 text-center text-sm text-klarim-muted">
+            🔒 {monitoredCount} site{monitoredCount > 1 ? 's' : ''} com score 100 monitorado
+            {monitoredCount > 1 ? 's' : ''} pelo Klarim.{' '}
+            <Link to="/monitorados" className="text-klarim-ok hover:underline">Ver todos</Link>
+          </p>
+        )}
       </section>
 
       {/* Como funciona */}

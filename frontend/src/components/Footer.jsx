@@ -12,6 +12,7 @@ export default function Footer() {
         <nav className="mt-2 flex flex-wrap justify-center gap-4">
           <Link to="/sobre" className="text-klarim-muted hover:text-klarim-text">Sobre</Link>
           <Link to="/parceiros" className="text-klarim-muted hover:text-klarim-text">Parceiros</Link>
+          <Link to="/monitorados" className="text-klarim-muted hover:text-klarim-text">Monitorados</Link>
           <button
             onClick={() => setShowContact(true)}
             className="text-klarim-muted hover:text-klarim-text"

@@ -3,8 +3,67 @@ import { useSearchParams, useNavigate, Link } from 'react-router-dom'
 import Layout from '../components/Layout'
 import Semaphore from '../components/Semaphore'
 import { useSummary, problemLine } from '../lib/useSummary'
-import { downloadReport } from '../lib/api'
+import { downloadReport, monitoringOffer } from '../lib/api'
 import { trackEvent } from '../lib/tracker'
+
+const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/
+
+// Oferta de monitoramento gratuito quando o site atinge score 100 (KL-29).
+function MonitoringOffer({ url, defaultEmail, chargeId }) {
+  const navigate = useNavigate()
+  const [email, setEmail] = useState(defaultEmail || '')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  async function accept() {
+    if (!EMAIL_RE.test(email)) return setError('Digite um e-mail válido.')
+    setBusy(true)
+    setError('')
+    try {
+      trackEvent('monitoring_offer_accepted', { url }, url)
+      const r = await monitoringOffer(url, email, chargeId)
+      if (r.already) {
+        navigate('/monitorados')
+      } else if (r.approval_token) {
+        navigate(`/monitorados/aprovar?token=${encodeURIComponent(r.approval_token)}`)
+      }
+    } catch (e) {
+      setError(e.message || 'Não foi possível ativar o monitoramento.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="mx-auto mt-8 max-w-md rounded-xl border border-klarim-ok bg-klarim-surface p-6 text-left">
+      <p className="text-center text-lg font-bold text-klarim-ok">🎉 Parabéns! Score 100/100</p>
+      <p className="mt-1 text-center text-sm text-klarim-muted">
+        Seu site passou em todas as 29 verificações de segurança.
+      </p>
+      <hr className="my-4 border-klarim-border" />
+      <p className="text-sm font-bold">Monitoramento gratuito</p>
+      <p className="mt-1 text-sm text-klarim-muted">
+        Quer que o Klarim monitore seu site gratuitamente? Verificamos semanalmente e
+        avisamos se algo mudar. Seu site também aparecerá na seção de Sites Monitorados.
+      </p>
+      <input
+        type="email"
+        value={email}
+        onChange={(e) => setEmail(e.target.value)}
+        placeholder="seu@email.com.br"
+        className="mt-3 w-full rounded-lg border border-klarim-border bg-klarim-bg px-4 py-2.5 text-klarim-text placeholder:text-klarim-muted focus:border-klarim-ok focus:outline-none"
+      />
+      <button
+        onClick={accept}
+        disabled={busy}
+        className="mt-3 w-full rounded-lg bg-klarim-ok px-6 py-3 font-bold text-klarim-bg transition hover:opacity-90 disabled:opacity-60"
+      >
+        {busy ? 'Ativando…' : 'Aceitar monitoramento gratuito'}
+      </button>
+      {error && <p className="mt-2 text-sm text-klarim-fail">{error}</p>}
+    </div>
+  )
+}
 
 // Linha de um check. No gratuito: só nome + ✅/❌ (falhas ganham 🔒). No completo:
 // os FAILs expandem com evidência, impacto e correção.
@@ -214,6 +273,11 @@ export default function Result() {
               <PdfButton kind="technical" url={url} chargeId={chargeId} label="Baixar Relatório Técnico (PDF)" />
             </div>
           </div>
+        )}
+
+        {/* Monitoramento gratuito — score 100 (KL-29) */}
+        {isFull && summary.score === 100 && (
+          <MonitoringOffer url={url} defaultEmail={summary.contact_email} chargeId={chargeId} />
         )}
 
         {/* Re-verificação (retorno médico) */}

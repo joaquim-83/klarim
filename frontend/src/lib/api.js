@@ -127,6 +127,45 @@ export async function downloadReport(kind, url, chargeId) {
 
 // --- Recuperação de relatórios (token temporário) --- //
 
+// --- Sites monitorados (KL-29) --- //
+
+export async function monitoringSites() {
+  const resp = await fetch(`${BASE}/monitoring/sites`)
+  if (!resp.ok) return { sites: [], total: 0 }
+  return resp.json() // { sites: [...], total }
+}
+
+// Oferece monitoramento. Só funciona para quem comprovadamente fez o scan completo
+// (score 100) da URL — envia o scan token full e/ou o charge_id como prova.
+export async function monitoringOffer(url, email, chargeId) {
+  const token = getScanToken()
+  const resp = await fetch(`${BASE}/monitoring/offer`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...(token ? { 'X-Scan-Token': token } : {}) },
+    body: JSON.stringify({ url, email, charge_id: chargeId || undefined }),
+  })
+  const data = await resp.json().catch(() => ({}))
+  if (resp.status === 403) throw new Error(data.detail || 'Faça o scan completo deste site primeiro.')
+  if (resp.status === 409) throw new Error(data.detail || 'Disponível apenas para sites com score 100.')
+  if (resp.status === 429) throw new Error(data.detail || 'Muitas solicitações. Aguarde.')
+  if (!resp.ok) throw new Error(data.detail || 'Falha ao oferecer monitoramento.')
+  return data // { status, domain, approval_token? , already? }
+}
+
+export async function monitoringStatus(token) {
+  const resp = await fetch(`${BASE}/monitoring/status?token=${encodeURIComponent(token)}`)
+  if (!resp.ok) return { valid: false }
+  return resp.json()
+}
+
+export async function monitoringApprove(token, displayName) {
+  const { status, data } = await jsonPost('/monitoring/approve', {
+    token, display_name: displayName || undefined,
+  })
+  if (status >= 400) throw new Error(data.detail || 'Link inválido ou expirado.')
+  return data // { status: 'active', domain, display_name }
+}
+
 export async function recoveryRequest(email) {
   const resp = await fetch(`${BASE}/recovery/request`, {
     method: 'POST',

@@ -109,7 +109,8 @@ JWT_TTL_SECONDS = 86400  # 24h
 # Prefixos protegidos — exigem Bearer token. O resto é público (scan/summary,
 # payment, report, webhooks, recovery, unsubscribe, health, auth/login).
 _PROTECTED_PREFIXES = ("/targets", "/scans", "/alerts", "/rescans", "/email", "/payments",
-                       "/config", "/discovery", "/admin", "/system", "/analytics")
+                       "/config", "/discovery", "/admin", "/system", "/analytics",
+                       "/monitoring/admin")  # KL-29: só o /monitoring/admin/* é protegido
 
 
 def _jwt_secret() -> str:
@@ -643,6 +644,8 @@ async def _full_extras(url: str, email: Optional[str], charge_id: Optional[str],
     extras: dict = {"report_urls": {"executive": f"/report/executive?{q}",
                                     "technical": f"/report/technical?{q}"}}
     if email:
+        # O próprio e-mail do usuário (pré-preenche a oferta de monitoramento — KL-29).
+        extras["contact_email"] = email
         try:
             credit = await get_target_store().get_scan_credit(email)
             extras["rescan_credits"] = int(credit.get("rescan_credits") or 0) if credit else 0
@@ -2265,6 +2268,206 @@ def _unsubscribe_html(email: str, success: bool) -> str:
         f"<p style=\"color:#8B949E;font-size:15px;line-height:1.6\">{msg}</p>"
         "</div></body></html>"
     )
+
+
+# --------------------------------------------------------------------------- #
+# Sites monitorados (KL-29) — selo de segurança para score 100
+# --------------------------------------------------------------------------- #
+
+_monitor_hits: dict = {}
+
+
+def _monitor_secret() -> str:
+    return os.environ.get("JWT_SECRET", "") or os.environ.get("UNSUBSCRIBE_SECRET", "")
+
+
+def _monitor_removal_token(domain: str) -> str:
+    """Token HMAC (idempotente) para o link de remoção do rodapé dos e-mails."""
+    return hmac.new(_monitor_secret().encode(), f"remove:{domain}".encode(),
+                    hashlib.sha256).hexdigest()[:32]
+
+
+def _favicon_url(domain: str) -> str:
+    return f"https://{domain}/favicon.ico"
+
+
+def _public_monitored(site: dict) -> dict:
+    """Payload público de um site monitorado — sem e-mail, target_id ou token."""
+    return {
+        "domain": site.get("domain"),
+        "display_name": site.get("display_name") or site.get("domain"),
+        "logo_url": site.get("logo_url") or _favicon_url(site.get("domain", "")),
+        "url": site.get("url"),
+        "score": site.get("last_check_score") if site.get("last_check_score") is not None else 100,
+        "last_check_at": site.get("last_check_at"),
+        "verified_since": site.get("approved_at"),
+    }
+
+
+class MonitorOfferBody(BaseModel):
+    url: str
+    email: str
+    charge_id: Optional[str] = None
+
+
+async def _authorized_for_url(request: Optional[Request], url: str,
+                              charge_id: Optional[str]) -> bool:
+    """Quem pode ofertar monitoramento de uma URL: admin, ou quem comprovadamente
+    fez o scan COMPLETO dela (scan token `full` ou cobrança paga). Evita alguém
+    listar/monitorar o site de terceiros com o próprio e-mail (KL-29)."""
+    if request is not None and _is_admin_request(request):
+        return True
+    token = request.headers.get("x-scan-token", "") if request is not None else ""
+    payload = _verify_scan_token(token)
+    if payload and payload.get("full") and _norm_scan_url(payload.get("url", "")) == url:
+        return True
+    if charge_id:
+        charge = await get_store().get(charge_id)
+        if charge and _norm_scan_url(charge.target_url) == url:
+            await _refresh_charge(charge)
+            if charge.is_paid or _free_access():
+                return True
+    return False
+
+
+class MonitorApproveBody(BaseModel):
+    token: str
+    display_name: Optional[str] = None
+
+
+@app.post("/monitoring/offer")
+async def monitoring_offer(body: MonitorOfferBody, request: Request = None) -> dict:
+    """Oferta de monitoramento (KL-29). Público, mas só para uma URL cujo scan
+    COMPLETO recente é **score 100** (o servidor confere — não confia no cliente).
+    Cria/reusa o registro `pending` e devolve o `approval_token` para a confirmação."""
+    url = _norm_scan_url(body.url)
+    email = _clean_scan_email(body.email)
+    if not url or not _SCAN_EMAIL_RE.match(email):
+        raise HTTPException(status_code=422, detail="URL ou e-mail inválido.")
+
+    ip = _client_ip(request) if request is not None else "?"
+    if not _rl_ok(_monitor_hits, ip, 10, 3600):
+        raise HTTPException(status_code=429, detail="Muitas solicitações. Aguarde.",
+                            headers={"Retry-After": "3600"})
+
+    # Só quem comprovadamente fez o scan completo da URL pode ofertá-la (anti-abuso).
+    if not await _authorized_for_url(request, url, body.charge_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Faça o scan completo deste site para ativar o monitoramento.")
+
+    # Confere o score 100 num scan COMPLETO recente (sem reescanear).
+    report = await get_recent_only(url, full=True)
+    score = report.score.score if (report and report.score) else None
+    if score != 100:
+        raise HTTPException(
+            status_code=409,
+            detail="O monitoramento é oferecido apenas a sites com score 100 num scan completo recente.")
+
+    domain = registrable_domain(domain_of(url))
+    store = get_target_store()
+    target = await store.get_target_by_url(url)
+    token = secrets.token_urlsafe(48)
+    site = await store.upsert_monitoring_offer(
+        domain=domain, url=url, contact_email=email, approval_token=token,
+        target_id=(target or {}).get("id"), score=score)
+    if site is None:
+        raise HTTPException(status_code=500, detail="Falha ao registrar o monitoramento.")
+    if site["status"] in ("active", "suspended"):
+        return {"status": site["status"], "domain": domain, "already": True}
+    return {"status": "pending", "domain": domain, "approval_token": site["approval_token"]}
+
+
+@app.get("/monitoring/status")
+async def monitoring_status(token: str = Query(...)) -> dict:
+    """Estado de uma oferta pelo token (para a página de aprovação)."""
+    site = await get_target_store().get_monitored_by_token(token)
+    if site is None:
+        return {"valid": False}
+    return {"valid": True, "domain": site["domain"], "status": site["status"],
+            "display_name": site.get("display_name"),
+            "score": site.get("last_check_score")}
+
+
+@app.post("/monitoring/approve")
+async def monitoring_approve(body: MonitorApproveBody) -> dict:
+    """Confirma o monitoramento (uso único do token): marca `active`, captura o
+    favicon como logo e salva o nome da empresa (opcional)."""
+    store = get_target_store()
+    domain_row = await store.get_monitored_by_token(body.token)
+    logo = _favicon_url(domain_row["domain"]) if domain_row else None
+    site = await store.approve_monitored_site(
+        body.token, display_name=body.display_name, logo_url=logo)
+    if site is None:
+        raise HTTPException(status_code=404, detail="Link inválido, expirado ou já usado.")
+    return {"status": "active", "domain": site["domain"],
+            "display_name": site.get("display_name")}
+
+
+@app.get("/monitoring/remove")
+async def monitoring_remove(domain: str = Query(...), token: str = Query(...)) -> Response:
+    """Link de remoção (rodapé dos e-mails de monitoramento). HMAC por domínio."""
+    domain = (domain or "").strip().lower()
+    ok = bool(_monitor_secret()) and hmac.compare_digest(token, _monitor_removal_token(domain))
+    if ok:
+        await get_target_store().remove_monitored_site_by_domain(domain)
+    return HTMLResponse(_unsubscribe_html_generic(
+        "Removido dos Sites Monitorados" if ok else "Link inválido",
+        (f"O site <strong>{domain}</strong> foi removido da seção Sites Monitorados."
+         if ok else "Este link de remoção é inválido.")))
+
+
+def _unsubscribe_html_generic(title: str, msg: str) -> str:
+    return (
+        "<!DOCTYPE html><html lang=\"pt-BR\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">"
+        f"<title>{title} — Klarim</title></head>"
+        "<body style=\"margin:0;background:#0D1117;font-family:Arial,sans-serif;color:#E6EDF3\">"
+        "<div style=\"max-width:520px;margin:64px auto;padding:32px;background:#161B22;"
+        "border:1px solid #30363D;border-radius:12px;text-align:center\">"
+        "<div style=\"font-size:24px;font-weight:bold;letter-spacing:2px;margin-bottom:16px\">"
+        "KLA<span style=\"color:#FF6B35\">R</span>IM</div>"
+        f"<h2 style=\"color:#FF6B35;font-size:20px\">{title}</h2>"
+        f"<p style=\"color:#8B949E;font-size:15px;line-height:1.6\">{msg}</p>"
+        "</div></body></html>")
+
+
+@app.get("/monitoring/sites")
+async def monitoring_sites() -> dict:
+    """Lista pública dos sites monitorados `active` (sem dados sensíveis)."""
+    try:
+        rows = await get_target_store().get_active_monitored_sites()
+    except Exception:  # noqa: BLE001
+        rows = []
+    return {"sites": [_public_monitored(s) for s in rows], "total": len(rows)}
+
+
+# --- gestão (admin, prefixo /monitoring/admin protegido pelo middleware) ---- #
+
+class MonitorAdminStatusBody(BaseModel):
+    status: str
+    reason: Optional[str] = None
+
+
+@app.get("/monitoring/admin/list")
+async def monitoring_admin_list(status: Optional[str] = Query(default=None)) -> dict:
+    rows = await get_target_store().list_monitored_sites(status=status)
+    return {"count": len(rows), "sites": rows}
+
+
+@app.get("/monitoring/admin/stats")
+async def monitoring_admin_stats() -> dict:
+    return await get_target_store().monitored_stats()
+
+
+@app.post("/monitoring/admin/{site_id}/status")
+async def monitoring_admin_set_status(site_id: int, body: MonitorAdminStatusBody) -> dict:
+    if body.status not in ("pending", "active", "suspended", "removed"):
+        raise HTTPException(status_code=422, detail=f"Status inválido: {body.status}")
+    site = await get_target_store().set_monitored_status(site_id, body.status, body.reason)
+    if site is None:
+        raise HTTPException(status_code=404, detail="Site monitorado não encontrado.")
+    return site
 
 
 # --------------------------------------------------------------------------- #

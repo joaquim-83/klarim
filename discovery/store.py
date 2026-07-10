@@ -147,6 +147,28 @@ CREATE TABLE IF NOT EXISTS scan_credits (
 );
 CREATE INDEX IF NOT EXISTS idx_sc_email ON scan_credits(email);
 ALTER TABLE scan_credits ADD COLUMN IF NOT EXISTS rescan_credits INTEGER DEFAULT 0;
+
+-- Sites monitorados (KL-29): score 100 → selo público + re-scan semanal.
+-- status: pending → active → suspended → active/removed.
+CREATE TABLE IF NOT EXISTS monitored_sites (
+    id SERIAL PRIMARY KEY,
+    target_id INTEGER REFERENCES targets(id),
+    domain VARCHAR(255) NOT NULL,
+    url TEXT NOT NULL,
+    display_name VARCHAR(255),
+    logo_url TEXT,
+    contact_email VARCHAR(255) NOT NULL,
+    approval_token VARCHAR(64) UNIQUE,
+    approved BOOLEAN DEFAULT FALSE,
+    approved_at TIMESTAMP,
+    last_check_score INTEGER,
+    last_check_at TIMESTAMP,
+    status VARCHAR(20) DEFAULT 'pending',
+    suspended_reason TEXT,
+    created_at TIMESTAMP DEFAULT NOW()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ms_domain_uniq ON monitored_sites(domain);
+CREATE INDEX IF NOT EXISTS idx_ms_status ON monitored_sites(status);
 """
 
 
@@ -596,6 +618,190 @@ class TargetStore:
                 (email,),
             )
             return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- sites monitorados (KL-29) ----------------------------------------- #
+
+    _MS_COLS = ("id, target_id, domain, url, display_name, logo_url, contact_email, "
+               "approved, approved_at, last_check_score, last_check_at, status, "
+               "suspended_reason, created_at")
+
+    async def upsert_monitoring_offer(
+        self, domain: str, url: str, contact_email: str, approval_token: str,
+        target_id: Optional[int] = None, score: Optional[int] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Cria (ou reusa) o registro de monitoramento de um domínio, em `pending`.
+
+        Idempotente por domínio: se já existe `active` (ou `suspended`), NÃO cria um
+        novo token/downgrade — devolve o registro atual. Só (re)emite token quando o
+        registro está ausente ou `pending`/`removed`.
+        """
+        domain = (domain or "").strip().lower()
+
+        def _fn(cur):
+            cur.execute("SELECT * FROM monitored_sites WHERE domain = %s", (domain,))
+            existing = self._rows_to_dicts(cur)
+            if existing and existing[0]["status"] in ("active", "suspended"):
+                return existing[0]  # já monitorado — não reoferece
+            cur.execute(
+                "INSERT INTO monitored_sites (target_id, domain, url, contact_email, "
+                "approval_token, last_check_score, status) "
+                "VALUES (%s, %s, %s, %s, %s, %s, 'pending') "
+                "ON CONFLICT (domain) DO UPDATE SET "
+                "  status = 'pending', approval_token = EXCLUDED.approval_token, "
+                "  approved = FALSE, url = EXCLUDED.url, "
+                "  contact_email = EXCLUDED.contact_email, "
+                "  last_check_score = EXCLUDED.last_check_score, "
+                "  target_id = COALESCE(EXCLUDED.target_id, monitored_sites.target_id) "
+                "RETURNING *",
+                (target_id, domain, url, contact_email.strip().lower(),
+                 approval_token, score),
+            )
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_monitored_by_token(self, token: str) -> Optional[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute("SELECT * FROM monitored_sites WHERE approval_token = %s", (token,))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_monitored_by_domain(self, domain: str) -> Optional[Dict[str, Any]]:
+        domain = (domain or "").strip().lower()
+
+        def _fn(cur):
+            cur.execute("SELECT * FROM monitored_sites WHERE domain = %s", (domain,))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def approve_monitored_site(
+        self, token: str, display_name: Optional[str] = None, logo_url: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Aprova (uso único do token): marca active + invalida o token."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE monitored_sites SET approved = TRUE, approved_at = NOW(), "
+                "  status = 'active', approval_token = NULL, "
+                "  display_name = COALESCE(%s, display_name), "
+                "  logo_url = COALESCE(%s, logo_url) "
+                "WHERE approval_token = %s AND status IN ('pending', 'removed') "
+                "RETURNING *",
+                ((display_name or "").strip() or None, logo_url, token),
+            )
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def remove_monitored_site_by_domain(self, domain: str) -> bool:
+        domain = (domain or "").strip().lower()
+
+        def _fn(cur):
+            cur.execute("UPDATE monitored_sites SET status = 'removed', approval_token = NULL "
+                        "WHERE domain = %s AND status <> 'removed'", (domain,))
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_active_monitored_sites(self) -> List[Dict[str, Any]]:
+        """Sites `active` para a listagem pública (mais recentes primeiro)."""
+        def _fn(cur):
+            cur.execute(
+                f"SELECT {self._MS_COLS} FROM monitored_sites "
+                "WHERE status = 'active' ORDER BY approved_at DESC NULLS LAST, id DESC")
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_monitored_for_rescan(self) -> List[Dict[str, Any]]:
+        """Sites active/suspended (aprovados) para o re-scan de monitoramento."""
+        def _fn(cur):
+            cur.execute(
+                f"SELECT {self._MS_COLS} FROM monitored_sites "
+                "WHERE status IN ('active', 'suspended') AND approved = TRUE "
+                "ORDER BY last_check_at ASC NULLS FIRST")
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def update_monitor_check(self, site_id: int, score: int) -> None:
+        def _fn(cur):
+            cur.execute("UPDATE monitored_sites SET last_check_score = %s, "
+                        "last_check_at = NOW() WHERE id = %s", (score, site_id))
+
+        await asyncio.to_thread(self._run, _fn)
+
+    async def suspend_monitored_site(self, site_id: int, reason: str) -> None:
+        def _fn(cur):
+            cur.execute("UPDATE monitored_sites SET status = 'suspended', "
+                        "suspended_reason = %s WHERE id = %s AND status = 'active'",
+                        (reason[:500], site_id))
+
+        await asyncio.to_thread(self._run, _fn)
+
+    async def restore_monitored_site(self, site_id: int) -> bool:
+        def _fn(cur):
+            cur.execute("UPDATE monitored_sites SET status = 'active', "
+                        "suspended_reason = NULL WHERE id = %s AND status = 'suspended'",
+                        (site_id,))
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def list_monitored_sites(self, status: Optional[str] = None,
+                                   limit: int = 100) -> List[Dict[str, Any]]:
+        def _fn(cur):
+            if status:
+                cur.execute(f"SELECT {self._MS_COLS} FROM monitored_sites WHERE status = %s "
+                            "ORDER BY id DESC LIMIT %s", (status, limit))
+            else:
+                cur.execute(f"SELECT {self._MS_COLS} FROM monitored_sites "
+                            "ORDER BY id DESC LIMIT %s", (limit,))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_monitored(self, site_id: int) -> Optional[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute(f"SELECT {self._MS_COLS} FROM monitored_sites WHERE id = %s", (site_id,))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def set_monitored_status(self, site_id: int, status: str,
+                                   reason: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute("UPDATE monitored_sites SET status = %s, suspended_reason = %s "
+                        "WHERE id = %s RETURNING " + self._MS_COLS,
+                        (status, reason, site_id))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def monitored_stats(self) -> Dict[str, Any]:
+        def _fn(cur):
+            cur.execute("SELECT status, COUNT(*) FROM monitored_sites GROUP BY status")
+            by_status = {r[0]: int(r[1]) for r in cur.fetchall()}
+            return {"total": sum(by_status.values()), "by_status": by_status,
+                    "active": by_status.get("active", 0),
+                    "suspended": by_status.get("suspended", 0),
+                    "pending": by_status.get("pending", 0)}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def count_active_monitored(self) -> int:
+        def _fn(cur):
+            cur.execute("SELECT COUNT(*) FROM monitored_sites WHERE status = 'active'")
+            return int(cur.fetchone()[0])
 
         return await asyncio.to_thread(self._run, _fn)
 

@@ -113,6 +113,12 @@ export const admin = {
   rescans: (params) => get(`/rescans${qs(params)}`),
   payments: (params) => get(`/payments/list${qs(params)}`),
 
+  // sites monitorados — KL-29
+  monitoredList: (status) => get(`/monitoring/admin/list${status ? `?status=${status}` : ''}`),
+  monitoredStats: () => get('/monitoring/admin/stats'),
+  monitoredSetStatus: (id, status, reason) =>
+    post(`/monitoring/admin/${id}/status`, { status, reason }),
+
   // configurações operacionais (read-only)
   config: () => get('/config'),
 
