@@ -705,6 +705,12 @@ escaneados que têm falhas:
   **Único teto:** a **cota mensal** `ALERT_MONTHLY_LIMIT` (45k dos 50k/mês do Resend
   Pro; 5k reservados p/ transacionais), via `store.count_proactive_emails_this_month`
   — os antigos `MAX_ALERTS_PER_HOUR/DAY/CYCLE` e a pausa de 5s foram removidos.
+- **Kill-switch `STOP_ALERTS` (KL-27):** `alerts_stopped()` checa o arquivo em
+  `ALERTS_STOP_FILE`; se existir, o `run_cycle` (alerta **e** evolução) é pulado
+  (`stats["paused_by_flag"]`). O compose monta o dir de deploy em `/klarim-control`
+  (ro), então `touch`/`rm /opt/klarim/STOP_ALERTS` no host pausa/resume **sem
+  redeploy** (bind mount ao vivo, vale no próximo ciclo). ⚠️ O flag antes **não era
+  lido pelo código** — a "pausa" por arquivo não existia até este card.
 - **Mesmo container do Discovery Worker:** `discovery/worker.py` `main()` roda
   `asyncio.gather(DiscoveryWorker().start(), AlertWorker().start())`.
 - **`store.py`** — tabela **`alert_log`** (histórico/throttle) + métodos

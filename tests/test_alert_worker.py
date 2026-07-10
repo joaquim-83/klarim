@@ -194,6 +194,29 @@ def test_run_cycle_sends_in_one_batch():
     assert all(l["status"] == "sent" for l in store.logged)
 
 
+# --- kill-switch STOP_ALERTS (KL-27) --------------------------------------- #
+
+def test_alerts_stopped_flag(tmp_path, monkeypatch):
+    from discovery.alert_worker import alerts_stopped
+    monkeypatch.delenv("ALERTS_STOP_FILE", raising=False)
+    assert alerts_stopped() is False               # var não configurada → nunca pausa
+    flag = tmp_path / "STOP_ALERTS"
+    monkeypatch.setenv("ALERTS_STOP_FILE", str(flag))
+    assert alerts_stopped() is False               # configurada mas arquivo ausente
+    flag.write_text("")
+    assert alerts_stopped() is True                # arquivo presente → pausa
+
+
+def test_run_cycle_paused_by_flag(tmp_path, monkeypatch):
+    flag = tmp_path / "STOP_ALERTS"
+    flag.write_text("")
+    monkeypatch.setenv("ALERTS_STOP_FILE", str(flag))
+    store = FakeStore(eligible=[_target(1), _target(2)])
+    stats = asyncio.run(_worker(store).run_cycle())
+    assert stats.get("paused_by_flag") is True
+    assert stats["sent"] == 0 and store.alerted == []
+
+
 def test_run_cycle_splits_into_batches():
     # 120 elegíveis, batch 50 -> 3 batches (50 + 50 + 20)
     store = FakeStore(eligible=[_target(i) for i in range(1, 121)])

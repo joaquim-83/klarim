@@ -98,11 +98,17 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "discovery.worker"]
     env_file: .env
+    # Kill-switch de alertas (KL-27): monta o dir de deploy (onde vive o flag
+    # STOP_ALERTS) read-only; o worker checa ALERTS_STOP_FILE a cada ciclo. Bind
+    # mount ao vivo → `touch`/`rm STOP_ALERTS` no host pausa/resume sem redeploy.
+    volumes:
+      - ./:/klarim-control:ro
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-klarim}:${POSTGRES_PASSWORD:-change-me}@db:5432/${POSTGRES_DB:-klarim}
       REDIS_URL: redis://redis:6379/0
       DISCOVERY_BATCH_SIZE: ${DISCOVERY_BATCH_SIZE:-100}
       DISCOVERY_INTERVAL_MINUTES: ${DISCOVERY_INTERVAL_MINUTES:-30}
+      ALERTS_STOP_FILE: ${ALERTS_STOP_FILE:-/klarim-control/STOP_ALERTS}
     # Watchdog (KL-19): se o event loop travar, os heartbeats no Redis expiram
     # (TTL 600s); após 3 falhas (~6min) o Docker reinicia o container.
     healthcheck:

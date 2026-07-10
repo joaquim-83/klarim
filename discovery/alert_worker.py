@@ -30,6 +30,23 @@ _EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$")
 _SEV_MAP = {"CRITICA": "critica", "ALTA": "alta", "MEDIA": "media", "BAIXA": "baixa"}
 
 
+def alerts_stopped() -> bool:
+    """Kill-switch operacional de envio proativo (alertas + evolução).
+
+    Se o arquivo em ``ALERTS_STOP_FILE`` existir, o ciclo de envio é pulado. No
+    compose o flag do operador (`/opt/klarim/STOP_ALERTS`) é montado read-only no
+    container; como o bind mount é ao vivo, `touch`/`rm` no host valem já no próximo
+    ciclo (≤30min), sem redeploy. Sem a var configurada, nunca pausa (default).
+    """
+    path = os.environ.get("ALERTS_STOP_FILE", "").strip()
+    if not path:
+        return False
+    try:
+        return os.path.exists(path)
+    except OSError:  # noqa: BLE001 - na dúvida, não pausa (fail-open)
+        return False
+
+
 def severity_counts_from_checks(checks_json: Optional[dict]) -> Dict[str, int]:
     counts = {"critica": 0, "alta": 0, "media": 0, "baixa": 0}
     for r in (checks_json or {}).get("results", []):
@@ -216,6 +233,12 @@ class AlertWorker:
         mailer = self._mailer()
         if mailer is None:
             print("[alert] RESEND_API_KEY não configurada; ciclo pulado", flush=True)
+            return stats
+
+        # Kill-switch operacional (STOP_ALERTS): pausa manual sem redeploy.
+        if alerts_stopped():
+            print("[alert] STOP_ALERTS ativo; ciclo pulado", flush=True)
+            stats["paused_by_flag"] = True
             return stats
 
         # Safety net de bounce (KL-24) — pausa se a taxa estiver crítica.

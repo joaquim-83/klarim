@@ -28,7 +28,7 @@ from reporter.risk_messages import get_risk_messages
 from payments import PRICING, DEFAULT_TIER, amount_display
 from .heartbeat import publish_heartbeat
 from .store import get_target_store
-from .alert_worker import severity_counts_from_checks
+from .alert_worker import severity_counts_from_checks, alerts_stopped
 
 
 def classify_evolution(old_score: Optional[int], new_score: Optional[int]) -> str:
@@ -225,8 +225,13 @@ class RescanWorker:
                 stats["errors"] += 1
                 print(f"[rescan] erro em {t.get('url')}: {exc!r}", flush=True)
 
-        # 2. Despacha os e-mails de evolução pendentes em batch.
-        if mailer is not None:
+        # 2. Despacha os e-mails de evolução pendentes em batch. O kill-switch
+        # (STOP_ALERTS) segura só os e-mails — o re-scan (dados) continua; as
+        # evoluções ficam pendentes e saem quando o flag for removido.
+        if mailer is not None and alerts_stopped():
+            stats["paused_by_flag"] = True
+            print("[rescan] STOP_ALERTS ativo; e-mails de evolução adiados", flush=True)
+        elif mailer is not None:
             stats["emailed"] = await self._flush_pending_batch(mailer)
 
         print(f"[rescan] ciclo concluído: {stats}", flush=True)
