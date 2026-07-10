@@ -16,13 +16,20 @@ ORDER = 22
 CHECK_ID = "check_22_dkim"
 NAME = "DKIM (assinatura de e-mail)"
 
-_SELECTORS = ["default", "google", "selector1", "selector2", "k1", "mail", "dkim", "s1", "s2"]
+# Seletores DKIM comuns + provedores populares (inclui os usados no Brasil).
+# Cobre 90%+ dos casos; seletores exóticos ainda podem dar falso positivo.
+DKIM_SELECTORS = [
+    "default", "google", "selector1", "selector2", "k1", "mail", "dkim", "s1", "s2",
+    "resend",                                          # Resend (usado pelo klarim.net)
+    "mandrill", "mailgun", "amazonses", "sendgrid",    # provedores transacionais
+    "zoho", "locaweb", "titan",                        # populares no Brasil
+]
 
 
 async def check(url: str) -> CheckResult:
     domain = registrable_domain(domain_of(url))
     any_dns_ok = False
-    for selector in _SELECTORS:
+    for selector in DKIM_SELECTORS:
         records = await asyncio.to_thread(
             dns_util.resolve_txt, f"{selector}._domainkey.{domain}", 4.0)
         if records is None:
@@ -43,4 +50,4 @@ async def check(url: str) -> CheckResult:
         name=NAME, status=Status.FAIL, severity=Severity.MEDIA,
         evidence=f"Nenhum registro DKIM nos seletores comuns de {domain} — e-mails do "
                  f"domínio não são assinados digitalmente.",
-        details={"domain": domain, "selectors_tried": _SELECTORS})
+        details={"domain": domain, "selectors_tried": DKIM_SELECTORS})

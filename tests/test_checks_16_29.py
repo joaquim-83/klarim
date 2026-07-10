@@ -274,6 +274,20 @@ def test_check22_pass_when_selector_found(monkeypatch):
     assert r.status == Status.PASS
 
 
+def test_check22_checks_resend_selector(monkeypatch):
+    # DKIM só no seletor 'resend' (o caso do klarim.net) → PASS.
+    assert "resend" in check_22_dkim.DKIM_SELECTORS
+
+    def _resolve(name, timeout=4.0):
+        if name.startswith("resend._domainkey"):
+            return ["v=DKIM1; k=rsa; p=MIGfMA0..."]
+        return []
+    monkeypatch.setattr(dns_util, "resolve_txt", _resolve)
+    r = _run(check_22_dkim.check(URL))
+    assert r.status == Status.PASS
+    assert r.details.get("selector") == "resend"
+
+
 def test_check22_fail_when_all_absent(monkeypatch):
     monkeypatch.setattr(dns_util, "resolve_txt", _txt_returning([]))
     r = _run(check_22_dkim.check(URL))
