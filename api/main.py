@@ -54,6 +54,7 @@ from payments import (
 from notifier import KlarimMailer, KlarimMailerError, unsubscribe_token, verify_resend_signature
 from discovery.alert_worker import send_alert_for_target
 from discovery.rescan_worker import rescan_target
+from discovery import worker_control
 from discovery.ingest import ingest_scan, _fetch_html
 from discovery.classifier import classify_sector, classify_by_domain, PRICE_TIERS
 from api import health_checks
@@ -1538,11 +1539,18 @@ async def api_system_status() -> dict:
             queue_size = None
 
     deps = await health_checks.run_all(redis)
+    ctrl = worker_control.load()  # KL-32: estado de pausa por worker
+
+    def _c(w: str) -> dict:
+        n = ctrl.get(w, {})
+        return {"enabled": n.get("enabled", True),
+                "paused_at": n.get("paused_at"), "paused_by": n.get("paused_by")}
 
     return {
         "workers": {
             "discovery": {
                 "alive": disc is not None,
+                **_c("discovery"),
                 "last_cycle_at": (disc or {}).get("last_cycle_at"),
                 "next_cycle_at": (disc or {}).get("next_cycle_at"),
                 "cycles_completed": (disc or {}).get("cycles_completed", 0),
@@ -1551,6 +1559,7 @@ async def api_system_status() -> dict:
             },
             "alert": {
                 "alive": alert_hb is not None,
+                **_c("alert"),
                 "last_cycle_at": (alert_hb or {}).get("last_cycle_at"),
                 "next_cycle_at": (alert_hb or {}).get("next_cycle_at"),
                 "sent_today": a_stats.get("today", 0),
@@ -1562,6 +1571,7 @@ async def api_system_status() -> dict:
             },
             "rescan": {
                 "alive": rescan_hb is not None,
+                **_c("rescan"),
                 "last_cycle_at": (rescan_hb or {}).get("last_cycle_at"),
                 "next_cycle_at": (rescan_hb or {}).get("next_cycle_at"),
                 "rescanned_today": r_stats.get("today", 0),
@@ -1570,6 +1580,7 @@ async def api_system_status() -> dict:
             },
             "scan": {
                 "alive": scan_hb is not None,
+                **_c("scan"),
                 "queue_size": queue_size,
                 "completed_today": scan_today["count"],
                 "avg_score_today": scan_today["avg_score"],
@@ -1586,6 +1597,37 @@ async def api_system_status() -> dict:
             "backlog": backlog,
         },
     }
+
+
+# --------------------------------------------------------------------------- #
+# Controle dos workers (KL-32) — pausa/retoma via painel (mesmo controle do MCP)
+# --------------------------------------------------------------------------- #
+
+class WorkerActionBody(BaseModel):
+    worker: str  # discovery | alert | rescan | scan | all
+
+
+@app.post("/admin/workers/pause")
+async def api_workers_pause(body: WorkerActionBody) -> dict:
+    try:
+        data = worker_control.pause(body.worker, by="painel")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"paused": body.worker, "control": data}
+
+
+@app.post("/admin/workers/resume")
+async def api_workers_resume(body: WorkerActionBody) -> dict:
+    try:
+        data = worker_control.resume(body.worker)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"resumed": body.worker, "control": data}
+
+
+@app.get("/admin/workers/control")
+async def api_workers_control() -> dict:
+    return {"control": worker_control.load(), "workers": worker_control.WORKERS}
 
 
 @app.get("/system/activity")

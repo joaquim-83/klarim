@@ -1208,3 +1208,33 @@ started/completed`, `score100_monitoring_offered/accepted`.
 
 **Regra inviolável:** o bônus é por (e-mail, URL), **uso único**, consumido ao rodar o
 scan; `bonus=full` na URL nunca autoriza sozinho — sempre confere o crédito no banco.
+
+## 29. Controle dos workers via MCP (KL-32)
+
+Pausa/retoma **cada worker independentemente** (discovery, alert, rescan, scan) e ajusta
+throttle, sem redeploy, com persistência entre restarts.
+
+**Estado (`discovery/worker_control.py`):** um JSON em `WORKER_CONTROL_FILE` (padrão
+`/klarim-control/worker_control.json` = host `/opt/klarim/worker_control.json`) com
+`{worker: {enabled, paused_at, paused_by, <config>}}`. **Fail-open** (ausente/corrompido/
+chave faltando ⇒ `enabled: true` — nunca trava). Escrita **atômica** (tmp + `os.replace`).
+API: `load`/`is_enabled`/`worker_config`/`pause`/`resume`(incl. `"all"`)/`set_config`.
+
+**Mounts (compose):** `api` monta `./:/klarim-control` **rw** (o MCP grava); `discovery`
+e `worker` montam `:ro` (leem). O arquivo vive no host → persiste. Ambos no `.gitignore`.
+
+**Integração:** cada worker checa `is_enabled` **no início de cada ciclo** e pula se
+desabilitado. Overrides lidos por ciclo: alert `max_per_hour`/`batch_size`, discovery
+`cycle_minutes`/`max_targets_per_cycle`, scan `max_per_hour`. O scan pausado **não
+consome a fila** (itens ficam enfileirados) mas mantém heartbeat. **Aditivo ao
+`STOP_ALERTS`** (KL-27): o alert só envia se `STOP_ALERTS` ausente **E** `alert.enabled`.
+
+**MCP (6 tools, `mcp_server/tools/workers.py`):** `pause_worker`, `resume_worker`,
+`get_worker_control` (controle + alive/dead do heartbeat), `set_alert_throttle`,
+`set_discovery_config`, `set_scan_config`. **REST (JWT):** `POST /admin/workers/pause|
+resume`, `GET /admin/workers/control`. `get_system_status` inclui `enabled/paused_at/
+paused_by` por worker.
+
+**Regra inviolável:** o controle é **fail-open** (um erro de leitura nunca pausa um
+worker por engano); pausar `alert`/`rescan` protege a reputação do domínio — o kill-switch
+`STOP_ALERTS` continua válido em paralelo.

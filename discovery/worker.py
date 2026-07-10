@@ -29,6 +29,7 @@ from .fingerprint import detect_platform
 from .contact import extract_email
 from .classifier import classify_sector
 from .store import get_target_store
+from . import worker_control
 
 SCAN_QUEUE = os.environ.get("KLARIM_SCAN_QUEUE", "klarim:scan_queue")
 STATUS_KEY = os.environ.get("KLARIM_DISCOVERY_STATUS_KEY", "discovery:status")
@@ -181,6 +182,16 @@ class DiscoveryWorker:
             "no_contact": 0, "registered": 0, "enqueued": 0, "unreachable": 0,
             "timeouts": 0, "errors": 0,
         }
+        # Controle centralizado (KL-32): pausa por MCP/painel.
+        if not worker_control.is_enabled("discovery"):
+            print("[discovery] worker pausado (worker_control); pulando ciclo", flush=True)
+            stats["disabled"] = True
+            self._last_cycle_stats = stats
+            return stats
+        # Override de tamanho do ciclo (KL-32).
+        batch = int(worker_control.worker_config("discovery").get("max_targets_per_cycle")
+                    or self.batch_size)
+
         domains = await self._get_domains(stats)
         if not domains:
             print("[discovery] nenhuma fonte retornou domínios neste ciclo", flush=True)
@@ -188,10 +199,10 @@ class DiscoveryWorker:
             return stats
 
         print(f"[discovery] buffer: {len(domains)} domínios .com.br → processando "
-              f"até {self.batch_size} (fonte={stats['source']})", flush=True)
+              f"até {batch} (fonte={stats['source']})", flush=True)
 
         for domain in domains:
-            if stats["processed"] >= self.batch_size:
+            if stats["processed"] >= batch:
                 break
             try:
                 if await self.store.domain_exists(domain):
@@ -252,10 +263,13 @@ class DiscoveryWorker:
             except Exception as exc:  # noqa: BLE001
                 print(f"[discovery] ciclo falhou: {exc!r}", flush=True)
             self._cycles_completed += 1
+            # Intervalo dinâmico (KL-32): cycle_minutes do controle, senão o do env.
+            interval = int(worker_control.worker_config("discovery").get("cycle_minutes")
+                           or self.interval_minutes)
             self._last_cycle_at = _utcnow()
-            self._next_cycle_at = self._last_cycle_at + timedelta(minutes=self.interval_minutes)
+            self._next_cycle_at = self._last_cycle_at + timedelta(minutes=interval)
             await self._write_status()
-            await asyncio.sleep(self.interval_minutes * 60)
+            await asyncio.sleep(interval * 60)
 
 
 async def _run_all() -> None:

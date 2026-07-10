@@ -34,6 +34,7 @@ from payments import PRICING, DEFAULT_TIER, amount_display
 from .heartbeat import publish_heartbeat
 from .store import get_target_store
 from .alert_worker import severity_counts_from_checks, alerts_stopped, is_demo_target
+from . import worker_control
 
 _SITE_BASE = os.environ.get("SITE_BASE", "https://klarim.net")
 
@@ -279,6 +280,11 @@ class RescanWorker:
 
     async def run_cycle(self) -> dict:
         stats = {"eligible": 0, "rescanned": 0, "emailed": 0, "errors": 0}
+        # Controle centralizado (KL-32): pausa por MCP/painel.
+        if not worker_control.is_enabled("rescan"):
+            print("[rescan] worker pausado (worker_control); pulando ciclo", flush=True)
+            stats["disabled"] = True
+            return stats
         mailer = self._mailer()
         cache = await self._cache()
 
@@ -311,9 +317,13 @@ class RescanWorker:
     # --- ciclo de monitoramento (KL-29) ------------------------------------ #
 
     async def _monitor_cycle(self) -> dict:
-        """Re-scan COMPLETO (29) semanal dos sites monitorados: <100 suspende +
-        alerta; suspenso que volta a 100 é restaurado + e-mail."""
+        """Re-scan COMPLETO (29) dos sites monitorados: <100 suspende + alerta;
+        suspenso que volta a 100 é restaurado + e-mail."""
         stats = {"checked": 0, "suspended": 0, "restored": 0, "errors": 0}
+        # Controle KL-32: pausa junto com o rescan worker (ambos vivem no mesmo loop).
+        if not worker_control.is_enabled("rescan"):
+            stats["disabled"] = True
+            return stats
         mailer = self._mailer()
         try:
             sites = await self.store.get_monitored_for_rescan()

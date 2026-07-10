@@ -81,6 +81,7 @@ async def _worker_loop() -> None:
     from scanner.cache import ScanCache
     from discovery.store import get_target_store
     from discovery.heartbeat import publish_heartbeat
+    from discovery import worker_control
 
     redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
     client = aioredis.from_url(redis_url, decode_responses=True)
@@ -110,6 +111,15 @@ async def _worker_loop() -> None:
     print(f"[klarim-worker] conectado a {redis_url}; aguardando '{SCAN_QUEUE}'…", flush=True)
     await _beat()
     while True:
+        # Controle centralizado (KL-32): pausado → não consome a fila (itens ficam
+        # enfileirados), mas mantém o heartbeat vivo.
+        if not worker_control.is_enabled("scan"):
+            await _beat()
+            await asyncio.sleep(30)
+            continue
+        # Throttle dinâmico (KL-32): max_per_hour do controle, senão o do env.
+        mph = int(worker_control.worker_config("scan").get("max_per_hour") or max_per_hour)
+        min_interval = 3600.0 / mph if mph > 0 else 0.0
         # timeout 30s: acorda pra bater o heartbeat mesmo com a fila vazia (KL-16).
         item = await client.blpop(SCAN_QUEUE, timeout=30)
         await _beat()

@@ -51,3 +51,7 @@ Thumbs.db
 # --- Docker volumes (local) ---
 pgdata/
 redisdata/
+
+# --- KL-32: worker control state (runtime, per-VM) ---
+worker_control.json
+STOP_ALERTS

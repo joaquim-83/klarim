@@ -47,9 +47,14 @@ services:
     restart: unless-stopped
     command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
     env_file: .env
+    # KL-32: monta o dir de deploy LEITURA+ESCRITA — o MCP grava o worker_control.json
+    # (os workers leem o mesmo arquivo pelo mount ro).
+    volumes:
+      - ./:/klarim-control
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-klarim}:${POSTGRES_PASSWORD:-change-me}@db:5432/${POSTGRES_DB:-klarim}
       REDIS_URL: redis://redis:6379/0
+      WORKER_CONTROL_FILE: ${WORKER_CONTROL_FILE:-/klarim-control/worker_control.json}
     ports:
       # Bind to localhost only — o público acessa via Nginx (serviço web, :80).
       # Continua acessível na VM para debug (curl localhost:8000).
@@ -83,9 +88,13 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "scanner.main", "--worker"]
     env_file: .env
+    # KL-32: lê o worker_control.json (pausa/retoma o scan worker sem redeploy).
+    volumes:
+      - ./:/klarim-control:ro
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-klarim}:${POSTGRES_PASSWORD:-change-me}@db:5432/${POSTGRES_DB:-klarim}
       REDIS_URL: redis://redis:6379/0
+      WORKER_CONTROL_FILE: ${WORKER_CONTROL_FILE:-/klarim-control/worker_control.json}
     depends_on:
       redis:
         condition: service_healthy
@@ -108,6 +117,7 @@ services:
       REDIS_URL: redis://redis:6379/0
       DISCOVERY_BATCH_SIZE: ${DISCOVERY_BATCH_SIZE:-100}
       DISCOVERY_INTERVAL_MINUTES: ${DISCOVERY_INTERVAL_MINUTES:-30}
+      WORKER_CONTROL_FILE: ${WORKER_CONTROL_FILE:-/klarim-control/worker_control.json}  # KL-32
       ALERTS_STOP_FILE: ${ALERTS_STOP_FILE:-/klarim-control/STOP_ALERTS}
     # Watchdog (KL-19): se o event loop travar, os heartbeats no Redis expiram
     # (TTL 600s); após 3 falhas (~6min) o Docker reinicia o container.

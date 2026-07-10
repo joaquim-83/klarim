@@ -198,6 +198,29 @@ def test_run_cycle_sends_in_one_batch():
     assert all(l["status"] == "sent" for l in store.logged)
 
 
+# --- controle centralizado KL-32 ------------------------------------------- #
+
+def test_run_cycle_disabled_by_worker_control(tmp_path, monkeypatch):
+    from discovery import worker_control
+    monkeypatch.setenv("WORKER_CONTROL_FILE", str(tmp_path / "wc.json"))
+    worker_control.pause("alert")
+    store = FakeStore(eligible=[_target(1), _target(2)])
+    stats = asyncio.run(_worker(store).run_cycle())
+    assert stats.get("disabled") is True and stats["sent"] == 0
+    assert store.alerted == []  # nada enviado enquanto pausado
+
+
+def test_run_cycle_alert_throttle_from_control(tmp_path, monkeypatch):
+    from discovery import worker_control
+    monkeypatch.setenv("WORKER_CONTROL_FILE", str(tmp_path / "wc.json"))
+    # max_per_hour=1 → o teto por ciclo cai para 1 (max(1, floor(1*intervalo/60))=1),
+    # independente do intervalo do worker. Sem o throttle, enviaria os 10.
+    worker_control.set_config("alert", max_per_hour=1)
+    store = FakeStore(eligible=[_target(i) for i in range(1, 11)])
+    stats = asyncio.run(_worker(store).run_cycle())
+    assert stats["sent"] == 1  # throttle capou o ciclo em 1
+
+
 # --- kill-switch STOP_ALERTS (KL-27) --------------------------------------- #
 
 def test_alerts_stopped_flag(tmp_path, monkeypatch):

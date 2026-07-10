@@ -27,6 +27,7 @@ from notifier import KlarimMailer, KlarimMailerError, build_unsubscribe_link
 from .store import get_target_store
 from .heartbeat import publish_heartbeat
 from .contact import email_mx_status, _clean_email
+from . import worker_control
 
 # Formato de e-mail aceito no batch. 1 e-mail malformado faz o Resend Batch API
 # rejeitar os 50 inteiros (422) — por isso validamos antes de montar o batch.
@@ -282,7 +283,13 @@ class AlertWorker:
             print("[alert] RESEND_API_KEY não configurada; ciclo pulado", flush=True)
             return stats
 
-        # Kill-switch operacional (STOP_ALERTS): pausa manual sem redeploy.
+        # Controle centralizado (KL-32): pausa por MCP/painel. Aditivo ao STOP_ALERTS.
+        if not worker_control.is_enabled("alert"):
+            print("[alert] worker pausado (worker_control); pulando ciclo", flush=True)
+            stats["disabled"] = True
+            return stats
+
+        # Kill-switch operacional (STOP_ALERTS, KL-27): pausa manual sem redeploy.
         if alerts_stopped():
             print("[alert] STOP_ALERTS ativo; ciclo pulado", flush=True)
             stats["paused_by_flag"] = True
@@ -300,8 +307,16 @@ class AlertWorker:
                   f"ciclo pulado", flush=True)
             return stats
 
+        # Throttle dinâmico (KL-32): batch_size + max_per_hour lidos do controle.
+        cfg = worker_control.worker_config("alert")
+        batch_size = int(cfg.get("batch_size") or self.batch_size)
+        self.batch_size = batch_size
         # Busca só o que cabe no ciclo e na cota mensal restante.
-        cycle_cap = self.batch_size * self.batches_per_cycle
+        cycle_cap = batch_size * self.batches_per_cycle
+        max_per_hour = cfg.get("max_per_hour")
+        if max_per_hour:
+            per_cycle = max(1, int(int(max_per_hour) * self.interval_minutes / 60))
+            cycle_cap = min(cycle_cap, per_cycle)
         want = min(cycle_cap, self.monthly_limit - sent_month)
         raw_targets = await self.store.get_eligible_targets_for_alert(limit=want)
         stats["eligible"] = len(raw_targets)

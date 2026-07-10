@@ -465,6 +465,13 @@ pagamentos ficam vinculados aos alvos (link nos dois sentidos + reenvio de
 relatório). Endpoints: `POST /api/admin/scan-and-report`, `/resend-alert`,
 `/send-report`, `/resend-payment`.
 
+**Controle dos workers (KL-32).** Cada worker (discovery, alert, rescan, scan) pode
+ser **pausado/retomado independentemente** via MCP (`pause_worker`/`resume_worker`/
+`get_worker_control` + `set_*_throttle/config`) ou REST (`POST /api/admin/workers/
+pause|resume`, JWT), sem redeploy. O estado vive em `worker_control.json` (montado por
+volume, persiste entre restarts) e é lido no início de cada ciclo — **fail-open** (erro
+de leitura nunca pausa por engano). Aditivo ao kill-switch `STOP_ALERTS`.
+
 ### Alert Worker (disparo automático — envio em lote, KL-23)
 
 No mesmo container do Discovery Worker (via `asyncio.gather`), o **Alert Worker**
