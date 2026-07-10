@@ -131,11 +131,12 @@ class MemoryStore:
     async def payment_stats(self) -> Dict[str, Any]:
         by_status: Dict[str, int] = {}
         revenue = 0
-        for c in self._d.values():
+        real = [c for c in self._d.values() if not c.charge_id.startswith("demo_")]
+        for c in real:  # cobranças demo não entram nas métricas (Fix pós-KL-27)
             by_status[c.status] = by_status.get(c.status, 0) + 1
             if c.is_paid:
                 revenue += c.amount_cents
-        return {"total": len(self._d), "by_status": by_status,
+        return {"total": len(real), "by_status": by_status,
                 "revenue_cents": revenue, "revenue_display": amount_display(revenue),
                 "paid_count": by_status.get(PaymentStatus.PAID, 0)}
 
@@ -316,13 +317,16 @@ class PostgresStore:
 
     def _payment_stats_sync(self) -> Dict[str, Any]:
         conn = self._connect()
+        # Cobranças demo (charge_id 'demo_...') não entram nas métricas (Fix pós-KL-27).
+        demo = "charge_id NOT LIKE 'demo\\_%'"
         try:
             with conn, conn.cursor() as cur:
-                cur.execute("SELECT status, COUNT(*) FROM payments GROUP BY status")
+                cur.execute(f"SELECT status, COUNT(*) FROM payments WHERE {demo} GROUP BY status")
                 by_status = {r[0]: int(r[1]) for r in cur.fetchall()}
-                cur.execute("SELECT COALESCE(SUM(amount_cents), 0) FROM payments WHERE status = 'PAID'")
+                cur.execute(f"SELECT COALESCE(SUM(amount_cents), 0) FROM payments "
+                            f"WHERE status = 'PAID' AND {demo}")
                 revenue = int(cur.fetchone()[0])
-                cur.execute("SELECT COUNT(*) FROM payments")
+                cur.execute(f"SELECT COUNT(*) FROM payments WHERE {demo}")
                 total = int(cur.fetchone()[0])
         finally:
             conn.close()

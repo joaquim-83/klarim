@@ -14,6 +14,24 @@ const TOOLTIP_STYLE = {
   backgroundColor: '#161B22', border: '1px solid #30363D', borderRadius: 8, color: '#E6EDF3',
 }
 
+// Rótulo do tipo de scan na atividade recente (Fix pós-KL-27).
+const SCAN_TYPE = {
+  public: ['Básico', '#3B82F6'], paid: ['Completo', '#00D26A'],
+  rescan: ['Re-verificação', '#A371F7'], admin: ['Admin', '#F0C000'],
+  manual: ['Manual', '#F0C000'], discovery: ['Descoberta', '#8B949E'],
+  demo: ['Demo', '#FF6B35'],
+}
+
+function scanTypeBadge(source) {
+  const [label, color] = SCAN_TYPE[source] || [source || '—', '#8B949E']
+  return (
+    <span className="rounded-full px-2 py-0.5 text-xs font-medium"
+      style={{ color, border: `1px solid ${color}55` }}>
+      {label}
+    </span>
+  )
+}
+
 function ChartCard({ title, children }) {
   return (
     <Card title={title}>
@@ -29,7 +47,7 @@ export default function Overview() {
     Promise.all([
       admin.targetsStats(), admin.alertsStats(), admin.scansStats(),
       admin.paymentsStats(), admin.scansDaily(30), admin.alertsDaily(30),
-      admin.scans({ limit: 10 }),
+      admin.scans({ limit: 10, distinct_url: true }),  // 1 linha por site (Fix pós-KL-27)
     ]).then(([targets, alerts, scans, payments, scansD, alertsD, recent]) => ({
       targets, alerts, scans, payments,
       scansD: scansD.series, alertsD: alertsD.series, recent: recent.scans,
@@ -113,6 +131,7 @@ export default function Overview() {
               <thead>
                 <tr className="text-left text-xs uppercase text-klarim-muted">
                   <th className="py-2 pr-4">Site</th>
+                  <th className="py-2 pr-4">Tipo</th>
                   <th className="py-2 pr-4">Score</th>
                   <th className="py-2 pr-4">Quando</th>
                   <th className="py-2"></th>
@@ -122,6 +141,7 @@ export default function Overview() {
                 {data.recent.map((s) => (
                   <tr key={s.id} className="border-t border-klarim-border">
                     <td className="py-2 pr-4 font-mono text-xs">{s.url}</td>
+                    <td className="py-2 pr-4">{scanTypeBadge(s.source)}</td>
                     <td className="py-2 pr-4"><SemaphoreDot semaphore={s.semaphore} score={s.score} /></td>
                     <td className="py-2 pr-4 text-klarim-muted">{relativeTime(s.scanned_at)}</td>
                     <td className="py-2 text-right">

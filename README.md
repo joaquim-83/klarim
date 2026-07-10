@@ -337,11 +337,20 @@ Um **webhook** confirma o pagamento server-side.
 - `POST /api/scan/rescan {email, code, url}` → re-verificação gratuita pós-compra:
   scan completo + comparação antes/depois (**"retorno médico"**).
 
+Após pagar, o visitante vai para **`/result?url=…&charge_id=…`**: a mesma tela
+mostra os **29 checks desbloqueados** (✅/❌ com evidência + impacto + correção nos
+FALHAS), os PDFs e a re-verificação gratuita — não só os downloads.
+
 **Modo livre:** com `KLARIM_DEV_MODE=true` **ou** sem `ABACATEPAY_API_KEY`
 configurada, os PDFs ficam liberados (o site funciona antes de configurar o
 pagamento). Variáveis (no `.env` da VM, **nunca commitadas**):
 `ABACATEPAY_API_KEY`, `ABACATEPAY_WEBHOOK_SECRET`, `KLARIM_DEV_MODE`. Chave
 `abc_dev_…` = sandbox (permite simular pagamento).
+
+**Modo demo** (`DEMO_EMAIL`/`DEMO_URL`, vazios = desligado): testa o fluxo completo
+sem cobrar — código de verificação fixo `000000`, pagamento PAID instantâneo (sem
+AbacatePay), scans `source='demo'`, alvos demo não recebem alerta e cobranças demo
+não entram na receita. ⚠️ nunca apontar `DEMO_URL` para o domínio de produção.
 
 ---
 

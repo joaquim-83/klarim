@@ -165,6 +165,35 @@ def test_verify_code_rate_limit(env, monkeypatch):
     assert codes[5] == 429
 
 
+# --- modo demo (Fix pós-KL-27) --------------------------------------------- #
+
+def test_demo_request_code_no_email(env, monkeypatch):
+    monkeypatch.setenv("DEMO_EMAIL", "demo@klarim.net")
+    store = FakeStore(credit=None)
+    c = _client(monkeypatch, store)
+    r = c.post("/scan/request-code", json={"email": "demo@klarim.net", "url": "x.com.br"})
+    b = r.json()
+    assert b["status"] == "code_sent" and b.get("demo") is True
+    assert env["mailer"].sent == []  # nenhum e-mail enviado no modo demo
+
+
+def test_demo_verify_code_fixed(env, monkeypatch):
+    monkeypatch.setenv("DEMO_EMAIL", "demo@klarim.net")
+    store = FakeStore(verify_ok=False)  # o store não valida — o demo aceita 000000
+    c = _client(monkeypatch, store)
+    r = c.post("/scan/verify-code", json={"email": "demo@klarim.net", "code": "000000", "url": "x.com.br"})
+    b = r.json()
+    assert b["status"] == "verified" and b["scan_token"] and b.get("demo") is True
+    assert store.free_scans == []  # demo NÃO consome crédito (repetível)
+
+
+def test_demo_verify_code_wrong(env, monkeypatch):
+    monkeypatch.setenv("DEMO_EMAIL", "demo@klarim.net")
+    c = _client(monkeypatch, FakeStore())
+    r = c.post("/scan/verify-code", json={"email": "demo@klarim.net", "code": "111111", "url": "x.com.br"})
+    assert r.json()["status"] == "invalid"
+
+
 # --- check-credit ---------------------------------------------------------- #
 
 def test_check_credit(env, monkeypatch):

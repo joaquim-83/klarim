@@ -22,7 +22,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response, HTMLResponse
@@ -394,6 +394,26 @@ def _is_admin_request(request: Request) -> bool:
         return False
 
 
+# --------------------------------------------------------------------------- #
+# Modo demo (Fix pós-KL-27): testar o fluxo completo sem pagamento real.
+# Ativado por e-mail (DEMO_EMAIL) e/ou URL (DEMO_URL) — ambos vazios = desligado.
+# ⚠️ NÃO aponte DEMO_URL para klarim.net (liberaria relatório completo grátis do
+# site real); use um domínio de teste. O código de verificação demo é "000000".
+# --------------------------------------------------------------------------- #
+
+DEMO_CODE = "000000"
+
+
+def _is_demo(email: Optional[str] = None, url: Optional[str] = None) -> bool:
+    demo_email = os.environ.get("DEMO_EMAIL", "").strip().lower()
+    demo_url = os.environ.get("DEMO_URL", "").strip().lower()
+    if email and demo_email and email.strip().lower() == demo_email:
+        return True
+    if url and demo_url and _norm_scan_url(url).lower().startswith(demo_url):
+        return True
+    return False
+
+
 class ScanCodeBody(BaseModel):
     email: str
     url: str
@@ -430,6 +450,11 @@ async def scan_request_code(body: ScanCodeBody, request: Request) -> dict:
         raise HTTPException(status_code=422, detail="E-mail inválido.")
     if not url:
         raise HTTPException(status_code=422, detail="URL inválida.")
+
+    # Modo demo: não envia e-mail; o código é fixo (DEMO_CODE), sem rate limit.
+    if _is_demo(email=email, url=url):
+        return {"status": "code_sent", "expires_in": 600, "demo": True}
+
     if not _email_enabled():
         raise HTTPException(status_code=503, detail="Envio de e-mail não configurado.")
 
@@ -469,6 +494,14 @@ async def scan_verify_code(body: ScanVerifyBody) -> dict:
     email = _clean_scan_email(body.email)
     url = _norm_scan_url(body.url)
     code = (body.code or "").strip()
+
+    # Modo demo: aceita o código fixo sem consumir crédito (testes repetíveis).
+    if _is_demo(email=email, url=url):
+        if code != DEMO_CODE:
+            return {"status": "invalid", "message": "Código inválido ou expirado."}
+        return {"status": "verified", "scan_token": _make_scan_token(email, url, full=False),
+                "expires_in": _SCAN_TOKEN_TTL, "demo": True}
+
     if not _rl_ok(_verify_hits, email, _VERIFY_RL_MAX, _VERIFY_RL_WIN):
         raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde alguns minutos.",
                             headers={"Retry-After": "600"})
@@ -520,10 +553,11 @@ async def scan_rescan(body: ScanRescanBody) -> dict:
     old_score = await store.get_last_scan_score(url)
     report = await _safe_scan(url, full=True, ingest_source="rescan", scanned_by_email=email)
     new_score = report.score.score if report.score else None
+    token = _make_scan_token(email, url, full=True)
     payload = _summary_payload(report, full=True)
     payload.update({
         "status": "ok",
-        "scan_token": _make_scan_token(email, url, full=True),
+        "scan_token": token,
         "comparison": {
             "old_score": old_score,
             "new_score": new_score,
@@ -532,38 +566,89 @@ async def scan_rescan(body: ScanRescanBody) -> dict:
             "evolution": _evolution_label(old_score, new_score),
         },
     })
+    payload.update(await _full_extras(url, email, None, token))
     return payload
 
 
 @app.get("/scan/summary")
 async def scan_summary(url: str = Query(..., description="URL alvo."),
+                       charge_id: Optional[str] = Query(default=None,
+                           description="Cobrança paga → resultado COMPLETO (29)."),
                        request: Request = None) -> dict:
-    """Semáforo executivo — score + contagens. Exige verificação de e-mail (scan
-    token) para **disparar** um scan novo (KL-25); leituras de scans já feitos
-    (cache/banco) são livres. Admin (JWT) sempre passa."""
+    """Resultado do scan — score + contagens + checks.
+
+    Autorização para o resultado **completo** (29, com detalhes): JWT admin, scan
+    token ``full`` (re-verificação) ou ``charge_id`` **pago** (pós-compra). Sem
+    autorização de scan novo, devolve só o resultado gratuito já existente (KL-25)."""
     url = _norm_scan_url(url)
     scanned_by = None
+    scan_token = ""
     is_admin = request is not None and _is_admin_request(request)
-    # Admin vê o completo (29); o público vê o gratuito (15 checks) com os 14 pagos
-    # bloqueados no payload (KL-27).
     full = is_admin
-    if not is_admin:
-        token = request.headers.get("x-scan-token", "") if request is not None else ""
-        payload = _verify_scan_token(token)
-        if payload and _norm_scan_url(payload.get("url", "")) == url:
-            scanned_by = _clean_scan_email(payload.get("email", "")) or None
-            full = bool(payload.get("full"))  # token de re-verificação → completo (29)
-        else:
-            # Sem token válido: só devolve resultado já existente (não escaneia).
-            recent = await get_recent_only(url, full=False)
-            if recent is None:
-                return {"status": "auth_required",
-                        "message": "Verifique seu e-mail para escanear este site."}
-            return _summary_payload(recent, full=False)
+    authorized = is_admin  # pode disparar/mostrar um scan?
 
-    report = await _safe_scan(url, full=full, ingest_source="public",
-                              scanned_by_email=scanned_by)
-    return _summary_payload(report, full=full)
+    if not is_admin:
+        # (1) charge_id pago da MESMA url → completo. Precedência sobre o scan token:
+        # depois de pagar, o token GRÁTIS (full=False) ainda fica no sessionStorage e
+        # senão mascararia o resultado completo (bug do teste real). (Fix pós-KL-27)
+        if charge_id:
+            charge = await get_store().get(charge_id)
+            if charge and _norm_scan_url(charge.target_url) == url:
+                await _refresh_charge(charge)
+                if charge.is_paid or _free_access():
+                    full = True
+                    authorized = True
+                    scanned_by = (charge.buyer_email or "").strip() or None
+
+        # (2) senão, scan token: `full` de re-verificação, ou grátis (KL-25).
+        if not authorized:
+            scan_token = request.headers.get("x-scan-token", "") if request is not None else ""
+            payload = _verify_scan_token(scan_token)
+            if payload and _norm_scan_url(payload.get("url", "")) == url:
+                scanned_by = _clean_scan_email(payload.get("email", "")) or None
+                full = bool(payload.get("full"))  # token de re-verificação → completo (29)
+                authorized = True
+
+    if not authorized:
+        # Sem autorização de scan novo: só devolve resultado gratuito já existente.
+        recent = await get_recent_only(url, full=False)
+        if recent is None:
+            return {"status": "auth_required",
+                    "message": "Verifique seu e-mail para escanear este site."}
+        return _summary_payload(recent, full=False)
+
+    # Só o caminho público gratuito ingere (KL-17); admin/pago/re-verificação já
+    # ingerem no seu próprio fluxo — evita linhas de scan duplicadas (Fix pós-KL-27).
+    # Demo (Fix pós-KL-27) é marcado source='demo' para não poluir as métricas reais.
+    if _is_demo(email=scanned_by, url=url):
+        ingest = "demo"
+    else:
+        ingest = "public" if not full else None
+    report = await _safe_scan(url, full=full, ingest_source=ingest, scanned_by_email=scanned_by)
+    data = _summary_payload(report, full=full)
+    if full:
+        data.update(await _full_extras(url, scanned_by, charge_id, scan_token))
+    return data
+
+
+async def _full_extras(url: str, email: Optional[str], charge_id: Optional[str],
+                       scan_token: Optional[str]) -> dict:
+    """Campos extra do resultado completo (Fix pós-KL-27): links de PDF (com a
+    autorização certa) + créditos de re-verificação restantes do comprador."""
+    q = f"url={quote(url, safe='')}"
+    if charge_id:
+        q += f"&charge_id={quote(charge_id, safe='')}"
+    elif scan_token:
+        q += f"&scan_token={quote(scan_token, safe='')}"
+    extras: dict = {"report_urls": {"executive": f"/report/executive?{q}",
+                                    "technical": f"/report/technical?{q}"}}
+    if email:
+        try:
+            credit = await get_target_store().get_scan_credit(email)
+            extras["rescan_credits"] = int(credit.get("rescan_credits") or 0) if credit else 0
+        except Exception:  # noqa: BLE001 - best-effort
+            extras["rescan_credits"] = 0
+    return extras
 
 
 # Metadados dos checks para o resultado gratuito (KL-27): nome + tier, sem chamar
@@ -573,24 +658,46 @@ _FREE_META = [m for m in CHECK_META if not m["paid"]]
 _PAID_META = [m for m in CHECK_META if m["paid"]]
 
 
-def _summary_payload(report: ScanReport, full: bool = False) -> dict:
-    """Payload do resultado gratuito (KL-27): score + semáforo + contagem + lista dos
-    15 checks (PASS/FAIL) + os 14 pagos **bloqueados** (`status: "locked"`). NÃO
-    expõe headlines de risco, evidências, impacto ou correção — isso é do relatório
-    pago. ``full=True`` (admin) devolve o status real também dos 14."""
-    score = report.score
-    by_id = {r.check_id: r.status for r in report.results}
+def _technical_content() -> dict:
+    """Impacto + correção por check_id (reporter). Import lazy: só o pós-pagamento
+    precisa, e evita puxar o WeasyPrint no caminho do resultado gratuito."""
+    try:
+        from reporter.generator import TECHNICAL
+        return TECHNICAL
+    except Exception:  # noqa: BLE001 - sem libs nativas → sem detalhe (degrada)
+        return {}
 
-    free_checks = [
-        {"check_id": m["check_id"], "name": m["name"],
-         "status": by_id.get(m["check_id"], "INCONCLUSO")}
-        for m in _FREE_META
-    ]
-    paid_checks = [
-        {"check_id": m["check_id"], "name": m["name"],
-         "status": (by_id.get(m["check_id"], "locked") if full else "locked")}
-        for m in _PAID_META
-    ]
+
+def _summary_payload(report: ScanReport, full: bool = False) -> dict:
+    """Payload do resultado.
+
+    **Gratuito** (`full=False`): 15 checks com PASS/FAIL (sem detalhe) + os 14 pagos
+    **bloqueados** (`status: "locked"`) — NÃO vaza evidência/impacto/correção nem o
+    resultado dos pagos. **Completo** (`full=True`, pós-pagamento/re-verificação):
+    os 29 com status real e, nos FAILs, `evidence` + `impact` + `fix` (Fix pós-KL-27)."""
+    score = report.score
+    by_result = {r.check_id: r for r in report.results}
+    tech = _technical_content() if full else {}
+
+    def _entry(meta: dict) -> dict:
+        cid = meta["check_id"]
+        # Pago no tier gratuito é SEMPRE bloqueado (mesmo que o report tenha 29).
+        if meta["paid"] and not full:
+            return {"check_id": cid, "name": meta["name"], "status": "locked"}
+        r = by_result.get(cid)
+        status = r.status if r is not None else "INCONCLUSO"
+        d = {"check_id": cid, "name": meta["name"], "status": status}
+        if full and r is not None and r.status == "FAIL":
+            t = tech.get(cid, {})
+            d["evidence"] = (r.evidence or None)
+            d["impact"] = t.get("impact")
+            d["fix"] = t.get("fix")
+            if t.get("fix_code"):
+                d["fix_code"] = t["fix_code"]
+        return d
+
+    free_checks = [_entry(m) for m in _FREE_META]
+    paid_checks = [_entry(m) for m in _PAID_META]
 
     return {
         "url": report.url,
@@ -630,6 +737,21 @@ class PaymentCreateBody(BaseModel):
 @app.post("/payment/create")
 async def payment_create(body: PaymentCreateBody) -> dict:
     """Cria uma cobrança PIX para liberar o relatório da URL escaneada."""
+    buyer_email = (body.buyer_email or "").strip() or None
+
+    # Modo demo (Fix pós-KL-27): cobrança PAID instantânea, sem AbacatePay nem PIX.
+    if _is_demo(email=buyer_email, url=body.url):
+        charge = Charge(
+            charge_id=f"demo_{secrets.token_hex(8)}",
+            target_url=body.url, amount_cents=PRICE_AMOUNT,
+            status=PaymentStatus.PAID,
+            paid_at=datetime.now(timezone.utc).isoformat(),
+            buyer_email=buyer_email,
+        )
+        await get_store().save(charge)
+        print(f"[demo] cobrança simulada PAID para {buyer_email} / {body.url}", flush=True)
+        return charge.to_public_dict()
+
     if not _payments_enabled():
         raise HTTPException(status_code=503, detail="Pagamentos não configurados.")
 
@@ -1240,8 +1362,11 @@ async def api_list_scans(
     score_max: Optional[int] = Query(default=None),
     source: Optional[str] = Query(default=None),
     limit: int = Query(default=50, le=500),
+    distinct_url: bool = Query(default=False,
+        description="Só o scan mais recente de cada URL (atividade recente)."),
 ) -> dict:
-    rows = await get_target_store().list_scans(target_id, score_min, score_max, source, limit)
+    rows = await get_target_store().list_scans(
+        target_id, score_min, score_max, source, limit, distinct_url=distinct_url)
     return {"count": len(rows), "scans": rows}
 
 

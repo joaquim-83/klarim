@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import Layout from '../components/Layout'
 import { Beacon } from '../components/Logo'
 import { normalizeUrl, isValidUrl } from '../lib/url'
@@ -30,8 +30,9 @@ const btnCls =
   'w-full rounded-lg bg-klarim-alert px-6 py-3 font-bold text-klarim-bg transition hover:opacity-90 disabled:opacity-50'
 
 export default function Landing() {
+  const [params] = useSearchParams()
   const [step, setStep] = useState('form') // form | code | limit
-  const [url, setUrl] = useState('')
+  const [url, setUrl] = useState(params.get('url') || '') // prefill p/ re-verificação
   const [email, setEmail] = useState('')
   const [code, setCode] = useState('')
   const [error, setError] = useState('')

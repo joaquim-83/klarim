@@ -5,7 +5,7 @@ import { fetchSummary } from './api'
 // Obtém o resumo do scan: usa o que veio via navegação (state) ou, se a página
 // foi aberta diretamente por link, busca o resultado já existente. Sem verificação
 // de e-mail e sem resultado em cache, redireciona à home para verificar (KL-25).
-export function useSummary(url) {
+export function useSummary(url, chargeId) {
   const location = useLocation()
   const navigate = useNavigate()
   const initial = location.state?.summary || null
@@ -16,7 +16,7 @@ export function useSummary(url) {
   useEffect(() => {
     if (initial || !url) return
     setLoading(true)
-    fetchSummary(url)
+    fetchSummary(url, chargeId)
       .then(setSummary)
       .catch((e) => {
         if (e.message === 'auth_required') { navigate(`/?url=${encodeURIComponent(url)}`, { replace: true }); return }
@@ -24,7 +24,7 @@ export function useSummary(url) {
       })
       .finally(() => setLoading(false))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [url])
+  }, [url, chargeId])
 
   return { summary, loading, error }
 }

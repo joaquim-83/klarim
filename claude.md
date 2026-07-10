@@ -1113,3 +1113,29 @@ sem cobrança (`/report/*` aceita `scan_token`, `_has_full_scan_token`).
 impacto, correção) nem o resultado dos 14 pagos; o e-mail **nunca** menciona preço.
 Ao adicionar um check, ele entra no tier certo pelo `ORDER` (≤15 grátis) e ganha
 entrada em `RISK_MESSAGES`/`ACCESSIBLE`/`TECHNICAL` (seção 4.2 / KL-22).
+
+### Ajustes pós-KL-27 (teste real de pagamento)
+
+- **Resultado completo na tela (não só PDFs).** `_summary_payload(report, full=True)`
+  enriquece cada FAIL com `evidence` (do `CheckResult`) + `impact`/`fix` (do
+  `reporter.generator.TECHNICAL`, import **lazy**); PASS/INCONCLUSO ficam só com
+  status. `/scan/summary` aceita **`charge_id` pago** (ou scan token `full`) como
+  autorização → devolve os 29 com detalhe + `report_urls` + `rescan_credits`
+  (`_full_extras`). O `Payment` passou a navegar para **`/result?...&charge_id=`**
+  (não `/report`); o `Result` completo mostra os 29 (FAILs expandem), os PDFs e o
+  bloco de re-verificação. O gratuito **continua** bloqueando os 14 e sem detalhe —
+  `_entry` força `locked` nos pagos quando `not full`, mesmo que o report tenha 29.
+- **Anti-duplicação de scan.** `/scan/summary` só ingere no caminho **público
+  gratuito**; admin/pago/re-verificação já ingerem no próprio fluxo (evita 2ª linha
+  em `scans`). A "atividade recente" do painel usa `GET /scans?distinct_url=true`
+  (`list_scans` com `DISTINCT ON (url)`) → **1 linha por site**, com badge do tipo
+  (Básico/Completo/Re-verificação/Admin/Demo).
+- **Modo demo** (testar o fluxo com pagamento **sem** cobrar). `_is_demo(email, url)`
+  casa `DEMO_EMAIL`/`DEMO_URL` (ambos vazios = desligado). Efeitos: `request-code`
+  não envia e-mail (código fixo **`000000`**); `verify-code` aceita `000000` **sem
+  consumir crédito**; `payment/create` cria cobrança **PAID instantânea**
+  (`charge_id` `demo_…`, sem AbacatePay); scans marcados **`source='demo'`**; o Alert
+  Worker pula alvos demo (`is_demo_target`); **cobranças demo não entram em
+  `payments/stats`** (filtro `charge_id NOT LIKE 'demo\_%'`). ⚠️ **NÃO** apontar
+  `DEMO_URL` para `klarim.net` (liberaria relatório grátis do site real) — usar
+  domínio de teste. Vars no `.env` da VM: `DEMO_EMAIL`, `DEMO_URL`.

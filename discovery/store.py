@@ -619,7 +619,14 @@ class TargetStore:
     async def list_scans(
         self, target_id: Optional[int] = None, score_min: Optional[int] = None,
         score_max: Optional[int] = None, source: Optional[str] = None, limit: int = 50,
+        distinct_url: bool = False,
     ) -> List[Dict[str, Any]]:
+        """Lista scans (mais recentes primeiro). ``distinct_url=True`` retorna apenas
+        o scan MAIS RECENTE de cada URL — evita 3 linhas do mesmo site na "atividade
+        recente" quando ele foi escaneado várias vezes (Fix pós-KL-27)."""
+        cols = ("id, target_id, url, score, semaphore, pass_count, fail_count, "
+                "inconclusive_count, source, scanned_at")
+
         def _fn(cur):
             where, params = [], []
             if target_id is not None:
@@ -636,12 +643,18 @@ class TargetStore:
                 params.append(source)
             clause = ("WHERE " + " AND ".join(where)) if where else ""
             params.append(limit)
-            cur.execute(
-                f"SELECT id, target_id, url, score, semaphore, pass_count, fail_count, "
-                f"inconclusive_count, source, scanned_at FROM scans {clause} "
-                f"ORDER BY scanned_at DESC LIMIT %s",
-                params,
-            )
+            if distinct_url:
+                # DISTINCT ON (url) pega o último por URL; reordena por data e limita.
+                cur.execute(
+                    f"SELECT * FROM (SELECT DISTINCT ON (url) {cols} FROM scans {clause} "
+                    f"ORDER BY url, scanned_at DESC) t ORDER BY scanned_at DESC LIMIT %s",
+                    params,
+                )
+            else:
+                cur.execute(
+                    f"SELECT {cols} FROM scans {clause} ORDER BY scanned_at DESC LIMIT %s",
+                    params,
+                )
             return self._rows_to_dicts(cur)
 
         return await asyncio.to_thread(self._run, _fn)

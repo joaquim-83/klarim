@@ -30,6 +30,18 @@ _EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$")
 _SEV_MAP = {"CRITICA": "critica", "ALTA": "alta", "MEDIA": "media", "BAIXA": "baixa"}
 
 
+def is_demo_target(email: Optional[str] = None, url: Optional[str] = None) -> bool:
+    """Alvo de teste (Fix pós-KL-27): não recebe alerta real. Casa por DEMO_EMAIL
+    e/ou DEMO_URL (ambos vazios = sem modo demo)."""
+    de = os.environ.get("DEMO_EMAIL", "").strip().lower()
+    du = os.environ.get("DEMO_URL", "").strip().lower()
+    if email and de and email.strip().lower() == de:
+        return True
+    if url and du and url.strip().lower().startswith(du):
+        return True
+    return False
+
+
 def alerts_stopped() -> bool:
     """Kill-switch operacional de envio proativo (alertas + evolução).
 
@@ -183,6 +195,9 @@ class AlertWorker:
         clean = []
         for t in targets:
             raw = (t.get("contact_email") or "").strip()
+            # Alvos demo nunca recebem alerta real (Fix pós-KL-27).
+            if is_demo_target(email=raw, url=t.get("url")):
+                continue
             email = _clean_email(raw)
             if not email or not _EMAIL_RE.match(email):
                 await self.store.update_status(t["id"], "descartado")

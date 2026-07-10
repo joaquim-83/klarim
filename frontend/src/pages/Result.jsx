@@ -6,8 +6,12 @@ import { useSummary, problemLine } from '../lib/useSummary'
 import { downloadReport } from '../lib/api'
 import { trackEvent } from '../lib/tracker'
 
-// Linha de um check no resultado. Sem detalhes — só nome + estado.
-function CheckRow({ name, status, locked }) {
+// Linha de um check. No gratuito: só nome + ✅/❌ (falhas ganham 🔒). No completo:
+// os FAILs expandem com evidência, impacto e correção.
+function CheckRow({ check, locked, full }) {
+  const { name, status, evidence, impact, fix } = check
+  const hasDetail = full && status === 'FAIL' && (evidence || impact || fix)
+  const [open, setOpen] = useState(false)
   const icon = locked ? '🔒' : status === 'PASS' ? '✅' : status === 'FAIL' ? '❌' : '➖'
   const color = locked
     ? 'text-klarim-muted'
@@ -16,19 +20,33 @@ function CheckRow({ name, status, locked }) {
     : status === 'PASS'
     ? 'text-klarim-text'
     : 'text-klarim-muted'
+
   return (
-    <div className={`flex items-center justify-between gap-3 border-b border-klarim-border/60 py-2 ${locked ? 'opacity-60' : ''}`}>
-      <span className={`text-sm ${color}`}>{name}</span>
-      <span className="shrink-0 text-sm">
-        {icon}
-        {/* falha no gratuito também mostra o cadeado: detalhe está no relatório pago */}
-        {!locked && status === 'FAIL' && <span className="ml-1 opacity-70">🔒</span>}
-      </span>
+    <div className={`border-b border-klarim-border/60 py-2 ${locked ? 'opacity-60' : ''}`}>
+      <button
+        type="button"
+        onClick={() => hasDetail && setOpen((o) => !o)}
+        className={`flex w-full items-center justify-between gap-3 text-left ${hasDetail ? 'cursor-pointer' : 'cursor-default'}`}
+      >
+        <span className={`text-sm ${color}`}>{name}</span>
+        <span className="shrink-0 text-sm">
+          {icon}
+          {!locked && !full && status === 'FAIL' && <span className="ml-1 opacity-70">🔒</span>}
+          {hasDetail && <span className="ml-1 text-xs text-klarim-muted">{open ? '▲' : '▼'}</span>}
+        </span>
+      </button>
+      {hasDetail && open && (
+        <div className="mt-2 space-y-1 rounded-lg bg-klarim-bg/60 p-3 text-xs">
+          {evidence && <p className="text-klarim-muted"><span className="text-klarim-text">Evidência:</span> {evidence}</p>}
+          {impact && <p className="text-klarim-muted"><span className="text-klarim-text">Impacto:</span> {impact}</p>}
+          {fix && <p className="text-klarim-ok"><span className="font-semibold">Correção:</span> {fix}</p>}
+        </div>
+      )}
     </div>
   )
 }
 
-function PdfButton({ kind, url, label }) {
+function PdfButton({ kind, url, chargeId, label }) {
   const [busy, setBusy] = useState(false)
   const [failed, setFailed] = useState(false)
   async function onClick() {
@@ -36,7 +54,7 @@ function PdfButton({ kind, url, label }) {
     setFailed(false)
     trackEvent('report_downloaded', { url, type: kind }, url)
     try {
-      await downloadReport(kind, url) // usa o scan token (full) guardado
+      await downloadReport(kind, url, chargeId) // usa charge_id e/ou o scan token full guardado
     } catch {
       setFailed(true)
     } finally {
@@ -57,16 +75,16 @@ function PdfButton({ kind, url, label }) {
 export default function Result() {
   const [params] = useSearchParams()
   const url = params.get('url') || ''
+  const chargeId = params.get('charge_id') || ''
   const navigate = useNavigate()
-  const { summary, loading, error } = useSummary(url)
+  const { summary, loading, error } = useSummary(url, chargeId)
   const [copied, setCopied] = useState(false)
 
-  // KL-21: result_viewed quando o resultado carrega (uma vez por scan).
   useEffect(() => {
     if (!summary) return
     trackEvent('result_viewed', {
       url, score: summary.score, semaphore: summary.semaphore,
-      fail_count: summary.fail_count,
+      fail_count: summary.fail_count, full: !!summary.is_full,
     }, url)
   }, [summary, url])
 
@@ -106,15 +124,17 @@ export default function Result() {
   const comparison = summary.comparison
   const freeChecks = summary.free_checks || []
   const paidChecks = summary.paid_checks || []
+  const totalChecks = summary.total_checks || freeChecks.length + paidChecks.length
   const freeCount = summary.free_count || freeChecks.length
   const failCount = summary.fail_count ?? summary.problems ?? 0
+  const canRescan = (summary.rescan_credits || 0) > 0
 
   return (
     <Layout>
       <div className="text-center">
         <p className="break-all font-mono text-sm text-klarim-muted">{summary.url || url}</p>
 
-        {/* Comparação antes/depois (re-verificação — KL-27) */}
+        {/* Comparação antes/depois (re-verificação) */}
         {comparison && comparison.old_score != null && (
           <div className="mx-auto mt-4 max-w-md rounded-lg border border-klarim-ok bg-klarim-surface px-4 py-3">
             <p className="text-sm text-klarim-muted">Re-verificação concluída</p>
@@ -131,28 +151,37 @@ export default function Result() {
         <div className="mt-6 flex justify-center">
           <Semaphore score={summary.score} semaphore={summary.semaphore} />
         </div>
-        <p className="mx-auto mt-6 max-w-md text-lg">{problemLine(failCount, freeCount)}</p>
-        {summary.risk_summary && (
+
+        {isFull ? (
+          <p className="mx-auto mt-6 max-w-md text-lg">
+            Scan completo — {totalChecks} verificações realizadas.
+          </p>
+        ) : (
+          <p className="mx-auto mt-6 max-w-md text-lg">{problemLine(failCount, freeCount)}</p>
+        )}
+        {summary.risk_summary && !isFull && (
           <p className="mx-auto mt-2 max-w-md text-sm text-klarim-muted">{summary.risk_summary}</p>
         )}
 
-        {/* Verificações realizadas (tier gratuito) */}
+        {/* Verificações básicas */}
         <div className="mx-auto mt-8 max-w-xl text-left">
           <h3 className="mb-1 text-center text-sm font-bold uppercase tracking-wide text-klarim-muted">
-            Verificações realizadas
+            {isFull ? `Verificações básicas (${freeChecks.length})` : 'Verificações realizadas'}
           </h3>
           {freeChecks.map((c) => (
-            <CheckRow key={c.check_id} name={c.name} status={c.status} />
+            <CheckRow key={c.check_id} check={c} full={isFull} />
           ))}
         </div>
 
-        {/* Checks do scan completo (bloqueados no gratuito) */}
+        {/* Checks avançados */}
         <div className="mx-auto mt-8 max-w-xl text-left">
           <h3 className="mb-1 text-center text-sm font-bold uppercase tracking-wide text-klarim-muted">
-            {isFull ? 'Verificações avançadas' : `Scan completo (${paidChecks.length} verificações adicionais)`}
+            {isFull
+              ? `Checks avançados (${paidChecks.length})`
+              : `Scan completo (${paidChecks.length} verificações adicionais)`}
           </h3>
           {paidChecks.map((c) => (
-            <CheckRow key={c.check_id} name={c.name} status={c.status} locked={!isFull} />
+            <CheckRow key={c.check_id} check={c} full={isFull} locked={!isFull} />
           ))}
         </div>
 
@@ -174,11 +203,34 @@ export default function Result() {
           </div>
         )}
 
-        {/* Downloads (re-verificação / scan completo — usa o scan token full) */}
+        {/* Relatório em PDF (completo) */}
         {isFull && (
-          <div className="mx-auto mt-8 flex max-w-md flex-col gap-4">
-            <PdfButton kind="executive" url={url} label="Baixar Relatório Executivo (PDF)" />
-            <PdfButton kind="technical" url={url} label="Baixar Relatório Técnico (PDF)" />
+          <div className="mx-auto mt-10 max-w-md">
+            <h3 className="mb-3 text-center text-sm font-bold uppercase tracking-wide text-klarim-muted">
+              Relatório em PDF
+            </h3>
+            <div className="flex flex-col gap-4">
+              <PdfButton kind="executive" url={url} chargeId={chargeId} label="Baixar Relatório Executivo (PDF)" />
+              <PdfButton kind="technical" url={url} chargeId={chargeId} label="Baixar Relatório Técnico (PDF)" />
+            </div>
+          </div>
+        )}
+
+        {/* Re-verificação (retorno médico) */}
+        {isFull && canRescan && (
+          <div className="mx-auto mt-8 max-w-md rounded-lg border border-klarim-ok bg-klarim-surface p-5 text-left">
+            <p className="font-bold text-klarim-ok">
+              Você tem {summary.rescan_credits} re-verificação(ões) gratuita(s) incluída(s).
+            </p>
+            <p className="mt-1 text-sm text-klarim-muted">
+              Após corrigir as falhas, verifique novamente sem custo — mostramos a evolução do score.
+            </p>
+            <button
+              onClick={() => navigate(`/?url=${encodeURIComponent(url)}`)}
+              className="mt-3 w-full rounded-lg border border-klarim-ok px-5 py-2.5 font-bold text-klarim-ok hover:bg-klarim-ok hover:text-klarim-bg sm:w-auto"
+            >
+              Fazer re-verificação gratuita
+            </button>
           </div>
         )}
 

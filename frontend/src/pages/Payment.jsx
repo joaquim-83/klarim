@@ -58,7 +58,7 @@ export default function Payment() {
           setTimeout(
             () =>
               navigate(
-                `/report?url=${encodeURIComponent(url)}&charge_id=${encodeURIComponent(charge.charge_id)}`,
+                `/result?url=${encodeURIComponent(url)}&charge_id=${encodeURIComponent(charge.charge_id)}`,
                 { replace: true },
               ),
             2000,
