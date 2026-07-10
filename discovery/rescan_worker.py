@@ -187,8 +187,8 @@ class RescanWorker:
         max_scans = int(os.environ.get("WORKER_MAX_SCANS_PER_HOUR", "50"))
         self.pause_s = 3600.0 / max_scans if max_scans > 0 else 0.0
         self.batch = int(os.environ.get("RESCAN_BATCH_SIZE", "50"))
-        # KL-29: re-scan semanal dos sites monitorados (score 100).
-        self.monitor_interval_days = int(os.environ.get("MONITOR_INTERVAL_DAYS", "7"))
+        # KL-29/KL-31: re-scan dos sites monitorados (score 100) a cada 30 dias.
+        self.monitor_interval_days = int(os.environ.get("MONITOR_INTERVAL_DAYS", "30"))
         self.store = get_target_store()
         self._cache_obj: Optional[ScanCache] = None
         self._last_cycle_at = None

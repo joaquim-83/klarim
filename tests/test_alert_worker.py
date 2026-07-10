@@ -72,8 +72,8 @@ class FakeMailer:
 
     async def send_alert(self, to_email, target_url, score, semaphore, fail_count,
                          severity_counts, unsubscribe_link=None, risk_messages=None,
-                         target_id=None):
-        self.singles.append({"to": to_email, "target_id": target_id})
+                         target_id=None, bonus_token=None):
+        self.singles.append({"to": to_email, "target_id": target_id, "bonus_token": bonus_token})
         return {"email_id": f"single_{len(self.singles)}"}
 
 
@@ -126,6 +126,10 @@ class FakeStore:
                         email_id, status="sent"):
         self.logged.append({"target_id": target_id, "status": status, "email_id": email_id})
         return len(self.logged)
+
+    async def grant_full_scan_credit(self, email, url, reason="score100_bonus"):
+        self.full_credits = getattr(self, "full_credits", [])
+        self.full_credits.append((email, url))
 
 
 def _target(tid, email="c@x.com.br"):

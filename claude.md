@@ -1175,3 +1175,36 @@ oferta no `Result` (score 100), prévia na landing, link no footer, painel
 **Regra inviolável:** a listagem pública **nunca** expõe `contact_email`/`target_id`/
 `approval_token`; a oferta só vale para score 100 **comprovado no servidor**; o token
 de aprovação é **uso único**. Vars: `MONITOR_INTERVAL_DAYS`, `SITE_BASE`.
+
+## 28. Scan completo gratuito para score 100 (KL-31)
+
+**REGRA INVIOLÁVEL:** zero cobrança no fluxo de score 100 — o scan completo e o
+monitoramento são **gratuitos**. R$ 19 só existe se o site **não** passou nos 29 e
+quer re-verificar após correções.
+
+Fluxo: discovery (15) → score 100 verde → Alert Worker envia e-mail de **parabéns**
+(convite, não alerta) + concede crédito → cliente clica → `/result?bonus=full&t=<token>`
+→ 15 ✅ + botão **"Fazer análise completa gratuita"** (sem R$ 19) → 29 checks sem
+cobrança → 100/29 oferta de monitoramento; <100/29 FAILs + "Re-verificar após correções
+— R$ 19".
+
+**Crédito (`scan_credits`):** colunas `full_scan_credits` + `full_scan_url` (vinculado a
+email+URL, uso único, não acumula). `grant_full_scan_credit`/`consume_full_scan_credit`.
+**Elegibilidade** (`get_eligible_targets_for_alert`) inclui `fail_count>0 OR (score=100
+AND semaphore='verde')`. **E-mail** (`_alert_params`): score 100 verde → `alert_score100
+.html` + assunto "parabéns" + link `?bonus=full&t=<token>` (token `bonus_scan_token`,
+HMAC, `full=false,bonus=true`, **TTL 30d**, formato idêntico ao `_make_scan_token`).
+
+**Autorização (`/scan/summary`):** prioridade **admin → charge pago → bônus** (`use_bonus`
++ crédito no banco, consumido aqui) **→ re-verificação (`full`) → básico (15)**. O token
+de bônus sozinho **não basta** (o backend consome o crédito no banco); a visão inicial de
+15 checks **não** consome (só o clique no botão, `use_bonus=true`). `/scan/check-credit`
+retorna `full_scan_credits`+`can_full_scan_free`.
+
+**Frontend (`Result.jsx`):** guarda o token do link, mostra o botão verde gratuito no
+lugar do R$ 19, roda o completo com `use_bonus`, e no <100 oferece "Re-verificar — R$ 19".
+**Monitor a cada 30 dias** (`MONITOR_INTERVAL_DAYS=30`). **Tracking:** `score100_full_scan_
+started/completed`, `score100_monitoring_offered/accepted`.
+
+**Regra inviolável:** o bônus é por (e-mail, URL), **uso único**, consumido ao rodar o
+scan; `bonus=full` na URL nunca autoriza sozinho — sempre confere o crédito no banco.

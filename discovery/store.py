@@ -147,6 +147,9 @@ CREATE TABLE IF NOT EXISTS scan_credits (
 );
 CREATE INDEX IF NOT EXISTS idx_sc_email ON scan_credits(email);
 ALTER TABLE scan_credits ADD COLUMN IF NOT EXISTS rescan_credits INTEGER DEFAULT 0;
+-- KL-31: bônus de scan completo gratuito para sites com score 100 (email+URL).
+ALTER TABLE scan_credits ADD COLUMN IF NOT EXISTS full_scan_credits INTEGER DEFAULT 0;
+ALTER TABLE scan_credits ADD COLUMN IF NOT EXISTS full_scan_url TEXT;
 
 -- Sites monitorados (KL-29): score 100 → selo público + re-scan semanal.
 -- status: pending → active → suspended → active/removed.
@@ -621,6 +624,43 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    async def grant_full_scan_credit(self, email: str, url: str,
+                                     reason: str = "score100_bonus") -> None:
+        """Concede 1 scan completo GRATUITO para o par (email, URL) — bônus de score
+        100 (KL-31). Não acumula (fixa em 1); troca a URL se o mesmo e-mail ganhar o
+        bônus para outro site."""
+        email = (email or "").strip().lower()
+        if not email or not url:
+            return
+
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO scan_credits (email, full_scan_credits, full_scan_url) "
+                "VALUES (%s, 1, %s) ON CONFLICT (email) DO UPDATE "
+                "SET full_scan_credits = 1, full_scan_url = EXCLUDED.full_scan_url",
+                (email, url),
+            )
+
+        await asyncio.to_thread(self._run, _fn)
+
+    async def consume_full_scan_credit(self, email: str, url: str) -> bool:
+        """Consome o bônus de scan completo do par (email, URL). Retorna True se havia
+        crédito (casamento de URL tolerante a caixa/'/'). Uso único (KL-31)."""
+        email = (email or "").strip().lower()
+        if not email or not url:
+            return False
+
+        def _fn(cur):
+            cur.execute(
+                "UPDATE scan_credits SET full_scan_credits = 0 "
+                "WHERE email = %s AND full_scan_credits > 0 "
+                "  AND lower(rtrim(full_scan_url, '/')) = lower(rtrim(%s, '/'))",
+                (email, url),
+            )
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
     # --- sites monitorados (KL-29) ----------------------------------------- #
 
     _MS_COLS = ("id, target_id, domain, url, display_name, logo_url, contact_email, "
@@ -988,19 +1028,24 @@ class TargetStore:
 
     # --- alertas ----------------------------------------------------------- #
 
+    # KL-31: também elegíveis os sites com score 100 verde (0 falhas) — recebem o
+    # convite de análise completa gratuita, não o alerta.
+    _ALERT_ELIGIBLE_WHERE = (
+        "t.status = 'scanned' AND t.contact_email IS NOT NULL "
+        "AND (s.fail_count > 0 OR (s.score = 100 AND s.semaphore = 'verde')) "
+        "AND (t.last_alert_at IS NULL OR t.last_alert_at < NOW() - INTERVAL '30 days')")
+
     async def get_eligible_targets_for_alert(self, limit: int = 50) -> List[Dict[str, Any]]:
-        """Alvos escaneados, com FALHAS, com e-mail, sem alerta nos últimos 30d."""
+        """Alvos escaneados com e-mail, sem alerta nos últimos 30d: com FALHAS
+        (alerta) ou score 100 verde (convite de scan completo gratuito, KL-31)."""
         def _fn(cur):
             cur.execute(
-                """
-                SELECT t.*, s.fail_count AS scan_fail_count, s.semaphore AS scan_semaphore,
-                       s.checks_json AS scan_checks
+                f"""
+                SELECT t.*, s.score AS scan_score, s.fail_count AS scan_fail_count,
+                       s.semaphore AS scan_semaphore, s.checks_json AS scan_checks
                 FROM targets t
                 JOIN scans s ON t.last_scan_id = s.id
-                WHERE t.status = 'scanned'
-                  AND t.contact_email IS NOT NULL
-                  AND s.fail_count > 0
-                  AND (t.last_alert_at IS NULL OR t.last_alert_at < NOW() - INTERVAL '30 days')
+                WHERE {self._ALERT_ELIGIBLE_WHERE}
                 ORDER BY t.last_scan_at ASC
                 LIMIT %s
                 """,
@@ -1014,15 +1059,8 @@ class TargetStore:
         """Backlog total de alvos elegíveis a alerta (mesma regra do get_, sem limit)."""
         def _fn(cur):
             cur.execute(
-                """
-                SELECT COUNT(*)
-                FROM targets t
-                JOIN scans s ON t.last_scan_id = s.id
-                WHERE t.status = 'scanned'
-                  AND t.contact_email IS NOT NULL
-                  AND s.fail_count > 0
-                  AND (t.last_alert_at IS NULL OR t.last_alert_at < NOW() - INTERVAL '30 days')
-                """
+                f"SELECT COUNT(*) FROM targets t JOIN scans s ON t.last_scan_id = s.id "
+                f"WHERE {self._ALERT_ELIGIBLE_WHERE}"
             )
             return int(cur.fetchone()[0])
 

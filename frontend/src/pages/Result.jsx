@@ -3,7 +3,7 @@ import { useSearchParams, useNavigate, Link } from 'react-router-dom'
 import Layout from '../components/Layout'
 import Semaphore from '../components/Semaphore'
 import { useSummary, problemLine } from '../lib/useSummary'
-import { downloadReport, monitoringOffer } from '../lib/api'
+import { downloadReport, monitoringOffer, fetchSummary, setScanToken } from '../lib/api'
 import { trackEvent } from '../lib/tracker'
 
 const EMAIL_RE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/
@@ -15,12 +15,16 @@ function MonitoringOffer({ url, defaultEmail, chargeId }) {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
 
+  useEffect(() => {
+    trackEvent('score100_monitoring_offered', { url }, url)
+  }, [url])
+
   async function accept() {
     if (!EMAIL_RE.test(email)) return setError('Digite um e-mail válido.')
     setBusy(true)
     setError('')
     try {
-      trackEvent('monitoring_offer_accepted', { url }, url)
+      trackEvent('score100_monitoring_accepted', { url }, url)
       const r = await monitoringOffer(url, email, chargeId)
       if (r.already) {
         navigate('/monitorados')
@@ -135,23 +139,70 @@ export default function Result() {
   const [params] = useSearchParams()
   const url = params.get('url') || ''
   const chargeId = params.get('charge_id') || ''
+  // KL-31: link do e-mail de score 100 traz ?bonus=full&t=<token>.
+  const hasBonus = params.get('bonus') === 'full'
+  const bonusToken = params.get('t') || ''
+  // Guarda o token ANTES do useSummary buscar (efeitos rodam depois do render).
+  if (hasBonus && bonusToken) setScanToken(bonusToken)
+
   const navigate = useNavigate()
   const { summary, loading, error } = useSummary(url, chargeId)
+  const [override, setOverride] = useState(null) // resultado completo do bônus
+  const [scanning, setScanning] = useState(false)
+  const [bonusError, setBonusError] = useState('')
   const [copied, setCopied] = useState(false)
 
+  const view = override || summary
+
+  async function runFullFree() {
+    setScanning(true)
+    setBonusError('')
+    trackEvent('score100_full_scan_started', { url }, url)
+    try {
+      const full = await fetchSummary(url, { useBonus: true })
+      if (full && full.is_full) {
+        setOverride(full)
+        trackEvent('score100_full_scan_completed', { url, score: full.score }, url)
+      } else {
+        // Sem crédito (já usado): cai no comportamento normal (15 + R$19).
+        setBonusError('Este bônus já foi utilizado. Você pode fazer o scan completo por R$ 19.')
+        if (full) setOverride(full)
+      }
+    } catch (e) {
+      setBonusError(e.message || 'Não foi possível rodar a análise completa.')
+    } finally {
+      setScanning(false)
+    }
+  }
+
   useEffect(() => {
-    if (!summary) return
+    if (!view) return
     trackEvent('result_viewed', {
-      url, score: summary.score, semaphore: summary.semaphore,
-      fail_count: summary.fail_count, full: !!summary.is_full,
+      url, score: view.score, semaphore: view.semaphore,
+      fail_count: view.fail_count, full: !!view.is_full,
     }, url)
-  }, [summary, url])
+  }, [view, url])
 
   function share() {
     navigator.clipboard?.writeText(window.location.href).then(() => {
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     })
+  }
+
+  if (scanning) {
+    return (
+      <Layout withFooter={false}>
+        <div className="flex flex-col items-center pt-16 text-center">
+          <div className="klarim-spinner h-16 w-16" />
+          <h1 className="mt-8 text-2xl font-bold">Executando análise completa…</h1>
+          <p className="mt-2 text-klarim-muted">29 verificações em andamento</p>
+          <p className="mt-6 max-w-sm text-sm text-klarim-muted">
+            Leva cerca de 30 segundos. 100% passiva — nenhum dado do seu site é acessado.
+          </p>
+        </div>
+      </Layout>
+    )
   }
 
   if (loading) {
@@ -165,7 +216,7 @@ export default function Result() {
     )
   }
 
-  if (error || !summary) {
+  if (error || !view) {
     return (
       <Layout>
         <div className="mx-auto max-w-md pt-10 text-center">
@@ -179,19 +230,23 @@ export default function Result() {
     )
   }
 
-  const isFull = !!summary.is_full
-  const comparison = summary.comparison
-  const freeChecks = summary.free_checks || []
-  const paidChecks = summary.paid_checks || []
-  const totalChecks = summary.total_checks || freeChecks.length + paidChecks.length
-  const freeCount = summary.free_count || freeChecks.length
-  const failCount = summary.fail_count ?? summary.problems ?? 0
-  const canRescan = (summary.rescan_credits || 0) > 0
+  const summaryV = view
+  const isFull = !!summaryV.is_full
+  const comparison = summaryV.comparison
+  const freeChecks = summaryV.free_checks || []
+  const paidChecks = summaryV.paid_checks || []
+  const totalChecks = summaryV.total_checks || freeChecks.length + paidChecks.length
+  const freeCount = summaryV.free_count || freeChecks.length
+  const failCount = summaryV.fail_count ?? summaryV.problems ?? 0
+  const canRescan = (summaryV.rescan_credits || 0) > 0
+  const score = summaryV.score
+  // Bônus disponível e ainda no resultado básico → mostra o botão gratuito, não o R$19.
+  const bonusAvailable = hasBonus && !isFull
 
   return (
     <Layout>
       <div className="text-center">
-        <p className="break-all font-mono text-sm text-klarim-muted">{summary.url || url}</p>
+        <p className="break-all font-mono text-sm text-klarim-muted">{summaryV.url || url}</p>
 
         {/* Comparação antes/depois (re-verificação) */}
         {comparison && comparison.old_score != null && (
@@ -208,18 +263,24 @@ export default function Result() {
         )}
 
         <div className="mt-6 flex justify-center">
-          <Semaphore score={summary.score} semaphore={summary.semaphore} />
+          <Semaphore score={summaryV.score} semaphore={summaryV.semaphore} />
         </div>
 
         {isFull ? (
           <p className="mx-auto mt-6 max-w-md text-lg">
-            Scan completo — {totalChecks} verificações realizadas.
+            {score === 100
+              ? '🎉 Nota máxima confirmada em 29 verificações!'
+              : `Scan completo — ${totalChecks} verificações realizadas.`}
+          </p>
+        ) : bonusAvailable ? (
+          <p className="mx-auto mt-6 max-w-md text-lg">
+            Parabéns! Seu site passou em todas as {freeCount} verificações básicas.
           </p>
         ) : (
           <p className="mx-auto mt-6 max-w-md text-lg">{problemLine(failCount, freeCount)}</p>
         )}
-        {summary.risk_summary && !isFull && (
-          <p className="mx-auto mt-2 max-w-md text-sm text-klarim-muted">{summary.risk_summary}</p>
+        {summaryV.risk_summary && !isFull && !bonusAvailable && (
+          <p className="mx-auto mt-2 max-w-md text-sm text-klarim-muted">{summaryV.risk_summary}</p>
         )}
 
         {/* Verificações básicas */}
@@ -244,17 +305,35 @@ export default function Result() {
           ))}
         </div>
 
-        {/* CTA de compra (só no gratuito) */}
-        {!isFull && (
+        {/* Análise completa GRATUITA — bônus de score 100 (KL-31, sem R$19) */}
+        {!isFull && bonusAvailable && (
+          <div className="mx-auto mt-8 max-w-md rounded-xl border border-klarim-ok bg-klarim-surface p-6">
+            <p className="text-lg font-bold text-klarim-ok">🎁 Você ganhou a análise completa!</p>
+            <p className="mt-1 text-sm text-klarim-muted">
+              29 verificações avançadas — SPF, DKIM, DMARC, cookies, CORS, subdomínios,
+              vazamentos e mais.
+            </p>
+            <button
+              onClick={runFullFree}
+              className="mt-4 w-full rounded-lg bg-klarim-ok px-6 py-4 text-lg font-bold text-klarim-bg transition hover:opacity-90"
+            >
+              Fazer análise completa gratuita
+            </button>
+            {bonusError && <p className="mt-2 text-sm text-klarim-fail">{bonusError}</p>}
+          </div>
+        )}
+
+        {/* CTA de compra (gratuito sem bônus) */}
+        {!isFull && !bonusAvailable && (
           <div className="mt-8">
             <button
               onClick={() => {
-                trackEvent('cta_clicked', { url, price: summary.price, score: summary.score }, url)
+                trackEvent('cta_clicked', { url, price: summaryV.price, score: summaryV.score }, url)
                 navigate(`/pay?url=${encodeURIComponent(url)}`)
               }}
               className="w-full rounded-lg bg-klarim-alert px-6 py-4 text-lg font-bold text-klarim-bg transition hover:opacity-90 sm:w-auto"
             >
-              Fazer scan completo — {summary.price_display || 'R$ 19'}
+              Fazer scan completo — {summaryV.price_display || 'R$ 19'}
             </button>
             <p className="mt-2 text-sm text-klarim-muted">
               Relatório executivo + técnico com todos os 29 pontos, evidências e correções.
@@ -275,9 +354,28 @@ export default function Result() {
           </div>
         )}
 
-        {/* Monitoramento gratuito — score 100 (KL-29) */}
-        {isFull && summary.score === 100 && (
-          <MonitoringOffer url={url} defaultEmail={summary.contact_email} chargeId={chargeId} />
+        {/* Monitoramento gratuito — score 100 (KL-29/KL-31) */}
+        {isFull && score === 100 && (
+          <MonitoringOffer url={url} defaultEmail={summaryV.contact_email} chargeId={chargeId} />
+        )}
+
+        {/* Score completo < 100 sem crédito → corrigir e re-verificar por R$19 (KL-31) */}
+        {isFull && score < 100 && !chargeId && !canRescan && (
+          <div className="mx-auto mt-8 max-w-md rounded-lg border border-klarim-border bg-klarim-surface p-5 text-left">
+            <p className="font-bold">Correções necessárias</p>
+            <p className="mt-1 text-sm text-klarim-muted">
+              Corrija as falhas encontradas e volte para verificar novamente:
+            </p>
+            <button
+              onClick={() => {
+                trackEvent('cta_clicked', { url, from: 'score100_dropped', score }, url)
+                navigate(`/pay?url=${encodeURIComponent(url)}`)
+              }}
+              className="mt-3 w-full rounded-lg bg-klarim-alert px-6 py-3 font-bold text-klarim-bg hover:opacity-90 sm:w-auto"
+            >
+              Re-verificar após correções — R$ 19
+            </button>
+          </div>
         )}
 
         {/* Re-verificação (retorno médico) */}

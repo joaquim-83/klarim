@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nota máxima em segurança — Klarim</title>
+</head>
+<body style="margin:0; padding:0; background-color:#0D1117;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#0D1117;">
+    <tr>
+      <td align="center" style="padding:24px 12px;">
+        <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:600px; max-width:100%; background-color:#161B22; border:1px solid #30363D; border-radius:12px; overflow:hidden; font-family:Arial,Helvetica,sans-serif;">
+
+          <!-- Header -->
+          <tr>
+            <td style="padding:20px 24px; border-bottom:2px solid #30363D;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td style="font-size:22px; font-weight:bold; letter-spacing:2px; color:#E6EDF3;">
+                    KLA<span style="color:#FF6B35;">R</span>IM
+                  </td>
+                  <td align="right" style="font-size:13px; color:#8B949E;">Avaliação de Segurança</td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+
+          <!-- Score / semáforo -->
+          <tr>
+            <td align="center" style="padding:28px 24px 8px 24px;">
+              <div style="display:inline-block; padding:14px 28px; border:3px solid {{ score_color }}; border-radius:9999px;">
+                <span style="font-size:40px; font-weight:bold; color:{{ score_color }};">{{ score }}</span><span style="font-size:16px; color:#8B949E;">/100</span>
+              </div>
+              <div style="margin-top:12px; font-size:20px; font-weight:bold; color:{{ score_color }};">
+                {{ semaphore_emoji }} {{ semaphore_label }}
+              </div>
+            </td>
+          </tr>
+
+          <!-- Parabéns + bônus -->
+          <tr>
+            <td style="padding:16px 28px 4px 28px; color:#E6EDF3; font-size:15px; line-height:1.6;">
+              Parabéns! Seu site
+              <a href="{{ target_url }}" style="color:#FF6B35; text-decoration:none;">{{ site_name }}</a>
+              passou em todas as <strong>15 verificações básicas</strong> de segurança.
+              <br><br>
+              Você ganhou uma <strong>análise completa gratuita</strong> com 29 verificações
+              avançadas — incluindo proteção de e-mail (SPF/DKIM/DMARC), cookies,
+              subdomínios e muito mais.
+              <br><br>
+              Sites que confirmarem a nota máxima na análise completa entram no nosso
+              programa de <strong>Sites Monitorados</strong> com selo de segurança.
+            </td>
+          </tr>
+
+          <!-- CTA -->
+          <tr>
+            <td align="center" style="padding:16px 28px 28px 28px;">
+              <a href="{{ result_link }}" style="display:inline-block; background-color:#00D26A; color:#0D1117; font-size:16px; font-weight:bold; text-decoration:none; padding:14px 32px; border-radius:8px;">
+                Fazer análise completa gratuita
+              </a>
+            </td>
+          </tr>
+
+          <!-- Footer -->
+          <tr>
+            <td style="padding:16px 28px; border-top:1px solid #30363D; color:#8B949E; font-size:11px; line-height:1.6;">
+              Esta é uma análise automatizada e 100% passiva. Nenhum dado do seu site foi acessado.
+              <br>Klarim Scanner — <a href="https://klarim.net" style="color:#8B949E;">klarim.net</a>
+              &nbsp;·&nbsp;
+              {% if unsubscribe_link %}
+              <a href="{{ unsubscribe_link }}" style="color:#8B949E;">Não quer mais receber? Clique aqui para se descadastrar</a>
+              {% else %}
+              <a href="mailto:seguranca@klarim.net?subject=REMOVER" style="color:#8B949E;">Não receber mais alertas</a>
+              {% endif %}
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

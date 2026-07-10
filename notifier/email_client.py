@@ -59,13 +59,18 @@ def site_name(url: str) -> str:
     return host[4:] if host.startswith("www.") else host
 
 
-def utm_result_link(target_url: str, campaign: str, target_id=None) -> str:
+def utm_result_link(target_url: str, campaign: str, target_id=None,
+                    bonus_token: Optional[str] = None) -> str:
     """Link /result com UTM (KL-21) — permite rastrear cliques do e-mail por campanha
-    e por alvo. Sem target_id, usa o domínio como utm_content."""
+    e por alvo. Sem target_id, usa o domínio como utm_content. ``bonus_token`` (KL-31)
+    adiciona ``&bonus=full&t=<token>`` para o fluxo de scan completo gratuito."""
     content = f"target_{target_id}" if target_id else site_name(target_url)
-    return (f"{SITE_BASE}/result?url={quote(target_url, safe='')}"
+    link = (f"{SITE_BASE}/result?url={quote(target_url, safe='')}"
             f"&utm_source=klarim&utm_medium=email&utm_campaign={quote(campaign, safe='')}"
             f"&utm_content={quote(content, safe='')}")
+    if bonus_token:
+        link += f"&bonus=full&t={quote(bonus_token, safe='')}"
+    return link
 
 
 def unsubscribe_token(email: str, secret: str) -> str:
@@ -245,27 +250,37 @@ class KlarimMailer:
         unsubscribe_link: Optional[str] = None,
         risk_messages: Optional[list] = None,
         target_id=None,
+        bonus_token: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Monta o payload Resend de um alerta (from/to/subject/html).
 
         Compartilhado pelo envio único (`send_alert`) e pelo batch (`send_alert_batch`).
+        Score 100 verde (KL-31) → template/assunto de **parabéns** + CTA de análise
+        completa gratuita (com o ``bonus_token`` no link); senão o alerta normal (KL-27).
         """
         site = site_name(target_url)
         if unsubscribe_link is None:
             secret = os.environ.get("UNSUBSCRIBE_SECRET")
             if secret:
                 unsubscribe_link = build_unsubscribe_link(to_email, secret)
-        # KL-27: e-mail sem preço, sem cards de risco e sem contagem por severidade —
-        # profissional e neutro. Score + semáforo + contagem + CTA "Veja o relatório".
-        html = _env.get_template("alert.html").render(
+
+        is_100 = score == 100 and (semaphore or "").lower() == "verde"
+        if is_100:
+            template, subject = "alert_score100.html", f"{site} — parabéns, nota máxima em segurança"
+            result_link = utm_result_link(target_url, "score100", target_id, bonus_token=bonus_token)
+        else:
+            template, subject = "alert.html", f"{site} — resultado da avaliação de segurança"
+            result_link = utm_result_link(target_url, "alerta", target_id)
+
+        # KL-27: e-mail sem preço, sem cards de risco e sem contagem por severidade.
+        html = _env.get_template(template).render(
             **self._score_ctx(score, semaphore),
             site_name=site,
             target_url=target_url,
             fail_count=fail_count,
-            result_link=utm_result_link(target_url, "alerta", target_id),
+            result_link=result_link,
             unsubscribe_link=unsubscribe_link,
         )
-        subject = f"{site} — resultado da avaliação de segurança"
         return {"from": self.from_address, "to": [to_email], "subject": subject, "html": html}
 
     async def send_alert(
@@ -279,11 +294,13 @@ class KlarimMailer:
         unsubscribe_link: Optional[str] = None,
         risk_messages: Optional[list] = None,
         target_id=None,
+        bonus_token: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Alerta gratuito (semáforo) — o anzol do funil."""
         return await self._send(self._alert_params(
             to_email, target_url, score, semaphore, fail_count, severity_counts,
-            unsubscribe_link=unsubscribe_link, risk_messages=risk_messages, target_id=target_id))
+            unsubscribe_link=unsubscribe_link, risk_messages=risk_messages,
+            target_id=target_id, bonus_token=bonus_token))
 
     async def send_alert_batch(self, alerts: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Envia até 100 alertas em 1 request via Resend Batch API (KL-23).
@@ -302,7 +319,8 @@ class KlarimMailer:
                 a["to_email"], a["target_url"], a.get("score", 0), a.get("semaphore", ""),
                 a.get("fail_count", 0), a.get("severity_counts") or {},
                 unsubscribe_link=a.get("unsubscribe_link"),
-                risk_messages=a.get("risk_messages"), target_id=a.get("target_id"))
+                risk_messages=a.get("risk_messages"), target_id=a.get("target_id"),
+                bonus_token=a.get("bonus_token"))
             for a in batch
         ]
         return await self._send_batch(payloads, batch)

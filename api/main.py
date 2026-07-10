@@ -352,14 +352,20 @@ def _scan_token_secret() -> str:
     return os.environ.get("JWT_SECRET", "") or os.environ.get("UNSUBSCRIBE_SECRET", "")
 
 
-def _make_scan_token(email: str, url: str, full: bool = False) -> str:
-    """Token HMAC-assinado que autoriza 1 scan da URL pelo e-mail (expira 1h).
+_BONUS_TOKEN_TTL = 30 * 86400  # 30 dias — o e-mail de score 100 pode ser clicado depois
+
+
+def _make_scan_token(email: str, url: str, full: bool = False, bonus: bool = False,
+                     ttl: Optional[int] = None) -> str:
+    """Token HMAC-assinado que autoriza 1 scan da URL pelo e-mail.
 
     ``full=True`` (re-verificação paga, KL-27) autoriza o scan completo de 29 checks
     e serve de bypass de pagamento nos PDFs; ``full=False`` é o scan gratuito (15).
+    ``bonus=True`` (KL-31) identifica o link do e-mail de score 100 — o scan completo
+    gratuito só roda se o **crédito no banco** existir (o token sozinho não basta).
     """
-    payload = {"email": email, "url": url, "full": bool(full),
-               "exp": int(time.time()) + _SCAN_TOKEN_TTL}
+    payload = {"email": email, "url": url, "full": bool(full), "bonus": bool(bonus),
+               "exp": int(time.time()) + (ttl if ttl is not None else _SCAN_TOKEN_TTL)}
     raw = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode()
     sig = hmac.new(_scan_token_secret().encode(), raw.encode(), hashlib.sha256).hexdigest()[:32]
     return f"{raw}.{sig}"
@@ -437,9 +443,14 @@ async def scan_check_credit(body: ScanCodeBody) -> dict:
     used = int(credit["free_scans_used"]) if credit else 0
     same_url = bool(credit and credit.get("first_scan_url") == url)
     rescan_credits = int(credit.get("rescan_credits") or 0) if credit else 0
+    full_scan_credits = int(credit.get("full_scan_credits") or 0) if credit else 0
+    # Bônus de score 100 (KL-31): vinculado ao par (e-mail, URL).
+    can_full = bool(full_scan_credits > 0 and credit
+                    and _norm_scan_url(credit.get("full_scan_url") or "") == url)
     return {"has_free_scan": used == 0, "same_url_scanned": same_url,
             "free_scans_used": used, "rescan_credits": rescan_credits,
-            "can_rescan": rescan_credits > 0}
+            "can_rescan": rescan_credits > 0,
+            "full_scan_credits": full_scan_credits, "can_full_scan_free": can_full}
 
 
 @app.post("/scan/request-code")
@@ -575,12 +586,14 @@ async def scan_rescan(body: ScanRescanBody) -> dict:
 async def scan_summary(url: str = Query(..., description="URL alvo."),
                        charge_id: Optional[str] = Query(default=None,
                            description="Cobrança paga → resultado COMPLETO (29)."),
+                       use_bonus: bool = Query(default=False,
+                           description="Consumir o bônus de scan completo (score 100, KL-31)."),
                        request: Request = None) -> dict:
     """Resultado do scan — score + contagens + checks.
 
-    Autorização para o resultado **completo** (29, com detalhes): JWT admin, scan
-    token ``full`` (re-verificação) ou ``charge_id`` **pago** (pós-compra). Sem
-    autorização de scan novo, devolve só o resultado gratuito já existente (KL-25)."""
+    Autorização para o resultado **completo** (29): JWT admin, `charge_id` pago,
+    **bônus de score 100** (KL-31, `use_bonus` + crédito no banco) ou scan token
+    ``full`` (re-verificação). Sem autorização, devolve o gratuito existente (KL-25)."""
     url = _norm_scan_url(url)
     scanned_by = None
     scan_token = ""
@@ -601,14 +614,22 @@ async def scan_summary(url: str = Query(..., description="URL alvo."),
                     authorized = True
                     scanned_by = (charge.buyer_email or "").strip() or None
 
-        # (2) senão, scan token: `full` de re-verificação, ou grátis (KL-25).
+        # (2) senão, scan token. Prioridade dentro do token (KL-31): bônus de score
+        # 100 (consome o crédito no banco) → re-verificação (`full`) → básico (15).
         if not authorized:
             scan_token = request.headers.get("x-scan-token", "") if request is not None else ""
             payload = _verify_scan_token(scan_token)
             if payload and _norm_scan_url(payload.get("url", "")) == url:
-                scanned_by = _clean_scan_email(payload.get("email", "")) or None
-                full = bool(payload.get("full"))  # token de re-verificação → completo (29)
+                email = _clean_scan_email(payload.get("email", "")) or None
+                scanned_by = email
                 authorized = True
+                # Bônus só roda o completo se pedido (botão) E o crédito existir no
+                # banco (o token/flag sozinho NÃO basta — consome-se aqui, uso único).
+                if (use_bonus and payload.get("bonus") and email
+                        and await get_target_store().consume_full_scan_credit(email, url)):
+                    full = True
+                else:
+                    full = bool(payload.get("full"))  # re-verificação → completo
 
     if not authorized:
         # Sem autorização de scan novo: só devolve resultado gratuito já existente.
@@ -1641,6 +1662,9 @@ _KNOWN_EVENTS = {
     "payment_created", "payment_completed", "report_downloaded", "email_link_clicked",
     # KL-25 — verificação de e-mail antes do scan público
     "code_requested", "code_verified", "code_failed", "scan_limit_reached",
+    # KL-29/KL-31 — monitoramento + bônus de score 100
+    "score100_full_scan_started", "score100_full_scan_completed",
+    "score100_monitoring_offered", "score100_monitoring_accepted",
 }
 _EVENT_RL_MAX = 100          # eventos/minuto por sessão
 _event_rl: dict = {}         # session_id -> lista de timestamps (janela de 60s)

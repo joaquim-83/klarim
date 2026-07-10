@@ -54,10 +54,13 @@ export async function verifyCode(email, code, url) {
 // Executa o scan e retorna o resumo executivo (score, semáforo, contagens).
 // Envia o scan token (se houver). auth_required => lança 'auth_required' (o
 // visitante precisa verificar o e-mail). Atenção: o scan leva ~25-30s.
-export async function fetchSummary(url, chargeId) {
+export async function fetchSummary(url, opts = {}) {
+  // opts: string (chargeId legado) ou { chargeId, useBonus }
+  const { chargeId, useBonus } = typeof opts === 'string' ? { chargeId: opts } : opts
   const token = getScanToken()
   let u = `${BASE}/scan/summary?url=${encodeURIComponent(url)}`
   if (chargeId) u += `&charge_id=${encodeURIComponent(chargeId)}` // pós-pagamento → completo
+  if (useBonus) u += `&use_bonus=true` // KL-31: consome o bônus de score 100 → completo grátis
   const resp = await fetch(u, {
     headers: token ? { 'X-Scan-Token': token } : {},
   })

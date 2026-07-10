@@ -13,8 +13,13 @@ do Re-scan Worker) — reserva de segurança dentro do limite de 50k/mês do Res
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
+import hmac
+import json
 import os
 import re
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
@@ -28,6 +33,25 @@ from .contact import email_mx_status, _clean_email
 _EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$")
 
 _SEV_MAP = {"CRITICA": "critica", "ALTA": "alta", "MEDIA": "media", "BAIXA": "baixa"}
+
+_BONUS_TOKEN_TTL = 30 * 86400  # 30 dias — o e-mail de score 100 pode ser clicado depois
+
+
+def _is_score100(score, semaphore) -> bool:
+    return score == 100 and (str(semaphore or "").lower() == "verde")
+
+
+def bonus_scan_token(email: str, url: str) -> str:
+    """Token de bônus de score 100 (KL-31). Formato IDÊNTICO ao
+    api.main._make_scan_token(full=False, bonus=True) — o /scan/summary o verifica
+    (o scan completo só roda se o crédito no banco existir; o token só identifica
+    o e-mail/URL). Válido por 30 dias."""
+    secret = os.environ.get("JWT_SECRET", "") or os.environ.get("UNSUBSCRIBE_SECRET", "")
+    payload = {"email": email, "url": url, "full": False, "bonus": True,
+               "exp": int(time.time()) + _BONUS_TOKEN_TTL}
+    raw = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode()
+    sig = hmac.new(secret.encode(), raw.encode(), hashlib.sha256).hexdigest()[:32]
+    return f"{raw}.{sig}"
 
 
 def is_demo_target(email: Optional[str] = None, url: Optional[str] = None) -> bool:
@@ -96,10 +120,12 @@ async def build_alert_payload(store, target: Dict[str, Any]) -> Dict[str, Any]:
     # KL-27: o e-mail não mostra mais riscos/severidade — só score + contagem + CTA.
     secret = os.environ.get("UNSUBSCRIBE_SECRET")
     unsub = build_unsubscribe_link(email, secret) if secret else None
+    # KL-31: score 100 verde → token de bônus (análise completa gratuita) no link.
+    bonus = bonus_scan_token(email, target["url"]) if _is_score100(score, semaphore) else None
     return {
         "target_id": target["id"], "to_email": email, "target_url": target["url"],
         "score": score or 0, "semaphore": semaphore or "", "fail_count": fail_count or 0,
-        "unsubscribe_link": unsub,
+        "unsubscribe_link": unsub, "bonus_token": bonus,
     }
 
 
@@ -119,11 +145,17 @@ async def send_alert_for_target(store, mailer: KlarimMailer, target: Dict[str, A
     score, semaphore, fail_count = scan["score"], scan["semaphore"], scan["fail_count"]
     secret = os.environ.get("UNSUBSCRIBE_SECRET")
     unsub = build_unsubscribe_link(email, secret) if secret else None
+    # KL-31: score 100 verde → convite de análise completa gratuita + concede o crédito.
+    is_100 = _is_score100(score, semaphore)
+    bonus = bonus_scan_token(email, target["url"]) if is_100 else None
 
     # KL-27: sem severidade/risco no e-mail (severity_counts fica {} — ignorado).
     res = await mailer.send_alert(email, target["url"], score, semaphore, fail_count, {},
-                                  unsubscribe_link=unsub, target_id=target["id"])
+                                  unsubscribe_link=unsub, target_id=target["id"],
+                                  bonus_token=bonus)
     email_id = res.get("email_id")
+    if is_100:
+        await store.grant_full_scan_credit(email, target["url"])
     await store.mark_target_alerted(target["id"])
     await store.log_alert(target["id"], email, score, semaphore, fail_count, email_id)
     return email_id
@@ -318,6 +350,9 @@ class AlertWorker:
                 await self.store.mark_target_alerted(a["target_id"])
                 await self.store.log_alert(a["target_id"], a["to_email"], a.get("score"),
                                            a.get("semaphore"), a.get("fail_count"), email_id)
+                # KL-31: convite de score 100 → concede o crédito de scan completo grátis.
+                if _is_score100(a.get("score"), a.get("semaphore")):
+                    await self.store.grant_full_scan_credit(a["to_email"], a["target_url"])
             for a in bad_alerts:  # e-mails que o Resend rejeitou (isolados no split)
                 await self.store.log_alert(a["target_id"], a["to_email"], a.get("score"),
                                            a.get("semaphore"), a.get("fail_count"), None,

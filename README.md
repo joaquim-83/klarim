@@ -560,11 +560,17 @@ disclaimer claro em todos os relatórios.
       re-scan semanal, suspensão/restauração automática
 - [ ] Pagamento por cartão (Stripe)
 
-**Sites Monitorados (`/monitorados`).** Sites que atingem **score 100/100** no scan
-completo podem ativar **monitoramento gratuito**: aparecem numa seção pública com
-selo 🔒, são reescaneados semanalmente (29 checks) e, se o score cair, o dono é
-alertado e o selo é suspenso até corrigir (restaura sozinho ao voltar a 100). A
-listagem pública (`GET /api/monitoring/sites`) nunca expõe e-mail/token; a oferta só
-vale para score 100 comprovado no servidor.
+**Score 100 = scan completo grátis (KL-31).** Sites que passam nos 15 checks básicos
+(score 100) recebem um e-mail de **parabéns** com direito à **análise completa dos 29
+gratuita** — nenhuma cobrança no fluxo de score 100. Confirmando 100/29, o site ganha
+**monitoramento gratuito** e o selo. Cobrança (R$ 19) só se o site **não** passou nos
+29 e quer re-verificar após correções. O bônus é um crédito único por (e-mail, URL),
+consumido ao rodar o scan.
+
+**Sites Monitorados (`/monitorados`).** Sites com **score 100/100** (29 checks) têm
+**monitoramento gratuito**: aparecem numa seção pública com selo 🔒, são reescaneados
+a cada 30 dias e, se o score cair, o dono é alertado e o selo é suspenso até corrigir
+(restaura sozinho ao voltar a 100). A listagem pública (`GET /api/monitoring/sites`)
+nunca expõe e-mail/token.
 
 Ver `klarim_mvp_spec.md` para a especificação completa do produto.
