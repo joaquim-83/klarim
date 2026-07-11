@@ -96,6 +96,11 @@ CLASSIFICATIONS: Dict[str, Classification] = {
     "check_38_caa":                Classification(_A02, "CWE-295", "Art. 46"),
     "check_39_mta_sts":            Classification(_A02, "CWE-319", "Art. 46"),
     "check_40_bimi":               Classification(_A07, "CWE-290", None),
+    # TLS profundo (KL-37)
+    "check_41_cipher_suites":      Classification(_A02, "CWE-327", "Art. 46"),
+    "check_42_cert_chain":         Classification(_A02, "CWE-295", "Art. 46"),
+    "check_43_ocsp_stapling":      Classification(_A02, "CWE-299", "Art. 46"),
+    "check_44_key_strength":       Classification(_A02, "CWE-326", "Art. 46"),
 }
 
 _EMPTY = Classification(None, None, None)

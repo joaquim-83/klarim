@@ -570,11 +570,11 @@ def test_check29_fail_when_flagged(monkeypatch):
 # --------------------------------------------------------------------------- #
 
 def test_all_checks_registered():
-    # 40 checks após o KL-36 (DNS security 37-40).
+    # 44 checks após o KL-37 (TLS profundo 41-44).
     ids = [cid for cid, _ in ALL_CHECKS]
-    assert len(ids) == 40
-    assert len(set(ids)) == 40
-    for i in range(16, 41):
+    assert len(ids) == 44
+    assert len(set(ids)) == 44
+    for i in range(16, 45):
         assert any(cid.startswith(f"check_{i}_") for cid in ids), i
 
 

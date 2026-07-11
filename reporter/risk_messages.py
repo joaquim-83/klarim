@@ -258,6 +258,30 @@ RISK_MESSAGES: Dict[str, Dict[str, str]] = {
                 "logo — isso reduz a confiança e dificulta identificar e-mails falsos.",
         "icon": "🏷️",
     },
+    "check_41_cipher_suites": {
+        "headline": "A criptografia do seu site usa um algoritmo quebrado",
+        "risk": "É como trancar a porta com uma fechadura que qualquer chaveiro abre em 5 "
+                "segundos. Os dados dos seus clientes podem ser decifrados por quem interceptar.",
+        "icon": "🔓",
+    },
+    "check_42_cert_chain": {
+        "headline": "O certificado de segurança tem um problema de configuração",
+        "risk": "A cadeia de confiança do seu certificado está incompleta ou inválida — alguns "
+                "navegadores podem mostrar aviso de 'site não seguro' aos seus visitantes.",
+        "icon": "🔗",
+    },
+    "check_43_ocsp_stapling": {
+        "headline": "Seu site não confirma a validade do certificado a cada conexão",
+        "risk": "Sem essa verificação embutida, a conexão fica mais lenta e a navegação dos seus "
+                "clientes é revelada à autoridade certificadora.",
+        "icon": "📶",
+    },
+    "check_44_key_strength": {
+        "headline": "A chave de criptografia do seu site é fraca",
+        "risk": "A chave é curta demais para os padrões atuais — é como ter uma senha de 4 "
+                "caracteres. Um atacante pode quebrá-la e se passar pelo seu site.",
+        "icon": "🗝️",
+    },
 }
 
 _SEV_ORDER = {"CRITICA": 0, "ALTA": 1, "MEDIA": 2, "BAIXA": 3}
@@ -268,7 +292,8 @@ _CAT_VAZAMENTO = {"check_01_https", "check_02_hsts", "check_04_tls",
                   "check_17_cookies", "check_18_cors", "check_25_form_security",
                   "check_28_hibp", "check_31_permissions_policy",
                   "check_35_referrer_policy", "check_36_cache_control_forms",
-                  "check_39_mta_sts"}
+                  "check_39_mta_sts", "check_41_cipher_suites", "check_42_cert_chain",
+                  "check_43_ocsp_stapling", "check_44_key_strength"}
 _CAT_GOLPES = {"check_05_csp", "check_06_xfo", "check_14_risky_sources",
                "check_19_redirect_domain", "check_21_spf", "check_22_dkim",
                "check_23_dmarc", "check_27_dangling_cname", "check_29_safe_browsing",

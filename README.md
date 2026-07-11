@@ -19,7 +19,7 @@ acionável. O conjunto de checks é **dinâmico e cresce continuamente** (hoje 2
 
 O número de checks **não é fixo** — novos módulos `check_*.py` são descobertos
 automaticamente (ver [Como adicionar um check](#como-adicionar-um-check)).
-Conjunto atual (40):
+Conjunto atual (44):
 
 | # | Check | Módulo | Severidade |
 |---|-------|--------|-----------|
@@ -63,6 +63,14 @@ Conjunto atual (40):
 | 38 | CAA (autorização de CAs para emitir certificado) | `check_38_caa.py` | 🟡 Média |
 | 39 | MTA-STS (TLS obrigatório em e-mail, RFC 8461) | `check_39_mta_sts.py` | 🔵 Baixa |
 | 40 | BIMI (logo da marca em e-mail) | `check_40_bimi.py` | 🔵 Baixa |
+| 41 | Cipher suites (cipher negociado fraco: RC4/DES/sem FS) | `check_41_cipher_suites.py` | 🟠 Alta |
+| 42 | Certificate chain (self-signed / cadeia / expiração) | `check_42_cert_chain.py` | 🟡 Média |
+| 43 | OCSP stapling (URI de revogação no cert) | `check_43_ocsp_stapling.py` | 🔵 Baixa |
+| 44 | Força da chave criptográfica (RSA/ECDSA) | `check_44_key_strength.py` | 🟠 Alta / 🔴 Crítica |
+
+O KL-37 aprofunda o TLS de "certificado válido?" para "TLS bem configurado?"
+(nível SSL Labs): cipher negociado, cadeia, OCSP e força da chave — via **um único
+handshake TLS compartilhado** (`scanner/tls_analyzer.py`), 100% passivo, tier pago.
 
 O KL-36 completa a camada DNS/e-mail (SPF/DKIM/DMARC já eram os checks 21–23) com
 **DNSSEC**, **CAA**, **MTA-STS** e **BIMI** — todos consultas DNS públicas (o MTA-STS

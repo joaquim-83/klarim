@@ -169,7 +169,7 @@ async def check(url: str) -> CheckResult
   `PASS`. `INCONCLUSO` é neutro no score.
 
 **O número de checks é dinâmico e cresce com o projeto** — nunca trate um número
-específico como identidade do produto. Conjunto atual (**40**):
+específico como identidade do produto. Conjunto atual (**44**):
 
 | # | Check | Módulo | Severidade |
 |---|-------|--------|-----------|
@@ -213,6 +213,10 @@ específico como identidade do produto. Conjunto atual (**40**):
 | 38 | CAA (Certificate Authority Authorization) | `check_38_caa.py` | Média |
 | 39 | MTA-STS (TLS obrigatório em e-mail) | `check_39_mta_sts.py` | Baixa |
 | 40 | BIMI (logo da marca em e-mail) | `check_40_bimi.py` | Baixa |
+| 41 | Cipher suites (cipher negociado fraco) | `check_41_cipher_suites.py` | Alta |
+| 42 | Certificate chain (cadeia/self-signed/expiração) | `check_42_cert_chain.py` | Média |
+| 43 | OCSP stapling (URI de revogação) | `check_43_ocsp_stapling.py` | Baixa |
+| 44 | Força da chave criptográfica | `check_44_key_strength.py` | Alta/Crítica |
 
 Checks 13–15 (supply chain, KL-2) fazem parse **passivo do HTML servido**;
 scripts injetados por JavaScript em runtime não são vistos por um GET simples.
@@ -1414,3 +1418,33 @@ tier **pago** (ORDER>15), via `dns_util.py`.
 **Regra inviolável:** 100% passivo (consulta DNS pública + o GET do MTA-STS é URL pública
 definida pela RFC). Os 4 são pagos. **Flush `scan:*` no Redis após deploy** (novos checks
 mudam scores).
+
+## 35. TLS profundo (KL-37) — checks 41–44
+
+Vai além de "certificado válido?" (check_03) e "TLS 1.2+?" (check_04) para "TLS bem
+configurado?", competindo com o SSL Labs. 4 checks pagos (ORDER>15), todos
+**A02:2025 Cryptographic Failures**, via um **único handshake TLS compartilhado**.
+
+- **`scanner/tls_analyzer.py`:** `get_tls_info(host, port)` faz **um** handshake (em
+  `asyncio.to_thread`), cacheado por (host,porta) ~2min — os 4 checks **compartilham** o
+  mesmo handshake (o runner os roda em sequência), sem reconectar 4×. Parseia o DER com
+  `cryptography` (cipher/protocolo/cert/SAN/OCSP URI/chave). Tenta handshake **verificado**;
+  em erro de verificação, cai para **não-verificado** para ainda extrair o cert (self-signed/
+  expirado). Helpers puros testáveis: `weak_cipher_reason`, `has_forward_secrecy`,
+  `classify_key`. **Não enumera** todas as suites (seria N conexões, mais intrusivo) —
+  avalia a **negociada** (abordagem pragmática do card).
+- **check_41 Cipher suites** (ALTA, CWE-327): cipher fraco (RC4/DES/3DES/NULL/EXPORT/anon) ou
+  protocolo obsoleto → FAIL ALTA; sem forward secrecy no TLS 1.2 → FAIL MÉDIA; TLS 1.3/ECDHE
+  forte → PASS.
+- **check_42 Certificate chain** (MÉDIA, CWE-295): self-signed ou cadeia que não valida →
+  FAIL; válido → PASS (nota se expira em <30 dias; mostra emissor/SAN).
+- **check_43 OCSP stapling** (BAIXA, CWE-299): **limitação** — a `ssl` stdlib não expõe
+  stapling; reporta a presença do **OCSP URI** (AIA) do cert (PASS com nota) ou a ausência
+  (FAIL BAIXA).
+- **check_44 Força da chave** (ALTA/CRÍTICA, CWE-326): RSA 2048+/ECDSA P-256+ → PASS; RSA
+  1024 → FAIL ALTA; RSA <1024 → FAIL CRÍTICA.
+
+**Regra inviolável:** 100% passivo (um handshake TLS público, como qualquer navegador); os 4
+compartilham o handshake via `tls_analyzer` (não faz 4 handshakes). **Flush `scan:*` no Redis
+após deploy** (novos checks mudam scores). Usa só `ssl`/`socket` (stdlib) + `cryptography`
+(já no requirements) — **sem** pyOpenSSL.

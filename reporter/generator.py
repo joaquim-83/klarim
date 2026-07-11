@@ -122,6 +122,10 @@ ACCESSIBLE: Dict[str, str] = {
     "check_38_caa": "Seu domínio não define quais empresas podem emitir certificados de segurança para ele — qualquer uma pode.",
     "check_39_mta_sts": "Os e-mails enviados para o seu domínio podem ser interceptados no caminho, sem criptografia obrigatória.",
     "check_40_bimi": "Seu domínio não exibe o logo da empresa nos e-mails — os clientes veem um ícone genérico em vez da sua marca.",
+    "check_41_cipher_suites": "A criptografia do seu site usa um algoritmo fraco, que já foi quebrado.",
+    "check_42_cert_chain": "A cadeia do certificado de segurança do seu site tem um problema de configuração.",
+    "check_43_ocsp_stapling": "Seu site não verifica automaticamente a validade do certificado a cada conexão.",
+    "check_44_key_strength": "A chave de criptografia do seu site é fraca demais para os padrões atuais.",
 }
 
 
@@ -329,6 +333,26 @@ TECHNICAL: Dict[str, Dict[str, str]] = {
         "impact": "Sem BIMI, o logo da marca não aparece nos e-mails (Gmail/Apple Mail) — reduz a confiança e dificulta distinguir e-mails legítimos de falsos. Requer DMARC em enforce.",
         "fix": "Configure DMARC com p=quarantine/reject e publique o TXT BIMI apontando o logo (SVG).",
         "fix_code": "default._bimi.exemplo.com.br. IN TXT \"v=BIMI1; l=https://exemplo.com.br/logo.svg\"",
+    },
+    "check_41_cipher_suites": {
+        "impact": "Cipher fraco (RC4/DES/3DES) ou sem forward secrecy permite decifrar o tráfego (agora ou no futuro, se a chave vazar). RC4 está quebrado desde 2015 (RFC 7465).",
+        "fix": "Desabilite ciphers legados e priorize suites ECDHE + AES-GCM; habilite TLS 1.3.",
+        "fix_code": "# nginx\nssl_protocols TLSv1.2 TLSv1.3;\nssl_ciphers ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384;\nssl_prefer_server_ciphers on;",
+    },
+    "check_42_cert_chain": {
+        "impact": "Certificado self-signed ou cadeia incompleta faz o navegador rejeitar (ou completar de forma frágil) a conexão; expiração próxima leva a downtime de confiança.",
+        "fix": "Sirva leaf + intermediários (fullchain) de uma CA confiável e automatize a renovação.",
+        "fix_code": "# nginx\nssl_certificate     /etc/letsencrypt/live/dominio/fullchain.pem;\nssl_certificate_key /etc/letsencrypt/live/dominio/privkey.pem;",
+    },
+    "check_43_ocsp_stapling": {
+        "impact": "Sem OCSP, a verificação de revogação do certificado fica lenta e vaza a navegação do usuário para a CA; sem OCSP URI, a revogação nem é consultável.",
+        "fix": "Use uma CA com OCSP e habilite OCSP stapling no servidor.",
+        "fix_code": "# nginx\nssl_stapling on;\nssl_stapling_verify on;\nresolver 1.1.1.1 valid=300s;",
+    },
+    "check_44_key_strength": {
+        "impact": "Chave RSA de 1024 bits é quebrável por fatoração (NIST deprecou em 2013, proibiu em 2014) — permite forjar o certificado e fazer MitM.",
+        "fix": "Gere uma nova chave RSA 2048+ (ideal 4096) ou migre para ECDSA P-256 e reemita o certificado.",
+        "fix_code": "openssl ecparam -genkey -name prime256v1 -out key.pem   # ECDSA P-256\n# ou: openssl genrsa -out key.pem 4096",
     },
 }
 
