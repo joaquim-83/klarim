@@ -1238,3 +1238,35 @@ paused_by` por worker.
 **Regra inviolável:** o controle é **fail-open** (um erro de leitura nunca pausa um
 worker por engano); pausar `alert`/`rescan` protege a reputação do domínio — o kill-switch
 `STOP_ALERTS` continua válido em paralelo.
+
+## 30. Perfil comercial: multi-page crawl + parser (KL-50)
+
+Extrai **dados de negócio** (não afeta o score de segurança) para desbloquear perfis
+públicos, notificações e aquisição orgânica. Reduz `sem_contato` e `unknown`.
+
+**Camada 1 — multi-page.** `discovery/contact.py` busca e-mail em 8 páginas internas
+(`_CONTACT_PATHS`: contato/contact/sobre/about/quem-somos/sobre-nos/fale-conosco/
+atendimento) — tira alvos de `sem_contato` já na descoberta. `scanner/profiler.
+crawl_contact_pages(url)` faz homepage + internas (200, 1 redirect, rate limit 1 req/s).
+
+**Camada 2 — `scanner/profiler.py` (parsers puros, testáveis, sem deps externas):**
+`extract_contacts` (e-mail hardened + `tel:` + `wa.me`/`data-phone` + endereço +
+**CNPJ com dígitos verificadores**), `extract_structured_data` (JSON-LD/@graph →
+name/phone/email/address/hours/sameAs/logo + **setor pelo @type**), `extract_social_
+links` (handles IG/FB/LI/YT/TT + maps + has_blog/has_app, ignora paths reservados),
+`extract_technologies` (~30 fingerprints case-insensitive por categoria, JSONB),
+`extract_infrastructure` (MX→e-mail provider, NS→dns provider, headers→CDN),
+`calculate_maturity_score` (0–10). `build_profile(...)` orquestra tudo (nunca levanta).
+`dns_util.resolve_mx`/`resolve_ns` (novos, mockáveis).
+
+**Tabela `site_profile`** (SERIAL/INTEGER — o schema não usa UUID; adaptado da spec),
+1 por target (UNIQUE, ON DELETE CASCADE). `upsert_site_profile`/`get_site_profile`.
+
+**Integração:** o **scan worker** (`_enrich_profile`) grava o perfil após o scan
+(best-effort). `GET /targets/{id}` anexa `profile`; `GET /targets/{id}/profile`; MCP
+`get_site_profile`. **Reprocessamento:** `scripts/enrich_batch.py --limit 500`
+(sem_contato → crawl + e-mail + perfil; achou e-mail → `discovered` + enfileira scan).
+
+**Regra inviolável:** o perfil é dado **comercial** (passivo, GET público) — **não
+altera o score de segurança**; a extração é sempre **best-effort** (erro só loga, nunca
+derruba scan/worker).

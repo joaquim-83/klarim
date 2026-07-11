@@ -420,6 +420,16 @@ travado congelou os três workers por 7,5h. O `contact.py` também filtra "e-mai
 inválidos (nomes de arquivo, placeholders) para não desperdiçar cota nem gerar
 bounces no Resend.
 
+**Perfil comercial (KL-50):** o `contact.py` busca e-mail em **8 páginas internas**
+(`/contato, /sobre, /about, /quem-somos…`) — mais alvos saem de `sem_contato`. O
+`scanner/profiler.py` (parsers puros, sem deps externas) extrai o **perfil comercial**
+do site — contatos (telefone, whatsapp, CNPJ validado, endereço), JSON-LD/Schema.org
+(→ setor), redes sociais (handles), tecnologias (~30 fingerprints), infraestrutura
+(MX/NS/CDN) e um **score de maturidade 0–10** — gravado em `site_profile` pelo scan
+worker (best-effort, **não** altera o score de segurança). Reprocessar os
+`sem_contato` existentes: `docker compose exec api python scripts/enrich_batch.py
+--limit 500`.
+
 ## Dashboard admin (`klarim.net/painel`)
 
 Painel do operador (login único) para operar e monitorar tudo: KPIs em tempo real

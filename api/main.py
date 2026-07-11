@@ -1332,10 +1332,25 @@ async def api_targets_stats() -> dict:
 
 @app.get("/targets/{target_id}")
 async def api_get_target(target_id: int) -> dict:
-    target = await get_target_store().get_target(target_id)
+    store = get_target_store()
+    target = await store.get_target(target_id)
     if target is None:
         raise HTTPException(status_code=404, detail="Alvo não encontrado.")
+    # KL-50: anexa o perfil comercial, se houver.
+    try:
+        target["profile"] = await store.get_site_profile(target_id)
+    except Exception:  # noqa: BLE001
+        target["profile"] = None
     return target
+
+
+@app.get("/targets/{target_id}/profile")
+async def api_target_profile(target_id: int) -> dict:
+    """Perfil comercial extraído do site (KL-50)."""
+    profile = await get_target_store().get_site_profile(target_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Perfil não encontrado.")
+    return profile
 
 
 @app.get("/targets/{target_id}/payments")

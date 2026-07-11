@@ -49,7 +49,10 @@ _JUNK_DOMAINS = (
     "schema.org", "w3.org", "sentry-next.wixpress.com",
 )
 
-_CONTACT_PATHS = ["contato", "contact", "fale-conosco", "fale-conosco/"]
+# Páginas internas de contato (KL-50 camada 1): o e-mail costuma estar em /contato,
+# /sobre, /quem-somos — não só na homepage. Tira alvos de 'sem_contato'.
+_CONTACT_PATHS = ["contato", "contact", "sobre", "about",
+                  "quem-somos", "sobre-nos", "fale-conosco", "atendimento"]
 
 # Extensões de arquivo que aparecem em nomes que "parecem" e-mail (KL-19).
 _INVALID_EXTENSIONS = (

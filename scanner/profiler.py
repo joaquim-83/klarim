@@ -1,0 +1,491 @@
+"""Perfil comercial de um site (KL-50, camada 2) — extração passiva de dados de
+negócio do HTML já coletado, sem dependências externas (regex + json.loads).
+
+Os *parsers* são **puros** (recebem HTML/headers, não tocam a rede) e testáveis
+offline. `crawl_contact_pages` (multi-page, camada 1) e `build_profile`
+(orquestrador) usam o `fetch` do scanner (rate limit 1 req/s por domínio).
+
+Nada aqui afeta o score de segurança — é dado comercial para perfis públicos,
+notificações e aquisição orgânica.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+from typing import Dict, List, Optional
+from urllib.parse import urljoin
+
+import httpx
+
+from scanner.checks.base import fetch, base_url, registrable_domain, domain_of
+from discovery.contact import _collect_emails, _ranked_emails
+
+# Páginas internas de contato (camada 1). A homepage já vem no crawl.
+CONTACT_PATHS = [
+    "contato", "contact", "sobre", "about",
+    "quem-somos", "sobre-nos", "fale-conosco", "atendimento",
+]
+
+_HREF_RE = re.compile(r"""href\s*=\s*['"]([^'"]+)['"]""", re.IGNORECASE)
+_SCRIPT_SRC_RE = re.compile(r"""<script[^>]+src\s*=\s*['"]([^'"]+)['"]""", re.IGNORECASE)
+_LDJSON_RE = re.compile(
+    r"""<script[^>]+type\s*=\s*['"]application/ld\+json['"][^>]*>(.*?)</script>""",
+    re.IGNORECASE | re.DOTALL,
+)
+_HTML_COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
+# Remove script/style (senão o regex de telefone/endereço casa dentro do JSON-LD).
+_SCRIPT_STYLE_RE = re.compile(r"<(script|style)\b[^>]*>.*?</\1>", re.DOTALL | re.IGNORECASE)
+
+
+# --------------------------------------------------------------------------- #
+# A. Contatos
+# --------------------------------------------------------------------------- #
+
+_PHONE_RE = re.compile(r"\(?\d{2}\)?\s?\d{4,5}[-.\s]?\d{4}")
+_TEL_RE = re.compile(r"""tel:\s*\+?([\d\s().\-]{8,})""", re.IGNORECASE)
+_WA_RE = re.compile(
+    r"""(?:wa\.me/|api\.whatsapp\.com/send\?phone=|web\.whatsapp\.com/send\?phone=)"""
+    r"""\+?(55\d{10,11})""",
+    re.IGNORECASE,
+)
+_WA_DATA_RE = re.compile(r"""data-phone\s*=\s*['"]\+?(55\d{10,11})['"]""", re.IGNORECASE)
+_CNPJ_RE = re.compile(r"\b(\d{2}\.\d{3}\.\d{3}/\d{4}-\d{2})\b")
+# Endereço BR: "Rua/Av/Avenida/Travessa ... , 123 ... UF"
+_ADDR_RE = re.compile(
+    r"((?:Rua|Av\.?|Avenida|Travessa|Rodovia|Alameda|Praça|Estrada)[^<>\n]{6,90}?"
+    r"\b(?:AC|AL|AP|AM|BA|CE|DF|ES|GO|MA|MT|MS|MG|PA|PB|PR|PE|PI|RJ|RN|RS|RO|RR|SC|SP|SE|TO)\b)",
+    re.IGNORECASE,
+)
+
+
+def validate_cnpj(cnpj: str) -> bool:
+    """Valida os dígitos verificadores de um CNPJ (aceita com ou sem máscara)."""
+    nums = re.sub(r"\D", "", cnpj or "")
+    if len(nums) != 14 or nums == nums[0] * 14:
+        return False
+
+    def _dv(digs: str, weights: List[int]) -> int:
+        s = sum(int(d) * w for d, w in zip(digs, weights))
+        r = s % 11
+        return 0 if r < 2 else 11 - r
+
+    d1 = _dv(nums[:12], [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2])
+    d2 = _dv(nums[:13], [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2])
+    return nums[12] == str(d1) and nums[13] == str(d2)
+
+
+def _fmt_phone(digs: str) -> str:
+    """Formata dígitos BR (DD + 8/9) como (DD) 9999-9999."""
+    dd, rest = digs[:2], digs[2:]
+    if len(rest) == 9:
+        return f"({dd}) {rest[:5]}-{rest[5:]}"
+    return f"({dd}) {rest[:4]}-{rest[4:]}"
+
+
+def _first_phone(html_with_scripts: str, visible: str) -> Optional[str]:
+    # tel: tem prioridade (marcado pelo dono) — extrai só os dígitos e formata.
+    for raw in _TEL_RE.findall(html_with_scripts or ""):
+        digs = re.sub(r"\D", "", raw)
+        if digs.startswith("55") and len(digs) in (12, 13):
+            digs = digs[2:]  # tira o código do país
+        if 10 <= len(digs) <= 11:
+            return _fmt_phone(digs)
+    # Fallback: texto visível (sem script/style/comentário).
+    m = _PHONE_RE.search(visible or "")
+    return m.group(0).strip() if m else None
+
+
+def extract_contacts(html_pages: Dict[str, str], site_domain: str = "") -> dict:
+    """Extrai contatos de várias páginas HTML: e-mail, telefone, whatsapp,
+    endereço e CNPJ (validado)."""
+    combined = "\n".join(html_pages.values())
+    # Texto "visível" (sem script/style/comentário) para telefone e endereço.
+    visible = _HTML_COMMENT_RE.sub(" ", _SCRIPT_STYLE_RE.sub(" ", combined))
+
+    # E-mail: reusa a extração/ranking hardened do discovery (KL-19/24).
+    emails: List[str] = []
+    for html in html_pages.values():
+        emails.extend(_collect_emails(html))
+    ranked = _ranked_emails(emails, site_domain) if site_domain else _ranked_emails(emails, "")
+    email = ranked[0] if ranked else None
+
+    whatsapp = None
+    for rx in (_WA_RE, _WA_DATA_RE):
+        m = rx.search(combined)  # wa.me pode estar em href/script → usa o combinado
+        if m:
+            whatsapp = m.group(1)
+            break
+
+    cnpj = None
+    for c in _CNPJ_RE.findall(visible):
+        if validate_cnpj(c):
+            cnpj = c
+            break
+
+    addr_m = _ADDR_RE.search(visible)
+    address = re.sub(r"\s+", " ", addr_m.group(1)).strip() if addr_m else None
+
+    return {
+        "email": email,
+        "phone": _first_phone(combined, visible),
+        "whatsapp": whatsapp,
+        "address": address,
+        "cnpj": cnpj,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# B. Dados estruturados (JSON-LD / Schema.org)
+# --------------------------------------------------------------------------- #
+
+# @type do schema.org → setor Klarim (mais confiável que regex de conteúdo).
+_SCHEMA_SECTOR = {
+    "hotel": "hotel", "lodgingbusiness": "hotel", "resort": "hotel", "bedandbreakfast": "hotel",
+    "restaurant": "restaurante", "foodestablishment": "restaurante", "cafeorcoffeeshop": "restaurante",
+    "medicalbusiness": "clinica", "medicalclinic": "clinica", "dentist": "clinica", "hospital": "clinica",
+    "legalservice": "juridico", "attorney": "juridico",
+    "school": "escola", "educationalorganization": "escola",
+    "realestateagent": "imobiliaria",
+    "accountingservice": "contabilidade", "financialservice": "contabilidade",
+    "store": "ecommerce", "onlinestore": "ecommerce",
+    "automotivebusiness": "automotivo", "autorepair": "automotivo",
+}
+
+
+def _iter_ld_objects(html: str):
+    for block in _LDJSON_RE.findall(html or ""):
+        try:
+            data = json.loads(block.strip())
+        except (json.JSONDecodeError, ValueError):
+            continue
+        stack = data.get("@graph", data) if isinstance(data, dict) else data
+        for obj in (stack if isinstance(stack, list) else [stack]):
+            if isinstance(obj, dict):
+                yield obj
+
+
+def extract_structured_data(html: str) -> dict:
+    """Parse dos <script type="application/ld+json">. Extrai name/telephone/email/
+    address/openingHours/sameAs/logo/description + setor pelo @type."""
+    out: dict = {"same_as": []}
+    for obj in _iter_ld_objects(html):
+        types = obj.get("@type", "")
+        types = [types] if isinstance(types, str) else (types or [])
+        for t in types:
+            sec = _SCHEMA_SECTOR.get(str(t).lower())
+            if sec and not out.get("sector"):
+                out["sector"] = sec
+        for key, field in (("name", "company_name"), ("telephone", "phone"),
+                           ("email", "email"), ("description", "description")):
+            if obj.get(key) and not out.get(field):
+                out[field] = str(obj[key]).strip()
+        logo = obj.get("logo")
+        if logo and not out.get("logo_url"):
+            out["logo_url"] = logo.get("url") if isinstance(logo, dict) else str(logo)
+        addr = obj.get("address")
+        if isinstance(addr, dict) and not out.get("address"):
+            parts = [addr.get(k) for k in ("streetAddress", "addressLocality",
+                                           "addressRegion", "postalCode")]
+            joined = ", ".join(str(p) for p in parts if p)
+            if joined:
+                out["address"] = joined
+        hours = obj.get("openingHours")
+        if hours and not out.get("business_hours"):
+            out["business_hours"] = ", ".join(hours) if isinstance(hours, list) else str(hours)
+        same = obj.get("sameAs")
+        if same:
+            out["same_as"].extend(same if isinstance(same, list) else [same])
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# C. Presença digital (redes sociais)
+# --------------------------------------------------------------------------- #
+
+# rede -> (regex do handle, segmentos reservados a ignorar)
+_SOCIAL = {
+    "instagram": re.compile(r"instagram\.com/([A-Za-z0-9._]+)", re.IGNORECASE),
+    "facebook": re.compile(r"facebook\.com/([A-Za-z0-9.\-]+)", re.IGNORECASE),
+    "linkedin": re.compile(r"linkedin\.com/(?:company|in)/([A-Za-z0-9._\-]+)", re.IGNORECASE),
+    "youtube": re.compile(r"youtube\.com/(channel/[A-Za-z0-9_\-]+|@[A-Za-z0-9._\-]+|c/[A-Za-z0-9._\-]+|user/[A-Za-z0-9._\-]+)", re.IGNORECASE),
+    "tiktok": re.compile(r"tiktok\.com/@([A-Za-z0-9._]+)", re.IGNORECASE),
+}
+_SOCIAL_RESERVED = {
+    "sharer", "share", "sharer.php", "share.php", "plugins", "tr", "p", "reel",
+    "reels", "login", "dialog", "profile.php", "events", "groups", "watch",
+    "pages", "story.php", "permalink.php", "embed", "intent", "hashtag", "explore",
+    "policies", "help", "about", "home", "results",
+}
+_MAPS_RE = re.compile(r"(maps\.google\.[a-z.]+|goo\.gl/maps|google\.[a-z.]+/maps|maps\.app\.goo\.gl)[^\s'\"<>]*",
+                      re.IGNORECASE)
+_RSS_RE = re.compile(r"""<link[^>]+type\s*=\s*['"]application/rss\+xml['"]""", re.IGNORECASE)
+
+
+def extract_social_links(html_pages: Dict[str, str]) -> dict:
+    """Extrai handles de redes sociais + Google Maps + has_blog/has_app dos <a href>."""
+    out: dict = {"has_blog": False, "has_app": False}
+    hrefs: List[str] = []
+    combined = ""
+    for html in html_pages.values():
+        clean = _HTML_COMMENT_RE.sub(" ", html or "")
+        combined += clean
+        hrefs.extend(_HREF_RE.findall(clean))
+
+    for net, rx in _SOCIAL.items():
+        for href in hrefs:
+            m = rx.search(href)
+            if not m:
+                continue
+            handle = m.group(1).strip("/").lower()
+            first = handle.split("/")[0]
+            if not handle or first in _SOCIAL_RESERVED:
+                continue
+            out[net] = handle
+            break
+
+    maps = _MAPS_RE.search(combined)
+    if maps:
+        out["google_maps_url"] = maps.group(0)
+
+    out["has_blog"] = bool(_RSS_RE.search(combined)) or any(
+        "/blog" in h.lower() for h in hrefs)
+    out["has_app"] = any(("apps.apple.com" in h.lower() or "play.google.com/store" in h.lower())
+                         for h in hrefs)
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# D. Stack comercial (tecnologias)
+# --------------------------------------------------------------------------- #
+
+TECH_FINGERPRINTS = {
+    # Analytics
+    "ga4": [r"gtag\.js", r"G-[A-Z0-9]{6,}"],
+    "google_tag_manager": [r"gtm\.js", r"GTM-[A-Z0-9]+"],
+    "hotjar": [r"static\.hotjar\.com"],
+    "clarity": [r"clarity\.ms"],
+    # Chat
+    "jivochat": [r"code\.jivosite\.com", r"code\.jivochat\.com"],
+    "tidio": [r"code\.tidio\.co"],
+    "zendesk": [r"static\.zdassets\.com"],
+    "intercom": [r"widget\.intercom\.io"],
+    # Pagamento
+    "pagseguro": [r"stc\.pagseguro\.uol\.com\.br", r"pagseguro"],
+    "mercado_pago": [r"sdk\.mercadopago\.com", r"mercadopago"],
+    "stripe": [r"js\.stripe\.com"],
+    "cielo": [r"cieloecommerce\.cielo\.com\.br"],
+    "picpay": [r"picpay\.com"],
+    # E-commerce
+    "woocommerce": [r"wp-content/plugins/woocommerce"],
+    "nuvemshop": [r"staticnuvem\.com", r"nuvemshop", r"tiendanube"],
+    "vtex": [r"vtexcommercestable", r"vtexassets"],
+    "tray": [r"traycorp\.com\.br"],
+    "magento": [r"/static/version\d+/frontend", r"Magento_"],
+    # Marketing
+    "rd_station": [r"d335luupugsy2\.cloudfront\.net", r"rdstation"],
+    "facebook_pixel": [r"fbevents\.js", r"fbq\s*\(\s*['\"]init['\"]"],
+    "google_ads": [r"googleads\.g\.doubleclick\.net", r"googleadservices\.com"],
+    "tiktok_pixel": [r"analytics\.tiktok\.com"],
+    # Booking
+    "omnibees": [r"omnibees\.com"],
+    # Cookie consent
+    "cookiebot": [r"cookiebot\.com"],
+    "onetrust": [r"onetrust\.com", r"cookielaw\.org"],
+    # Outros
+    "recaptcha": [r"recaptcha/api\.js"],
+    "wordpress": [r"wp-content/", r"wp-includes/"],
+}
+
+# tech -> categoria (para o JSONB agrupado)
+_TECH_CATEGORY = {
+    "ga4": "analytics", "google_tag_manager": "analytics", "hotjar": "analytics", "clarity": "analytics",
+    "jivochat": "chat", "tidio": "chat", "zendesk": "chat", "intercom": "chat",
+    "pagseguro": "payment", "mercado_pago": "payment", "stripe": "payment", "cielo": "payment", "picpay": "payment",
+    "woocommerce": "ecommerce", "nuvemshop": "ecommerce", "vtex": "ecommerce", "tray": "ecommerce", "magento": "ecommerce",
+    "rd_station": "marketing", "facebook_pixel": "marketing", "google_ads": "ads", "tiktok_pixel": "marketing",
+    "omnibees": "booking",
+    "cookiebot": "cookie_consent", "onetrust": "cookie_consent",
+    "recaptcha": "security", "wordpress": "cms",
+}
+
+_TECH_COMPILED = {name: [re.compile(p, re.IGNORECASE) for p in pats]
+                  for name, pats in TECH_FINGERPRINTS.items()}
+
+
+def extract_technologies(html_pages: Dict[str, str], headers: Optional[dict] = None) -> dict:
+    """Detecta tecnologias via fingerprints (case-insensitive) no HTML + headers,
+    agrupadas por categoria: {'analytics': ['ga4'], 'payment': ['pagseguro'], ...}."""
+    blob = "\n".join(html_pages.values())
+    if headers:
+        blob += "\n" + "\n".join(f"{k}: {v}" for k, v in headers.items())
+    out: Dict[str, List[str]] = {}
+    for name, regexes in _TECH_COMPILED.items():
+        if any(rx.search(blob) for rx in regexes):
+            cat = _TECH_CATEGORY.get(name, "other")
+            out.setdefault(cat, []).append(name)
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# E. Infraestrutura (headers + DNS já coletados)
+# --------------------------------------------------------------------------- #
+
+_MX_PROVIDERS = {
+    "google.com": "google_workspace", "googlemail.com": "google_workspace",
+    "outlook.com": "microsoft_365", "microsoft.com": "microsoft_365",
+    "locaweb.com.br": "locaweb", "titan.email": "titan", "hostinger": "hostinger",
+    "zoho.com": "zoho", "zoho.eu": "zoho", "secureserver.net": "godaddy",
+    "umbler.com": "umbler", "kinghost": "kinghost", "uol.com.br": "uol_host",
+}
+_NS_PROVIDERS = {
+    "cloudflare.com": "cloudflare", "awsdns": "route53", "registro.br": "registro_br",
+    "hostinger": "hostinger", "locaweb": "locaweb", "umbler": "umbler",
+    "kinghost": "kinghost", "googledomains.com": "google_domains", "dns.br": "registro_br",
+}
+
+
+def _match_provider(records: List[str], table: dict) -> Optional[str]:
+    for rec in records or []:
+        low = str(rec).lower()
+        for needle, name in table.items():
+            if needle in low:
+                return name
+    return None
+
+
+def _detect_cdn(headers: dict) -> Optional[str]:
+    h = {str(k).lower(): str(v).lower() for k, v in (headers or {}).items()}
+    if "cf-ray" in h or "cloudflare" in h.get("server", ""):
+        return "cloudflare"
+    if "x-amz-cf-id" in h or "cloudfront" in h.get("via", ""):
+        return "cloudfront"
+    if "x-fastly" in h or "fastly" in h.get("x-served-by", "") or "fastly" in h.get("via", ""):
+        return "fastly"
+    if "x-akamai-transformed" in h or "akamai" in h.get("server", ""):
+        return "akamai"
+    return None
+
+
+def extract_infrastructure(headers: Optional[dict] = None,
+                           mx_records: Optional[List[str]] = None,
+                           ns_records: Optional[List[str]] = None,
+                           certificate_authority: Optional[str] = None) -> dict:
+    """Mapeia provedores de e-mail (MX), DNS (NS) e CDN (headers)."""
+    return {
+        "email_provider": _match_provider(mx_records or [], _MX_PROVIDERS),
+        "dns_provider": _match_provider(ns_records or [], _NS_PROVIDERS),
+        "cdn": _detect_cdn(headers or {}),
+        "certificate_authority": certificate_authority,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# F. Score de maturidade digital (0-10)
+# --------------------------------------------------------------------------- #
+
+_FREE_EMAIL_DOMAINS = ("gmail.com", "hotmail.com", "outlook.com", "yahoo.com",
+                       "yahoo.com.br", "bol.com.br", "uol.com.br", "live.com",
+                       "icloud.com", "terra.com.br", "ig.com.br")
+
+
+def calculate_maturity_score(profile: dict, security_score: Optional[int] = None) -> int:
+    """Score de maturidade digital 0-10 a partir dos sinais do perfil."""
+    tech = profile.get("technologies") or {}
+    social_count = sum(1 for k in ("instagram", "facebook", "linkedin", "youtube", "tiktok")
+                       if profile.get(k))
+    email = (profile.get("commercial_email") or "").lower()
+    email_domain = email.rsplit("@", 1)[-1] if "@" in email else ""
+
+    pts = 0
+    pts += 1 if (security_score is not None and security_score >= 80 and profile.get("_hsts")) else 0
+    pts += 1 if tech.get("analytics") else 0
+    pts += 1 if social_count >= 2 else 0
+    pts += 1 if (tech.get("chat") or profile.get("whatsapp")) else 0
+    pts += 1 if tech.get("payment") else 0
+    pts += 1 if profile.get("has_blog") else 0
+    pts += 1 if tech.get("cookie_consent") else 0
+    pts += 1 if (email and email_domain and email_domain not in _FREE_EMAIL_DOMAINS) else 0
+    pts += 1 if profile.get("_responsive") else 0
+    pts += 1 if (security_score is not None and security_score >= 80) else 0
+    return min(10, pts)
+
+
+# --------------------------------------------------------------------------- #
+# Camada 1 — Multi-page crawl
+# --------------------------------------------------------------------------- #
+
+_VIEWPORT_RE = re.compile(r"""<meta[^>]+name\s*=\s*['"]viewport['"]""", re.IGNORECASE)
+
+
+async def crawl_contact_pages(url: str, homepage_html: Optional[str] = None,
+                              max_pages: int = 8) -> Dict[str, str]:
+    """Busca a homepage + páginas internas de contato (HTTP 200). Segue 1 nível de
+    redirect (o fetch já faz follow_redirects). Rate limit 1 req/s por domínio."""
+    pages: Dict[str, str] = {}
+    root = base_url(url) + "/"
+    if homepage_html is not None:
+        pages["homepage"] = homepage_html
+    else:
+        try:
+            resp = await fetch(root, method="GET", follow_redirects=True)
+            if resp.status_code == 200:
+                pages["homepage"] = resp.text
+        except (httpx.HTTPError, OSError):
+            pass
+
+    for path in CONTACT_PATHS[:max_pages]:
+        try:
+            resp = await fetch(urljoin(root, path), method="GET", follow_redirects=True)
+        except (httpx.HTTPError, OSError):
+            continue
+        if resp.status_code == 200 and resp.text:
+            pages[path] = resp.text
+    return pages
+
+
+async def build_profile(url: str, homepage_html: Optional[str] = None,
+                        headers: Optional[dict] = None, mx_records: Optional[List[str]] = None,
+                        ns_records: Optional[List[str]] = None,
+                        certificate_authority: Optional[str] = None,
+                        security_score: Optional[int] = None) -> dict:
+    """Orquestra o crawl + todos os parsers e devolve o perfil comercial completo
+    (pronto para `site_profile`). Nunca levanta — degrada para campos vazios."""
+    site_domain = registrable_domain(domain_of(url))
+    pages = await crawl_contact_pages(url, homepage_html=homepage_html)
+    combined = "\n".join(pages.values())
+
+    contacts = extract_contacts(pages, site_domain)
+    structured = extract_structured_data(combined)
+    social = extract_social_links(pages)
+    tech = extract_technologies(pages, headers)
+    infra = extract_infrastructure(headers, mx_records, ns_records, certificate_authority)
+
+    profile = {
+        "company_name": structured.get("company_name"),
+        "phone": contacts.get("phone") or structured.get("phone"),
+        "whatsapp": contacts.get("whatsapp"),
+        "address": structured.get("address") or contacts.get("address"),
+        "cnpj": contacts.get("cnpj"),
+        "commercial_email": contacts.get("email") or structured.get("email"),
+        "business_hours": structured.get("business_hours"),
+        "description": structured.get("description"),
+        "logo_url": structured.get("logo_url"),
+        "instagram": social.get("instagram"), "facebook": social.get("facebook"),
+        "linkedin": social.get("linkedin"), "youtube": social.get("youtube"),
+        "tiktok": social.get("tiktok"), "google_maps_url": social.get("google_maps_url"),
+        "has_blog": social.get("has_blog", False), "has_app": social.get("has_app", False),
+        "technologies": tech,
+        "email_provider": infra.get("email_provider"),
+        "cdn": infra.get("cdn"), "dns_provider": infra.get("dns_provider"),
+        "certificate_authority": infra.get("certificate_authority"),
+        "sector_hint": structured.get("sector"),
+        "extraction_sources": sorted(pages.keys()) + (["schema_org"] if structured.get("company_name") else []),
+    }
+    # sinais auxiliares para a maturidade
+    profile["_hsts"] = bool(headers and any(k.lower() == "strict-transport-security" for k in headers))
+    profile["_responsive"] = bool(_VIEWPORT_RE.search(combined))
+    profile["maturity_score"] = calculate_maturity_score(profile, security_score)
+    profile.pop("_hsts", None)
+    profile.pop("_responsive", None)
+    return profile

@@ -56,6 +56,17 @@ async def get_target_stats() -> dict:
 
 
 @mcp.tool()
+async def get_site_profile(target_id: int) -> dict:
+    """Perfil comercial extraído do site (KL-50): nome, telefone, whatsapp, CNPJ,
+    endereço, redes sociais, tecnologias, provedores e score de maturidade digital."""
+    async def _impl():
+        prof = await _store().get_site_profile(target_id)
+        return prof if prof is not None else {"error": "Perfil não encontrado."}
+
+    return await _guard(_impl)
+
+
+@mcp.tool()
 async def search_targets(query: str) -> dict:
     """Busca alvos por URL, domínio ou e-mail (parcial, case-insensitive). Até 20
     resultados. Útil para reaproveitar alvos existentes."""

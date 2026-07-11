@@ -64,6 +64,36 @@ async def _write_pdfs(report, url: str) -> None:
     print(f"\nPDFs gerados:\n  - {exec_name} ({len(exec_bytes)} bytes)\n  - {tech_name} ({len(tech_bytes)} bytes)")
 
 
+async def _enrich_profile(store, target_id: int, url: str, security_score) -> None:
+    """KL-50: extrai o perfil comercial (multi-page + parsers) e grava em site_profile.
+    Best-effort — qualquer erro é só logado (não afeta o scan nem o score)."""
+    try:
+        from scanner import profiler
+        from scanner.checks import dns_util
+        from scanner.checks.base import fetch, base_url, registrable_domain, domain_of
+
+        headers, homepage_html = {}, None
+        try:
+            hp = await fetch(base_url(url) + "/", method="GET", follow_redirects=True)
+            headers = dict(hp.headers)
+            homepage_html = hp.text if hp.status_code == 200 else None
+        except Exception:  # noqa: BLE001
+            pass
+        dom = registrable_domain(domain_of(url))
+        mx = await asyncio.to_thread(dns_util.resolve_mx, dom)
+        ns = await asyncio.to_thread(dns_util.resolve_ns, dom)
+        profile = await profiler.build_profile(
+            url, homepage_html=homepage_html, headers=headers,
+            mx_records=mx, ns_records=ns, security_score=security_score)
+        await store.upsert_site_profile(target_id, profile)
+        found = [k for k in ("commercial_email", "phone", "whatsapp", "cnpj", "instagram")
+                 if profile.get(k)]
+        print(f"[profile] {url} -> maturity {profile.get('maturity_score')} "
+              f"({', '.join(found) or 'sem sinais'})", flush=True)
+    except Exception as exc:  # noqa: BLE001 - enriquecimento nunca derruba o worker
+        print(f"[profile] falha em {url}: {exc!r}", flush=True)
+
+
 def _parse_queue_item(raw: str):
     """Aceita JSON {target_id, url, source?} (workers) ou uma URL simples."""
     try:
@@ -142,6 +172,8 @@ async def _worker_loop() -> None:
                     target_id, url, s.score, s.semaphore, s.passed, s.failed,
                     s.inconclusive, report.to_dict(), source=source)
                 await store.update_scan_result(target_id, scan_id, s.score)
+                # KL-50: extrai o perfil comercial (best-effort, não afeta o scan).
+                await _enrich_profile(store, target_id, url, s.score if s else None)
             last_scan_at = datetime.now(timezone.utc).isoformat()
             print(f"[klarim-worker] {url} -> score {s.score if s else 'n/a'}"
                   f"{' (target ' + str(target_id) + ')' if target_id else ''}", flush=True)

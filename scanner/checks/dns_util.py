@@ -70,3 +70,36 @@ def host_exists(name: str, timeout: float = 3.0) -> Optional[bool]:
         return True  # o nome existe (só não tem A) — não é dangling
     except Exception:  # noqa: BLE001
         return None
+
+
+def resolve_mx(name: str, timeout: float = 5.0) -> Optional[List[str]]:
+    """Hostnames dos registros MX (mapeamento de provedor de e-mail — KL-50).
+    `[]` = sem MX; `None` = erro de DNS. Mockável nos testes."""
+    try:
+        import dns.resolver  # noqa: F401
+    except ImportError:
+        return None
+    import dns.resolver as _r
+    try:
+        answers = _resolver(timeout).resolve(name, "MX")
+        return [str(rr.exchange).rstrip(".").lower() for rr in answers]
+    except (_r.NXDOMAIN, _r.NoAnswer):
+        return []
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def resolve_ns(name: str, timeout: float = 5.0) -> Optional[List[str]]:
+    """Hostnames dos registros NS (mapeamento de provedor de DNS — KL-50)."""
+    try:
+        import dns.resolver  # noqa: F401
+    except ImportError:
+        return None
+    import dns.resolver as _r
+    try:
+        answers = _resolver(timeout).resolve(name, "NS")
+        return [str(rr.target).rstrip(".").lower() for rr in answers]
+    except (_r.NXDOMAIN, _r.NoAnswer):
+        return []
+    except Exception:  # noqa: BLE001
+        return None

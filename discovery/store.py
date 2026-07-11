@@ -172,6 +172,23 @@ CREATE TABLE IF NOT EXISTS monitored_sites (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS idx_ms_domain_uniq ON monitored_sites(domain);
 CREATE INDEX IF NOT EXISTS idx_ms_status ON monitored_sites(status);
+
+-- Perfil comercial (KL-50): dados de negócio extraídos do HTML (não afeta o score).
+-- Usa SERIAL/INTEGER (o schema não usa UUID); 1 perfil por target (UNIQUE).
+CREATE TABLE IF NOT EXISTS site_profile (
+    id SERIAL PRIMARY KEY,
+    target_id INTEGER UNIQUE REFERENCES targets(id) ON DELETE CASCADE,
+    company_name TEXT, phone TEXT, whatsapp TEXT, address TEXT, cnpj VARCHAR(20),
+    commercial_email TEXT, business_hours TEXT, description TEXT, logo_url TEXT,
+    instagram TEXT, facebook TEXT, linkedin TEXT, youtube TEXT, tiktok TEXT,
+    google_maps_url TEXT, has_blog BOOLEAN DEFAULT FALSE, has_app BOOLEAN DEFAULT FALSE,
+    technologies JSONB DEFAULT '{}',
+    email_provider TEXT, hosting_provider TEXT, cdn TEXT, dns_provider TEXT,
+    certificate_authority TEXT, maturity_score SMALLINT,
+    extracted_at TIMESTAMP DEFAULT NOW(), extraction_sources TEXT[]
+);
+CREATE INDEX IF NOT EXISTS idx_site_profile_cnpj ON site_profile(cnpj) WHERE cnpj IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_site_profile_maturity ON site_profile(maturity_score);
 """
 
 
@@ -842,6 +859,45 @@ class TargetStore:
         def _fn(cur):
             cur.execute("SELECT COUNT(*) FROM monitored_sites WHERE status = 'active'")
             return int(cur.fetchone()[0])
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- perfil comercial (KL-50) ------------------------------------------ #
+
+    _SP_FIELDS = ("company_name", "phone", "whatsapp", "address", "cnpj",
+                  "commercial_email", "business_hours", "description", "logo_url",
+                  "instagram", "facebook", "linkedin", "youtube", "tiktok",
+                  "google_maps_url", "has_blog", "has_app", "email_provider",
+                  "hosting_provider", "cdn", "dns_provider", "certificate_authority",
+                  "maturity_score")
+
+    async def upsert_site_profile(self, target_id: int, profile: Dict[str, Any]) -> None:
+        """Grava (ou atualiza) o perfil comercial de um alvo (1 por target)."""
+        fields = list(self._SP_FIELDS)
+        vals = [profile.get(f) for f in fields]
+        tech = json.dumps(profile.get("technologies") or {})
+        sources = list(profile.get("extraction_sources") or [])
+
+        def _fn(cur):
+            cols = ", ".join(fields) + ", technologies, extraction_sources, extracted_at"
+            ph = ", ".join(["%s"] * len(fields)) + ", %s, %s, NOW()"
+            updates = ", ".join(f"{f} = EXCLUDED.{f}" for f in fields)
+            cur.execute(
+                f"INSERT INTO site_profile (target_id, {cols}) "
+                f"VALUES (%s, {ph}) "
+                f"ON CONFLICT (target_id) DO UPDATE SET {updates}, "
+                f"  technologies = EXCLUDED.technologies, "
+                f"  extraction_sources = EXCLUDED.extraction_sources, extracted_at = NOW()",
+                [target_id, *vals, tech, sources],
+            )
+
+        await asyncio.to_thread(self._run, _fn)
+
+    async def get_site_profile(self, target_id: int) -> Optional[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute("SELECT * FROM site_profile WHERE target_id = %s", (target_id,))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
 
         return await asyncio.to_thread(self._run, _fn)
 
