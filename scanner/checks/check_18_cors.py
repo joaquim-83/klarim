@@ -29,6 +29,7 @@ async def _probe(url: str, method: str) -> httpx.Response:
 async def check(url: str) -> CheckResult:
     https_url = with_scheme(url, "https")
     acao = None
+    allow_creds = False
     for method in ("OPTIONS", "GET"):  # alguns servidores só refletem no GET
         try:
             resp = await _probe(https_url, method)
@@ -37,20 +38,32 @@ async def check(url: str) -> CheckResult:
         val = resp.headers.get("access-control-allow-origin")
         if val:
             acao = val.strip()
+            allow_creds = resp.headers.get("access-control-allow-credentials", "").strip().lower() == "true"
             break
 
     if acao is None:
         return CheckResult(name=NAME, status=Status.PASS, severity=Severity.ALTA,
                            evidence="CORS não libera origens externas (sem Access-Control-Allow-Origin).")
 
-    if acao == "*" or acao.lower() == _EVIL:
-        creds = ""  # nota extra se também permite credenciais
+    permissive = acao == "*" or acao.lower() == _EVIL
+    if permissive:
+        details = {"acao": acao, "allow_credentials": allow_creds}
+        # A combinação permissivo + credenciais é a vulnerabilidade real: qualquer
+        # site pode ler respostas autenticadas (exfiltração cross-origin).
+        if allow_creds:
+            reflected = " (origem refletida)" if acao.lower() == _EVIL else ""
+            return CheckResult(
+                name=NAME, status=Status.FAIL, severity=Severity.ALTA,
+                evidence=f"CORS permissivo COM credenciais: Access-Control-Allow-Origin: "
+                         f"{acao}{reflected} + Access-Control-Allow-Credentials: true — "
+                         f"qualquer site pode ler respostas autenticadas da sua API.",
+                details=details)
         return CheckResult(
-            name=NAME, status=Status.FAIL, severity=Severity.ALTA,
+            name=NAME, status=Status.FAIL, severity=Severity.MEDIA,
             evidence=f"CORS permissivo: Access-Control-Allow-Origin: {acao} — "
-                     f"qualquer site pode fazer requisições à sua API.{creds}",
-            details={"acao": acao})
+                     f"qualquer site pode fazer requisições à sua API (sem credenciais).",
+            details=details)
 
     return CheckResult(name=NAME, status=Status.PASS, severity=Severity.ALTA,
                        evidence=f"CORS restrito a origem específica (Access-Control-Allow-Origin: {acao}).",
-                       details={"acao": acao})
+                       details={"acao": acao, "allow_credentials": allow_creds})

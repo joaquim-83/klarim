@@ -169,7 +169,7 @@ async def check(url: str) -> CheckResult
   `PASS`. `INCONCLUSO` é neutro no score.
 
 **O número de checks é dinâmico e cresce com o projeto** — nunca trate um número
-específico como identidade do produto. Conjunto atual (**30**):
+específico como identidade do produto. Conjunto atual (**36**):
 
 | # | Check | Módulo | Severidade |
 |---|-------|--------|-----------|
@@ -203,6 +203,12 @@ específico como identidade do produto. Conjunto atual (**30**):
 | 28 | Vazamentos de dados (HIBP) | `check_28_hibp.py` | Média |
 | 29 | Google Safe Browsing | `check_29_safe_browsing.py` | Crítica |
 | 30 | Componentes com vulnerabilidades conhecidas (CVE) | `check_30_vulnerable_components.py` | Dinâmica |
+| 31 | Permissions-Policy | `check_31_permissions_policy.py` | Média |
+| 32 | Cross-Origin-Opener-Policy (COOP) | `check_32_coop.py` | Baixa |
+| 33 | Cross-Origin-Embedder-Policy (COEP) | `check_33_coep.py` | Baixa |
+| 34 | Cross-Origin-Resource-Policy (CORP) | `check_34_corp.py` | Baixa |
+| 35 | Referrer-Policy (qualidade) | `check_35_referrer_policy.py` | Baixa/Média |
+| 36 | Cache-Control em páginas sensíveis | `check_36_cache_control_forms.py` | Média |
 
 Checks 13–15 (supply chain, KL-2) fazem parse **passivo do HTML servido**;
 scripts injetados por JavaScript em runtime não são vistos por um GET simples.
@@ -1346,3 +1352,37 @@ ORDER 30) e entra no score com **severidade dinâmica** (pelo maior CVSS/severid
 (nenhuma versão é sondada ativamente). A base de CVE é **best-effort/fail-open**: nunca
 bloquear o scan por falha de download. **Flush `scan:*` no Redis após deploy** (novo check
 altera scores). `packaging` está no `requirements.txt`.
+
+## 33. Análise de qualidade de headers + headers modernos (KL-32)
+
+Transforma "header checker" em "header analyser": aprofunda 4 checks de presença para
+**análise de eficácia** e adiciona 6 checks de headers modernos. Tudo passivo (só lê
+headers/HTML já servidos).
+
+> ⚠️ **Colisão de numeração:** o card Jira **KL-32** é o **de headers** (esta seção). O
+> "worker control via MCP" (seção 29) também recebeu KL-32 no Jira por engano — são
+> coisas diferentes.
+
+**Aprofundados (mesmo arquivo, tier/severidade inalterados):**
+- **check_05 CSP** (`analyze_csp`): faz parse da policy. `'unsafe-inline'`/`'unsafe-eval'`/
+  `*`/`data:`/`blob:` em `script-src`/`default-src` → **FAIL** (CSP cosmético agora reprova);
+  diretivas essenciais ausentes → nota (PASS).
+- **check_02 HSTS**: avalia `max-age` (mín. 6 meses, ideal 1 ano), `includeSubDomains`,
+  `preload`. `max-age` ausente/0/curto → FAIL; aceitável → PASS com notas.
+- **check_17 cookies** (`analyze_cookie`, por cookie): `SameSite=None` sem `Secure`, `Domain`
+  amplo (public suffix), prefixo `__Secure-`/`__Host-` sem a flag, sessão sem HttpOnly/
+  Secure/SameSite → FAIL.
+- **check_18 CORS**: `*`/origem-refletida **+ `Allow-Credentials: true`** → **FAIL ALTA**
+  (exfiltração cross-origin); `*` sozinho → **FAIL MÉDIA**.
+
+**Novos (checks 31–36, tier pago ORDER>15, todos A05:2025):** 31 Permissions-Policy
+(MÉDIA, CWE-693), 32 COOP (BAIXA, CWE-346), 33 COEP (BAIXA, CWE-346), 34 CORP (BAIXA,
+CWE-346), 35 Referrer-Policy (qualidade; `unsafe-url`→MÉDIA, ausente→BAIXA, CWE-200), 36
+Cache-Control em páginas com `<form>`/`<input type=password>` (MÉDIA, CWE-524). Cada um é
+um `check_NN_*.py` no padrão; classificados em `classifications.py`; com `RISK_MESSAGES`/
+`ACCESSIBLE`/`TECHNICAL`.
+
+**Regra inviolável:** 100% passivo (só lê headers/HTML já entregues). Os checks 31–36 são
+**pagos** (headers modernos com adoção baixa — se fossem gratuitos, todo site ficaria
+vermelho). **Flush `scan:*` no Redis após deploy** — a análise de qualidade faz um CSP/HSTS
+antes PASS virar FAIL, mudando scores.

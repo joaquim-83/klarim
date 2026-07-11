@@ -112,6 +112,12 @@ ACCESSIBLE: Dict[str, str] = {
     "check_28_hibp": "O domínio da sua empresa aparece em vazamentos de dados conhecidos.",
     "check_29_safe_browsing": "O Google marcou seu site como perigoso (malware/phishing).",
     "check_30_vulnerable_components": "Seu site usa versões antigas de ferramentas com falhas de segurança já conhecidas e catalogadas.",
+    "check_31_permissions_policy": "Seu site não restringe o acesso de scripts à câmera, microfone e localização do visitante.",
+    "check_32_coop": "Seu site não tem uma proteção moderna contra ataques que abrem seu site em outra janela.",
+    "check_33_coep": "Seu site não isola recursos carregados de outros sites (proteção moderna do navegador).",
+    "check_34_corp": "Seu site não controla quais outros sites podem carregar os seus recursos.",
+    "check_35_referrer_policy": "Ao clicar em links, seu site pode enviar o endereço completo (com dados) para outros sites.",
+    "check_36_cache_control_forms": "Páginas com formulários do seu site podem ficar guardadas no cache do navegador.",
 }
 
 
@@ -269,6 +275,36 @@ TECHNICAL: Dict[str, Dict[str, str]] = {
         "impact": "Componentes desatualizados (bibliotecas JS, CMS) com CVEs públicos entregam ao atacante um roteiro pronto de exploração — o exploit já existe, é documentado e muitas vezes automatizado.",
         "fix": "Atualize as bibliotecas e o CMS para versões suportadas; automatize a verificação de dependências (Dependabot, npm audit, Retire.js).",
         "fix_code": "<!-- ex.: jQuery -->\n<script src=\"https://code.jquery.com/jquery-3.7.1.min.js\"></script>\n# WordPress: Painel → Atualizações → atualizar o core e os plugins",
+    },
+    "check_31_permissions_policy": {
+        "impact": "Sem Permissions-Policy, qualquer script (inclusive de terceiros) pode acessar câmera, microfone, geolocalização e pagamento sem restrição adicional.",
+        "fix": "Declare uma Permissions-Policy negando por default e liberando só o necessário.",
+        "fix_code": "Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()",
+    },
+    "check_32_coop": {
+        "impact": "Sem COOP, uma janela aberta pelo site (ou que abriu o site) mantém referência via window.opener e pode ser alvo de ataques cross-origin (tabnabbing, XS-Leaks).",
+        "fix": "Envie Cross-Origin-Opener-Policy com same-origin.",
+        "fix_code": "Cross-Origin-Opener-Policy: same-origin",
+    },
+    "check_33_coep": {
+        "impact": "Sem COEP, recursos cross-origin são embutidos sem opt-in; impede também habilitar isolamento (necessário para APIs sensíveis do navegador).",
+        "fix": "Envie Cross-Origin-Embedder-Policy com require-corp (ou credentialless).",
+        "fix_code": "Cross-Origin-Embedder-Policy: require-corp",
+    },
+    "check_34_corp": {
+        "impact": "Sem CORP, os recursos do site podem ser carregados por qualquer origem, facilitando ataques de canal lateral (Spectre/XS-Leaks).",
+        "fix": "Envie Cross-Origin-Resource-Policy conforme o uso (same-origin para recursos privados).",
+        "fix_code": "Cross-Origin-Resource-Policy: same-origin",
+    },
+    "check_35_referrer_policy": {
+        "impact": "Com 'unsafe-url' (ou sem policy), a URL completa — incluindo query strings com dados sensíveis — é enviada a sites de terceiros no header Referer.",
+        "fix": "Declare Referrer-Policy com strict-origin-when-cross-origin.",
+        "fix_code": "Referrer-Policy: strict-origin-when-cross-origin",
+    },
+    "check_36_cache_control_forms": {
+        "impact": "Páginas com formulário/senha sem Cache-Control podem ficar no cache do navegador/proxy; em um computador compartilhado a próxima pessoa pode ver os dados.",
+        "fix": "Envie Cache-Control: no-store nas páginas com dados sensíveis.",
+        "fix_code": "Cache-Control: no-store, max-age=0",
     },
 }
 

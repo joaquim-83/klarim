@@ -152,7 +152,17 @@ def _probe_returning(resp):
 
 
 def test_check18_fail_wildcard(monkeypatch):
+    # KL-32: `*` sozinho (sem credenciais) -> FAIL MÉDIA.
     resp = FakeResp(200, headers={"access-control-allow-origin": "*"})
+    monkeypatch.setattr(check_18_cors, "_probe", _probe_returning(resp))
+    r = _run(check_18_cors.check(URL))
+    assert r.status == Status.FAIL and r.severity == Severity.MEDIA
+
+
+def test_check18_fail_wildcard_with_credentials(monkeypatch):
+    # KL-32: permissivo + credenciais -> FAIL ALTA (exfiltração cross-origin).
+    resp = FakeResp(200, headers={"access-control-allow-origin": "*",
+                                  "access-control-allow-credentials": "true"})
     monkeypatch.setattr(check_18_cors, "_probe", _probe_returning(resp))
     r = _run(check_18_cors.check(URL))
     assert r.status == Status.FAIL and r.severity == Severity.ALTA
@@ -560,11 +570,11 @@ def test_check29_fail_when_flagged(monkeypatch):
 # --------------------------------------------------------------------------- #
 
 def test_all_checks_registered():
-    # 30 checks após o KL-33 (check_30_vulnerable_components).
+    # 36 checks após o KL-32 (headers modernos 31-36).
     ids = [cid for cid, _ in ALL_CHECKS]
-    assert len(ids) == 30
-    assert len(set(ids)) == 30
-    for i in range(16, 31):
+    assert len(ids) == 36
+    assert len(set(ids)) == 36
+    for i in range(16, 37):
         assert any(cid.startswith(f"check_{i}_") for cid in ids), i
 
 

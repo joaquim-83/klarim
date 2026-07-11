@@ -84,6 +84,13 @@ CLASSIFICATIONS: Dict[str, Classification] = {
     "check_29_safe_browsing":    Classification(_A09, "CWE-693", "Art. 46, Art. 48"),
     # Componentes vulneráveis (KL-33)
     "check_30_vulnerable_components": Classification(_A06, "CWE-1104", "Art. 46"),
+    # Headers modernos (KL-32)
+    "check_31_permissions_policy": Classification(_A05, "CWE-693", "Art. 46"),
+    "check_32_coop":               Classification(_A05, "CWE-346", "Art. 46"),
+    "check_33_coep":               Classification(_A05, "CWE-346", "Art. 46"),
+    "check_34_corp":               Classification(_A05, "CWE-346", "Art. 46"),
+    "check_35_referrer_policy":    Classification(_A05, "CWE-200", "Art. 46"),
+    "check_36_cache_control_forms": Classification(_A05, "CWE-524", "Art. 46"),
 }
 
 _EMPTY = Classification(None, None, None)

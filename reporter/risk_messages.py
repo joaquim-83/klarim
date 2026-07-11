@@ -198,6 +198,42 @@ RISK_MESSAGES: Dict[str, Dict[str, str]] = {
                 "A correção costuma ser simples — atualizar as ferramentas.",
         "icon": "🚗",
     },
+    "check_31_permissions_policy": {
+        "headline": "Seu site não restringe câmera, microfone e localização",
+        "risk": "Qualquer script no seu site pode acessar câmera, microfone e localização do "
+                "visitante sem pedir permissão adicional — inclusive scripts de terceiros.",
+        "icon": "🎥",
+    },
+    "check_32_coop": {
+        "headline": "Falta uma proteção moderna entre janelas",
+        "risk": "Seu site não isola janelas abertas de/para outros sites. É uma camada moderna "
+                "de segurança que os navegadores oferecem, mas que precisa ser ativada.",
+        "icon": "🪟",
+    },
+    "check_33_coep": {
+        "headline": "Falta o isolamento de recursos de outros sites",
+        "risk": "Seu site não exige que recursos carregados de terceiros sejam explicitamente "
+                "autorizados — outra camada moderna de proteção que não está ativada.",
+        "icon": "🧩",
+    },
+    "check_34_corp": {
+        "headline": "Seus recursos podem ser usados por qualquer site",
+        "risk": "Qualquer outro site pode carregar imagens, scripts e arquivos do seu site. "
+                "Ativar essa proteção limita quem pode consumir os seus recursos.",
+        "icon": "🔗",
+    },
+    "check_35_referrer_policy": {
+        "headline": "Seu site pode vazar endereços ao clicar em links",
+        "risk": "Quando alguém clica num link do seu site para outro site, o endereço completo "
+                "— incluindo dados na barra de endereço — pode ser enviado ao outro site.",
+        "icon": "↗️",
+    },
+    "check_36_cache_control_forms": {
+        "headline": "Formulários podem ficar guardados no cache",
+        "risk": "Páginas com formulários do seu site podem ser armazenadas no cache do navegador. "
+                "Num computador público, a próxima pessoa pode ver os dados preenchidos.",
+        "icon": "💾",
+    },
 }
 
 _SEV_ORDER = {"CRITICA": 0, "ALTA": 1, "MEDIA": 2, "BAIXA": 3}
@@ -206,10 +242,12 @@ _SEV_ORDER = {"CRITICA": 0, "ALTA": 1, "MEDIA": 2, "BAIXA": 3}
 _CAT_VAZAMENTO = {"check_01_https", "check_02_hsts", "check_04_tls",
                   "check_09_sourcemaps", "check_10_sensitive",
                   "check_17_cookies", "check_18_cors", "check_25_form_security",
-                  "check_28_hibp"}
+                  "check_28_hibp", "check_31_permissions_policy",
+                  "check_35_referrer_policy", "check_36_cache_control_forms"}
 _CAT_GOLPES = {"check_05_csp", "check_06_xfo", "check_14_risky_sources",
                "check_19_redirect_domain", "check_21_spf", "check_22_dkim",
-               "check_23_dmarc", "check_27_dangling_cname", "check_29_safe_browsing"}
+               "check_23_dmarc", "check_27_dangling_cname", "check_29_safe_browsing",
+               "check_32_coop", "check_33_coep", "check_34_corp"}
 _CAT_INVASAO = {"check_08_server", "check_11_dirlist", "check_10_sensitive",
                 "check_16_api_docs", "check_20_info_disclosure", "check_26_subdomains"}
 _CAT_SUPPLY = {"check_13_sri", "check_14_risky_sources", "check_15_external_domains",

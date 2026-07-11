@@ -19,7 +19,7 @@ acionável. O conjunto de checks é **dinâmico e cresce continuamente** (hoje 2
 
 O número de checks **não é fixo** — novos módulos `check_*.py` são descobertos
 automaticamente (ver [Como adicionar um check](#como-adicionar-um-check)).
-Conjunto atual (30):
+Conjunto atual (36):
 
 | # | Check | Módulo | Severidade |
 |---|-------|--------|-----------|
@@ -53,6 +53,19 @@ Conjunto atual (30):
 | 28 | Domínio em vazamentos conhecidos (HIBP) | `check_28_hibp.py` | 🟡 Média |
 | 29 | Site flagado pelo Google Safe Browsing | `check_29_safe_browsing.py` | 🔴 Crítica |
 | 30 | Componentes com vulnerabilidades conhecidas (CVE via Retire.js) | `check_30_vulnerable_components.py` | ⚫ Dinâmica (CVSS) |
+| 31 | Permissions-Policy (câmera/microfone/geolocalização) | `check_31_permissions_policy.py` | 🟡 Média |
+| 32 | Cross-Origin-Opener-Policy (COOP) | `check_32_coop.py` | 🔵 Baixa |
+| 33 | Cross-Origin-Embedder-Policy (COEP) | `check_33_coep.py` | 🔵 Baixa |
+| 34 | Cross-Origin-Resource-Policy (CORP) | `check_34_corp.py` | 🔵 Baixa |
+| 35 | Referrer-Policy (análise de qualidade do valor) | `check_35_referrer_policy.py` | 🔵 Baixa / 🟡 Média |
+| 36 | Cache-Control em páginas com formulário/senha | `check_36_cache_control_forms.py` | 🟡 Média |
+
+O KL-32 transforma "header checker" em "header analyser": os checks **05 (CSP)**,
+**02 (HSTS)**, **17 (cookies)** e **18 (CORS)** deixaram de ser presença binária e
+passaram a avaliar **eficácia** (CSP com `unsafe-inline`/`*` → FAIL; HSTS com
+`max-age` curto → FAIL; `SameSite=None` sem `Secure` → FAIL; CORS `*`+credenciais →
+FAIL alta). Os checks **31–36** (headers modernos, tier pago) cobrem
+Permissions-Policy, COOP/COEP/CORP, Referrer-Policy e Cache-Control.
 
 O **check 30** (KL-33) detecta **versões** de bibliotecas JS (jQuery, Bootstrap,
 Angular…) e CMS (WordPress/Joomla/Drupal) de forma **passiva** (script src, inline,
