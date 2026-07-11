@@ -1270,3 +1270,43 @@ links` (handles IG/FB/LI/YT/TT + maps + has_blog/has_app, ignora paths reservado
 **Regra inviolável:** o perfil é dado **comercial** (passivo, GET público) — **não
 altera o score de segurança**; a extração é sempre **best-effort** (erro só loga, nunca
 derruba scan/worker).
+
+## 31. Classificação OWASP/CWE/LGPD (KL-34/35)
+
+Cada finding ganha classificação em frameworks reconhecidos — **OWASP Top 10 2025**,
+**CWE** e **LGPD** — o que transforma o relatório de "lista de problemas" em documento
+que um auditor, advogado ou seguradora aceita. É **metadata** sobre os checks
+existentes: **não muda a lógica de scan nem o score**.
+
+**Identidade dual (inviolável):** o relatório **técnico** (PDF + resultado web
+completo) e a **API** expõem OWASP/CWE/LGPD; o **executivo NUNCA** os menciona por
+finding — mantém linguagem informal e leva só uma nota institucional genérica ("baseado
+em padrões internacionais de segurança (OWASP) e considera a LGPD").
+
+- **`scanner/checks/classifications.py` — fonte da verdade única.** `CLASSIFICATIONS`
+  mapeia os **29** `check_id` → `(owasp, cwe, lgpd)`. `classify(check_id)`,
+  `compliance_summary(results)` (conta as FALHAS por categoria OWASP e por artigo
+  LGPD), `owasp_parts`/`lgpd_articles`/`LGPD_LABELS` e o `COMPLIANCE_DISCLAIMER`
+  obrigatório ("não constitui auditoria…"). LGPD pode ser múltiplo ("Art. 46, Art. 48");
+  checks 12/20/26 têm LGPD `None`.
+- **`CheckResult` (base.py)** ganhou `owasp`/`cwe`/`lgpd` **opcionais** (`None` default,
+  retrocompatível — `from_dict` de scan antigo não quebra). O **`runner`** os **carimba**
+  pelo `check_id` (onde já seta o `check_id`), então **não** foi preciso editar as ~100
+  `return CheckResult(...)` dos 29 checks, e até o resultado de fallback (check que
+  levanta exceção) fica classificado. Serializam sozinhos no `to_dict` → fluem para
+  cache/banco (`checks_json`) e para o `get_scan` **sem** mudança na API.
+- **Relatório técnico** (`reporter/generator.py` + `technical.html`): cada FALHA mostra
+  uma linha **Classificação** (OWASP/CWE/LGPD) abaixo da evidência, e há um **Sumário de
+  conformidade** no fim (contagem por OWASP e por artigo LGPD + disclaimer). O
+  `generator` usa o carimbo do `CheckResult` com **fallback** a `classify(check_id)`
+  (robusto para reports antigos). `executive.html` só recebe a nota genérica.
+- **Resultado web** (`/scan/summary` completo, `_summary_payload(full=True)`): as
+  entradas de **FALHA** trazem `owasp`/`cwe`/`lgpd`; o **gratuito** (`full=False`) **não**
+  — mantém o gate do funil (KL-27). Frontend `Result.jsx` renderiza a classificação nos
+  FAILs expandidos do modo completo.
+
+**Ao adicionar um check novo:** acrescente a entrada em `CLASSIFICATIONS` (o teste
+`test_every_check_is_mapped` falha se faltar) além de `RISK_MESSAGES`/`ACCESSIBLE`/
+`TECHNICAL` (seções 4.2/21). **Flush `scan:*` no Redis** após deploy para os scans
+cacheados reganharem os campos (metadata não muda o score, então o flush é recomendado,
+não obrigatório).

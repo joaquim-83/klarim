@@ -18,6 +18,7 @@ from typing import List, Optional
 
 from .checks import ALL_CHECKS, FREE_CHECKS
 from .checks.base import CheckResult, Status, Severity, normalize_url
+from .checks.classifications import classify
 from .scoring import ScoreBreakdown, compute_score
 
 
@@ -79,6 +80,10 @@ async def run_scan(url: str, full: bool = True) -> ScanReport:
                 evidence=f"Erro inesperado ao executar o check: {exc!r}",
             )
         result.check_id = check_id
+        # Carimba OWASP/CWE/LGPD (KL-34/35) — metadata, não afeta o score. Centralizado
+        # aqui (onde o check_id é setado) para não editar as ~100 return sites dos checks.
+        cls = classify(check_id)
+        result.owasp, result.cwe, result.lgpd = cls.owasp, cls.cwe, cls.lgpd
         results.append(result)
 
     duration = loop.time() - t0

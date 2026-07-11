@@ -51,6 +51,13 @@
   .finding .val { margin-top: 2px; }
   pre.code { background: #0D1117; border: 1px solid #30363D; border-radius: 6px; padding: 9px 11px; font-family: "SF Mono", "DejaVu Sans Mono", Consolas, monospace; font-size: 8.5pt; white-space: pre-wrap; word-break: break-word; color: #E6EDF3; margin: 4px 0 0 0; }
 
+  /* Classificação de compliance (KL-34/35) */
+  .cref { display: inline-block; min-width: 46px; font-size: 7.5pt; font-weight: 700; letter-spacing: 1px; color: #8B949E; text-transform: uppercase; }
+  .compliance .crow { display: flex; justify-content: space-between; border-bottom: 1px solid #21262D; padding: 4px 0; font-size: 9.5pt; }
+  .compliance .cn { color: #8B949E; white-space: nowrap; padding-left: 12px; }
+  .compliance h3 { font-size: 10.5pt; margin: 14px 0 4px 0; color: #E6EDF3; }
+  .disclaimer { margin-top: 14px; padding: 10px 12px; border: 1px solid #30363D; border-radius: 6px; background: #161B22; font-size: 8.5pt; color: #8B949E; font-style: italic; }
+
   /* Inventory */
   .inv { font-size: 9.5pt; }
   .inv .k { font-family: "SF Mono", "DejaVu Sans Mono", Consolas, monospace; font-size: 8.5pt; word-break: break-all; padding: 3px 0; border-bottom: 1px solid #21262D; }
@@ -113,6 +120,14 @@
     <span class="fsev" style="color: {{ f.severity_color }};">{{ f.severity_label }}</span>
     <div class="lbl">Evidência</div>
     <div class="val mono" style="font-size:9pt;">{{ f.evidence }}</div>
+    {% if f.owasp or f.cwe or f.lgpd %}
+    <div class="lbl">Classificação</div>
+    <div class="val" style="font-size:9pt;">
+      {% if f.owasp %}<div><span class="cref">OWASP</span> {{ f.owasp }}</div>{% endif %}
+      {% if f.cwe %}<div><span class="cref">CWE</span> {{ f.cwe }}</div>{% endif %}
+      {% if f.lgpd %}<div><span class="cref">LGPD</span> {{ f.lgpd }}</div>{% endif %}
+    </div>
+    {% endif %}
     {% if f.impact %}
     <div class="lbl">Impacto</div>
     <div class="val">{{ f.impact }}</div>
@@ -153,6 +168,25 @@
     {% else %}<div class="empty">Nenhum header de segurança relevante capturado.</div>{% endif %}
 
   </div>
+
+  <!-- ===================== SUMÁRIO DE CONFORMIDADE ===================== -->
+  <div class="page-break"></div>
+  <h2>Sumário de conformidade</h2>
+  {% if compliance.has_data %}
+  <div class="compliance">
+    <h3>OWASP Top 10 2025</h3>
+    {% for row in compliance.owasp %}
+    <div class="crow"><span>{{ row.code }} {{ row.name }}</span><span class="cn">{{ row.count }} ocorrência{{ 's' if row.count != 1 else '' }}</span></div>
+    {% endfor %}
+    <h3>LGPD</h3>
+    {% for row in compliance.lgpd %}
+    <div class="crow"><span>{{ row.label }}</span><span class="cn">{{ row.count }} ocorrência{{ 's' if row.count != 1 else '' }}</span></div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="muted">Nenhuma falha classificável nesta varredura.</p>
+  {% endif %}
+  <div class="disclaimer">{{ compliance.disclaimer }}</div>
 
   <div class="footer">
     <span class="id mono">{{ report_id }}</span>

@@ -26,6 +26,7 @@ from weasyprint import HTML
 from scanner import __version__ as scanner_version
 from scanner.runner import ScanReport
 from scanner.checks.base import Status, Severity
+from scanner.checks.classifications import classify, LGPD_LABELS, compliance_summary
 from .risk_messages import get_risk_messages, get_risk_summary
 
 _HERE = Path(__file__).resolve().parent
@@ -331,6 +332,14 @@ def _collect_headers(report: ScanReport) -> List[Dict[str, str]]:
     return out
 
 
+def _lgpd_display(value: Optional[str]) -> str:
+    """``"Art. 46, Art. 48"`` -> rótulos amigáveis unidos (vazio se ``None``)."""
+    if not value:
+        return ""
+    arts = [a.strip() for a in value.split(",") if a.strip()]
+    return ", ".join(LGPD_LABELS.get(a, a) for a in arts)
+
+
 def _build_context(report: ScanReport, target_url: str) -> Dict[str, Any]:
     s = report.score
     sev = s.fails_by_severity if s else {}
@@ -341,6 +350,9 @@ def _build_context(report: ScanReport, target_url: str) -> Dict[str, Any]:
         if r.status != Status.FAIL:
             continue
         tech = TECHNICAL.get(r.check_id, {})
+        # Classificação de compliance (KL-34/35): usa o carimbo do runner e cai para
+        # o mapa por check_id (robusto para reports antigos sem os campos no JSON).
+        cls = classify(r.check_id)
         fails.append({
             "check_id": r.check_id,
             "name": r.name,
@@ -352,6 +364,10 @@ def _build_context(report: ScanReport, target_url: str) -> Dict[str, Any]:
             "impact": tech.get("impact", ""),
             "fix": tech.get("fix", ""),
             "fix_code": tech.get("fix_code", ""),
+            # Só o template técnico renderiza estes; o executivo os ignora.
+            "owasp": r.owasp or cls.owasp,
+            "cwe": r.cwe or cls.cwe,
+            "lgpd": _lgpd_display(r.lgpd or cls.lgpd),
         })
 
     all_checks = []
@@ -427,6 +443,8 @@ def _build_context(report: ScanReport, target_url: str) -> Dict[str, Any]:
         "risk_messages": risk_messages,
         "risk_summary": risk_summary,
         "lgpd_text": LGPD_TEXT,
+        # Sumário de conformidade (KL-34/35) — só o template técnico o consome.
+        "compliance": compliance_summary(report.results),
     }
 
 

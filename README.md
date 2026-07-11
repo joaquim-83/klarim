@@ -264,8 +264,15 @@ O módulo [`reporter/`](./reporter/) transforma um `ScanReport` em dois PDFs
   por falha (KL-20 — "seu site pode ser usado para golpes", não artigos de lei; a
   LGPD vira nota de rodapé), lista de problemas em linguagem humana.
 - **Técnico** (3-5 páginas) — para dev/agência: tabela de todos os checks,
-  detalhamento de cada falha (evidência + impacto + correção com exemplo) e
-  inventário (domínios externos, scripts sem SRI, fontes arriscadas, headers).
+  detalhamento de cada falha (evidência + impacto + correção com exemplo),
+  **classificação OWASP Top 10 2025 / CWE / LGPD** por falha, um **sumário de
+  conformidade** (contagem por categoria OWASP e por artigo da LGPD, com disclaimer)
+  e inventário (domínios externos, scripts sem SRI, fontes arriscadas, headers).
+
+> **Compliance (KL-34/35):** a classificação OWASP/CWE/LGPD é **metadata** sobre os
+> checks (`scanner/checks/classifications.py`) — **não altera o score**. Aparece só no
+> técnico e na API; o **executivo nunca** cita OWASP/CWE/LGPD por falha (linguagem
+> informal). Não é auditoria formal — o relatório leva o disclaimer.
 
 ```python
 import asyncio

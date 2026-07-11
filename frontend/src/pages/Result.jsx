@@ -72,8 +72,8 @@ function MonitoringOffer({ url, defaultEmail, chargeId }) {
 // Linha de um check. No gratuito: só nome + ✅/❌ (falhas ganham 🔒). No completo:
 // os FAILs expandem com evidência, impacto e correção.
 function CheckRow({ check, locked, full }) {
-  const { name, status, evidence, impact, fix } = check
-  const hasDetail = full && status === 'FAIL' && (evidence || impact || fix)
+  const { name, status, evidence, impact, fix, owasp, cwe, lgpd } = check
+  const hasDetail = full && status === 'FAIL' && (evidence || impact || fix || owasp || cwe || lgpd)
   const [open, setOpen] = useState(false)
   const icon = locked ? '🔒' : status === 'PASS' ? '✅' : status === 'FAIL' ? '❌' : '➖'
   const color = locked
@@ -103,6 +103,13 @@ function CheckRow({ check, locked, full }) {
           {evidence && <p className="text-klarim-muted"><span className="text-klarim-text">Evidência:</span> {evidence}</p>}
           {impact && <p className="text-klarim-muted"><span className="text-klarim-text">Impacto:</span> {impact}</p>}
           {fix && <p className="text-klarim-ok"><span className="font-semibold">Correção:</span> {fix}</p>}
+          {(owasp || cwe || lgpd) && (
+            <div className="mt-1 border-t border-klarim-border/60 pt-1 text-klarim-muted">
+              {owasp && <p><span className="text-klarim-text">OWASP:</span> {owasp}</p>}
+              {cwe && <p><span className="text-klarim-text">CWE:</span> {cwe}</p>}
+              {lgpd && <p><span className="text-klarim-text">LGPD:</span> {lgpd}</p>}
+            </div>
+          )}
         </div>
       )}
     </div>

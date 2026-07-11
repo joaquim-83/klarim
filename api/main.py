@@ -33,6 +33,7 @@ from scanner import (run_scan, summarize_fails, Severity, ScanReport,
 from scanner import __version__ as scanner_version
 from scanner.cache import ScanCache
 from scanner.checks.base import normalize_url, registrable_domain, domain_of
+from scanner.checks.classifications import classify as classify_compliance
 from discovery.store import get_target_store
 from reporter import generate_executive_pdf, generate_technical_pdf, pdf_filename
 from reporter.risk_messages import get_risk_messages, get_risk_summary
@@ -719,6 +720,12 @@ def _summary_payload(report: ScanReport, full: bool = False) -> dict:
             d["fix"] = t.get("fix")
             if t.get("fix_code"):
                 d["fix_code"] = t["fix_code"]
+            # Classificação de compliance (KL-34/35) — só no resultado completo/técnico.
+            # Carimbada no CheckResult; cai para o mapa por check_id (reports antigos).
+            cc = classify_compliance(cid)
+            d["owasp"] = getattr(r, "owasp", None) or cc.owasp
+            d["cwe"] = getattr(r, "cwe", None) or cc.cwe
+            d["lgpd"] = getattr(r, "lgpd", None) or cc.lgpd
         return d
 
     free_checks = [_entry(m) for m in _FREE_META]

@@ -80,6 +80,11 @@ class CheckResult:
                   change with the outcome.
         evidence: A short human-readable string with the concrete detail that
                   justifies the status (headers seen, paths probed, cert dates).
+        owasp/cwe/lgpd: Classificação em frameworks reconhecidos (KL-34/35). São
+                  metadata opcional (``None`` por default, retrocompatível); o
+                  ``runner`` as carimba pelo ``check_id`` a partir de
+                  ``scanner.checks.classifications``. Aparecem só no relatório
+                  técnico e na API — nunca no executivo.
     """
 
     name: str
@@ -90,6 +95,10 @@ class CheckResult:
     check_id: str = ""
     # Optional structured extras (e.g. probed paths) for the technical report.
     details: Dict[str, Any] = field(default_factory=dict)
+    # Classificação de compliance (KL-34/35) — opcional, carimbada pelo runner.
+    owasp: Optional[str] = None    # ex.: "A05:2025 Security Misconfiguration"
+    cwe: Optional[str] = None      # ex.: "CWE-693"
+    lgpd: Optional[str] = None     # ex.: "Art. 46" (ou "Art. 46, Art. 48")
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -103,6 +112,9 @@ class CheckResult:
             evidence=d.get("evidence", ""),
             check_id=d.get("check_id", ""),
             details=d.get("details") or {},
+            owasp=d.get("owasp"),
+            cwe=d.get("cwe"),
+            lgpd=d.get("lgpd"),
         )
 
     def __str__(self) -> str:  # pragma: no cover - cosmetic

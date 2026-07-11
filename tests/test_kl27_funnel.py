@@ -165,6 +165,26 @@ def test_full_payload_free_still_locks_paid():
     assert all("evidence" not in c for c in p["free_checks"])  # sem detalhe no grátis
 
 
+# --- KL-34/35: classificação OWASP/CWE/LGPD no payload completo ------------- #
+
+def test_full_payload_includes_compliance_classification():
+    import api.main as m
+    p = m._summary_payload(_full_report(fail_ids=("check_23_dmarc", "check_05_csp")), full=True)
+    dmarc = next(c for c in p["paid_checks"] if c["check_id"] == "check_23_dmarc")
+    assert dmarc["owasp"] == "A07:2025 Identification and Authentication Failures"
+    assert dmarc["cwe"] == "CWE-290" and dmarc["lgpd"] == "Art. 46"
+    # FAIL em check gratuito (CSP) também traz a classificação no modo completo.
+    csp = next(c for c in p["free_checks"] if c["check_id"] == "check_05_csp")
+    assert csp["owasp"] == "A05:2025 Security Misconfiguration" and csp["cwe"] == "CWE-693"
+
+
+def test_free_payload_omits_compliance():
+    import api.main as m
+    p = m._summary_payload(_full_report(fail_ids=("check_05_csp",)), full=False)
+    for c in p["free_checks"] + p["paid_checks"]:
+        assert "owasp" not in c and "cwe" not in c and "lgpd" not in c
+
+
 def test_is_demo(monkeypatch):
     import api.main as m
     monkeypatch.setenv("DEMO_EMAIL", "demo@klarim.net")

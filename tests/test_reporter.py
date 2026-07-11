@@ -70,3 +70,35 @@ def test_technical_pdf_renders():
     pdf = asyncio.run(generate_technical_pdf(_sample_report(), "https://example.com"))
     assert pdf[:5] == b"%PDF-"
     assert len(pdf) > 2000
+
+
+# --- KL-34/35: OWASP/CWE/LGPD no técnico, ausentes no executivo ------------ #
+
+def _render(template_name: str) -> str:
+    """Renderiza o HTML do template (sem WeasyPrint) para asserir no conteúdo."""
+    from reporter import generator as g
+
+    ctx = g._build_context(_sample_report(), "https://example.com")
+    return g._env.get_template(template_name).render(**ctx)
+
+
+def test_technical_html_has_classification_and_compliance():
+    html = _render("technical.html")
+    # SRI (check_13) falha no sample => A08 / CWE-353 aparecem por finding.
+    assert "A08:2025 Software and Data Integrity Failures" in html
+    assert "CWE-353" in html
+    assert "Art. 46 (medidas de segurança)" in html
+    # Sumário de conformidade + disclaimer obrigatório.
+    assert "Sumário de conformidade" in html
+    assert "OWASP Top 10 2025" in html
+    assert "não constitui auditoria" in html
+
+
+def test_executive_html_excludes_owasp_cwe_lgpd_details():
+    html = _render("executive.html")
+    # Nada de códigos CWE, rótulos OWASP por finding, nem sumário de conformidade.
+    assert "CWE-" not in html
+    assert "A08:2025" not in html
+    assert "Sumário de conformidade" not in html
+    # A nota institucional genérica (permitida) menciona OWASP/LGPD uma vez.
+    assert "padrões internacionais de segurança (OWASP)" in html
