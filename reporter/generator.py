@@ -118,6 +118,10 @@ ACCESSIBLE: Dict[str, str] = {
     "check_34_corp": "Seu site não controla quais outros sites podem carregar os seus recursos.",
     "check_35_referrer_policy": "Ao clicar em links, seu site pode enviar o endereço completo (com dados) para outros sites.",
     "check_36_cache_control_forms": "Páginas com formulários do seu site podem ficar guardadas no cache do navegador.",
+    "check_37_dnssec": "As respostas de DNS do seu domínio não são autenticadas — alguém poderia redirecionar seus visitantes para uma cópia falsa do site.",
+    "check_38_caa": "Seu domínio não define quais empresas podem emitir certificados de segurança para ele — qualquer uma pode.",
+    "check_39_mta_sts": "Os e-mails enviados para o seu domínio podem ser interceptados no caminho, sem criptografia obrigatória.",
+    "check_40_bimi": "Seu domínio não exibe o logo da empresa nos e-mails — os clientes veem um ícone genérico em vez da sua marca.",
 }
 
 
@@ -305,6 +309,26 @@ TECHNICAL: Dict[str, Dict[str, str]] = {
         "impact": "Páginas com formulário/senha sem Cache-Control podem ficar no cache do navegador/proxy; em um computador compartilhado a próxima pessoa pode ver os dados.",
         "fix": "Envie Cache-Control: no-store nas páginas com dados sensíveis.",
         "fix_code": "Cache-Control: no-store, max-age=0",
+    },
+    "check_37_dnssec": {
+        "impact": "Sem DNSSEC (registro DS ausente no parent zone), as respostas DNS não são assinadas — o domínio fica vulnerável a cache poisoning/spoofing, redirecionando visitantes a uma cópia falsa.",
+        "fix": "Ative DNSSEC no registrar/provedor de DNS (Registro.br, Cloudflare, Hostinger).",
+        "fix_code": "# Registro.br / painel do provedor: ativar DNSSEC (publica DS no parent zone)",
+    },
+    "check_38_caa": {
+        "impact": "Sem CAA, qualquer autoridade certificadora pode emitir um certificado válido para o domínio, facilitando MitM com certificado fraudulento (RFC 8659).",
+        "fix": "Publique um registro CAA restringindo às CAs que você usa.",
+        "fix_code": "exemplo.com.br.  IN CAA 0 issue \"letsencrypt.org\"\nexemplo.com.br.  IN CAA 0 iodef \"mailto:seguranca@exemplo.com.br\"",
+    },
+    "check_39_mta_sts": {
+        "impact": "Sem MTA-STS, e-mails de entrada podem sofrer downgrade de TLS (STARTTLS stripping) e ser lidos em trânsito (RFC 8461).",
+        "fix": "Publique o TXT _mta-sts e a policy em mta-sts.<domínio>/.well-known/mta-sts.txt com mode: enforce.",
+        "fix_code": "_mta-sts.exemplo.com.br. IN TXT \"v=STSv1; id=20260101000000\"\n# policy:\nversion: STSv1\nmode: enforce\nmx: mail.exemplo.com.br\nmax_age: 604800",
+    },
+    "check_40_bimi": {
+        "impact": "Sem BIMI, o logo da marca não aparece nos e-mails (Gmail/Apple Mail) — reduz a confiança e dificulta distinguir e-mails legítimos de falsos. Requer DMARC em enforce.",
+        "fix": "Configure DMARC com p=quarantine/reject e publique o TXT BIMI apontando o logo (SVG).",
+        "fix_code": "default._bimi.exemplo.com.br. IN TXT \"v=BIMI1; l=https://exemplo.com.br/logo.svg\"",
     },
 }
 

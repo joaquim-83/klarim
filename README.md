@@ -19,7 +19,7 @@ acionável. O conjunto de checks é **dinâmico e cresce continuamente** (hoje 2
 
 O número de checks **não é fixo** — novos módulos `check_*.py` são descobertos
 automaticamente (ver [Como adicionar um check](#como-adicionar-um-check)).
-Conjunto atual (36):
+Conjunto atual (40):
 
 | # | Check | Módulo | Severidade |
 |---|-------|--------|-----------|
@@ -59,6 +59,14 @@ Conjunto atual (36):
 | 34 | Cross-Origin-Resource-Policy (CORP) | `check_34_corp.py` | 🔵 Baixa |
 | 35 | Referrer-Policy (análise de qualidade do valor) | `check_35_referrer_policy.py` | 🔵 Baixa / 🟡 Média |
 | 36 | Cache-Control em páginas com formulário/senha | `check_36_cache_control_forms.py` | 🟡 Média |
+| 37 | DNSSEC (registro DS no parent zone) | `check_37_dnssec.py` | 🟡 Média |
+| 38 | CAA (autorização de CAs para emitir certificado) | `check_38_caa.py` | 🟡 Média |
+| 39 | MTA-STS (TLS obrigatório em e-mail, RFC 8461) | `check_39_mta_sts.py` | 🔵 Baixa |
+| 40 | BIMI (logo da marca em e-mail) | `check_40_bimi.py` | 🔵 Baixa |
+
+O KL-36 completa a camada DNS/e-mail (SPF/DKIM/DMARC já eram os checks 21–23) com
+**DNSSEC**, **CAA**, **MTA-STS** e **BIMI** — todos consultas DNS públicas (o MTA-STS
+faz também um GET na policy pública da RFC 8461), 100% passivos, tier pago.
 
 O KL-32 transforma "header checker" em "header analyser": os checks **05 (CSP)**,
 **02 (HSTS)**, **17 (cookies)** e **18 (CORS)** deixaram de ser presença binária e

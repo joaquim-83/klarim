@@ -234,6 +234,30 @@ RISK_MESSAGES: Dict[str, Dict[str, str]] = {
                 "Num computador público, a próxima pessoa pode ver os dados preenchidos.",
         "icon": "💾",
     },
+    "check_37_dnssec": {
+        "headline": "As respostas de DNS do seu domínio não são autenticadas",
+        "risk": "Sem essa proteção (DNSSEC), alguém poderia redirecionar seus visitantes para "
+                "uma cópia falsa do seu site sem que ninguém percebesse.",
+        "icon": "🧭",
+    },
+    "check_38_caa": {
+        "headline": "Qualquer empresa pode emitir um certificado do seu site",
+        "risk": "Seu domínio não define quais autoridades podem emitir certificados de segurança "
+                "para ele. Qualquer empresa do mundo poderia criar um certificado falso do seu site.",
+        "icon": "📜",
+    },
+    "check_39_mta_sts": {
+        "headline": "E-mails do seu domínio podem ser interceptados no caminho",
+        "risk": "Sem TLS obrigatório (MTA-STS), os e-mails podem trafegar sem criptografia. "
+                "É como enviar uma carta sem lacrar o envelope — qualquer carteiro pode ler.",
+        "icon": "✉️",
+    },
+    "check_40_bimi": {
+        "headline": "Seus e-mails não exibem o logo da empresa",
+        "risk": "Quando seus clientes recebem um e-mail seu, veem um ícone genérico em vez do seu "
+                "logo — isso reduz a confiança e dificulta identificar e-mails falsos.",
+        "icon": "🏷️",
+    },
 }
 
 _SEV_ORDER = {"CRITICA": 0, "ALTA": 1, "MEDIA": 2, "BAIXA": 3}
@@ -243,11 +267,13 @@ _CAT_VAZAMENTO = {"check_01_https", "check_02_hsts", "check_04_tls",
                   "check_09_sourcemaps", "check_10_sensitive",
                   "check_17_cookies", "check_18_cors", "check_25_form_security",
                   "check_28_hibp", "check_31_permissions_policy",
-                  "check_35_referrer_policy", "check_36_cache_control_forms"}
+                  "check_35_referrer_policy", "check_36_cache_control_forms",
+                  "check_39_mta_sts"}
 _CAT_GOLPES = {"check_05_csp", "check_06_xfo", "check_14_risky_sources",
                "check_19_redirect_domain", "check_21_spf", "check_22_dkim",
                "check_23_dmarc", "check_27_dangling_cname", "check_29_safe_browsing",
-               "check_32_coop", "check_33_coep", "check_34_corp"}
+               "check_32_coop", "check_33_coep", "check_34_corp",
+               "check_37_dnssec", "check_38_caa", "check_40_bimi"}
 _CAT_INVASAO = {"check_08_server", "check_11_dirlist", "check_10_sensitive",
                 "check_16_api_docs", "check_20_info_disclosure", "check_26_subdomains"}
 _CAT_SUPPLY = {"check_13_sri", "check_14_risky_sources", "check_15_external_domains",

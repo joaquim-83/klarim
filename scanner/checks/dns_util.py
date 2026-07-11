@@ -103,3 +103,42 @@ def resolve_ns(name: str, timeout: float = 5.0) -> Optional[List[str]]:
         return []
     except Exception:  # noqa: BLE001
         return None
+
+
+def resolve_ds(name: str, timeout: float = 5.0) -> Optional[List[str]]:
+    """Registros DS do domínio (DNSSEC — KL-36). Presença de DS no parent zone
+    indica DNSSEC ativo. `[]` = sem DS; `None` = erro. Mockável nos testes."""
+    try:
+        import dns.resolver  # noqa: F401
+    except ImportError:
+        return None
+    import dns.resolver as _r
+    try:
+        answers = _resolver(timeout).resolve(name, "DS")
+        return [rr.to_text() for rr in answers]
+    except (_r.NXDOMAIN, _r.NoAnswer):
+        return []
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def resolve_caa(name: str, timeout: float = 5.0) -> Optional[List[dict]]:
+    """Registros CAA do domínio (KL-36) como ``[{flags, tag, value}]``.
+    `[]` = sem CAA; `None` = erro. Mockável nos testes."""
+    try:
+        import dns.resolver  # noqa: F401
+    except ImportError:
+        return None
+    import dns.resolver as _r
+    try:
+        answers = _resolver(timeout).resolve(name, "CAA")
+        out: List[dict] = []
+        for rr in answers:
+            tag = rr.tag.decode() if isinstance(rr.tag, bytes) else str(rr.tag)
+            val = rr.value.decode("utf-8", "replace") if isinstance(rr.value, bytes) else str(rr.value)
+            out.append({"flags": int(rr.flags), "tag": tag, "value": val.strip('"')})
+        return out
+    except (_r.NXDOMAIN, _r.NoAnswer):
+        return []
+    except Exception:  # noqa: BLE001
+        return None

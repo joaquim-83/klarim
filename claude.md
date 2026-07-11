@@ -169,7 +169,7 @@ async def check(url: str) -> CheckResult
   `PASS`. `INCONCLUSO` é neutro no score.
 
 **O número de checks é dinâmico e cresce com o projeto** — nunca trate um número
-específico como identidade do produto. Conjunto atual (**36**):
+específico como identidade do produto. Conjunto atual (**40**):
 
 | # | Check | Módulo | Severidade |
 |---|-------|--------|-----------|
@@ -209,6 +209,10 @@ específico como identidade do produto. Conjunto atual (**36**):
 | 34 | Cross-Origin-Resource-Policy (CORP) | `check_34_corp.py` | Baixa |
 | 35 | Referrer-Policy (qualidade) | `check_35_referrer_policy.py` | Baixa/Média |
 | 36 | Cache-Control em páginas sensíveis | `check_36_cache_control_forms.py` | Média |
+| 37 | DNSSEC (registro DS no parent zone) | `check_37_dnssec.py` | Média |
+| 38 | CAA (Certificate Authority Authorization) | `check_38_caa.py` | Média |
+| 39 | MTA-STS (TLS obrigatório em e-mail) | `check_39_mta_sts.py` | Baixa |
+| 40 | BIMI (logo da marca em e-mail) | `check_40_bimi.py` | Baixa |
 
 Checks 13–15 (supply chain, KL-2) fazem parse **passivo do HTML servido**;
 scripts injetados por JavaScript em runtime não são vistos por um GET simples.
@@ -1386,3 +1390,27 @@ um `check_NN_*.py` no padrão; classificados em `classifications.py`; com `RISK_
 **pagos** (headers modernos com adoção baixa — se fossem gratuitos, todo site ficaria
 vermelho). **Flush `scan:*` no Redis após deploy** — a análise de qualidade faz um CSP/HSTS
 antes PASS virar FAIL, mudando scores.
+
+## 34. DNS security expandido (KL-36) — checks 37–40
+
+Completa a camada DNS/e-mail (que já tinha SPF/DKIM/DMARC nos checks 21–23) com 4
+verificações **100% passivas** (consulta DNS pública + 1 GET público no MTA-STS). Todas
+tier **pago** (ORDER>15), via `dns_util.py`.
+
+- **`dns_util.py`:** novos `resolve_ds` (DNSSEC) e `resolve_caa` (retorna
+  `[{flags,tag,value}]`), no mesmo padrão mockável de `resolve_mx`/`resolve_ns`/
+  `resolve_txt` (`[]` = ausência definitiva → FAIL; `None` = erro → INCONCLUSO).
+- **check_37 DNSSEC** (MÉDIA, A02/CWE-350): presença de **DS** no parent zone → PASS;
+  ausente → FAIL (respostas DNS adulteráveis / cache poisoning).
+- **check_38 CAA** (MÉDIA, A02/CWE-295): registros CAA `issue`/`issuewild` → PASS (lista as
+  CAs; nota se tem `iodef`); ausente → FAIL (qualquer CA pode emitir certificado).
+- **check_39 MTA-STS** (BAIXA, A02/CWE-319): TXT `_mta-sts.<domínio>` + GET público na
+  policy `mta-sts.<domínio>/.well-known/mta-sts.txt` (RFC 8461). `mode: enforce` → PASS;
+  `testing` → PASS com nota; declarado sem policy → FAIL; ausente → FAIL.
+- **check_40 BIMI** (BAIXA, A07/CWE-290, **LGPD None**): TXT `default._bimi.<domínio>`
+  com `v=BIMI1` → PASS (checa o pré-requisito DMARC enforce e anota se falta); ausente →
+  FAIL (indicador de maturidade, não falha grave).
+
+**Regra inviolável:** 100% passivo (consulta DNS pública + o GET do MTA-STS é URL pública
+definida pela RFC). Os 4 são pagos. **Flush `scan:*` no Redis após deploy** (novos checks
+mudam scores).

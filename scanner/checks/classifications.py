@@ -91,6 +91,11 @@ CLASSIFICATIONS: Dict[str, Classification] = {
     "check_34_corp":               Classification(_A05, "CWE-346", "Art. 46"),
     "check_35_referrer_policy":    Classification(_A05, "CWE-200", "Art. 46"),
     "check_36_cache_control_forms": Classification(_A05, "CWE-524", "Art. 46"),
+    # DNS security expandido (KL-36)
+    "check_37_dnssec":             Classification(_A02, "CWE-350", "Art. 46"),
+    "check_38_caa":                Classification(_A02, "CWE-295", "Art. 46"),
+    "check_39_mta_sts":            Classification(_A02, "CWE-319", "Art. 46"),
+    "check_40_bimi":               Classification(_A07, "CWE-290", None),
 }
 
 _EMPTY = Classification(None, None, None)
