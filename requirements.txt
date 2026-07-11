@@ -3,6 +3,7 @@
 # --- Scanner engine ---
 httpx>=0.27,<0.28            # async HTTP client for GET/HEAD probes
 cryptography>=42,<45         # X.509 certificate parsing (check_ssl)
+packaging>=23,<25            # comparação semver de versão nos CVEs (KL-33)
 
 # --- API ---
 fastapi>=0.115,<0.116        # async, typed HTTP API

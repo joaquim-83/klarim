@@ -191,6 +191,13 @@ RISK_MESSAGES: Dict[str, Dict[str, str]] = {
                 "site perde visitas e credibilidade.",
         "icon": "☠️",
     },
+    "check_30_vulnerable_components": {
+        "headline": "Seu site usa ferramentas com falhas conhecidas",
+        "risk": "É como dirigir um carro que teve vários recalls e você nunca levou na oficina: "
+                "as falhas já são públicas e qualquer atacante sabe exatamente como entrar. "
+                "A correção costuma ser simples — atualizar as ferramentas.",
+        "icon": "🚗",
+    },
 }
 
 _SEV_ORDER = {"CRITICA": 0, "ALTA": 1, "MEDIA": 2, "BAIXA": 3}
@@ -206,7 +213,7 @@ _CAT_GOLPES = {"check_05_csp", "check_06_xfo", "check_14_risky_sources",
 _CAT_INVASAO = {"check_08_server", "check_11_dirlist", "check_10_sensitive",
                 "check_16_api_docs", "check_20_info_disclosure", "check_26_subdomains"}
 _CAT_SUPPLY = {"check_13_sri", "check_14_risky_sources", "check_15_external_domains",
-               "check_24_mixed_content"}
+               "check_24_mixed_content", "check_30_vulnerable_components"}
 
 
 def _get(item: Any, key: str) -> Any:

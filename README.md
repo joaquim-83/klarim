@@ -19,7 +19,7 @@ acionável. O conjunto de checks é **dinâmico e cresce continuamente** (hoje 2
 
 O número de checks **não é fixo** — novos módulos `check_*.py` são descobertos
 automaticamente (ver [Como adicionar um check](#como-adicionar-um-check)).
-Conjunto atual (29):
+Conjunto atual (30):
 
 | # | Check | Módulo | Severidade |
 |---|-------|--------|-----------|
@@ -52,6 +52,13 @@ Conjunto atual (29):
 | 27 | Dangling CNAME (risco de subdomain takeover) | `check_27_dangling_cname.py` | 🔴 Crítica |
 | 28 | Domínio em vazamentos conhecidos (HIBP) | `check_28_hibp.py` | 🟡 Média |
 | 29 | Site flagado pelo Google Safe Browsing | `check_29_safe_browsing.py` | 🔴 Crítica |
+| 30 | Componentes com vulnerabilidades conhecidas (CVE via Retire.js) | `check_30_vulnerable_components.py` | ⚫ Dinâmica (CVSS) |
+
+O **check 30** (KL-33) detecta **versões** de bibliotecas JS (jQuery, Bootstrap,
+Angular…) e CMS (WordPress/Joomla/Drupal) de forma **passiva** (script src, inline,
+`<meta generator>`, `?ver=`, headers) e cruza com a base **Retire.js** (`scanner/cve_db.py`,
+baixada em runtime, cache 24h, fail-open) para listar **CVEs** conhecidos. Severidade
+**dinâmica** pelo maior CVSS. NVD/NIST fica atrás de `NVD_ENABLED` (default off).
 
 Os checks 13–15 cobrem **supply chain / third-party risk** (KL-2). Eles fazem um
 parse **passivo do HTML servido** (via `html.parser` da stdlib) — scripts

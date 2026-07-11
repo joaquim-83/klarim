@@ -559,11 +559,12 @@ def test_check29_fail_when_flagged(monkeypatch):
 # Registry + reporter coverage (guards against forgetting a new check)
 # --------------------------------------------------------------------------- #
 
-def test_all_29_checks_registered():
+def test_all_checks_registered():
+    # 30 checks após o KL-33 (check_30_vulnerable_components).
     ids = [cid for cid, _ in ALL_CHECKS]
-    assert len(ids) == 29
-    assert len(set(ids)) == 29
-    for i in range(16, 30):
+    assert len(ids) == 30
+    assert len(set(ids)) == 30
+    for i in range(16, 31):
         assert any(cid.startswith(f"check_{i}_") for cid in ids), i
 
 

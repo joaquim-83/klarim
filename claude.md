@@ -27,7 +27,7 @@ níveis:
 **Modelo de negócio (bottom-up, funil KL-27):** o scan **gratuito** roda os 15
 primeiros checks e mostra só score + semáforo + contagem + a lista de verificações
 (✅/❌, sem detalhes) — os outros 14 aparecem **bloqueados** (🔒). O **relatório
-completo** (29 checks, com evidências e correções) custa **R$ 19** (preço único,
+completo** (todos os checks, com evidências e correções) custa **R$ 19** (preço único,
 todos os setores — decisão de impulso) e inclui **1 re-verificação gratuita**
 ("retorno médico"). O dono encaminha o relatório para a **agência** que fez o site.
 Quando várias agências recebem relatórios de vários clientes, elas procuram o
@@ -169,7 +169,7 @@ async def check(url: str) -> CheckResult
   `PASS`. `INCONCLUSO` é neutro no score.
 
 **O número de checks é dinâmico e cresce com o projeto** — nunca trate um número
-específico como identidade do produto. Conjunto atual (**29**):
+específico como identidade do produto. Conjunto atual (**30**):
 
 | # | Check | Módulo | Severidade |
 |---|-------|--------|-----------|
@@ -202,6 +202,7 @@ específico como identidade do produto. Conjunto atual (**29**):
 | 27 | Dangling CNAME (subdomain takeover) | `check_27_dangling_cname.py` | Crítica |
 | 28 | Vazamentos de dados (HIBP) | `check_28_hibp.py` | Média |
 | 29 | Google Safe Browsing | `check_29_safe_browsing.py` | Crítica |
+| 30 | Componentes com vulnerabilidades conhecidas (CVE) | `check_30_vulnerable_components.py` | Dinâmica |
 
 Checks 13–15 (supply chain, KL-2) fazem parse **passivo do HTML servido**;
 scripts injetados por JavaScript em runtime não são vistos por um GET simples.
@@ -1288,7 +1289,8 @@ em padrões internacionais de segurança (OWASP) e considera a LGPD").
   `compliance_summary(results)` (conta as FALHAS por categoria OWASP e por artigo
   LGPD), `owasp_parts`/`lgpd_articles`/`LGPD_LABELS` e o `COMPLIANCE_DISCLAIMER`
   obrigatório ("não constitui auditoria…"). LGPD pode ser múltiplo ("Art. 46, Art. 48");
-  checks 12/20/26 têm LGPD `None`.
+  checks 12/20/26 têm LGPD `None`. A tabela cobre **todos** os checks da suíte (o teste
+  `test_every_check_is_mapped` falha se algum ficar de fora).
 - **`CheckResult` (base.py)** ganhou `owasp`/`cwe`/`lgpd` **opcionais** (`None` default,
   retrocompatível — `from_dict` de scan antigo não quebra). O **`runner`** os **carimba**
   pelo `check_id` (onde já seta o `check_id`), então **não** foi preciso editar as ~100
@@ -1310,3 +1312,37 @@ em padrões internacionais de segurança (OWASP) e considera a LGPD").
 `TECHNICAL` (seções 4.2/21). **Flush `scan:*` no Redis** após deploy para os scans
 cacheados reganharem os campos (metadata não muda o score, então o flush é recomendado,
 não obrigatório).
+
+## 32. Componentes vulneráveis + CVE matching (KL-33) — `check_30`
+
+O achado mais acionável do scanner: detecta **versões** de bibliotecas JS e CMS (100%
+passivo) e cruza com CVEs conhecidos. "jQuery 2.1.4 com 12 vulnerabilidades conhecidas"
+é concreto e assustador — diferente de "falta um header". É o **check 30** (tier pago,
+ORDER 30) e entra no score com **severidade dinâmica** (pelo maior CVSS/severidade).
+
+- **`scanner/cve_db.py` — base de CVEs.** `CVEDatabase` (singleton via `get_cve_db()`):
+  baixa a base **Retire.js** (`jsrepository.json`, ~500KB) em **runtime**, cacheia em
+  `KLARIM_CVE_CACHE` (padrão `/tmp/klarim_retirejs_cache.json`, **TTL 24h**, escrita
+  atômica) e é **fail-open** — download/parse falho → base vazia → o check vira
+  INCONCLUSO, **nunca** derruba o scan. `lookup_js(lib, version)` casa a versão contra
+  `below`/`atOrAbove` (via `packaging.version`), `recommended_upgrade` (menor versão
+  segura), `covers`, `severity_from_cves`/`max_cvss`. **NVD/NIST** para CMS/PHP/servidor
+  fica atrás de `NVD_ENABLED` (**default `false`**) — pronto mas inerte até ter rede/chave.
+- **`scanner/checks/check_30_vulnerable_components.py`.** `detect_versions(html, headers,
+  script_urls)` (puro, testável): JS via `<script src>` + inline (50KB) usando
+  `VERSION_PATTERNS`; CMS via `<meta generator>`/`?ver=` (`CMS_VERSION_PATTERNS`,
+  WordPress é o de maior impacto — 18,6% dos alvos); PHP/servidor via headers. Cruza com
+  o `cve_db`. **FAIL** se algum componente tem CVE; **PASS** se detectou componente(s)
+  cobertos pela base e nenhum é vulnerável; **INCONCLUSO** se nada foi detectado ou só há
+  componentes que a base não cobre (ex.: WordPress com NVD off). `details.components`
+  carrega `{library, version, source, cves:[{id,severity,cvss,summary}], recommendation}`.
+- **Classificação (KL-34/35):** `check_30` → **A06:2025 Vulnerable and Outdated
+  Components** / **CWE-1104** / **Art. 46** (em `classifications.py`, carimbado pelo runner).
+- **Relatórios:** `RISK_MESSAGES` (executivo — "carro com vários recalls que você nunca
+  levou na oficina"), `ACCESSIBLE`/`TECHNICAL` (técnico com CVE-IDs + recomendação de
+  atualização). Identidade dual preservada.
+
+**Regra inviolável:** 100% passivo — o check só lê o HTML/headers que o site já entrega
+(nenhuma versão é sondada ativamente). A base de CVE é **best-effort/fail-open**: nunca
+bloquear o scan por falha de download. **Flush `scan:*` no Redis após deploy** (novo check
+altera scores). `packaging` está no `requirements.txt`.

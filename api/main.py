@@ -752,7 +752,8 @@ def _summary_payload(report: ScanReport, full: bool = False) -> dict:
         "price_display": PRICE_DISPLAY,
         "message": (
             "Encaminhe este resumo ao responsável pelo seu site. "
-            "Relatório completo com os 29 pontos de segurança na versão paga."
+            f"Relatório completo com os {len(_FREE_META) + len(_PAID_META)} pontos "
+            "de segurança na versão paga."
         ),
     }
 

@@ -111,6 +111,7 @@ ACCESSIBLE: Dict[str, str] = {
     "check_27_dangling_cname": "Um subdomínio aponta para um serviço inexistente (risco de sequestro).",
     "check_28_hibp": "O domínio da sua empresa aparece em vazamentos de dados conhecidos.",
     "check_29_safe_browsing": "O Google marcou seu site como perigoso (malware/phishing).",
+    "check_30_vulnerable_components": "Seu site usa versões antigas de ferramentas com falhas de segurança já conhecidas e catalogadas.",
 }
 
 
@@ -263,6 +264,11 @@ TECHNICAL: Dict[str, Dict[str, str]] = {
         "impact": "O Google flagou o site como malware/phishing — navegadores mostram alerta vermelho antes de acessar.",
         "fix": "Remova o conteúdo malicioso e solicite revisão no Google Search Console.",
         "fix_code": "# https://search.google.com/search-console/security-issues",
+    },
+    "check_30_vulnerable_components": {
+        "impact": "Componentes desatualizados (bibliotecas JS, CMS) com CVEs públicos entregam ao atacante um roteiro pronto de exploração — o exploit já existe, é documentado e muitas vezes automatizado.",
+        "fix": "Atualize as bibliotecas e o CMS para versões suportadas; automatize a verificação de dependências (Dependabot, npm audit, Retire.js).",
+        "fix_code": "<!-- ex.: jQuery -->\n<script src=\"https://code.jquery.com/jquery-3.7.1.min.js\"></script>\n# WordPress: Painel → Atualizações → atualizar o core e os plugins",
     },
 }
 

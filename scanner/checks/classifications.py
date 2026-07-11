@@ -36,6 +36,7 @@ class Classification(NamedTuple):
 _A01 = "A01:2025 Broken Access Control"
 _A02 = "A02:2025 Cryptographic Failures"
 _A05 = "A05:2025 Security Misconfiguration"
+_A06 = "A06:2025 Vulnerable and Outdated Components"
 _A07 = "A07:2025 Identification and Authentication Failures"
 _A08 = "A08:2025 Software and Data Integrity Failures"
 _A09 = "A09:2025 Security Logging and Monitoring Failures"
@@ -81,6 +82,8 @@ CLASSIFICATIONS: Dict[str, Classification] = {
     "check_27_dangling_cname":   Classification(_A05, "CWE-672", "Art. 46"),
     "check_28_hibp":             Classification(_A07, "CWE-521", "Art. 46, Art. 48"),
     "check_29_safe_browsing":    Classification(_A09, "CWE-693", "Art. 46, Art. 48"),
+    # Componentes vulneráveis (KL-33)
+    "check_30_vulnerable_components": Classification(_A06, "CWE-1104", "Art. 46"),
 }
 
 _EMPTY = Classification(None, None, None)
