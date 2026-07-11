@@ -42,7 +42,11 @@ _SCRIPT_STYLE_RE = re.compile(r"<(script|style)\b[^>]*>.*?</\1>", re.DOTALL | re
 # A. Contatos
 # --------------------------------------------------------------------------- #
 
-_PHONE_RE = re.compile(r"\(?\d{2}\)?\s?\d{4,5}[-.\s]?\d{4}")
+# Telefone BR no texto: DDD opcional + separador interno OBRIGATÓRIO (hífen/ponto)
+# entre as duas metades. Sem o separador, corridas de dígitos (IDs, timestamps,
+# números de rastreio) viravam "telefone" — o separador é o que marca um número
+# realmente exibido para o cliente.
+_PHONE_RE = re.compile(r"(?:\(?\d{2}\)?[\s.\-]+)?\d{4,5}[.\-]\d{4}")
 _TEL_RE = re.compile(r"""tel:\s*\+?([\d\s().\-]{8,})""", re.IGNORECASE)
 _WA_RE = re.compile(
     r"""(?:wa\.me/|api\.whatsapp\.com/send\?phone=|web\.whatsapp\.com/send\?phone=)"""
@@ -91,9 +95,19 @@ def _first_phone(html_with_scripts: str, visible: str) -> Optional[str]:
             digs = digs[2:]  # tira o código do país
         if 10 <= len(digs) <= 11:
             return _fmt_phone(digs)
-    # Fallback: texto visível (sem script/style/comentário).
+    # Fallback: texto visível (sem script/style/comentário). Normaliza igual ao
+    # tel: — sem isso um match sairia cru e inconsistente (ex.: "55119444494").
     m = _PHONE_RE.search(visible or "")
-    return m.group(0).strip() if m else None
+    if not m:
+        return None
+    digs = re.sub(r"\D", "", m.group(0))
+    if digs.startswith("55") and len(digs) in (12, 13):
+        digs = digs[2:]  # tira o código do país
+    if 10 <= len(digs) <= 11:
+        return _fmt_phone(digs)
+    if 8 <= len(digs) <= 9:          # número local sem DDD — devolve como veio
+        return m.group(0).strip()
+    return None
 
 
 def extract_contacts(html_pages: Dict[str, str], site_domain: str = "") -> dict:

@@ -32,6 +32,20 @@ def test_extract_contacts_prefers_same_domain_email():
     assert c["email"] == "reservas@hotel.com.br"
 
 
+def test_phone_from_visible_text_is_formatted():
+    # Telefone exibido com hífen -> normalizado para (DD) 9999-9999.
+    c = p.extract_contacts({"h": "<p>Ligue: (11) 98690-1979</p>"}, "x.com.br")
+    assert c["phone"] == "(11) 98690-1979"
+    # Sem DDD, mas com hífen -> devolve o trecho local.
+    assert p.extract_contacts({"h": "<p>Fone 3333-4444</p>"}, "x.com.br")["phone"] == "3333-4444"
+
+
+def test_phone_ignores_bare_digit_runs():
+    # Corridas de dígitos sem separador interno (IDs, timestamps) NÃO são telefone.
+    for junk in ("1501510921", "17268339507", "55119444494", "ID 20260711182643"):
+        assert p.extract_contacts({"h": f"<span>{junk}</span>"}, "x.com.br")["phone"] is None
+
+
 def test_whatsapp_from_api_and_data_phone():
     assert p.extract_contacts({"h": 'a href="https://api.whatsapp.com/send?phone=5511988887777"'}
                               )["whatsapp"] == "5511988887777"
