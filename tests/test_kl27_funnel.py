@@ -18,25 +18,25 @@ from scanner.checks.base import CheckResult, Status, Severity
 # --- tiering --------------------------------------------------------------- #
 
 def test_tier_split_counts():
-    # 44 checks após o KL-37 (TLS profundo 41-44); 15 gratuitos, 29 pagos (ORDER>15).
-    assert len(scanner.ALL_CHECKS) == 44
+    # 48 checks após o KL-38 (content analysis 45-48); 15 gratuitos, 33 pagos (ORDER>15).
+    assert len(scanner.ALL_CHECKS) == 48
     assert len(scanner.FREE_CHECKS) == 15
     assert FREE_CHECK_MAX_ORDER == 15
     free_ids = {cid for cid, _ in scanner.FREE_CHECKS}
     all_ids = {cid for cid, _ in scanner.ALL_CHECKS}
     assert free_ids <= all_ids                     # gratuito é subconjunto
-    assert len(all_ids - free_ids) == 29           # os pagos
+    assert len(all_ids - free_ids) == 33           # os pagos
 
 
 def test_discover_checks_free_filters_by_order():
     assert len(discover_checks(full=False)) == 15
-    assert len(discover_checks(full=True)) == 44
+    assert len(discover_checks(full=True)) == 48
 
 
 def test_check_meta_marks_paid():
     meta = scanner.CHECK_META
-    assert len(meta) == 44
-    assert sum(1 for m in meta if m["paid"]) == 29
+    assert len(meta) == 48
+    assert sum(1 for m in meta if m["paid"]) == 33
     assert sum(1 for m in meta if not m["paid"]) == 15
     # os 15 primeiros (ORDER<=15) não são pagos; os demais são
     for m in meta:
@@ -80,7 +80,7 @@ def _free_report(fails=("check_02_hsts",)):
 def test_summary_payload_free_locks_paid_and_hides_detail():
     import api.main as m
     p = m._summary_payload(_free_report(), full=False)
-    assert len(p["free_checks"]) == 15 and len(p["paid_checks"]) == 29
+    assert len(p["free_checks"]) == 15 and len(p["paid_checks"]) == 33
     assert all(c["status"] == "locked" for c in p["paid_checks"])
     assert {c["status"] for c in p["free_checks"]} <= {"PASS", "FAIL", "INCONCLUSO"}
     # sem detalhes de risco no gratuito

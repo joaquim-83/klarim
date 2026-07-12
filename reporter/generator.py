@@ -126,6 +126,10 @@ ACCESSIBLE: Dict[str, str] = {
     "check_42_cert_chain": "A cadeia do certificado de segurança do seu site tem um problema de configuração.",
     "check_43_ocsp_stapling": "Seu site não verifica automaticamente a validade do certificado a cada conexão.",
     "check_44_key_strength": "A chave de criptografia do seu site é fraca demais para os padrões atuais.",
+    "check_45_html_comments": "O código do seu site tem comentários que revelam informações internas (servidores, caminhos de arquivos).",
+    "check_46_debug_mode": "Seu site mostra informações técnicas internas quando ocorre um erro.",
+    "check_47_open_redirect": "Seu site tem links que podem redirecionar visitantes para sites maliciosos.",
+    "check_48_password_fields": "O campo de senha do seu site permite que o navegador salve a senha automaticamente.",
 }
 
 
@@ -353,6 +357,26 @@ TECHNICAL: Dict[str, Dict[str, str]] = {
         "impact": "Chave RSA de 1024 bits é quebrável por fatoração (NIST deprecou em 2013, proibiu em 2014) — permite forjar o certificado e fazer MitM.",
         "fix": "Gere uma nova chave RSA 2048+ (ideal 4096) ou migre para ECDSA P-256 e reemita o certificado.",
         "fix_code": "openssl ecparam -genkey -name prime256v1 -out key.pem   # ECDSA P-256\n# ou: openssl genrsa -out key.pem 4096",
+    },
+    "check_45_html_comments": {
+        "impact": "Comentários HTML com nomes de servidores internos, IPs, paths de sistema ou TODOs de segurança dão ao atacante um mapa da infraestrutura e das fraquezas conhecidas.",
+        "fix": "Remova todos os comentários HTML com informação operacional na build de produção (minificação normalmente os elimina).",
+        "fix_code": "<!-- remova: server: db-prod-01.internal / TODO: fix XSS / /var/www/config.php -->",
+    },
+    "check_46_debug_mode": {
+        "impact": "Debug em produção expõe stack traces com paths de arquivos, versões de framework e trechos de código/SQL — roteiro pronto para explorar a aplicação.",
+        "fix": "Desative o modo debug em produção e configure páginas de erro genéricas.",
+        "fix_code": "# Django: DEBUG=False\n# Laravel: APP_DEBUG=false\n# WordPress: define('WP_DEBUG', false);\n# PHP: display_errors=Off",
+    },
+    "check_47_open_redirect": {
+        "impact": "Parâmetros de redirect sem validação permitem que um link com o seu domínio leve a uma página de phishing (o usuário confia porque começa no seu site).",
+        "fix": "Valide o destino do redirect contra uma whitelist de domínios/paths do próprio site.",
+        "fix_code": "# só aceitar caminhos relativos internos:\nif not next_url.startswith('/') or next_url.startswith('//'):\n    next_url = '/'",
+    },
+    "check_48_password_fields": {
+        "impact": "Campo de senha sem autocomplete adequado permite que o navegador salve/autocomplete a senha — risco em computadores compartilhados (LGPD Art. 11, dados sensíveis).",
+        "fix": "Use autocomplete='new-password' no cadastro/troca e 'current-password' no login; garanta HTTPS e Cache-Control: no-store.",
+        "fix_code": "<input type=\"password\" name=\"pass\" autocomplete=\"new-password\">",
     },
 }
 

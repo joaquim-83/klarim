@@ -169,7 +169,7 @@ async def check(url: str) -> CheckResult
   `PASS`. `INCONCLUSO` é neutro no score.
 
 **O número de checks é dinâmico e cresce com o projeto** — nunca trate um número
-específico como identidade do produto. Conjunto atual (**44**):
+específico como identidade do produto. Conjunto atual (**48**):
 
 | # | Check | Módulo | Severidade |
 |---|-------|--------|-----------|
@@ -217,6 +217,10 @@ específico como identidade do produto. Conjunto atual (**44**):
 | 42 | Certificate chain (cadeia/self-signed/expiração) | `check_42_cert_chain.py` | Média |
 | 43 | OCSP stapling (URI de revogação) | `check_43_ocsp_stapling.py` | Baixa |
 | 44 | Força da chave criptográfica | `check_44_key_strength.py` | Alta/Crítica |
+| 45 | Info sensível em comentários HTML | `check_45_html_comments.py` | Média/Alta |
+| 46 | Indicadores de modo debug em produção | `check_46_debug_mode.py` | Alta/Média |
+| 47 | Padrões de open redirect | `check_47_open_redirect.py` | Baixa/Média |
+| 48 | Campos de senha sem proteções | `check_48_password_fields.py` | Baixa |
 
 Checks 13–15 (supply chain, KL-2) fazem parse **passivo do HTML servido**;
 scripts injetados por JavaScript em runtime não são vistos por um GET simples.
@@ -1448,3 +1452,28 @@ configurado?", competindo com o SSL Labs. 4 checks pagos (ORDER>15), todos
 compartilham o handshake via `tls_analyzer` (não faz 4 handshakes). **Flush `scan:*` no Redis
 após deploy** (novos checks mudam scores). Usa só `ssl`/`socket` (stdlib) + `cryptography`
 (já no requirements) — **sem** pyOpenSSL.
+
+## 36. Content analysis passivo (KL-38) — checks 45–48
+
+Último card da Fase 0 (scanner profissional). Analisa o **HTML servido** em busca de padrões
+de risco — sem requisição nova (exceto o GET de erro do check_46). 4 checks pagos (ORDER>15).
+**Nova categoria OWASP** `_A04 = "A04:2025 Insecure Design"`.
+
+- **check_45 Comentários HTML** (MÉDIA/ALTA, A01/CWE-615): extrai `<!-- ... -->` e procura
+  credenciais/chaves/token (ALTA), IP/servidor/banco/TODO-de-segurança/paths (MÉDIA). Uma
+  **whitelist** (copyright, meta, tracking, markers de template, condicionais de IE) é
+  aplicada **antes** para evitar falso positivo.
+- **check_46 Debug mode** (ALTA/MÉDIA, A05/CWE-489): stack traces / erros de framework
+  (Python/PHP/Java/Django/Laravel/WP) no HTML **e** numa página de erro (GET numa URL
+  inexistente `/klarim-nonexistent-debug-check-404` — passivo, o que um navegador faria);
+  strip de `<script>/<style>` antes; headers de debug (Symfony) → FAIL MÉDIA.
+- **check_47 Open redirect** (BAIXA/MÉDIA, A01/CWE-601): detecta a **presença** de params de
+  redirect (`?redirect=`, `?next=`, `?url=`…) em href/action/src. **Não testa** se é
+  explorável (depende do servidor) → BAIXA; >5 ocorrências → MÉDIA.
+- **check_48 Password fields** (BAIXA, A04/CWE-522, **LGPD Art. 46+11**): `<input
+  type=password>` sem `autocomplete=off/new-password` (navegador salva a senha) ou sem
+  `name`/`id` (campo anônimo → phishing). Sem campo de senha = não aplicável (PASS).
+
+**Regra inviolável:** 100% passivo (analisa o HTML já servido; o único request extra é o GET
+de erro do check_46, inofensivo). Os 4 são pagos. **Flush `scan:*` no Redis após deploy**.
+A whitelist de comentários (check_45) roda **antes** dos padrões sensíveis.

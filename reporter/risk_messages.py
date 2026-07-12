@@ -282,6 +282,30 @@ RISK_MESSAGES: Dict[str, Dict[str, str]] = {
                 "caracteres. Um atacante pode quebrá-la e se passar pelo seu site.",
         "icon": "🗝️",
     },
+    "check_45_html_comments": {
+        "headline": "O código do seu site revela informações internas",
+        "risk": "Encontramos comentários no código que expõem nomes de servidores e caminhos de "
+                "arquivos. Um atacante usa isso para planejar um ataque mais preciso.",
+        "icon": "📝",
+    },
+    "check_46_debug_mode": {
+        "headline": "Seu site mostra informações técnicas quando dá erro",
+        "risk": "É como um cofre que mostra a combinação escrita na porta quando alguém erra a "
+                "senha. Os erros expõem a estrutura interna do seu site a qualquer visitante.",
+        "icon": "🐛",
+    },
+    "check_47_open_redirect": {
+        "headline": "Links do seu site podem levar a páginas falsas",
+        "risk": "Um atacante pode criar um link que começa com o endereço do seu site mas leva "
+                "para uma página maliciosa — o cliente confia porque vê o seu domínio.",
+        "icon": "↪️",
+    },
+    "check_48_password_fields": {
+        "headline": "O campo de senha pode ser salvo pelo navegador",
+        "risk": "Se um cliente acessa seu site de um computador público (lan house, hotel), a "
+                "próxima pessoa pode ver a senha salva pelo navegador.",
+        "icon": "🔑",
+    },
 }
 
 _SEV_ORDER = {"CRITICA": 0, "ALTA": 1, "MEDIA": 2, "BAIXA": 3}
@@ -293,14 +317,17 @@ _CAT_VAZAMENTO = {"check_01_https", "check_02_hsts", "check_04_tls",
                   "check_28_hibp", "check_31_permissions_policy",
                   "check_35_referrer_policy", "check_36_cache_control_forms",
                   "check_39_mta_sts", "check_41_cipher_suites", "check_42_cert_chain",
-                  "check_43_ocsp_stapling", "check_44_key_strength"}
+                  "check_43_ocsp_stapling", "check_44_key_strength",
+                  "check_48_password_fields"}
 _CAT_GOLPES = {"check_05_csp", "check_06_xfo", "check_14_risky_sources",
                "check_19_redirect_domain", "check_21_spf", "check_22_dkim",
                "check_23_dmarc", "check_27_dangling_cname", "check_29_safe_browsing",
                "check_32_coop", "check_33_coep", "check_34_corp",
-               "check_37_dnssec", "check_38_caa", "check_40_bimi"}
+               "check_37_dnssec", "check_38_caa", "check_40_bimi",
+               "check_47_open_redirect"}
 _CAT_INVASAO = {"check_08_server", "check_11_dirlist", "check_10_sensitive",
-                "check_16_api_docs", "check_20_info_disclosure", "check_26_subdomains"}
+                "check_16_api_docs", "check_20_info_disclosure", "check_26_subdomains",
+                "check_45_html_comments", "check_46_debug_mode"}
 _CAT_SUPPLY = {"check_13_sri", "check_14_risky_sources", "check_15_external_domains",
                "check_24_mixed_content", "check_30_vulnerable_components"}
 

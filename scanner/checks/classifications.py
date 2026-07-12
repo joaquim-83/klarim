@@ -35,6 +35,7 @@ class Classification(NamedTuple):
 
 _A01 = "A01:2025 Broken Access Control"
 _A02 = "A02:2025 Cryptographic Failures"
+_A04 = "A04:2025 Insecure Design"
 _A05 = "A05:2025 Security Misconfiguration"
 _A06 = "A06:2025 Vulnerable and Outdated Components"
 _A07 = "A07:2025 Identification and Authentication Failures"
@@ -101,6 +102,11 @@ CLASSIFICATIONS: Dict[str, Classification] = {
     "check_42_cert_chain":         Classification(_A02, "CWE-295", "Art. 46"),
     "check_43_ocsp_stapling":      Classification(_A02, "CWE-299", "Art. 46"),
     "check_44_key_strength":       Classification(_A02, "CWE-326", "Art. 46"),
+    # Content analysis passivo (KL-38)
+    "check_45_html_comments":      Classification(_A01, "CWE-615", "Art. 46"),
+    "check_46_debug_mode":         Classification(_A05, "CWE-489", "Art. 46"),
+    "check_47_open_redirect":      Classification(_A01, "CWE-601", "Art. 46"),
+    "check_48_password_fields":    Classification(_A04, "CWE-522", "Art. 46, Art. 11"),
 }
 
 _EMPTY = Classification(None, None, None)

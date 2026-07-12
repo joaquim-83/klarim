@@ -18,7 +18,7 @@ def test_every_check_is_mapped():
     suite = {m["check_id"] for m in CHECK_META}
     mapped = set(CLASSIFICATIONS)
     assert suite == mapped, f"faltando={suite - mapped} extra={mapped - suite}"
-    assert len(mapped) == 44
+    assert len(mapped) == 48
 
 
 def test_no_orphan_classifications():

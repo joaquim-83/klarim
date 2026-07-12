@@ -19,7 +19,7 @@ acionável. O conjunto de checks é **dinâmico e cresce continuamente** (hoje 2
 
 O número de checks **não é fixo** — novos módulos `check_*.py` são descobertos
 automaticamente (ver [Como adicionar um check](#como-adicionar-um-check)).
-Conjunto atual (44):
+Conjunto atual (48):
 
 | # | Check | Módulo | Severidade |
 |---|-------|--------|-----------|
@@ -67,6 +67,14 @@ Conjunto atual (44):
 | 42 | Certificate chain (self-signed / cadeia / expiração) | `check_42_cert_chain.py` | 🟡 Média |
 | 43 | OCSP stapling (URI de revogação no cert) | `check_43_ocsp_stapling.py` | 🔵 Baixa |
 | 44 | Força da chave criptográfica (RSA/ECDSA) | `check_44_key_strength.py` | 🟠 Alta / 🔴 Crítica |
+| 45 | Info sensível em comentários HTML | `check_45_html_comments.py` | 🟡 Média / 🟠 Alta |
+| 46 | Indicadores de modo debug em produção | `check_46_debug_mode.py` | 🟠 Alta / 🟡 Média |
+| 47 | Padrões de open redirect (detecção passiva) | `check_47_open_redirect.py` | 🔵 Baixa / 🟡 Média |
+| 48 | Campos de senha sem proteções (autocomplete) | `check_48_password_fields.py` | 🔵 Baixa |
+
+O KL-38 (última do scanner profissional) analisa o HTML servido em busca de padrões
+de risco: informação vazada em comentários, indicadores de debug em produção, padrões
+de open redirect e campos de senha sem proteção — 100% passivo, tier pago.
 
 O KL-37 aprofunda o TLS de "certificado válido?" para "TLS bem configurado?"
 (nível SSL Labs): cipher negociado, cadeia, OCSP e força da chave — via **um único
