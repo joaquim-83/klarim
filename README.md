@@ -481,6 +481,17 @@ worker (best-effort, **não** altera o score de segurança). Reprocessar os
 `sem_contato` existentes: `docker compose exec api python scripts/enrich_batch.py
 --limit 500`.
 
+**Reprocessamento completo (`scripts/enrich_all.py`):** para dar perfil + IA a
+**todos** os alvos (não só `sem_contato`) — os que foram escaneados antes do
+profiler/IA e os classificados como `outro`. Seleciona por prioridade em 3 grupos
+disjuntos: **G1** sem perfil (`alerted` > `scanned` > `sem_contato` > `discovered`),
+**G2** com perfil mas classificação fraca (a IA acerta o setor), **G3** com perfil +
+setor por IA mas sem descrição. Idempotente (nunca traz um alvo já completo),
+fail-open e controla custo (`--ai-delay`). Uso:
+`docker compose exec api python scripts/enrich_all.py [--limit 500 | --no-limit]
+[--only-ai | --only-sem-contato] [--dry-run] [--ai-delay 2]`. Automatizável por
+cron (2×/dia, 500 alvos → ~6 dias para drenar o backlog).
+
 **Enriquecimento por IA (KL-47A):** `scanner/ai_enrichment.py` usa **GPT-4o mini** (via
 `httpx`, sem SDK) numa **única** chamada para classificar o setor (inclui cauda longa),
 extrair contatos em texto corrido e gerar a descrição do negócio (~US$0,001/site). É

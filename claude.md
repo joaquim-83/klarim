@@ -1286,9 +1286,29 @@ links` (handles IG/FB/LI/YT/TT + maps + has_blog/has_app, ignora paths reservado
 `get_site_profile`. **Reprocessamento:** `scripts/enrich_batch.py --limit 500`
 (sem_contato → crawl + e-mail + perfil; achou e-mail → `discovered` + enfileira scan).
 
+**Reprocessamento completo — `scripts/enrich_all.py` (extensão do KL-50 + KL-47A).**
+Onde o `enrich_batch` só cobre `sem_contato`, este cobre **todos** os alvos acessíveis
+(não `descartado`) que ainda faltam perfil/IA — inclusive os escaneados **antes** do
+profiler/IA e os classificados como `outro`. Seleção por prioridade em **3 grupos
+disjuntos** (via `store.list_enrichment_candidates`/`count_enrichment_groups`, LEFT
+JOIN `site_profile`): **G1** sem perfil (`alerted` > `scanned` > `sem_contato` >
+`discovered`); **G2** com perfil mas classificação fraca e não-IA (`sector='outro'`
+ou confiança < 0.5 — a IA acerta o setor); **G3** com perfil + setor por IA mas sem
+descrição (a IA gera a descrição). Por alvo: crawl multi-page + `build_profile` + IA
+(`ai_enrich`/`merge_ai_into_profile`; setor só via `ai_update_classification`, que
+respeita `manual`/regex forte); e-mail achado (com MX) em `sem_contato` → `discovered`
++ enfileira. Helpers puros `enrichment_group`/`needs_crawl`/`needs_ai`/
+`should_update_sector` (espelham o SQL, testáveis offline). **Idempotente** (a seleção
+nunca traz alvo já completo), **fail-open** (IA opcional; erro por alvo é logado e
+não aborta o batch), **controla custo** (`--ai-delay`, ~US$0,001/site). Flags:
+`--limit N`/`--no-limit`, `--only-ai` (pula o crawl), `--only-sem-contato` (modo
+antigo), `--dry-run`. Log em `enrichment_all.log`. Cron sugerido: 2×/dia × 500 →
+~6 dias para drenar o backlog.
+
 **Regra inviolável:** o perfil é dado **comercial** (passivo, GET público) — **não
 altera o score de segurança**; a extração é sempre **best-effort** (erro só loga, nunca
-derruba scan/worker).
+derruba scan/worker). A IA **complementa** o regex (só preenche campo vazio; setor só
+em alvo fraco, nunca `manual`) — vale também no reprocessamento em massa.
 
 ## 31. Classificação OWASP/CWE/LGPD (KL-34/35)
 

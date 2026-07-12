@@ -191,6 +191,35 @@ CREATE INDEX IF NOT EXISTS idx_site_profile_cnpj ON site_profile(cnpj) WHERE cnp
 CREATE INDEX IF NOT EXISTS idx_site_profile_maturity ON site_profile(maturity_score);
 """
 
+# --------------------------------------------------------------------------- #
+# Seleção de alvos que precisam de enriquecimento (perfil + IA) — usado por
+# scripts/enrich_all.py. Três grupos disjuntos, do mais para o menos prioritário:
+#   G1 sem perfil · G2 com perfil mas classificação fraca (não-IA) · G3 com
+#   perfil + setor por IA mas sem descrição. Sempre exclui 'descartado'.
+# --------------------------------------------------------------------------- #
+
+_ENRICH_G1 = "sp.id IS NULL"
+_ENRICH_G2 = ("(sp.id IS NOT NULL AND t.classification_source IS DISTINCT FROM 'ai' "
+              "AND (t.sector = 'outro' OR t.classification_confidence < 0.5 "
+              "OR t.classification_confidence IS NULL))")
+_ENRICH_G3 = ("(sp.id IS NOT NULL AND (sp.description IS NULL OR sp.description = '') "
+              "AND t.classification_source = 'ai')")
+
+
+def _enrichment_where(mode: str = "all") -> str:
+    """Cláusula WHERE (sem a palavra WHERE) para os alvos que precisam de
+    enriquecimento. `mode`: 'all' | 'only_ai' (só G2/G3) | 'sem_contato'."""
+    parts = ["t.status <> 'descartado'"]
+    if mode == "sem_contato":
+        parts.append("t.status = 'sem_contato'")
+    if mode == "only_ai":
+        # Só alvos que já têm perfil — pula o crawl (G1 fica de fora).
+        parts.append("sp.id IS NOT NULL")
+        parts.append(f"({_ENRICH_G2} OR {_ENRICH_G3})")
+    else:
+        parts.append(f"({_ENRICH_G1} OR {_ENRICH_G2} OR {_ENRICH_G3})")
+    return " AND ".join(parts)
+
 
 class TargetStore:
     def _connect(self):
@@ -915,6 +944,59 @@ class TargetStore:
             cur.execute("SELECT * FROM site_profile WHERE target_id = %s", (target_id,))
             rows = self._rows_to_dicts(cur)
             return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def count_enrichment_groups(self, mode: str = "all") -> Dict[str, int]:
+        """Conta os alvos pendentes de enriquecimento por grupo (G1/G2/G3) e o
+        total. Ignora `limit` — é o panorama completo do backlog."""
+        where = _enrichment_where(mode)
+
+        def _fn(cur):
+            cur.execute(
+                f"SELECT "
+                f"  COUNT(*) FILTER (WHERE {_ENRICH_G1}) AS g1, "
+                f"  COUNT(*) FILTER (WHERE {_ENRICH_G2}) AS g2, "
+                f"  COUNT(*) FILTER (WHERE {_ENRICH_G3}) AS g3, "
+                f"  COUNT(*) AS total "
+                f"FROM targets t LEFT JOIN site_profile sp ON sp.target_id = t.id "
+                f"WHERE {where}"
+            )
+            g1, g2, g3, total = cur.fetchone()
+            return {"group1": int(g1 or 0), "group2": int(g2 or 0),
+                    "group3": int(g3 or 0), "total": int(total or 0)}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def list_enrichment_candidates(
+        self, limit: Optional[int] = 500, mode: str = "all",
+    ) -> List[Dict[str, Any]]:
+        """Alvos que precisam de enriquecimento, ordenados por prioridade
+        (G1 antes de G2 antes de G3; dentro de G1, alerted > scanned > sem_contato
+        > discovered). Traz os campos do perfil (LEFT JOIN) para evitar N+1:
+        `profile_id`, `profile_description`, `profile_sources`."""
+        where = _enrichment_where(mode)
+
+        def _fn(cur):
+            sql = (
+                "SELECT t.id, t.url, t.domain, t.sector, t.status, t.contact_email, "
+                "       t.classification_source, t.classification_confidence, "
+                "       sp.id AS profile_id, sp.description AS profile_description, "
+                "       sp.extraction_sources AS profile_sources "
+                "FROM targets t LEFT JOIN site_profile sp ON sp.target_id = t.id "
+                f"WHERE {where} "
+                "ORDER BY "
+                f"  CASE WHEN {_ENRICH_G1} THEN 0 "
+                f"       WHEN {_ENRICH_G2} THEN 1 ELSE 2 END, "
+                "  CASE t.status WHEN 'alerted' THEN 1 WHEN 'scanned' THEN 2 "
+                "       WHEN 'sem_contato' THEN 3 WHEN 'discovered' THEN 4 ELSE 5 END, "
+                "  t.id"
+            )
+            if limit is not None:
+                cur.execute(sql + " LIMIT %s", (limit,))
+            else:
+                cur.execute(sql)
+            return self._rows_to_dicts(cur)
 
         return await asyncio.to_thread(self._run, _fn)
 
