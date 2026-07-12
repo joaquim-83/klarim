@@ -52,7 +52,7 @@ if (Astro.request.method === 'POST') {
 
 const field =
   'w-full rounded-xl border border-slate-700 bg-slate-800/80 px-4 py-3 text-base text-white ' +
-  'placeholder:text-slate-500 outline-none transition-colors focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/30';
+  'placeholder:text-slate-500 outline-none transition-colors focus:border-brand-500 focus:ring-2 focus:ring-brand-500/30';
 ---
 
 <Base
@@ -65,10 +65,10 @@ const field =
     <h1 class="text-3xl font-bold tracking-tight text-white sm:text-4xl">Fale conosco</h1>
 
     {sent ? (
-      <div class="mt-8 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-6">
-        <p class="font-semibold text-emerald-300">Mensagem enviada!</p>
+      <div class="mt-8 rounded-2xl border border-brand-500/30 bg-brand-500/10 p-6">
+        <p class="font-semibold text-brand-300">Mensagem enviada!</p>
         <p class="mt-1 text-sm text-slate-300">Respondemos em até 48h.</p>
-        <a href="/" class="mt-4 inline-block text-sm text-emerald-400 hover:text-emerald-300">← Voltar ao início</a>
+        <a href="/" class="mt-4 inline-block text-sm text-brand-400 hover:text-brand-300">← Voltar ao início</a>
       </div>
     ) : (
       <>
@@ -101,13 +101,13 @@ const field =
             class="absolute left-[-9999px] h-0 w-0 opacity-0" />
 
           <button type="submit"
-            class="inline-flex items-center justify-center rounded-xl bg-emerald-500 px-6 py-3.5 text-base font-semibold text-slate-950 transition-colors hover:bg-emerald-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300">
+            class="inline-flex items-center justify-center rounded-xl bg-brand-500 px-6 py-3.5 text-base font-semibold text-slate-950 transition-colors hover:bg-brand-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-300">
             Enviar mensagem
           </button>
         </form>
 
         <p class="mt-6 text-sm text-slate-500">
-          Ou, se preferir: <a href="mailto:seguranca@klarim.net" class="text-emerald-400 hover:text-emerald-300">seguranca@klarim.net</a>
+          Ou, se preferir: <a href="mailto:seguranca@klarim.net" class="text-brand-400 hover:text-brand-300">seguranca@klarim.net</a>
         </p>
       </>
     )}

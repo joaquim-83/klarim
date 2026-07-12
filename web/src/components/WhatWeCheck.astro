@@ -29,10 +29,10 @@ const icons: Record<string, string> = {
     <div class="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
       {layers.map((l) => (
         <div class="flex gap-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
-          <svg class="mt-0.5 h-6 w-6 shrink-0 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" set:html={icons[l.icon]} />
+          <svg class="mt-0.5 h-6 w-6 shrink-0 text-brand-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" set:html={icons[l.icon]} />
           <div>
             <h3 class="font-semibold text-white">{l.name}</h3>
-            <p class="text-xs font-medium text-emerald-400/80">{l.count}</p>
+            <p class="text-xs font-medium text-brand-400/80">{l.count}</p>
             <p class="mt-1.5 text-sm leading-relaxed text-slate-400">{l.desc}</p>
           </div>
         </div>

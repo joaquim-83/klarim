@@ -44,10 +44,10 @@ function maskEmail(e) {
 
 const field =
   'w-full rounded-xl border border-slate-700 bg-slate-800/80 px-4 py-3.5 text-base text-white ' +
-  'placeholder:text-slate-500 outline-none transition-colors focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/30';
+  'placeholder:text-slate-500 outline-none transition-colors focus:border-brand-500 focus:ring-2 focus:ring-brand-500/30';
 const btn =
-  'inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-500 px-6 py-3.5 text-base font-semibold ' +
-  'text-slate-950 transition-colors hover:bg-emerald-400 disabled:opacity-60 disabled:cursor-not-allowed';
+  'inline-flex items-center justify-center gap-2 rounded-xl bg-brand-500 px-6 py-3.5 text-base font-semibold ' +
+  'text-slate-950 transition-colors hover:bg-brand-400 disabled:opacity-60 disabled:cursor-not-allowed';
 const card = 'rounded-2xl border border-slate-800 bg-slate-900/60 p-6 sm:p-8';
 
 // --------------------------------------------------------------------------- #
@@ -69,7 +69,7 @@ export default function ScanFlow({ url: initialUrl = '' }) {
     return (
       <div className={card}>
         <p className="text-slate-300">Nenhum site informado.</p>
-        <a href="/" className="mt-4 inline-block text-emerald-400 hover:text-emerald-300">← Voltar ao início</a>
+        <a href="/" className="mt-4 inline-block text-brand-400 hover:text-brand-300">← Voltar ao início</a>
       </div>
     );
   }
@@ -189,7 +189,7 @@ function CodeStep({ email, code, setCode, busy, submitCode, resendCode, setStep 
         {cooldown > 0 ? (
           <span className="text-slate-500">Reenviar em {cooldown}s</span>
         ) : (
-          <button onClick={() => { resendCode(); setCooldown(45); }} className="text-emerald-400 hover:text-emerald-300">
+          <button onClick={() => { resendCode(); setCooldown(45); }} className="text-brand-400 hover:text-brand-300">
             Reenviar código
           </button>
         )}
@@ -215,14 +215,14 @@ function ProgressStep({ domain }) {
       <p className="text-xl font-bold text-white">{domain}</p>
 
       <div className="mt-6 h-2.5 w-full overflow-hidden rounded-full bg-slate-800">
-        <div className="h-full rounded-full bg-emerald-500 transition-all duration-700 ease-out" style={{ width: `${pct}%` }} />
+        <div className="h-full rounded-full bg-brand-500 transition-all duration-700 ease-out" style={{ width: `${pct}%` }} />
       </div>
       <p className="mt-2 text-sm text-slate-400">{Math.round(pct)}% — 48 verificações de segurança</p>
 
       <ul className="mt-6 space-y-2">
         {CATEGORIES.map((cat, i) => (
           <li key={cat} className="flex items-center gap-2 text-sm">
-            <span className={i < catIdx ? 'text-emerald-400' : 'text-slate-600'}>{i < catIdx ? '✓' : '○'}</span>
+            <span className={i < catIdx ? 'text-brand-400' : 'text-slate-600'}>{i < catIdx ? '✓' : '○'}</span>
             <span className={i < catIdx ? 'text-slate-200' : 'text-slate-500'}>{cat}</span>
             {i === catIdx && <span className="text-slate-500">analisando…</span>}
           </li>
@@ -238,6 +238,7 @@ function ProgressStep({ domain }) {
 
 // --- Etapa 4: resultado ----------------------------------------------------- #
 const SEMA = {
+  // semáforo de score: verde/amarelo/vermelho são indicadores funcionais (não branding).
   verde: { dot: '🟢', ring: 'ring-emerald-500/40', text: 'text-emerald-400' },
   amarelo: { dot: '🟡', ring: 'ring-amber-500/40', text: 'text-amber-400' },
   vermelho: { dot: '🔴', ring: 'ring-red-500/40', text: 'text-red-400' },
@@ -292,7 +293,7 @@ function ResultView({ data, domain }) {
       {/* Benchmark */}
       {benchmark && benchmark.count > 0 && (
         <div className={card}>
-          <p className="text-sm font-medium uppercase tracking-wide text-emerald-400/80">Benchmark</p>
+          <p className="text-sm font-medium uppercase tracking-wide text-brand-400/80">Benchmark</p>
           <p className="mt-2 text-slate-300">
             Seu score: <span className="font-bold text-white">{data.score}</span> · Média dos sites brasileiros:{' '}
             <span className="font-bold text-white">{benchmark.avg_score}</span>
@@ -336,7 +337,7 @@ function ResultView({ data, domain }) {
       </div>
 
       <div className="text-center">
-        <a href="/" className="text-sm text-emerald-400 hover:text-emerald-300">← Escanear outro site</a>
+        <a href="/" className="text-sm text-brand-400 hover:text-brand-300">← Escanear outro site</a>
       </div>
     </div>
   );
@@ -377,7 +378,7 @@ function LimitStep({ message }) {
     <div className={card}>
       <p className="text-xl font-bold text-white">Limite atingido</p>
       <p className="mt-2 text-slate-300">{message}</p>
-      <a href="/" className="mt-4 inline-block text-emerald-400 hover:text-emerald-300">← Voltar ao início</a>
+      <a href="/" className="mt-4 inline-block text-brand-400 hover:text-brand-300">← Voltar ao início</a>
     </div>
   );
 }

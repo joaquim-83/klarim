@@ -1,13 +1,21 @@
 @import 'tailwindcss';
 
-/* Tailwind v4 CSS-first. A paleta slate/emerald/amber/red já vem do Tailwind;
-   aqui só definimos a fonte (sistema, sem Google Fonts — performance) e um par
-   de tokens de marca. Dark mode é o default (sem toggle nesta fase). */
+/* Tailwind v4 CSS-first. A paleta slate/amber/red já vem do Tailwind; a cor de
+   ACENTO da marca é o laranja/coral da logo (beacon + "R" de KLARIM), definido
+   aqui como `brand`. O verde do Tailwind fica RESERVADO para indicadores
+   funcionais (semáforo de score, checks ✅/❌), não para branding.
+   Dark mode é o default (sem toggle nesta fase). */
 @theme {
   --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
     Helvetica, Arial, 'Apple Color Emoji', 'Segoe UI Emoji';
   --font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', 'Roboto Mono', Menlo,
     Consolas, monospace;
+
+  /* Laranja/coral da logo Klarim (#FF6B35 = beacon e o "R" do wordmark). */
+  --color-brand-300: #ffa579;
+  --color-brand-400: #ff8a5c;
+  --color-brand-500: #ff6b35;
+  --color-brand-600: #e8541f;
 }
 
 html {
