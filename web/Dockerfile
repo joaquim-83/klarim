@@ -3,7 +3,7 @@
 # serve as páginas pré-renderizadas + assets (e as SSR das próximas fases).
 
 # --- build ---
-FROM node:20-slim AS build
+FROM node:22-slim AS build
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci
@@ -11,7 +11,7 @@ COPY . .
 RUN npm run build
 
 # --- runtime ---
-FROM node:20-slim AS web
+FROM node:22-slim AS web
 WORKDIR /app
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
