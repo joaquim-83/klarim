@@ -499,8 +499,16 @@ extrair contatos em texto corrido e gerar a descrição do negócio (~US$0,001/s
 impacto). A IA **complementa** o regex — só preenche campo vazio e só refina setor
 `outro`/fraco (nunca sobrescreve regex forte ou classificação manual); o e-mail da IA passa
 pela mesma validação de MX antes de sair de `sem_contato`. Roda inline no scan worker e no
-`enrich_batch.py`. 5 setores novos que o regex não pega: saude, tecnologia, industria,
-agencia, consultoria.
+`enrich_batch.py`/`enrich_all.py`.
+
+**Taxonomia de setores (KL-54):** `discovery/sector_taxonomy.py` é a **fonte da verdade
+única** — **48 setores** finos em **13 macro-setores** (+ `outro`), substituindo os ~15
+antigos que deixavam 57% dos alvos em `outro`. O prompt da IA lista os setores
+dinamicamente daí; o classificador regex derruba `PRICE_TIERS` (preço único → tier
+`standard`) e desmembra os buckets grossos (`odontologia`/`farmacia`/`academia`… saem de
+`clinica`); o profiler mapeia `@type` do Schema.org para os setores finos; a API expõe
+`GET /api/sectors` (48 setores + 13 macros) para dropdowns. Sem impacto no score, sem
+migration.
 
 ## Dashboard admin (`klarim.net/painel`)
 

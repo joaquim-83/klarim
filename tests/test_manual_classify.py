@@ -12,9 +12,10 @@ import api.main as m
 # --- _resolve_classification (lógica pura) --------------------------------- #
 
 def test_resolve_derives_tier_from_sector():
-    assert m._resolve_classification("clinica", None) == ("clinica", "enterprise")
+    # KL-54: preço único ⇒ todo setor deriva tier `standard`.
+    assert m._resolve_classification("clinica", None) == ("clinica", "standard")
     assert m._resolve_classification("hotel", None) == ("hotel", "standard")
-    assert m._resolve_classification("restaurante", None) == ("restaurante", "basic")
+    assert m._resolve_classification("odontologia", None) == ("odontologia", "standard")
 
 
 def test_resolve_honors_explicit_tier():
@@ -80,9 +81,9 @@ def test_patch_classify_derives_tier(client):
     r = client.patch("/targets/5/classify", json={"sector": "clinica"}, headers=_auth(client))
     assert r.status_code == 200
     body = r.json()
-    assert body["sector"] == "clinica" and body["price_tier"] == "enterprise"
+    assert body["sector"] == "clinica" and body["price_tier"] == "standard"
     assert body["classification_source"] == "manual"
-    assert client._store.calls[-1] == (5, "clinica", "enterprise")
+    assert client._store.calls[-1] == (5, "clinica", "standard")
 
 
 def test_patch_classify_invalid_sector(client):

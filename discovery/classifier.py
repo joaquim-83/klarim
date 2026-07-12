@@ -26,51 +26,135 @@ from html import unescape
 from typing import Dict, Optional, Tuple
 from urllib.parse import urlsplit
 
+from discovery.sector_taxonomy import VALID_SECTORS
+
 # --------------------------------------------------------------------------- #
-# Dicionários de setor
+# Dicionários de setor (KL-54 — taxonomia expandida para 48 setores + outro)
 # --------------------------------------------------------------------------- #
+# O regex NÃO precisa cobrir todos os 48 — a IA (scanner/ai_enrichment.py) faz o
+# trabalho pesado e cobre a cauda longa. Aqui ficam os padrões **óbvios/precisos**.
+# Como o domínio dá confiança 0.9 (que a IA não rebaixa), os setores **finos** vêm
+# ANTES dos genéricos (`odontologia` antes de `clinica`) — no empate, o específico
+# vence (a ordem de inserção do dict decide o desempate em `classify_by_domain`).
 
 # Camada 1: pistas no próprio domínio (o dono batizou o site). Sem acento.
 DOMAIN_PATTERNS: Dict[str, list] = {
-    "hotel": ["hotel", "pousada", "hostel", "resort", "inn"],
-    "clinica": ["clinica", "clinic", "odonto", "dent", "medic", "saude", "fisio",
-                "psico", "nutri", "veterinar"],
-    "escola": ["escola", "colegio", "educa", "ensino", "cursos", "academ", "universid"],
-    "ecommerce": ["loja", "shop", "store", "comercio", "mercado", "outlet"],
-    "condominio": ["condomi", "residen"],
-    "juridico": ["advog", "juridi", "advocacia", "direito", "legal"],
+    # ── saúde (finos antes de clinica) ──
+    "odontologia": ["odonto", "dentista", "dental", "ortodont", "implantodont"],
+    "veterinaria": ["veterinar", "clinicavet", "petvet"],
+    "psicologia": ["psicolog", "psicoterap", "psicanal"],
+    "nutricao": ["nutricion", "nutricao"],
+    "farmacia": ["farmacia", "drogaria", "manipula"],
+    "laboratorio": ["laboratorio", "diagnostico"],
+    "hospital": ["hospital", "prontosocorro"],
+    "clinica": ["clinica", "clinic", "medic", "saude", "fisio", "consultorio"],
+    # ── beleza ──
+    "salao_barbearia": ["barbearia", "barbershop", "cabeleire", "salaodebeleza"],
+    "estetica_spa": ["estetica", "depila"],
+    "academia": ["academia", "fitness", "crossfit", "pilates"],
+    # ── alimentação (finos antes de restaurante) ──
+    "padaria_confeitaria": ["padaria", "confeitaria", "panificad"],
+    "bar_lanchonete": ["lanchonete", "hamburgueria", "hamburg", "burger"],
+    "restaurante": ["restaur", "pizzaria", "pizza", "gastro", "cantina", "churrascaria"],
+    # ── comércio (finos antes de ecommerce) ──
+    "loja_moda": ["moda", "boutique", "calcados", "fashion"],
+    "otica": ["otica", "oticas"],
+    "supermercado": ["supermercado", "mercadinho", "mercearia", "hortifruti"],
+    "petshop": ["petshop", "agropet"],
+    "moveis_decoracao": ["moveis", "decoracao", "estofados"],
+    "eletronicos": ["informatica", "eletronic", "assistenciatecnica"],
+    "ecommerce": ["loja", "shop", "store", "comercio", "outlet"],
+    # ── serviços ──
     "contabilidade": ["contab", "contad", "fiscal", "tribut"],
-    "restaurante": ["restaur", "pizza", "burger", "gastro", "buffet", "cafe",
-                    "padaria", "confeitaria"],
+    "juridico": ["advog", "juridic", "advocacia", "direito", "legal"],
+    "consultoria": ["consultoria", "consultor"],
+    "agencia": ["agencia", "marketingdigital", "publicidade"],
+    "tecnologia": ["tecnologia", "sistemas", "software", "webdev"],
+    "seguros_financeiro": ["seguros", "corretoradeseguros", "financeira"],
+    "rh_recrutamento": ["recrutamento", "recursoshumanos"],
+    "grafica": ["grafica", "graficarapida", "impressos"],
+    # ── imóveis (finos antes de condominio) ──
     "imobiliaria": ["imob", "imovei", "imovel", "realt"],
+    "construtora": ["construtora", "incorpora", "engenhariacivil"],
+    "arquitetura": ["arquitet", "designdeinteriores"],
+    "condominio": ["condomi", "residen"],
+    # ── automotivo ──
     "automotivo": ["auto", "veicul", "carro", "motor", "oficina", "funilaria", "mecanica"],
+    # ── educação (finos antes de escola) ──
+    "faculdade": ["faculdade", "universidade", "univ"],
+    "curso_idiomas": ["idiomas", "escoladeingles", "cursodeingles"],
+    "escola": ["escola", "colegio", "educa", "ensino", "creche", "bercario"],
+    # ── turismo ──
+    "hotel": ["hotel", "pousada", "hostel", "resort", "inn"],
+    "turismo_viagens": ["turismo", "viagens", "agenciadeviagens"],
+    # ── eventos ──
+    "eventos_buffet": ["buffet", "cerimonial", "festas"],
+    "fotografia": ["fotografia", "fotograf", "filmagem", "estudiofoto"],
+    # ── indústria / transporte ──
+    "industria": ["industria", "fabrica", "industrial", "metalurgica"],
+    "transporte": ["transporte", "logistica", "transportadora", "mudancas"],
+    # ── institucional ──
+    "religioso": ["igreja", "paroquia", "diocese", "templo", "catedral"],
+    "ong_associacao": ["ong", "associacao", "sindicato", "fundacao"],
+    "governo": ["prefeitura", "camaramunicipal", "gov"],
 }
 
 # Camadas 2 e 3: keywords "âncora" (fortes) por setor. Armazenadas SEM acento —
 # o texto é "folded" (minúsculo + sem acento) antes de contar, então "clínica"
-# e "clinica" casam igual.
+# e "clinica" casam igual. Aqui ficam os setores frequentes e inequívocos; a
+# cauda longa fica só no domínio + IA (evita falso positivo no conteúdo).
 SECTOR_KEYWORDS: Dict[str, list] = {
-    "hotel": ["hotel", "pousada", "hospedagem", "hospede", "diaria", "check-in",
-              "check-out", "quarto", "suite", "hostel", "resort", "cafe da manha"],
-    "clinica": ["clinica", "consultorio", "odontolog", "dentista", "paciente",
-                "agendamento", "fisioterap", "psicolog", "nutricion", "veterinar",
+    # ── saúde desmembrada ──
+    "odontologia": ["odontolog", "dentista", "dental", "ortodont", "clareamento dental"],
+    "veterinaria": ["veterinar", "medicina veterinaria", "castracao", "vacina animal"],
+    "psicologia": ["psicolog", "psicoterapia", "psicanalise", "atendimento psicologico"],
+    "nutricao": ["nutricionista", "reeducacao alimentar", "consulta nutricional"],
+    "farmacia": ["farmacia", "drogaria", "medicamento", "manipulacao"],
+    "clinica": ["clinica", "consultorio", "paciente", "agendamento", "fisioterap",
                 "exame", "medico"],
-    "escola": ["escola", "colegio", "educacao", "aluno", "matricula", "ensino",
-               "professor", "pedagog", "vestibular", "creche", "bercario"],
+    # ── beleza ──
+    "salao_barbearia": ["barbearia", "cabeleireiro", "salao de beleza", "corte de cabelo",
+                        "manicure"],
+    "estetica_spa": ["estetica", "day spa", "depilacao", "limpeza de pele"],
+    "academia": ["academia", "musculacao", "crossfit", "pilates", "personal trainer"],
+    # ── alimentação desmembrada ──
+    "restaurante": ["restaurante", "cardapio", "gastronomia", "pizzaria", "prato executivo"],
+    "bar_lanchonete": ["lanchonete", "hamburgueria", "hamburguer", "petiscos", "chopp"],
+    "padaria_confeitaria": ["padaria", "confeitaria", "panificadora", "bolos e doces"],
+    "delivery": ["delivery", "tele-entrega", "peca pelo app"],
+    # ── comércio ──
     "ecommerce": ["carrinho", "comprar", "frete", "catalogo", "checkout", "estoque",
                   "adicionar ao carrinho", "parcelamento", "cupom"],
-    "condominio": ["condominio", "morador", "sindico", "assembleia", "portaria",
-                   "area comum", "taxa condominial"],
-    "juridico": ["advogado", "advocacia", "juridico", "tribunal", "oab", "litigio",
-                 "peticao", "processo judicial"],
+    "loja_moda": ["boutique", "roupas", "calcados", "moda feminina", "moda masculina"],
+    "otica": ["otica", "oculos de grau", "lentes de contato", "armacao"],
+    "petshop": ["petshop", "banho e tosa", "racao", "animais de estimacao"],
+    # ── serviços (mantidos) ──
     "contabilidade": ["contabilidade", "contador", "fiscal", "tributar", "imposto",
                       "escrituracao", "folha de pagamento", "simples nacional"],
-    "restaurante": ["restaurante", "cardapio", "delivery", "gastronomia", "pizzaria",
-                    "hamburgueria", "buffet", "confeitaria", "padaria", "prato"],
+    "juridico": ["advogado", "advocacia", "juridico", "tribunal", "oab", "litigio",
+                 "peticao", "processo judicial"],
+    # ── imóveis ──
     "imobiliaria": ["imobiliaria", "imovel", "imoveis", "corretor", "apartamento",
                     "locacao", "financiamento imobiliario", "aluguel"],
+    "condominio": ["condominio", "morador", "sindico", "assembleia", "portaria",
+                   "area comum", "taxa condominial"],
+    "arquitetura": ["arquitetura", "arquiteto", "design de interiores", "projeto arquitetonico"],
+    # ── automotivo (mantido) ──
     "automotivo": ["veiculo", "oficina mecanica", "funilaria", "seminovo",
                    "concessionaria", "pneu", "revisao automotiva", "automovel"],
+    # ── educação desmembrada ──
+    "escola": ["escola", "colegio", "educacao", "aluno", "matricula", "ensino",
+               "professor", "pedagog", "creche", "bercario"],
+    "faculdade": ["faculdade", "universidade", "graduacao", "pos-graduacao", "vestibular"],
+    "curso_idiomas": ["curso de idiomas", "aula de ingles", "intercambio"],
+    # ── turismo (mantém hotel) ──
+    "hotel": ["hotel", "pousada", "hospedagem", "hospede", "diaria", "check-in",
+              "check-out", "quarto", "suite", "hostel", "resort", "cafe da manha"],
+    "turismo_viagens": ["agencia de viagens", "pacote turistico", "roteiro de viagem"],
+    # ── eventos ──
+    "eventos_buffet": ["buffet", "cerimonial", "festa de casamento", "formatura",
+                       "espaco para eventos"],
+    "fotografia": ["ensaio fotografico", "fotografo", "book fotografico"],
 }
 
 # Keywords ambíguas: só contam para o setor se uma âncora do mesmo setor também
@@ -81,26 +165,10 @@ AMBIGUOUS: Dict[str, str] = {
     "entrega": "ecommerce",  # e-commerce vs. "entrega de serviço"
 }
 
-# Faixa de preço por setor (mantida). Valores casam com payments.PRICING.
-PRICE_TIERS: Dict[str, str] = {
-    "hotel": "standard",           # R$ 29
-    "restaurante": "basic",        # R$ 19
-    "ecommerce": "professional",   # R$ 39
-    "escola": "professional",      # R$ 39
-    "clinica": "enterprise",       # R$ 49
-    "juridico": "enterprise",      # R$ 49
-    "contabilidade": "professional",  # R$ 39
-    "condominio": "standard",      # R$ 29
-    "imobiliaria": "standard",     # R$ 29
-    "automotivo": "basic",         # R$ 19
-    # Setores da IA (KL-47A) — o regex não os detecta. Tier só p/ analytics (preço único R$19).
-    "saude": "enterprise",
-    "tecnologia": "professional",
-    "industria": "professional",
-    "agencia": "standard",
-    "consultoria": "professional",
-    "outro": "standard",           # R$ 29
-}
+# Faixa de preço por setor (KL-54): **preço único** (R$ 19) → todos os 48 setores +
+# `outro` recebem o mesmo tier `standard`. O tier existe só para analytics de
+# classificação; derivado da taxonomia (fonte da verdade), sem lista à mão.
+PRICE_TIERS: Dict[str, str] = {sector: "standard" for sector in VALID_SECTORS}
 
 # TLDs a remover do domínio para achar o "nome" escolhido pelo dono.
 _TLDS = (".com.br", ".net.br", ".org.br", ".gov.br", ".com", ".net", ".org",

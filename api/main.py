@@ -288,6 +288,24 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
+@app.get("/sectors")
+async def list_sectors() -> dict:
+    """Taxonomia de setores do Klarim (KL-54) — pública, para dropdowns/filtros.
+    Não expõe nada sensível: só id/label/macro. `outro` fica fora da listagem."""
+    from discovery.sector_taxonomy import SECTOR_TAXONOMY, MACRO_LABELS
+    return {
+        "sectors": [
+            {"id": sid, "label": meta["label"], "macro": meta["macro"]}
+            for sid, meta in SECTOR_TAXONOMY.items() if sid != "outro"
+        ],
+        "macro_sectors": [
+            {"id": mid, "label": MACRO_LABELS.get(mid, mid.replace("_", " ").title())}
+            for mid in sorted({m["macro"] for m in SECTOR_TAXONOMY.values()})
+            if mid != "outro"
+        ],
+    }
+
+
 # --------------------------------------------------------------------------- #
 # Scan
 # --------------------------------------------------------------------------- #

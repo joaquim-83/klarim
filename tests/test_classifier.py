@@ -21,7 +21,7 @@ def test_domain_hotel():
 def test_domain_clinica_two_patterns_higher_confidence():
     sector, conf = classify_by_domain("https://clinicaodonto.com.br")
     assert sector == "clinica"
-    assert conf == 0.95  # 'clinica' + 'odonto' → ≥2 padrões
+    assert conf == 0.95  # 'clinica' + 'clinic' → ≥2 padrões (KL-54: 'odonto' → odontologia)
 
 
 def test_domain_unknown_is_none():
@@ -89,9 +89,11 @@ def test_cascade_domain_wins_over_content():
 
 
 def test_cascade_returns_tier_and_confidence():
+    # KL-54: a taxonomia fina desmembrou "clínica odontológica" em `odontologia`;
+    # o preço é único ⇒ tier `standard` para todos os setores.
     sector, tier, conf = classify_sector(
         "<head><title>Clínica Odontológica</title></head>", "https://site-generico.com.br")
-    assert sector == "clinica" and tier == "enterprise" and 0.0 < conf <= 1.0
+    assert sector == "odontologia" and tier == "standard" and 0.0 < conf <= 1.0
 
 
 def test_cascade_fallback_outro():

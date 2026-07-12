@@ -154,16 +154,52 @@ def extract_contacts(html_pages: Dict[str, str], site_domain: str = "") -> dict:
 # --------------------------------------------------------------------------- #
 
 # @type do schema.org → setor Klarim (mais confiável que regex de conteúdo).
+# KL-54: mapeamento fino para a taxonomia de 48 setores. Chaves em minúsculo.
 _SCHEMA_SECTOR = {
-    "hotel": "hotel", "lodgingbusiness": "hotel", "resort": "hotel", "bedandbreakfast": "hotel",
-    "restaurant": "restaurante", "foodestablishment": "restaurante", "cafeorcoffeeshop": "restaurante",
-    "medicalbusiness": "clinica", "medicalclinic": "clinica", "dentist": "clinica", "hospital": "clinica",
-    "legalservice": "juridico", "attorney": "juridico",
-    "school": "escola", "educationalorganization": "escola",
-    "realestateagent": "imobiliaria",
-    "accountingservice": "contabilidade", "financialservice": "contabilidade",
+    # hospedagem & turismo
+    "hotel": "hotel", "lodgingbusiness": "hotel", "resort": "hotel",
+    "bedandbreakfast": "hotel", "hostel": "hotel", "motel": "hotel", "accommodation": "hotel",
+    "travelagency": "turismo_viagens",
+    # alimentação
+    "restaurant": "restaurante", "foodestablishment": "restaurante",
+    "cafeorcoffeeshop": "bar_lanchonete", "barorpub": "bar_lanchonete", "bakery": "padaria_confeitaria",
+    # saúde
+    "medicalbusiness": "clinica", "medicalclinic": "clinica", "physician": "clinica",
+    "dentist": "odontologia", "pharmacy": "farmacia", "veterinarycare": "veterinaria",
+    "hospital": "hospital", "medicallaboratory": "laboratorio", "psychologist": "psicologia",
+    # beleza & bem-estar
+    "beautysalon": "salao_barbearia", "hairsalon": "salao_barbearia", "barbershop": "salao_barbearia",
+    "dayspa": "estetica_spa", "healthandbeautybusiness": "estetica_spa",
+    "healthclub": "academia", "sportsactivitylocation": "academia",
+    # comércio
     "store": "ecommerce", "onlinestore": "ecommerce",
-    "automotivebusiness": "automotivo", "autorepair": "automotivo",
+    "clothingstore": "loja_moda", "shoestore": "loja_moda", "jewelrystore": "loja_moda",
+    "furniturestore": "moveis_decoracao", "homegoodsstore": "moveis_decoracao",
+    "electronicsstore": "eletronicos", "computerstore": "eletronicos",
+    "grocerystore": "supermercado", "supermarket": "supermercado",
+    "petstore": "petshop", "hardwarestore": "material_construcao",
+    "opticalstore": "otica", "optician": "otica",
+    # serviços profissionais
+    "legalservice": "juridico", "attorney": "juridico",
+    "accountingservice": "contabilidade",
+    "financialservice": "seguros_financeiro", "insuranceagency": "seguros_financeiro",
+    "employmentagency": "rh_recrutamento", "professionalservice": "consultoria",
+    "advertisingagency": "agencia", "marketingagency": "agencia", "printshop": "grafica",
+    # imóveis & construção
+    "realestateagent": "imobiliaria",
+    "generalcontractor": "construtora", "homeandconstructionbusiness": "construtora",
+    # automotivo
+    "automotivebusiness": "automotivo", "autorepair": "automotivo", "autodealer": "automotivo",
+    # educação
+    "school": "escola", "educationalorganization": "escola", "elementaryschool": "escola",
+    "preschool": "escola", "highschool": "escola",
+    "collegeoruniversity": "faculdade", "languageschool": "curso_idiomas",
+    # eventos & entretenimento
+    "eventvenue": "eventos_buffet", "caterer": "eventos_buffet",
+    "photographyservice": "fotografia", "photographer": "fotografia",
+    # institucional
+    "church": "religioso", "placeofworship": "religioso", "ngo": "ong_associacao",
+    "governmentorganization": "governo", "governmentoffice": "governo",
 }
 
 

@@ -23,29 +23,31 @@ from typing import Optional
 
 import httpx
 
+from discovery.sector_taxonomy import VALID_SECTORS, normalize_sector
+
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
 OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
 AI_ENRICHMENT_ENABLED = bool(OPENAI_API_KEY)
 
-# Setores válidos: os 10 originais + 5 que a IA classifica e o regex não.
-SECTORS = {
-    "hotel", "clinica", "ecommerce", "restaurante", "escola",
-    "imobiliaria", "juridico", "contabilidade", "automotivo", "condominio",
-    "saude", "tecnologia", "industria", "agencia", "consultoria", "outro",
-}
+# Setores válidos: a taxonomia completa do Klarim (KL-54 — 48 setores + outro).
+# Fonte da verdade em discovery/sector_taxonomy.py; mantido como alias local para
+# compatibilidade com quem importava `SECTORS` daqui.
+SECTORS = VALID_SECTORS
 
 _MAX_TEXT_CHARS = 3000
+
+# Lista de setores (sem `outro`) para o prompt — gerada da taxonomia, nunca à mão.
+_SECTOR_LIST = ", ".join(sorted(VALID_SECTORS - {"outro"}))
 
 SYSTEM_PROMPT = (
     "Você é um analista de inteligência comercial que examina sites brasileiros.\n"
     "Analise o texto extraído de um site e retorne um JSON com os campos abaixo.\n"
     "Responda APENAS com JSON válido, sem markdown, sem explicação.\n\n"
     "Campos obrigatórios:\n"
-    '- "sector": um dos valores exatos: hotel, clinica, ecommerce, restaurante, escola, '
-    "imobiliaria, juridico, contabilidade, automotivo, condominio, saude, tecnologia, "
-    "industria, agencia, consultoria, outro\n"
+    '- "sector": um dos valores exatos: ' + _SECTOR_LIST + ", outro\n"
+    "  (escolha o mais específico; use 'outro' só se nenhum servir)\n"
     '- "sector_confidence": float 0.0 a 1.0\n'
     '- "company_name": nome da empresa (limpo, sem slogan)\n'
     '- "description": resumo do negócio em 1-2 frases em português\n'
@@ -126,8 +128,8 @@ async def ai_enrich(domain: str, html_text: str, current_profile: Optional[dict]
     result = await call_openai(SYSTEM_PROMPT, prompt)
     if not result:
         return None
-    if result.get("sector") not in SECTORS:
-        result["sector"] = "outro"
+    # Normaliza (limpa + resolve aliases legados como saude→clinica); inválido ⇒ outro.
+    result["sector"] = normalize_sector(result.get("sector", ""))
     try:
         result["sector_confidence"] = float(result.get("sector_confidence") or 0.0)
     except (TypeError, ValueError):

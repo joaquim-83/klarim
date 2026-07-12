@@ -4,18 +4,71 @@ import { useState } from 'react'
 import { admin } from '../../lib/adminApi'
 import { Badge } from './ui'
 
-// Setores válidos com rótulos amigáveis (batem com PRICE_TIERS no backend).
+// Taxonomia de setores (KL-54) — espelha discovery/sector_taxonomy.py.
+// Ordenada por macro-setor para o dropdown ficar legível. A fonte da verdade é o
+// backend (GET /api/sectors); esta cópia mantém o editor funcional offline.
 export const SECTOR_OPTIONS = [
-  { value: 'hotel', label: 'Hotel / Pousada' },
-  { value: 'clinica', label: 'Clínica / Saúde' },
-  { value: 'escola', label: 'Escola / Educação' },
-  { value: 'ecommerce', label: 'E-commerce / Loja' },
-  { value: 'condominio', label: 'Condomínio' },
-  { value: 'juridico', label: 'Jurídico / Advocacia' },
+  // Alimentação & Bebidas
+  { value: 'restaurante', label: 'Restaurante' },
+  { value: 'bar_lanchonete', label: 'Bar / Lanchonete / Hamburgueria' },
+  { value: 'padaria_confeitaria', label: 'Padaria / Confeitaria' },
+  { value: 'delivery', label: 'Delivery / Food Truck' },
+  // Saúde
+  { value: 'clinica', label: 'Clínica Médica' },
+  { value: 'odontologia', label: 'Odontologia' },
+  { value: 'farmacia', label: 'Farmácia / Manipulação' },
+  { value: 'laboratorio', label: 'Laboratório / Diagnóstico' },
+  { value: 'psicologia', label: 'Psicologia / Terapia' },
+  { value: 'veterinaria', label: 'Veterinária' },
+  { value: 'hospital', label: 'Hospital / Pronto-socorro' },
+  { value: 'nutricao', label: 'Nutrição / Saúde Funcional' },
+  // Beleza & Bem-estar
+  { value: 'salao_barbearia', label: 'Salão / Barbearia' },
+  { value: 'estetica_spa', label: 'Estética / Spa' },
+  { value: 'academia', label: 'Academia / Pilates / Yoga' },
+  // Comércio
+  { value: 'ecommerce', label: 'E-commerce / Loja Online' },
+  { value: 'loja_moda', label: 'Moda / Calçados / Acessórios' },
+  { value: 'otica', label: 'Ótica' },
+  { value: 'supermercado', label: 'Supermercado / Mercearia' },
+  { value: 'petshop', label: 'Pet Shop' },
+  { value: 'material_construcao', label: 'Material de Construção' },
+  { value: 'moveis_decoracao', label: 'Móveis / Decoração' },
+  { value: 'eletronicos', label: 'Informática / Eletrônicos' },
+  // Serviços Profissionais
   { value: 'contabilidade', label: 'Contabilidade' },
-  { value: 'restaurante', label: 'Restaurante / Food' },
+  { value: 'juridico', label: 'Advocacia / Jurídico' },
+  { value: 'consultoria', label: 'Consultoria' },
+  { value: 'agencia', label: 'Agência / Marketing / Design' },
+  { value: 'tecnologia', label: 'Tecnologia / Software / TI' },
+  { value: 'seguros_financeiro', label: 'Seguros / Financeiro' },
+  { value: 'rh_recrutamento', label: 'RH / Recrutamento' },
+  { value: 'grafica', label: 'Gráfica / Impressão' },
+  // Imobiliário & Construção
   { value: 'imobiliaria', label: 'Imobiliária' },
-  { value: 'automotivo', label: 'Automotivo' },
+  { value: 'construtora', label: 'Construtora / Incorporadora' },
+  { value: 'arquitetura', label: 'Arquitetura / Design de Interiores' },
+  { value: 'condominio', label: 'Condomínio / Administradora' },
+  // Automotivo
+  { value: 'automotivo', label: 'Oficina / Concessionária / Autopeças' },
+  // Educação
+  { value: 'escola', label: 'Escola' },
+  { value: 'curso_idiomas', label: 'Curso Livre / Idiomas' },
+  { value: 'faculdade', label: 'Faculdade / Ensino Superior' },
+  // Hospedagem & Turismo
+  { value: 'hotel', label: 'Hotel / Pousada' },
+  { value: 'turismo_viagens', label: 'Turismo / Agência de Viagens' },
+  // Eventos & Entretenimento
+  { value: 'eventos_buffet', label: 'Eventos / Buffet / Cerimonial' },
+  { value: 'fotografia', label: 'Fotografia / Vídeo / Produtora' },
+  // Indústria / Transporte
+  { value: 'industria', label: 'Indústria / Fábrica' },
+  { value: 'transporte', label: 'Transporte / Logística' },
+  // Institucional
+  { value: 'religioso', label: 'Igreja / Instituição Religiosa' },
+  { value: 'ong_associacao', label: 'ONG / Associação / Sindicato' },
+  { value: 'governo', label: 'Governo / Órgão Público' },
+  // Catch-all
   { value: 'outro', label: 'Outro' },
 ]
 

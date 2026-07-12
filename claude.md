@@ -1528,3 +1528,50 @@ O classificador por regex deixa ~57% dos alvos em `outro` e a extração por reg
 serviços `api`/`worker`/`discovery` já usam `env_file: .env`, então a chave é propagada
 **sem** mudar o `docker-compose.yml`. `os.environ.get("OPENAI_API_KEY")` — ausente ⇒ regex-only.
 Opcional `OPENAI_MODEL` (padrão `gpt-4o-mini`). **Não** adicionar o SDK `openai` (httpx basta).
+
+## 38. Taxonomia de setores — 48 setores + 13 macro-setores (KL-54)
+
+Antes o Klarim tinha ~15 setores + `outro` e **57% dos alvos caíam em `outro`** (a
+taxonomia não cobria o mercado de PME brasileiro). O KL-54 expande para **48 setores
+finos** organizados em **13 macro-setores** (+ `outro`). Sem impacto no score de
+segurança, sem flush de Redis, sem migration (a coluna `targets.sector` é TEXT).
+
+- **`discovery/sector_taxonomy.py` — FONTE DA VERDADE ÚNICA** (módulo puro, zero
+  imports internos → sem risco de ciclo). `SECTOR_TAXONOMY` (`setor → {macro, label}`),
+  `VALID_SECTORS`, `MACRO_SECTORS`, `MACRO_LABELS`, `SECTOR_ALIASES` e os helpers
+  `get_macro`/`get_label`/`normalize_sector`. O **macro-setor é derivável** por lookup
+  (`get_macro`) — **não** há coluna nova no banco. **Ao mexer em setores, edite só
+  aqui**; todos os outros módulos importam desta taxonomia.
+- **IA (`scanner/ai_enrichment.py`):** o `SYSTEM_PROMPT` lista os 48 setores
+  **dinamicamente** (`", ".join(sorted(VALID_SECTORS - {"outro"}))`, nunca à mão);
+  `SECTORS = VALID_SECTORS`; a validação virou `normalize_sector(...)` (limpa +
+  resolve aliases + inválido ⇒ `outro`).
+- **Classificador regex (`discovery/classifier.py`):** `PRICE_TIERS = {s: "standard"
+  for s in VALID_SECTORS}` — **preço único** (R$ 19); o tier só existe para analytics.
+  `DOMAIN_PATTERNS`/`SECTOR_KEYWORDS` foram **desmembrados** (os finos vêm ANTES dos
+  genéricos no dict, para o específico vencer o empate: `odontologia`>`clinica`,
+  `padaria_confeitaria`>`restaurante`, `faculdade`>`escola`) e ganharam padrões dos
+  setores novos **óbvios/precisos**. O regex **não** cobre os 48 — a IA cobre a cauda
+  longa e refina os `outro`/fracos. ⚠️ `classify_sector` indexa `PRICE_TIERS[setor]`
+  **direto**, então todo setor em `DOMAIN_PATTERNS`/`SECTOR_KEYWORDS` **tem** que estar
+  em `VALID_SECTORS`.
+- **Profiler (`scanner/profiler.py`):** `_SCHEMA_SECTOR` (Schema.org `@type` → setor)
+  mapeia os tipos finos (`Dentist`→`odontologia`, `Bakery`→`padaria_confeitaria`,
+  `Pharmacy`→`farmacia`, `VeterinaryCare`→`veterinaria`, `TravelAgency`→
+  `turismo_viagens`, …). Todos os valores são setores válidos.
+- **API:** `_VALID_SECTORS = set(PRICE_TIERS)` já cobre os 48 automaticamente; endpoint
+  público **`GET /sectors`** (via Nginx `GET /api/sectors`) devolve `sectors`
+  (48 `{id,label,macro}`) + `macro_sectors` (13 `{id,label}`) para dropdowns/filtros —
+  **sem** expor nada sensível. `targets/stats` já agrupa por `sector` dinamicamente.
+- **Frontend:** `SECTOR_OPTIONS` (em `components/admin/SectorEditor.jsx`) espelha a
+  taxonomia (48 + outro, ordenada por macro); o filtro de setor em `Alvos.jsx` deriva
+  dela (`SECTOR_OPTS = SECTOR_OPTIONS.map(o => o.value)`).
+- **Retrocompatibilidade:** os 15 setores antigos continuam válidos; o genérico
+  antigo `saude` (KL-47A, ~3 alvos) foi **desmembrado** e vira `clinica` via
+  `SECTOR_ALIASES` (a IA refina no batch). Nenhum valor legado quebra.
+
+**Regra inviolável:** `discovery/sector_taxonomy.py` é a única fonte da verdade — ao
+adicionar/renomear setor, edite **só** lá; o prompt da IA, o `PRICE_TIERS` e a
+validação da API derivam dela. Todo setor classificável pelo regex **tem** que estar
+em `VALID_SECTORS` (senão `PRICE_TIERS[setor]` levanta `KeyError`). A taxonomia é
+**dado comercial** — **não** altera o score de segurança.

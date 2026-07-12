@@ -11,8 +11,8 @@ import { StatusEditor, EmailEditor } from '../../components/admin/TargetEditors'
 
 const STATUS_OPTS = ['discovered', 'scanned', 'alerted', 'sem_contato', 'unsubscribed', 'descartado']
 const PLATFORM_OPTS = ['duda', 'wordpress', 'cra', 'wix', 'shopify', 'squarespace', 'unknown']
-const SECTOR_OPTS = ['hotel', 'clinica', 'escola', 'restaurante', 'ecommerce', 'contabilidade',
-  'juridico', 'condominio', 'imobiliaria', 'automotivo', 'outro']
+// KL-54: filtro cobre a taxonomia completa (deriva de SECTOR_OPTIONS).
+const SECTOR_OPTS = SECTOR_OPTIONS.map((o) => o.value)
 const SOURCE_OPTS = ['public', 'discovery', 'admin', 'manual']
 const PAGE_SIZE = 25
 
