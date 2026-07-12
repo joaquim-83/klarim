@@ -117,7 +117,7 @@ async def _ai_enrich_profile(store, target_id: int, domain: str, homepage_html, 
         conf = float(ai.get("sector_confidence") or 0.0)
         if sector and sector != "outro" and conf > 0.7:
             tier = PRICE_TIERS.get(sector, "standard")
-            await store.ai_update_classification(target_id, sector, tier, conf)  # só fraco/outro
+            await store.ai_update_classification(target_id, sector, tier, conf)  # revê regex; preserva manual/ai (KL-54)
         print(f"[ai] {domain}: sector={sector} conf={conf:.2f} "
               f"preenchidos={changed or 'nenhum'}", flush=True)
     except Exception as exc:  # noqa: BLE001 - IA nunca derruba o worker

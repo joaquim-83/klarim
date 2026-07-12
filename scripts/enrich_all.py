@@ -92,9 +92,8 @@ def enrichment_group(row: Dict[str, Any]) -> Optional[int]:
     if row.get("profile_id") is None:
         return 1
     source = row.get("classification_source")
-    conf = row.get("classification_confidence")
-    weak = row.get("sector") == "outro" or conf is None or conf < 0.5
-    if source != "ai" and weak:          # None != "ai" == True (== SQL IS DISTINCT FROM)
+    # KL-54: toda classificação por regex é revista pela IA — só preserva ai/manual.
+    if source not in ("ai", "manual"):   # None/auto/domain → reclassificar
         return 2
     if source == "ai" and not (row.get("profile_description") or "").strip():
         return 3
@@ -114,14 +113,12 @@ def needs_crawl(row: Dict[str, Any], only_ai: bool = False) -> bool:
 
 
 def needs_ai(row: Dict[str, Any], profile: Optional[Dict[str, Any]]) -> bool:
-    """Precisa de IA se o setor é `outro`, a confiança é baixa, ou o perfil não
-    tem descrição. Sem `OPENAI_API_KEY`, a IA está desligada (retorna False)."""
+    """Precisa de IA se a classificação veio do **regex** (não-IA, não-manual — KL-54:
+    toda regex é revista), ou se o perfil (já IA/manual) **não tem descrição**. Sem
+    `OPENAI_API_KEY`, a IA está desligada (retorna False)."""
     if not AI_ENRICHMENT_ENABLED:
         return False
-    if row.get("sector") == "outro":
-        return True
-    conf = row.get("classification_confidence")
-    if conf is None or conf < 0.5:
+    if row.get("classification_source") not in ("ai", "manual"):
         return True
     if profile is not None and not (profile.get("description") or "").strip():
         return True
@@ -129,9 +126,9 @@ def needs_ai(row: Dict[str, Any], profile: Optional[Dict[str, Any]]) -> bool:
 
 
 def should_update_sector(row: Dict[str, Any], ai: Dict[str, Any]) -> bool:
-    """A IA só atualiza o setor de alvos **fracos** (nunca manual, nunca regex forte),
-    e só com confiança > 0.7 e setor ≠ `outro`."""
-    if row.get("classification_source") == "manual":
+    """A IA reclassifica **toda** classificação por regex (KL-54), desde que volte com
+    setor real (≠ `outro`) e confiança ≥ 0.7. **Preserva** `manual` e `ai`."""
+    if row.get("classification_source") in ("manual", "ai"):
         return False
     sector = ai.get("sector")
     if not sector or sector == "outro":
@@ -140,11 +137,7 @@ def should_update_sector(row: Dict[str, Any], ai: Dict[str, Any]) -> bool:
         conf = float(ai.get("sector_confidence") or 0.0)
     except (TypeError, ValueError):
         conf = 0.0
-    if conf < 0.7:
-        return False
-    if row.get("sector") != "outro" and (row.get("classification_confidence") or 0) >= 0.5:
-        return False  # regex já acertou com confiança
-    return True
+    return conf >= 0.7
 
 
 # --------------------------------------------------------------------------- #

@@ -194,14 +194,16 @@ CREATE INDEX IF NOT EXISTS idx_site_profile_maturity ON site_profile(maturity_sc
 # --------------------------------------------------------------------------- #
 # Seleção de alvos que precisam de enriquecimento (perfil + IA) — usado por
 # scripts/enrich_all.py. Três grupos disjuntos, do mais para o menos prioritário:
-#   G1 sem perfil · G2 com perfil mas classificação fraca (não-IA) · G3 com
-#   perfil + setor por IA mas sem descrição. Sempre exclui 'descartado'.
+#   G1 sem perfil · G2 com perfil e classificação por REGEX · G3 com perfil +
+#   setor por IA mas sem descrição. Sempre exclui 'descartado'.
+# KL-54: com a expansão de 15 → 48 setores, TODA classificação por regex precisa
+# ser revista pela IA — G2 não filtra mais por setor/confiança. Só **preserva** o
+# que é 'manual' (operador) ou já é 'ai'.
 # --------------------------------------------------------------------------- #
 
 _ENRICH_G1 = "sp.id IS NULL"
 _ENRICH_G2 = ("(sp.id IS NOT NULL AND t.classification_source IS DISTINCT FROM 'ai' "
-              "AND (t.sector = 'outro' OR t.classification_confidence < 0.5 "
-              "OR t.classification_confidence IS NULL))")
+              "AND t.classification_source IS DISTINCT FROM 'manual')")
 _ENRICH_G3 = ("(sp.id IS NOT NULL AND (sp.description IS NULL OR sp.description = '') "
               "AND t.classification_source = 'ai')")
 
@@ -324,17 +326,17 @@ class TargetStore:
     async def ai_update_classification(
         self, target_id: int, sector: str, price_tier: str, confidence: float,
     ) -> None:
-        """Classificação por IA (KL-47A) — só preenche classificação **fraca**.
+        """Classificação por IA (KL-47A + KL-54) — revê **toda** classificação por regex.
 
-        A IA complementa, nunca sobrescreve: só atualiza quando o setor atual é ``outro``
-        ou a confiança < 0.5, e **nunca** um alvo classificado manualmente."""
+        Com a expansão para 48 setores (KL-54), a IA passa a rever **qualquer**
+        classificação feita por regex (auto/domain), independentemente do setor atual
+        ou da confiança. Só **preserva** o que é ``manual`` (operador) ou já é ``ai``."""
         await asyncio.to_thread(
             self._run, lambda cur: cur.execute(
                 "UPDATE targets SET sector = %s, price_tier = %s, "
                 "classification_confidence = %s, classification_source = 'ai' "
                 "WHERE id = %s AND classification_source IS DISTINCT FROM 'manual' "
-                "AND (sector = 'outro' OR classification_confidence < 0.5 "
-                "     OR classification_confidence IS NULL)",
+                "AND classification_source IS DISTINCT FROM 'ai'",
                 (sector, price_tier, confidence, target_id))
         )
 

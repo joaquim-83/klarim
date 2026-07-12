@@ -90,10 +90,31 @@ def test_select_group1_no_profile():
     assert e.enrichment_group(_row(status="alerted", profile_id=None)) == 1
 
 
-def test_select_group2_weak_classification():
-    row = _row(profile_id=10, sector="outro", classification_source="auto",
-               classification_confidence=0.0)
-    assert e.enrichment_group(row) == 2
+def test_select_group2_any_regex_classification():
+    # KL-54: qualquer classificação por regex (auto/domain) entra no G2, independente
+    # do setor/confiança — incl. regex "forte" e não-`outro`.
+    assert e.enrichment_group(
+        _row(profile_id=10, sector="outro", classification_source="auto",
+             classification_confidence=0.0)) == 2
+    # agencianextweb: regex disse imobiliaria com confiança 0.5 → agora revisto pela IA
+    assert e.enrichment_group(
+        _row(profile_id=11, sector="imobiliaria", classification_source="domain",
+             classification_confidence=0.5)) == 2
+    # regex forte (não-outro, alta confiança) também é revisto agora
+    assert e.enrichment_group(
+        _row(profile_id=12, sector="clinica", classification_source="domain",
+             classification_confidence=0.9)) == 2
+
+
+def test_group2_preserves_ai_and_manual():
+    # já classificado pela IA e com descrição → não reentra (nem G2 nem G3)
+    assert e.enrichment_group(
+        _row(profile_id=20, sector="hotel", classification_source="ai",
+             classification_confidence=0.9, profile_description="ok")) is None
+    # manual → preservado (não entra no G2)
+    assert e.enrichment_group(
+        _row(profile_id=21, sector="hotel", classification_source="manual",
+             classification_confidence=1.0, profile_description="ok")) is None
 
 
 def test_select_group3_missing_description():
@@ -139,11 +160,18 @@ def test_needs_ai_disabled(monkeypatch):
     assert e.needs_ai(_row(sector="outro"), None) is False
 
 
-def test_needs_ai_outro_or_no_description(monkeypatch):
+def test_needs_ai_regex_always_reviewed(monkeypatch):
     monkeypatch.setattr(e, "AI_ENRICHMENT_ENABLED", True)
-    assert e.needs_ai(_row(sector="outro", classification_confidence=0.9), {"description": "x"}) is True
-    assert e.needs_ai(_row(sector="hotel", classification_confidence=0.9), {"description": ""}) is True
-    assert e.needs_ai(_row(sector="hotel", classification_confidence=0.9), {"description": "ok"}) is False
+    # KL-54: qualquer classificação por regex (auto/domain) → sempre revista pela IA,
+    # mesmo com setor definido e descrição preenchida.
+    assert e.needs_ai(_row(classification_source="auto", sector="hotel",
+                           classification_confidence=0.9), {"description": "ok"}) is True
+    assert e.needs_ai(_row(classification_source="domain", sector="clinica",
+                           classification_confidence=0.95), {"description": "ok"}) is True
+    # já IA/manual + descrição → não precisa; já IA sem descrição → precisa (gera descrição)
+    assert e.needs_ai(_row(classification_source="ai", sector="hotel"), {"description": "ok"}) is False
+    assert e.needs_ai(_row(classification_source="manual", sector="hotel"), {"description": "ok"}) is False
+    assert e.needs_ai(_row(classification_source="ai", sector="hotel"), {"description": ""}) is True
 
 
 # --- 8: a IA respeita a classificação manual ------------------------------- #
@@ -154,13 +182,21 @@ def test_ai_respects_manual():
     assert e.should_update_sector(manual, {"sector": "hotel", "sector_confidence": 0.95}) is False
 
 
-def test_ai_updates_weak_but_not_strong_regex():
+def test_ai_updates_regex_but_preserves_ai_and_manual():
+    # KL-54: a IA reclassifica QUALQUER regex confiável (incl. regex "forte")...
     weak = _row(classification_source="auto", sector="outro", classification_confidence=0.0)
     assert e.should_update_sector(weak, {"sector": "hotel", "sector_confidence": 0.9}) is True
+    # agencianextweb: domain/imobiliaria/0.5 → agencia (antes ficava bloqueado)
+    agencia = _row(classification_source="domain", sector="imobiliaria", classification_confidence=0.5)
+    assert e.should_update_sector(agencia, {"sector": "agencia", "sector_confidence": 0.9}) is True
     strong = _row(classification_source="domain", sector="clinica", classification_confidence=0.9)
-    assert e.should_update_sector(strong, {"sector": "hotel", "sector_confidence": 0.95}) is False
+    assert e.should_update_sector(strong, {"sector": "hotel", "sector_confidence": 0.95}) is True
+    # ...mas preserva ai e manual, e ignora IA pouco confiante / setor `outro`.
+    ai_row = _row(classification_source="ai", sector="hotel", classification_confidence=0.9)
+    assert e.should_update_sector(ai_row, {"sector": "clinica", "sector_confidence": 0.95}) is False
     lowconf = _row(classification_source="auto", sector="outro", classification_confidence=0.0)
     assert e.should_update_sector(lowconf, {"sector": "hotel", "sector_confidence": 0.5}) is False
+    assert e.should_update_sector(weak, {"sector": "outro", "sector_confidence": 0.99}) is False
 
 
 # --- 7: e-mail encontrado reativa o sem_contato + enfileira ---------------- #

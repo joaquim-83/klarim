@@ -1292,11 +1292,13 @@ Onde o `enrich_batch` só cobre `sem_contato`, este cobre **todos** os alvos ace
 profiler/IA e os classificados como `outro`. Seleção por prioridade em **3 grupos
 disjuntos** (via `store.list_enrichment_candidates`/`count_enrichment_groups`, LEFT
 JOIN `site_profile`): **G1** sem perfil (`alerted` > `scanned` > `sem_contato` >
-`discovered`); **G2** com perfil mas classificação fraca e não-IA (`sector='outro'`
-ou confiança < 0.5 — a IA acerta o setor); **G3** com perfil + setor por IA mas sem
-descrição (a IA gera a descrição). Por alvo: crawl multi-page + `build_profile` + IA
+`discovered`); **G2** com perfil e classificação por **regex** — não-IA e não-manual
+(**KL-54:** com 48 setores, TODA classificação por regex é revista pela IA,
+independentemente de setor/confiança; ex.: `agencianextweb` que o regex deu
+`imobiliaria` 0.5 vira `agencia`); **G3** com perfil + setor por IA mas sem descrição
+(a IA gera a descrição). Por alvo: crawl multi-page + `build_profile` + IA
 (`ai_enrich`/`merge_ai_into_profile`; setor só via `ai_update_classification`, que
-respeita `manual`/regex forte); e-mail achado (com MX) em `sem_contato` → `discovered`
+**preserva `manual` e `ai`**); e-mail achado (com MX) em `sem_contato` → `discovered`
 + enfileira. Helpers puros `enrichment_group`/`needs_crawl`/`needs_ai`/
 `should_update_sector` (espelham o SQL, testáveis offline). **Idempotente** (a seleção
 nunca traz alvo já completo), **fail-open** (IA opcional; erro por alvo é logado e
@@ -1511,11 +1513,15 @@ O classificador por regex deixa ~57% dos alvos em `outro` e a extração por reg
   script/style/tags), `ai_enrich` (normaliza o setor para o enum), `merge_ai_into_profile`.
   **Opt-in/fail-open:** sem `OPENAI_API_KEY`, `AI_ENRICHMENT_ENABLED=False` e toda a IA é
   silenciosamente desligada (regex-only, zero impacto); qualquer erro de rede/parse → `None`.
-- **Regra de ouro (inviolável):** a IA **complementa** o regex, **nunca sobrescreve**.
-  `merge_ai_into_profile` só preenche campo **vazio** do perfil. O setor só é atualizado por
-  `store.ai_update_classification` (source `ai`), que no SQL só toca alvos **fracos**
-  (`sector='outro' OR confidence<0.5`) e **nunca** `classification_source='manual'`; e só
-  quando a IA volta com setor ≠ `outro` e confiança > 0.7.
+- **Regra de ouro (inviolável):** a IA **complementa** o regex e **preserva** o que é
+  humano/IA. `merge_ai_into_profile` só preenche campo **vazio** do perfil. O setor só é
+  atualizado por `store.ai_update_classification` (source `ai`) e só quando a IA volta com
+  setor ≠ `outro` e confiança > 0.7. **KL-54:** com a expansão para 48 setores, o SQL passou
+  a rever **toda** classificação por **regex** (auto/domain), independentemente de
+  setor/confiança — o guard agora só **preserva** `classification_source='manual'` **e**
+  `='ai'` (`IS DISTINCT FROM 'manual' AND IS DISTINCT FROM 'ai'`). Antes só tocava alvos
+  fracos (`sector='outro' OR confidence<0.5`), o que deixava passar erros de regex confiante
+  (ex.: `agencianextweb` classificado `imobiliaria` 0.5).
 - **Contato via IA** (só quando o regex não achou): passa pela **mesma validação de MX**
   (KL-24) antes de tirar o alvo de `sem_contato` — nunca alimenta o funil com e-mail sem MX.
 - **5 setores novos** (a IA classifica, o regex não): `saude`, `tecnologia`, `industria`,
