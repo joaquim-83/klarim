@@ -93,6 +93,12 @@ PRICE_TIERS: Dict[str, str] = {
     "condominio": "standard",      # R$ 29
     "imobiliaria": "standard",     # R$ 29
     "automotivo": "basic",         # R$ 19
+    # Setores da IA (KL-47A) — o regex não os detecta. Tier só p/ analytics (preço único R$19).
+    "saude": "enterprise",
+    "tecnologia": "professional",
+    "industria": "professional",
+    "agencia": "standard",
+    "consultoria": "professional",
     "outro": "standard",           # R$ 29
 }
 

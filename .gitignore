@@ -55,3 +55,6 @@ redisdata/
 # --- KL-32: worker control state (runtime, per-VM) ---
 worker_control.json
 STOP_ALERTS
+
+# --- KL-47A: enrichment batch log (runtime) ---
+enrichment_batch.log

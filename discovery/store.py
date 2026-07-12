@@ -292,6 +292,23 @@ class TargetStore:
                 (sector, price_tier, confidence, classification_source, target_id))
         )
 
+    async def ai_update_classification(
+        self, target_id: int, sector: str, price_tier: str, confidence: float,
+    ) -> None:
+        """Classificação por IA (KL-47A) — só preenche classificação **fraca**.
+
+        A IA complementa, nunca sobrescreve: só atualiza quando o setor atual é ``outro``
+        ou a confiança < 0.5, e **nunca** um alvo classificado manualmente."""
+        await asyncio.to_thread(
+            self._run, lambda cur: cur.execute(
+                "UPDATE targets SET sector = %s, price_tier = %s, "
+                "classification_confidence = %s, classification_source = 'ai' "
+                "WHERE id = %s AND classification_source IS DISTINCT FROM 'manual' "
+                "AND (sector = 'outro' OR classification_confidence < 0.5 "
+                "     OR classification_confidence IS NULL)",
+                (sector, price_tier, confidence, target_id))
+        )
+
     async def bulk_update_classification(self, updates: List[tuple]) -> None:
         """Atualiza setor/tier/confiança em lote (uma conexão, source='domain').
         updates: (sector, tier, confidence, target_id). Pula alvos manuais."""

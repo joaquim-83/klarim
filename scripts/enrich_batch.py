@@ -28,9 +28,21 @@ from scanner import profiler  # noqa: E402
 from scanner.checks import dns_util  # noqa: E402
 from scanner.checks.base import fetch, base_url, registrable_domain, domain_of  # noqa: E402
 from discovery.store import get_target_store  # noqa: E402
-from discovery.contact import extract_email  # noqa: E402
+from discovery.contact import (  # noqa: E402
+    extract_email, _clean_email, _is_valid_email, _is_junk, email_has_mx)
+from discovery.classifier import PRICE_TIERS  # noqa: E402
+from scanner.ai_enrichment import (  # noqa: E402
+    AI_ENRICHMENT_ENABLED, ai_enrich, merge_ai_into_profile)
 
 SCAN_QUEUE = os.environ.get("KLARIM_SCAN_QUEUE", "klarim:scan_queue")
+
+
+async def _validate_ai_email(raw: str):
+    """E-mail vindo da IA: limpa + valida formato + MX (KL-24) antes de usar."""
+    e = _clean_email(raw or "")
+    if not e or not _is_valid_email(e) or _is_junk(e):
+        return None
+    return e if await asyncio.to_thread(email_has_mx, e) else None
 
 logging.basicConfig(
     level=logging.INFO, format="%(asctime)s %(message)s",
@@ -75,15 +87,39 @@ async def _process_one(store, redis, target: dict) -> str:
         ns = await asyncio.to_thread(dns_util.resolve_ns, dom)
         profile = await profiler.build_profile(
             url, homepage_html=homepage, headers=headers, mx_records=mx, ns_records=ns)
+
+        # 3) IA (KL-47A): refina setor + preenche campos vazios do perfil; se o regex
+        #    não achou e-mail, a IA tenta (validado por MX antes de sair de sem_contato).
+        ai_email = None
+        if AI_ENRICHMENT_ENABLED and homepage:
+            try:
+                ai = await ai_enrich(dom, homepage, current_profile=profile)
+                if ai:
+                    merge_ai_into_profile(profile, ai)
+                    sector = ai.get("sector")
+                    conf = float(ai.get("sector_confidence") or 0.0)
+                    if sector and sector != "outro" and conf > 0.7:
+                        await store.ai_update_classification(
+                            tid, sector, PRICE_TIERS.get(sector, "standard"), conf)
+                    if not email:
+                        ai_email = await _validate_ai_email((ai.get("contacts_found") or {}).get("email"))
+                    log.info("[ai] %s sector=%s conf=%.2f email_ia=%s", url, sector, conf,
+                             ai_email or "-")
+            except Exception as exc:  # noqa: BLE001
+                log.warning("[ai] falha em %s: %r", url, exc)
+            await asyncio.sleep(1)  # rate limit OpenAI
+
         try:
             await store.upsert_site_profile(tid, profile)
         except Exception as exc:  # noqa: BLE001
             log.warning("perfil não gravado para %s: %r", url, exc)
 
-        if email:
-            await store.update_target_email(tid, email)   # sem_contato -> discovered
+        final_email = email or ai_email
+        if final_email:
+            await store.update_target_email(tid, final_email)   # sem_contato -> discovered
             await _enqueue(redis, tid, url)
-            log.info("✓ %s -> e-mail %s (enfileirado)", url, email)
+            log.info("✓ %s -> e-mail %s%s (enfileirado)", url, final_email,
+                     " (IA)" if ai_email and not email else "")
             return "email"
         return "profile_only"
     except Exception as exc:  # noqa: BLE001

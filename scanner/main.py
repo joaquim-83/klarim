@@ -85,6 +85,11 @@ async def _enrich_profile(store, target_id: int, url: str, security_score) -> No
         profile = await profiler.build_profile(
             url, homepage_html=homepage_html, headers=headers,
             mx_records=mx, ns_records=ns, security_score=security_score)
+
+        # KL-47A: enriquecimento por IA (só se OPENAI_API_KEY configurada). Complementa o
+        # regex — preenche campos vazios do perfil e refina o setor quando fraco/outro.
+        await _ai_enrich_profile(store, target_id, dom, homepage_html, profile)
+
         await store.upsert_site_profile(target_id, profile)
         found = [k for k in ("commercial_email", "phone", "whatsapp", "cnpj", "instagram")
                  if profile.get(k)]
@@ -92,6 +97,31 @@ async def _enrich_profile(store, target_id: int, url: str, security_score) -> No
               f"({', '.join(found) or 'sem sinais'})", flush=True)
     except Exception as exc:  # noqa: BLE001 - enriquecimento nunca derruba o worker
         print(f"[profile] falha em {url}: {exc!r}", flush=True)
+
+
+async def _ai_enrich_profile(store, target_id: int, domain: str, homepage_html, profile: dict) -> None:
+    """KL-47A: enriquece com IA. Best-effort — sem chave ou erro, não faz nada."""
+    try:
+        from scanner.ai_enrichment import AI_ENRICHMENT_ENABLED, ai_enrich, merge_ai_into_profile
+        from discovery.classifier import PRICE_TIERS
+    except Exception:  # noqa: BLE001
+        return
+    if not AI_ENRICHMENT_ENABLED or not homepage_html:
+        return
+    try:
+        ai = await ai_enrich(domain, homepage_html, current_profile=profile)
+        if not ai:
+            return
+        changed = merge_ai_into_profile(profile, ai)   # só campos vazios
+        sector = ai.get("sector")
+        conf = float(ai.get("sector_confidence") or 0.0)
+        if sector and sector != "outro" and conf > 0.7:
+            tier = PRICE_TIERS.get(sector, "standard")
+            await store.ai_update_classification(target_id, sector, tier, conf)  # só fraco/outro
+        print(f"[ai] {domain}: sector={sector} conf={conf:.2f} "
+              f"preenchidos={changed or 'nenhum'}", flush=True)
+    except Exception as exc:  # noqa: BLE001 - IA nunca derruba o worker
+        print(f"[ai] falha em {domain}: {exc!r}", flush=True)
 
 
 def _parse_queue_item(raw: str):

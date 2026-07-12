@@ -481,6 +481,16 @@ worker (best-effort, **não** altera o score de segurança). Reprocessar os
 `sem_contato` existentes: `docker compose exec api python scripts/enrich_batch.py
 --limit 500`.
 
+**Enriquecimento por IA (KL-47A):** `scanner/ai_enrichment.py` usa **GPT-4o mini** (via
+`httpx`, sem SDK) numa **única** chamada para classificar o setor (inclui cauda longa),
+extrair contatos em texto corrido e gerar a descrição do negócio (~US$0,001/site). É
+**opt-in/fail-open**: sem `OPENAI_API_KEY` no `.env` da VM, tudo fica regex-only (zero
+impacto). A IA **complementa** o regex — só preenche campo vazio e só refina setor
+`outro`/fraco (nunca sobrescreve regex forte ou classificação manual); o e-mail da IA passa
+pela mesma validação de MX antes de sair de `sem_contato`. Roda inline no scan worker e no
+`enrich_batch.py`. 5 setores novos que o regex não pega: saude, tecnologia, industria,
+agencia, consultoria.
+
 ## Dashboard admin (`klarim.net/painel`)
 
 Painel do operador (login único) para operar e monitorar tudo: KPIs em tempo real

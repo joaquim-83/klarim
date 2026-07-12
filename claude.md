@@ -1477,3 +1477,34 @@ de risco — sem requisição nova (exceto o GET de erro do check_46). 4 checks 
 **Regra inviolável:** 100% passivo (analisa o HTML já servido; o único request extra é o GET
 de erro do check_46, inofensivo). Os 4 são pagos. **Flush `scan:*` no Redis após deploy**.
 A whitelist de comentários (check_45) roda **antes** dos padrões sensíveis.
+
+## 37. Enriquecimento por IA — setor + contato + perfil (KL-47A / KL-50 L5)
+
+O classificador por regex deixa ~57% dos alvos em `outro` e a extração por regex ~39% em
+`sem_contato`. Uma **única** chamada ao **GPT-4o mini** resolve os dois: classifica o setor
+(inclui cauda longa), extrai contatos em texto corrido e gera a descrição do negócio. Custo
+~US$0,001/site (~US$3,5 para os ~4,7k `sem_contato`).
+
+- **`scanner/ai_enrichment.py`** (httpx direto, **sem** o SDK `openai`): `call_openai`
+  (gpt-4o-mini, `response_format=json_object`, temp 0.1, chave de `OPENAI_API_KEY`),
+  `SYSTEM_PROMPT`/`build_user_prompt` (trunca 3000 chars), `extract_clean_text` (strip
+  script/style/tags), `ai_enrich` (normaliza o setor para o enum), `merge_ai_into_profile`.
+  **Opt-in/fail-open:** sem `OPENAI_API_KEY`, `AI_ENRICHMENT_ENABLED=False` e toda a IA é
+  silenciosamente desligada (regex-only, zero impacto); qualquer erro de rede/parse → `None`.
+- **Regra de ouro (inviolável):** a IA **complementa** o regex, **nunca sobrescreve**.
+  `merge_ai_into_profile` só preenche campo **vazio** do perfil. O setor só é atualizado por
+  `store.ai_update_classification` (source `ai`), que no SQL só toca alvos **fracos**
+  (`sector='outro' OR confidence<0.5`) e **nunca** `classification_source='manual'`; e só
+  quando a IA volta com setor ≠ `outro` e confiança > 0.7.
+- **Contato via IA** (só quando o regex não achou): passa pela **mesma validação de MX**
+  (KL-24) antes de tirar o alvo de `sem_contato` — nunca alimenta o funil com e-mail sem MX.
+- **5 setores novos** (a IA classifica, o regex não): `saude`, `tecnologia`, `industria`,
+  `agencia`, `consultoria` (em `SECTORS` e `PRICE_TIERS`; tier só p/ analytics — preço único).
+- **Integração:** scan worker (`scanner/main.py::_ai_enrich_profile`, após o `_enrich_profile`
+  do KL-50, inline) e `scripts/enrich_batch.py` (a IA tenta quando o regex não achou e-mail;
+  `await asyncio.sleep(1)` entre chamadas p/ rate limit da OpenAI).
+
+**Config (nunca no git):** `OPENAI_API_KEY` vive **só** no `/opt/klarim/.env` da VM. Os
+serviços `api`/`worker`/`discovery` já usam `env_file: .env`, então a chave é propagada
+**sem** mudar o `docker-compose.yml`. `os.environ.get("OPENAI_API_KEY")` — ausente ⇒ regex-only.
+Opcional `OPENAI_MODEL` (padrão `gpt-4o-mini`). **Não** adicionar o SDK `openai` (httpx basta).
