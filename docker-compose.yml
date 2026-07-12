@@ -65,8 +65,24 @@ services:
       redis:
         condition: service_healthy
 
-  # Frontend React (build estático) + Nginx como reverse proxy para a API.
-  # Serve HTTP até existir o certificado; depois HTTPS (ver frontend/entrypoint).
+  # Plataforma pública (Astro SSR standalone, KL-51). Node server em :4321; o
+  # Nginx (web) faz proxy das rotas públicas para cá. Publicado só em localhost
+  # (debug: curl localhost:4321) — o público chega via Nginx.
+  astro:
+    build: ./web
+    restart: unless-stopped
+    environment:
+      HOST: 0.0.0.0
+      PORT: 4321
+    ports:
+      - "127.0.0.1:4321:4321"
+    depends_on:
+      - api
+
+  # Nginx: reverse proxy + TLS self-healing + security headers. Serve o painel
+  # admin (build Vite estático, /painel) e faz proxy das rotas públicas → Astro e
+  # das rotas /api e /mcp → API. Serve HTTP até existir o certificado; depois
+  # HTTPS (ver frontend/docker-entrypoint.d/40-klarim-tls.sh).
   web:
     build: ./frontend
     restart: unless-stopped
@@ -82,6 +98,7 @@ services:
       - /var/www/certbot:/var/www/certbot:ro
     depends_on:
       - api
+      - astro
 
   worker:
     build: .

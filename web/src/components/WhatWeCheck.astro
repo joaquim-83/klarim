@@ -1,0 +1,47 @@
+---
+// 6 camadas que somam os 48 checks (KL-22/36/37/38 …). Contagens conferem com
+// o conjunto atual do scanner.
+const layers = [
+  { icon: 'lock', name: 'Transporte & TLS', count: '8 checks', desc: 'HTTPS, HSTS, certificado, cipher, cadeia, OCSP.' },
+  { icon: 'shield', name: 'Headers de segurança', count: '13 checks', desc: 'CSP, X-Frame, COOP/COEP/CORP, Permissions-Policy.' },
+  { icon: 'package', name: 'Supply chain', count: '4 checks', desc: 'SRI, fontes de script, domínios externos, CVEs.' },
+  { icon: 'globe', name: 'DNS & E-mail', count: '10 checks', desc: 'SPF, DKIM, DMARC, DNSSEC, CAA, MTA-STS, BIMI.' },
+  { icon: 'file', name: 'Conteúdo', count: '9 checks', desc: 'Source maps, arquivos sensíveis, formulários, debug.' },
+  { icon: 'search', name: 'OSINT & Reputação', count: '4 checks', desc: 'Vazamentos (HIBP), Safe Browsing, subdomínios.' },
+];
+
+const icons: Record<string, string> = {
+  lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+  shield: '<path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3z"/>',
+  package: '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9L12 3z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/>',
+  globe: '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.5 2.5 3.5 6 3.5 9s-1 6.5-3.5 9c-2.5-2.5-3.5-6-3.5-9s1-6.5 3.5-9z"/>',
+  file: '<path d="M6 3h8l4 4v14a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z"/><path d="M14 3v4h4"/>',
+  search: '<circle cx="11" cy="11" r="6"/><path d="M20 20l-3.5-3.5"/>',
+};
+---
+
+<section class="px-5 py-16 sm:py-20">
+  <div class="mx-auto max-w-6xl">
+    <h2 class="text-center text-2xl font-bold text-white sm:text-3xl">
+      48 verificações em 6 camadas de segurança
+    </h2>
+
+    <div class="mt-12 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      {layers.map((l) => (
+        <div class="flex gap-4 rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
+          <svg class="mt-0.5 h-6 w-6 shrink-0 text-emerald-400" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" set:html={icons[l.icon]} />
+          <div>
+            <h3 class="font-semibold text-white">{l.name}</h3>
+            <p class="text-xs font-medium text-emerald-400/80">{l.count}</p>
+            <p class="mt-1.5 text-sm leading-relaxed text-slate-400">{l.desc}</p>
+          </div>
+        </div>
+      ))}
+    </div>
+
+    <p class="mx-auto mt-10 max-w-2xl text-center text-sm text-slate-500">
+      Classificação <span class="text-slate-300">OWASP Top 10 2025</span>, <span class="text-slate-300">CWE</span>
+      e mapeamento <span class="text-slate-300">LGPD</span> em cada verificação.
+    </p>
+  </div>
+</section>

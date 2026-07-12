@@ -52,6 +52,48 @@ server {
     # afeta /api/, /mcp/ (prefixos, e a âncora ^/ não casa /api/admin) nem /painel/.
     location ~* ^/(backup|uploads|admin|internal|debug|test|staging|tmp|temp|logs|private|secret|dump)(/|$) { return 404; }
 
+    # KL-51 — nova plataforma pública (Astro): a raiz, as páginas institucionais/
+    # legais, o favicon/robots e os assets do Astro vão ao container `astro`. O
+    # RESTANTE (fluxo de scan, /painel, /assets) continua na SPA Vite (location /
+    # abaixo). Resolver dinâmico + upstream em variável (mesmo motivo do /api/):
+    # re-resolve o IP do `astro` a cada request, evitando 502 quando ele é recriado.
+    location = / {
+        resolver 127.0.0.11 valid=10s ipv6=off;
+        set $klarim_astro astro:4321;
+        proxy_pass http://$klarim_astro;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location ~ ^/(termos|privacidade|sobre|favicon\.svg|robots\.txt)(/|$) {
+        resolver 127.0.0.11 valid=10s ipv6=off;
+        set $klarim_astro astro:4321;
+        proxy_pass http://$klarim_astro;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location ^~ /_astro/ {
+        resolver 127.0.0.11 valid=10s ipv6=off;
+        set $klarim_astro astro:4321;
+        proxy_pass http://$klarim_astro;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        # add_header próprio quebra a herança dos headers do server — repetir os de segurança.
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'" always;
+    }
+
     location /assets/ {
         expires 1y;
         add_header Cache-Control "public, immutable";
@@ -66,6 +108,7 @@ server {
         try_files $uri =404;
     }
 
+    # SPA Vite (fluxo de scan existente + /painel). Fallback para o index.html.
     location / {
         try_files $uri /index.html;
     }

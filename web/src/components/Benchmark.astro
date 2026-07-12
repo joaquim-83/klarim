@@ -1,0 +1,28 @@
+---
+import ScanInput from './ScanInput.astro';
+// Score médio real do banco (hardcoded por ora — atualizado manualmente).
+const avg = 74;
+---
+
+<section class="border-y border-slate-800 bg-slate-900 px-5 py-16 sm:py-20">
+  <div class="mx-auto max-w-2xl text-center">
+    <p class="text-sm font-medium uppercase tracking-wide text-emerald-400/80">Benchmark</p>
+    <h2 class="mt-2 text-2xl font-bold text-white sm:text-3xl">
+      Score médio dos sites brasileiros: <span class="text-emerald-400">{avg}/100</span>
+    </h2>
+
+    <div class="mt-8" aria-hidden="true">
+      <div class="relative h-3 w-full overflow-hidden rounded-full bg-slate-800">
+        <div class="h-full rounded-full bg-gradient-to-r from-red-500 via-amber-500 to-emerald-500" style={`width:${avg}%`}></div>
+      </div>
+      <div class="mt-2 flex justify-between text-xs text-slate-500">
+        <span>0</span>
+        <span class="font-semibold text-slate-300">média {avg}</span>
+        <span>100</span>
+      </div>
+    </div>
+
+    <p class="mt-8 text-lg text-slate-300">Qual é o score do seu site?</p>
+    <ScanInput id="scan-url-benchmark" class="mx-auto mt-5 max-w-xl" />
+  </div>
+</section>

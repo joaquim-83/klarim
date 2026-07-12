@@ -1,0 +1,63 @@
+@import 'tailwindcss';
+
+/* Tailwind v4 CSS-first. A paleta slate/emerald/amber/red já vem do Tailwind;
+   aqui só definimos a fonte (sistema, sem Google Fonts — performance) e um par
+   de tokens de marca. Dark mode é o default (sem toggle nesta fase). */
+@theme {
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+    Helvetica, Arial, 'Apple Color Emoji', 'Segoe UI Emoji';
+  --font-mono: ui-monospace, 'SF Mono', 'Cascadia Code', 'Roboto Mono', Menlo,
+    Consolas, monospace;
+}
+
+html {
+  color-scheme: dark;
+  scroll-behavior: smooth;
+  background-color: #020617; /* slate-950 — evita flash branco */
+}
+
+body {
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Tipografia das páginas de conteúdo (termos, privacidade, sobre). O Tailwind v4
+   não traz o plugin typography por padrão — estilos mínimos, dark. */
+.prose-klarim {
+  color: #cbd5e1;
+  line-height: 1.75;
+}
+.prose-klarim h2 {
+  color: #fff;
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin-top: 2.25rem;
+  margin-bottom: 0.75rem;
+}
+.prose-klarim h3 {
+  color: #e2e8f0;
+  font-weight: 600;
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+}
+.prose-klarim p {
+  margin: 0.85rem 0;
+}
+.prose-klarim ul {
+  margin: 0.85rem 0;
+  padding-left: 1.25rem;
+  list-style: disc;
+}
+.prose-klarim li {
+  margin: 0.4rem 0;
+}
+.prose-klarim a {
+  color: #34d399;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.prose-klarim strong {
+  color: #f1f5f9;
+  font-weight: 600;
+}

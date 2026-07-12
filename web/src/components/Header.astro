@@ -1,0 +1,19 @@
+---
+import Logo from './Logo.astro';
+---
+
+<header class="absolute inset-x-0 top-0 z-10">
+  <nav class="mx-auto flex max-w-6xl items-center justify-between px-5 py-5">
+    <a href="/" aria-label="Página inicial do Klarim" class="rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500">
+      <Logo />
+    </a>
+    <!-- Login público chega na fase de contas (KL-51 fase 5). Por ora, aponta ao
+         painel do operador, o único login existente. -->
+    <a
+      href="/painel/login"
+      class="rounded-lg px-3.5 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white"
+    >
+      Entrar
+    </a>
+  </nav>
+</header>

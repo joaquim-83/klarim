@@ -338,8 +338,19 @@ reais gerados para os 3 hotéis Duda estão em
 
 ## Interface web
 
-Frontend **React + Vite + Tailwind v4** em [`frontend/`](./frontend/), servido
-como build estático pelo **Nginx** (que também faz proxy de `/api` → API). Telas:
+**Plataforma pública em Astro (KL-51, fase 1).** O site público está migrando de
+React SPA para **Astro** (SSR standalone, `web/`) para ganhar SEO e performance. O
+Nginx (serviço `web`) continua como front de TLS/segurança e faz **proxy das rotas
+públicas novas → serviço `astro`** (`:4321`): a **landing** (`/`) e as páginas
+**legais/institucionais** (`/termos`, `/privacidade`, `/sobre`). Dark-mode, mobile-first,
+sem fontes/JS externos; Tailwind v4 via `@tailwindcss/vite`. Build: `cd web && npm ci &&
+npm run build` (gera `dist/server/entry.mjs`). O **painel admin** e o **fluxo de scan
+existente** continuam no build React abaixo, servidos pelo mesmo Nginx (`/painel`,
+`/scan`, …). Ver `claude.md` §39 e o doc de arquitetura em `claude/reports/`.
+
+O restante do frontend (fluxo de scan + painel) segue em **React + Vite + Tailwind v4**
+em [`frontend/`](./frontend/), servido como build estático pelo **Nginx** (que também faz
+proxy de `/api` → API). Telas:
 
 - **Landing** (`/`) — scan self-service com **verificação de e-mail** (KL-25):
   URL + e-mail → código de 6 dígitos → scan. **1 scan gratuito por e-mail**; o 2º

@@ -1,0 +1,28 @@
+---
+import Logo from './Logo.astro';
+const year = 2026;
+const links = [
+  { href: '/termos', label: 'Termos de Uso' },
+  { href: '/privacidade', label: 'Política de Privacidade' },
+  { href: '/sobre', label: 'Sobre' },
+];
+---
+
+<footer class="border-t border-slate-800 bg-slate-950 px-5 py-12">
+  <div class="mx-auto flex max-w-6xl flex-col items-center gap-6 text-center">
+    <Logo />
+    <p class="text-sm text-slate-400">Segurança web para o Brasil.</p>
+
+    <nav class="flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-sm">
+      {links.map((l) => (
+        <a href={l.href} class="text-slate-400 transition-colors hover:text-white">{l.label}</a>
+      ))}
+      <a href="mailto:seguranca@klarim.net" class="text-slate-400 transition-colors hover:text-white">Contato</a>
+    </nav>
+
+    <p class="max-w-md text-xs leading-relaxed text-slate-600">
+      © {year} Klarim. Scanner 100% passivo — analisa apenas o que o site já entrega
+      publicamente. Nenhum dado privado é coletado.
+    </p>
+  </div>
+</footer>

@@ -56,5 +56,6 @@ redisdata/
 worker_control.json
 STOP_ALERTS
 
-# --- KL-47A: enrichment batch log (runtime) ---
+# --- KL-47A/KL-50: enrichment batch logs (runtime) ---
 enrichment_batch.log
+enrichment_all.log

@@ -1,0 +1,52 @@
+---
+export const prerender = true;
+
+import Base from '../layouts/Base.astro';
+import Header from '../components/Header.astro';
+import Footer from '../components/Footer.astro';
+import ScanInput from '../components/ScanInput.astro';
+import HowItWorks from '../components/HowItWorks.astro';
+import WhatWeCheck from '../components/WhatWeCheck.astro';
+import Benchmark from '../components/Benchmark.astro';
+import ForWhom from '../components/ForWhom.astro';
+
+const description =
+  'Descubra se o seu site é seguro em 30 segundos. 48 verificações de segurança, ' +
+  'relatório completo e gratuito. 13.000+ sites brasileiros já analisados.';
+---
+
+<Base title="Klarim" description={description} path="/">
+  <Header />
+
+  <!-- Hero — acima da dobra -->
+  <section class="relative overflow-hidden bg-gradient-to-b from-slate-950 to-slate-900 px-5 pt-28 pb-16 sm:pt-32 sm:pb-24">
+    <div class="mx-auto max-w-3xl text-center">
+      <h1 class="text-balance text-4xl font-bold leading-[1.1] tracking-tight text-white sm:text-6xl">
+        Descubra se o seu site é seguro
+        <span class="text-emerald-400"> — em 30 segundos.</span>
+      </h1>
+
+      <p class="mx-auto mt-6 max-w-xl text-pretty text-lg text-slate-400 sm:text-xl">
+        48 verificações de segurança. Relatório completo.
+        <span class="whitespace-nowrap font-semibold text-slate-200">100% gratuito.</span>
+      </p>
+
+      <ScanInput class="mx-auto mt-10 max-w-xl" />
+      <p class="mt-4 text-sm text-slate-500">100% gratuito. Sem cadastro.</p>
+
+      <div class="mt-10 inline-flex items-center gap-2 text-sm text-slate-500">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" aria-hidden="true">
+          <path d="M12 3l7 3v5c0 4.5-3 8-7 10-4-2-7-5.5-7-10V6l7-3z" stroke-linejoin="round"></path>
+          <path d="M9 12l2 2 4-4" stroke-linecap="round" stroke-linejoin="round"></path>
+        </svg>
+        <span><span class="font-semibold text-slate-300">13.000+</span> sites brasileiros analisados</span>
+      </div>
+    </div>
+  </section>
+
+  <HowItWorks />
+  <WhatWeCheck />
+  <Benchmark />
+  <ForWhom />
+  <Footer />
+</Base>

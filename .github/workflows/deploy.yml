@@ -68,9 +68,56 @@ jobs:
       - name: Run tests
         run: pytest -q
 
+  # KL-51: valida o build do Astro (plataforma pública) ANTES do deploy. Se o
+  # build quebrar, o deploy nem começa — o `web`/Astro só sobe se compilar aqui.
+  build-web:
+    name: Build web (Astro)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+      - name: Install & build
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+  # KL-51: valida a config do Nginx (nginx -t) ANTES do deploy. Uma config
+  # inválida derruba o container `web` (o site inteiro) e os health checks do
+  # deploy batem em api/astro DIRETO — não pegariam o Nginx quebrado. Gate no CI.
+  nginx-check:
+    name: Nginx config check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate http.conf + rendered https.conf with nginx -t
+        run: |
+          set -euo pipefail
+          D=klarim.net
+          # http.conf não usa certificado — valida a sintaxe direto.
+          docker run --rm \
+            -v "$PWD/frontend/nginx/http.conf:/etc/nginx/conf.d/default.conf:ro" \
+            nginx:alpine nginx -t
+          # https.conf.template: renderiza só ${DOMAIN} (como o entrypoint) e gera
+          # um certificado dummy para o nginx -t conseguir carregar ssl_certificate.
+          mkdir -p le/live/"$D"
+          openssl req -x509 -newkey rsa:2048 -nodes -days 1 \
+            -keyout le/live/"$D"/privkey.pem -out le/live/"$D"/fullchain.pem \
+            -subj "/CN=$D" 2>/dev/null
+          DOMAIN="$D" envsubst '${DOMAIN}' \
+            < frontend/nginx/https.conf.template > https.rendered.conf
+          docker run --rm \
+            -v "$PWD/https.rendered.conf:/etc/nginx/conf.d/default.conf:ro" \
+            -v "$PWD/le:/etc/letsencrypt/live:ro" \
+            nginx:alpine nginx -t
+
   deploy:
     name: Deploy to GCP VM
-    needs: test
+    needs: [test, build-web, nginx-check]
     runs-on: ubuntu-latest
     # Only deploy the real branch, never a fork PR or other ref.
     if: github.ref == 'refs/heads/main'

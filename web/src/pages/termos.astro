@@ -1,0 +1,74 @@
+---
+export const prerender = true;
+import Page from '../layouts/Page.astro';
+---
+
+<Page
+  title="Termos de Uso"
+  description="Termos de Uso do Klarim — scanner passivo de segurança web. Definição do serviço, uso, dados, perfil público, isenção de responsabilidade e propriedade intelectual."
+  path="/termos"
+  updated="12 de julho de 2026"
+>
+  <p>
+    Ao usar o Klarim, você concorda com estes Termos de Uso. Leia-os com atenção.
+  </p>
+
+  <h2>1. Definição do serviço</h2>
+  <p>
+    O Klarim é um <strong>scanner passivo de segurança web</strong> que analisa sites
+    públicos por meio de requisições GET/HEAD, consultas DNS e APIs públicas. O Klarim
+    <strong>não realiza testes invasivos</strong>, brute-force de credenciais nem
+    acesso a áreas autenticadas.
+  </p>
+
+  <h2>2. Uso do serviço</h2>
+  <p>
+    O serviço é gratuito para uso pessoal e comercial. A conta gratuita permite
+    monitorar 1 site. É proibido usar o Klarim para atividades ilegais, assédio ou
+    qualquer forma de abuso, incluindo tentativas de sobrecarregar a plataforma.
+  </p>
+
+  <h2>3. Dados coletados</h2>
+  <p>
+    O Klarim coleta dados técnicos de segurança (headers, DNS, certificados) e dados
+    comerciais publicados pelo próprio site (nome, contato, endereço). <strong>Não
+    coletamos dados pessoais de visitantes</strong> dos sites analisados. Detalhes na
+    <a href="/privacidade">Política de Privacidade</a>.
+  </p>
+
+  <h2>4. Perfil público</h2>
+  <p>
+    Sites com e-mail de contato válido podem ter um perfil público em
+    <code>klarim.net/site/{'{dominio}'}</code>. O proprietário pode solicitar a remoção
+    dos dados por meio do link "Remover meus dados" no perfil, com prazo de atendimento
+    de até 48 horas.
+  </p>
+
+  <h2>5. Avaliações e contribuições</h2>
+  <p>
+    Em versões futuras, usuários identificados poderão avaliar sites e sugerir
+    correções. O Klarim modera o conteúdo e se reserva o direito de remover avaliações.
+    O usuário é integralmente responsável pelo conteúdo que publica.
+  </p>
+
+  <h2>6. Isenção de responsabilidade</h2>
+  <p>
+    O score de segurança é resultado de uma análise passiva automatizada.
+    <strong>Não constitui auditoria de segurança, certificação, nem avaliação de
+    conformidade legal</strong>, e não substitui a consultoria de um profissional. O
+    Klarim se esforça pela precisão, mas não garante que a análise esteja livre de
+    falsos positivos ou negativos.
+  </p>
+
+  <h2>7. Propriedade intelectual</h2>
+  <p>
+    O conteúdo do Klarim (relatórios, metodologia e interface) é de sua propriedade.
+    Os dados dos sites analisados pertencem aos respectivos proprietários.
+  </p>
+
+  <h2>8. Alterações</h2>
+  <p>
+    O Klarim pode alterar estes Termos a qualquer momento. Usuários registrados serão
+    notificados por e-mail sobre mudanças relevantes.
+  </p>
+</Page>

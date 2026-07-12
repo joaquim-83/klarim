@@ -1,0 +1,40 @@
+---
+const steps = [
+  {
+    n: '1',
+    title: 'Digite a URL',
+    desc: 'Cole o endereço do site. Sem cadastro, sem cartão.',
+  },
+  {
+    n: '2',
+    title: 'Analisamos 48 pontos',
+    desc: 'Verificações passivas de segurança — sem tocar em dados privados.',
+  },
+  {
+    n: '3',
+    title: 'Receba o relatório',
+    desc: 'Score, semáforo e o que corrigir, em linguagem que você entende.',
+  },
+];
+---
+
+<section class="border-t border-slate-800 bg-slate-900 px-5 py-16 sm:py-20">
+  <div class="mx-auto max-w-6xl">
+    <h2 class="text-center text-2xl font-bold text-white sm:text-3xl">Como funciona</h2>
+    <p class="mx-auto mt-3 max-w-xl text-center text-slate-400">
+      Sem cadastro. Sem cartão. Resultado em 30 segundos.
+    </p>
+
+    <ol class="mt-12 grid gap-6 sm:grid-cols-3">
+      {steps.map((s) => (
+        <li class="rounded-2xl border border-slate-800 bg-slate-950/40 p-6">
+          <span class="inline-flex h-10 w-10 items-center justify-center rounded-full bg-emerald-500/10 text-lg font-bold text-emerald-400">
+            {s.n}
+          </span>
+          <h3 class="mt-4 text-lg font-semibold text-white">{s.title}</h3>
+          <p class="mt-2 text-sm leading-relaxed text-slate-400">{s.desc}</p>
+        </li>
+      ))}
+    </ol>
+  </div>
+</section>

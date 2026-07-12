@@ -1581,3 +1581,56 @@ adicionar/renomear setor, edite **só** lá; o prompt da IA, o `PRICE_TIERS` e a
 validação da API derivam dela. Todo setor classificável pelo regex **tem** que estar
 em `VALID_SECTORS` (senão `PRICE_TIERS[setor]` levanta `KeyError`). A taxonomia é
 **dado comercial** — **não** altera o score de segurança.
+
+## 39. Plataforma pública em Astro — landing + páginas legais (KL-51, fase 1)
+
+Fase 1 da migração do site público de **React SPA (Vite)** para **Astro** (SSR
+standalone), para ganhar SEO, performance e credibilidade. Arquitetura de experiência
+completa em `claude/reports/klarim_arquitetura_experiencia_plataforma.md`.
+
+**Decisão de arquitetura (menor risco, painel intacto):** em vez de substituir o
+`frontend/`, **adicionamos** um serviço `astro` e **mantivemos** o Nginx (serviço `web`)
+como front de TLS/segurança. O Nginx passou a fazer **proxy das rotas públicas novas →
+Astro** e continua servindo o **build Vite** em `/painel*` + o **fluxo de scan existente**
+(`/scan`, `/result`, `/pay`, …). Nada do painel/admin mudou.
+
+- **`web/` (novo) — projeto Astro 7** (`output: 'server'` + `@astrojs/node`
+  standalone → `dist/server/entry.mjs`; páginas desta fase com `export const prerender =
+  true` = SSG). Tailwind **v4** via `@tailwindcss/vite` (CSS-first, igual ao `frontend/`;
+  **não** o `@astrojs/tailwind`, que é v3). `@astrojs/react` já incluso para as *islands*
+  das próximas fases. Estrutura: `src/layouts` (`Base.astro` com SEO/OG/dark, `Page.astro`
+  para conteúdo), `src/components` (Header/Footer/Logo/ScanInput + seções da landing),
+  `src/pages` (`index`, `termos`, `privacidade`, `sobre`), `src/styles/global.css`,
+  `public/` (favicon.svg, robots.txt). Dark-mode default, mobile-first, PT-BR, **sem**
+  Google Fonts/JS externo. O `ScanInput` é um form progressivo `GET /scan` (o fluxo
+  completo de scan chega na fase 2).
+- **`docker-compose.yml`:** serviço **`astro`** (`build: ./web`, Node em `:4321`,
+  publicado só em `127.0.0.1:4321` para debug). O `web` (Nginx) ganhou `depends_on:
+  astro`.
+- **Nginx (`frontend/nginx/http.conf` + `https.conf.template`, só no server block
+  principal — NÃO no subdomínio painel):** rotas do Astro com **resolver dinâmico** +
+  upstream em variável (`set $klarim_astro astro:4321`, mesmo padrão do `/api/`):
+  `location = /` (landing), `~ ^/(termos|privacidade|sobre|favicon\.svg|robots\.txt)`,
+  `^~ /_astro/` (assets, cache 1a + **repete os security headers** — add_header próprio
+  quebra a herança). **Tudo o mais é preservado:** `location /` (SPA Vite), `/assets/`
+  (assets do painel), `/api/`, `/mcp/`, os bloqueios de paths sensíveis, o subdomínio
+  `painel.` e os security headers do server. ⚠️ Ao mexer no Nginx, rode o `nginx -t`
+  (há um job de CI para isso — veja abaixo); config inválida **derruba o site**.
+- **`.dockerignore` (novo, raiz):** exclui `frontend/`, `web/`, `node_modules`, `dist`
+  etc. do contexto da imagem Python (`api`/`worker`/`discovery`, `build: .`) — imagem
+  enxuta e **não recriada** quando só o Astro muda.
+- **`web/Dockerfile`:** multi-stage `node:20-slim` → `npm ci` + `npm run build` →
+  runtime roda `node ./dist/server/entry.mjs` (`HOST=0.0.0.0 PORT=4321`).
+- **CI (`.github/workflows/deploy.yml`):** dois jobs novos **antes** do deploy
+  (`deploy` tem `needs: [test, build-web, nginx-check]`): **`build-web`** (`npm ci` +
+  `npm run build` do Astro — quebra de build não vai a produção) e **`nginx-check`**
+  (`nginx -t` no `http.conf` e no `https.conf.template` renderizado, com cert dummy —
+  config inválida bloqueia o deploy, **não** derruba o site). `deploy.sh` ganhou um
+  health check do Astro (`curl localhost:4321/`).
+
+**Regra inviolável:** o Nginx é o front único de TLS/segurança — ao adicionar rota,
+**preserve** todos os security headers, o subdomínio painel, `/api`, `/mcp` e os
+bloqueios; valide com `nginx -t` (job de CI). O painel admin continua no build Vite
+(`frontend/`, servido em `/painel`); o Astro (`web/`) serve **só** as rotas públicas
+listadas. Fases seguintes migram o fluxo de scan, contas, dashboard e o painel para o
+Astro (ver o doc de arquitetura).

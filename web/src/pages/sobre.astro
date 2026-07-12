@@ -1,0 +1,52 @@
+---
+export const prerender = true;
+import Page from '../layouts/Page.astro';
+---
+
+<Page
+  title="Sobre o Klarim"
+  description="O Klarim é um scanner passivo de segurança web para PMEs brasileiras: 48 verificações, classificação OWASP e mapeamento LGPD. Não é pentest, não é invasivo."
+  path="/sobre"
+>
+  <p>
+    O <strong>Klarim</strong> é um scanner passivo de segurança web feito para
+    pequenas e médias empresas brasileiras — hotéis, clínicas, escolas,
+    e-commerces, condomínios, contabilidades — que têm um site exposto na internet
+    mas não têm uma equipe de segurança para cuidar dele.
+  </p>
+
+  <h2>O que fazemos</h2>
+  <p>
+    Analisamos um site a partir do que ele já entrega publicamente e calculamos um
+    <strong>score de 0 a 100</strong> com um semáforo simples (🟢 seguro, 🟡 atenção,
+    🔴 risco). São <strong>48 verificações</strong> agrupadas em camadas — transporte
+    e TLS, headers de segurança, supply chain, DNS e e-mail, conteúdo, e reputação
+    (OSINT). Cada achado é classificado segundo o <strong>OWASP Top 10 2025</strong>,
+    o <strong>CWE</strong> e mapeado para os artigos da <strong>LGPD</strong>.
+  </p>
+
+  <h2>Para quem</h2>
+  <p>
+    Para o <strong>dono do negócio</strong>, um relatório executivo em linguagem
+    acessível, focado no risco para a empresa. Para o <strong>desenvolvedor ou a
+    agência</strong>, um relatório técnico com a evidência de cada verificação e como
+    corrigir.
+  </p>
+
+  <h2>O que o Klarim NÃO é</h2>
+  <ul>
+    <li><strong>Não é pentest.</strong> Não exploramos vulnerabilidades.</li>
+    <li><strong>Não é invasivo.</strong> Não fazemos brute-force, injeção de payloads nem acesso a áreas autenticadas.</li>
+    <li><strong>Não acessa dados privados.</strong> Só lemos o que qualquer visitante já pode ver: páginas públicas, headers HTTP, certificados SSL e registros DNS públicos.</li>
+  </ul>
+  <p>
+    Em resumo: tratamos cada site como um site de terceiros que autorizou apenas
+    olhar o que é público. É um serviço de <em>security rating</em> / monitoramento de
+    superfície de ataque — não uma auditoria de segurança nem uma certificação.
+  </p>
+
+  <h2>Contato</h2>
+  <p>
+    Fale com a gente em <a href="mailto:seguranca@klarim.net">seguranca@klarim.net</a>.
+  </p>
+</Page>

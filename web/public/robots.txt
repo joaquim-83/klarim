@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+
+# Painel administrativo e endpoints internos não devem ser indexados.
+Disallow: /painel
+Disallow: /api/
+
+Sitemap: https://klarim.net/sitemap.xml

@@ -65,6 +65,24 @@ if [[ "$health_ok" -ne 1 ]]; then
   exit 1
 fi
 
+# 5b) Health check da plataforma pública (Astro, KL-51) em localhost:4321.
+echo "==> health check http://localhost:4321/ (Astro)"
+web_ok=0
+for i in $(seq 1 10); do
+  if curl -fsS "http://localhost:4321/" >/dev/null 2>&1; then
+    web_ok=1
+    echo "    Astro respondeu OK na tentativa $i."
+    break
+  fi
+  sleep 3
+done
+
+if [[ "$web_ok" -ne 1 ]]; then
+  echo "AVISO: Astro não respondeu em / após múltiplas tentativas. Logs recentes:" >&2
+  docker compose logs --tail=40 astro >&2 || true
+  exit 1
+fi
+
 # 6) Renova o certificado Let's Encrypt se estiver perto de expirar (no-op se
 #    ainda não é hora ou se o Certbot não está instalado). O deploy-hook recria
 #    o container web para carregar o novo certificado.

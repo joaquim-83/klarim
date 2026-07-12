@@ -1,0 +1,39 @@
+---
+interface Props {
+  /** id único do input (evita colisão quando o CTA repete na página). */
+  id?: string;
+  class?: string;
+}
+const { id = 'scan-url', class: cls = '' } = Astro.props;
+---
+
+<!-- Formulário progressivo (funciona sem JS): GET /scan?url=...
+     O fluxo completo de scan (e-mail → código → progresso) chega na fase 2;
+     por ora entrega a URL à rota de scan existente. -->
+<form
+  action="/scan"
+  method="get"
+  class={`flex w-full flex-col gap-3 sm:flex-row ${cls}`}
+>
+  <label for={id} class="sr-only">URL do site</label>
+  <input
+    id={id}
+    name="url"
+    type="text"
+    inputmode="url"
+    autocomplete="url"
+    spellcheck="false"
+    required
+    placeholder="https://seusite.com.br"
+    class="w-full flex-1 rounded-xl border border-slate-700 bg-slate-800/80 px-4 py-3.5 text-base text-white placeholder:text-slate-500 shadow-sm outline-none transition-colors focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/30"
+  />
+  <button
+    type="submit"
+    class="inline-flex items-center justify-center gap-2 rounded-xl bg-emerald-500 px-6 py-3.5 text-base font-semibold text-slate-950 transition-colors hover:bg-emerald-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300"
+  >
+    Verificar
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+    </svg>
+  </button>
+</form>
