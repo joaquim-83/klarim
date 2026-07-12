@@ -74,6 +74,9 @@ services:
     environment:
       HOST: 0.0.0.0
       PORT: 4321
+      # URL interna da API (rede do compose) para os fetches SSR do Astro
+      # (ex.: POST do formulário de contato → /contact).
+      KLARIM_API_URL: http://api:8000
     ports:
       - "127.0.0.1:4321:4321"
     depends_on:

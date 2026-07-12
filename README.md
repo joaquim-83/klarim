@@ -344,9 +344,16 @@ Nginx (serviço `web`) continua como front de TLS/segurança e faz **proxy das r
 públicas novas → serviço `astro`** (`:4321`): a **landing** (`/`) e as páginas
 **legais/institucionais** (`/termos`, `/privacidade`, `/sobre`). Dark-mode, mobile-first,
 sem fontes/JS externos; Tailwind v4 via `@tailwindcss/vite`. Build: `cd web && npm ci &&
-npm run build` (gera `dist/server/entry.mjs`). O **painel admin** e o **fluxo de scan
-existente** continuam no build React abaixo, servidos pelo mesmo Nginx (`/painel`,
-`/scan`, …). Ver `claude.md` §39 e o doc de arquitetura em `claude/reports/`.
+npm run build` (gera `dist/server/entry.mjs`). O **painel admin** continua no build React
+abaixo, servido pelo mesmo Nginx (`/painel`). Ver `claude.md` §39 e o doc de arquitetura
+em `claude/reports/`.
+
+**Fluxo de scan em Astro (fase 2, KL-51 f2):** o `/scan` (React island `ScanFlow`) faz
+e-mail → código de verificação → progresso → **resultado inline** (score, benchmark, 48
+checks por categoria, PDF), reusando os endpoints KL-25. **Paywall aberto por flag:**
+`PAYWALL_ENABLED` (default `false`) libera os **48 checks** com detalhe na web, sem limite
+de 1 scan/e-mail (o PDF é sempre gratuito); `=true` volta o gate KL-27. **Contato** em
+`/contato` (reusa `POST /contact`).
 
 O restante do frontend (fluxo de scan + painel) segue em **React + Vite + Tailwind v4**
 em [`frontend/`](./frontend/), servido como build estático pelo **Nginx** (que também faz

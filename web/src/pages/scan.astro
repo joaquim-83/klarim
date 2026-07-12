@@ -1,0 +1,37 @@
+---
+export const prerender = false; // SSR: lê ?url= e passa ao island
+
+import Base from '../layouts/Base.astro';
+import Header from '../components/Header.astro';
+import Footer from '../components/Footer.astro';
+import ScanFlow from '../components/scan/ScanFlow.jsx';
+
+const url = Astro.url.searchParams.get('url') || '';
+
+function safeDomain(u) {
+  if (!u) return '';
+  try {
+    return new URL(u.includes('://') ? u : `https://${u}`).hostname.replace(/^www\./, '');
+  } catch {
+    return u;
+  }
+}
+const domain = safeDomain(url);
+---
+
+<Base
+  title={domain ? `Analisando ${domain}` : 'Análise de segurança'}
+  description="Análise de segurança do seu site — 48 verificações, score e relatório completo, gratuito."
+  path="/scan"
+>
+  <Header />
+  <main class="mx-auto max-w-3xl px-5 pt-28 pb-20 sm:pt-32">
+    <ScanFlow url={url} client:load />
+    <noscript>
+      <p class="mt-6 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
+        A análise interativa precisa de JavaScript. Ative-o para escanear seu site.
+      </p>
+    </noscript>
+  </main>
+  <Footer />
+</Base>

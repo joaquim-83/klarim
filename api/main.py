@@ -91,6 +91,14 @@ def _free_access() -> bool:
     return _dev_mode() or not _payments_enabled()
 
 
+def _paywall_enabled() -> bool:
+    """Gate do resultado web (KL-51 f2). **Default `false`** (pivot freemium): todo
+    scan autorizado (e-mail verificado) vê os **48 checks** com detalhe, e não há
+    limite de 1 scan/e-mail. Com `PAYWALL_ENABLED=true` volta o gate do KL-27 (15
+    grátis + 33 bloqueados, 1 scan/e-mail). O PDF é sempre gratuito."""
+    return os.environ.get("PAYWALL_ENABLED", "false").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _resend_key() -> str:
     return os.environ.get("RESEND_API_KEY", "")
 
@@ -317,6 +325,37 @@ async def scan_full(url: str = Query(..., description="URL alvo (http/https)."))
 
 
 # --------------------------------------------------------------------------- #
+# Benchmark (KL-51 f2) — média de score para comparar no resultado. Público.
+# --------------------------------------------------------------------------- #
+
+@app.get("/benchmark")
+async def api_benchmark_global() -> dict:
+    """Média geral de score dos sites brasileiros já escaneados."""
+    try:
+        data = await get_target_store().global_avg_score()
+    except Exception:  # noqa: BLE001 - best-effort; nunca derruba o resultado
+        data = {"avg_score": 0, "count": 0}
+    return {"scope": "global", "avg_score": data["avg_score"], "count": data["count"]}
+
+
+@app.get("/benchmark/{sector}")
+async def api_benchmark_sector(sector: str) -> dict:
+    """Média de score do setor. Cai para o benchmark geral se o setor tem amostra
+    pequena (< 5 sites) ou é desconhecido."""
+    store = get_target_store()
+    try:
+        data = await store.sector_avg_score(sector)
+        if data["count"] < 5:
+            g = await store.global_avg_score()
+            return {"scope": "global", "sector": sector, "avg_score": g["avg_score"],
+                    "count": g["count"]}
+    except Exception:  # noqa: BLE001
+        return {"scope": "global", "sector": sector, "avg_score": 0, "count": 0}
+    return {"scope": "sector", "sector": sector, "avg_score": data["avg_score"],
+            "count": data["count"]}
+
+
+# --------------------------------------------------------------------------- #
 # Verificação de e-mail (código 6 dígitos) antes do scan público — KL-25
 # --------------------------------------------------------------------------- #
 
@@ -495,7 +534,10 @@ async def scan_request_code(body: ScanCodeBody, request: Request) -> dict:
     has_rescan = bool(credit and int(credit.get("rescan_credits") or 0) > 0)
     # KL-27: quem tem crédito de re-verificação pode pedir um código mesmo já tendo
     # escaneado — é a re-verificação paga (retorno médico), não o scan gratuito.
-    if credit and not has_rescan:
+    # KL-51 f2: com o paywall aberto (default), NÃO há limite de 1 scan/e-mail —
+    # a verificação de e-mail continua (captura de lead + anti-bot via rate limit),
+    # mas o usuário pode escanear quantos sites quiser.
+    if _paywall_enabled() and credit and not has_rescan:
         if credit.get("first_scan_url") == url:
             return {"status": "already_scanned", "message": "Você já escaneou este site."}
         return {"status": "limit_reached",
@@ -651,21 +693,35 @@ async def scan_summary(url: str = Query(..., description="URL alvo."),
                 else:
                     full = bool(payload.get("full"))  # re-verificação → completo
 
+    # Paywall aberto (KL-51 f2, default): o resultado web mostra os 48 checks com
+    # detalhe. `open_all` reflete o flag; `full` só é forçado para o resultado
+    # (não muda quem PODE escanear — isso continua exigindo autorização acima).
+    open_all = not _paywall_enabled()
+
     if not authorized:
-        # Sem autorização de scan novo: só devolve resultado gratuito já existente.
-        recent = await get_recent_only(url, full=False)
+        # Sem autorização de scan novo: só devolve resultado já existente (o tier
+        # segue o paywall — aberto ⇒ completo).
+        recent = await get_recent_only(url, full=open_all)
         if recent is None:
             return {"status": "auth_required",
                     "message": "Verifique seu e-mail para escanear este site."}
-        return _summary_payload(recent, full=False)
+        return _summary_payload(recent, full=open_all)
+
+    # Caminho público gratuito (token, sem admin/charge) — é o que ingere (KL-17).
+    # Capturado ANTES de abrir o paywall, senão o `full` mascararia o ingest.
+    is_public_free = (not is_admin) and (not full)
+    if open_all:
+        full = True  # resultado completo (48) para todo scan autorizado
 
     # Só o caminho público gratuito ingere (KL-17); admin/pago/re-verificação já
     # ingerem no seu próprio fluxo — evita linhas de scan duplicadas (Fix pós-KL-27).
     # Demo (Fix pós-KL-27) é marcado source='demo' para não poluir as métricas reais.
     if _is_demo(email=scanned_by, url=url):
         ingest = "demo"
+    elif is_public_free:
+        ingest = "public"
     else:
-        ingest = "public" if not full else None
+        ingest = None
     report = await _safe_scan(url, full=full, ingest_source=ingest, scanned_by_email=scanned_by)
     data = _summary_payload(report, full=full)
     if full:

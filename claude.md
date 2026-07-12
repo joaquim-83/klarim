@@ -1634,3 +1634,34 @@ bloqueios; valide com `nginx -t` (job de CI). O painel admin continua no build V
 (`frontend/`, servido em `/painel`); o Astro (`web/`) serve **só** as rotas públicas
 listadas. Fases seguintes migram o fluxo de scan, contas, dashboard e o painel para o
 Astro (ver o doc de arquitetura).
+
+### Fase 2 — fluxo de scan + resultado + correções (KL-51 f2)
+
+- **Paywall aberto por flag (`PAYWALL_ENABLED`, default `false`).** Pivot freemium:
+  todo scan **autorizado** (e-mail verificado, KL-25) vê os **48 checks** com detalhe e
+  **não há** limite de 1 scan/e-mail. `_paywall_enabled()` gateia dois pontos em
+  `api/main.py`: `/scan/request-code` (pula o `limit_reached`/`already_scanned` quando
+  aberto) e `/scan/summary` (força `full=True`, preservando o ingest público KL-17 via
+  `is_public_free`). Com `PAYWALL_ENABLED=true` volta o gate KL-27 (15 grátis + 33 🔒, 1
+  scan/e-mail). O **PDF é sempre gratuito**. ⚠️ São **48 checks (15 free + 33 pago)** — a
+  contagem "29" em docstrings antigas é do KL-27; `_tier_ok` já usa `len(ALL_CHECKS)`.
+- **Benchmark:** `GET /benchmark` (média global) e `GET /benchmark/{sector}` (cai para a
+  global se amostra < 5), via `store.global_avg_score`/`sector_avg_score`
+  (`targets.last_scan_score`). Públicos.
+- **Fluxo de scan (React island):** `web/src/components/scan/ScanFlow.jsx` (+
+  `checks.js`, agrupa os 48 em 6 categorias) em `web/src/pages/scan.astro` (SSR,
+  `prerender=false`, lê `?url=`). Etapas no client: e-mail → `POST /api/scan/request-code`
+  → código → `POST /api/scan/verify-code` (scan token) → **progresso simulado** durante o
+  `GET /api/scan/summary` (bloqueante ~30s) → **resultado inline** (score animado +
+  semáforo + frase + benchmark + 48 checks por categoria, FAILs expansíveis com
+  evidência/impacto/correção/OWASP-CWE-LGPD, CTA de PDF). O resultado renderiza no island
+  (não há `/resultado/{scan_id}` — o backend faz scan bloqueante sem id pollável; página
+  SSR de resultado com SEO fica para a fase de perfis públicos).
+- **Correções f1:** logo real (`Logo.astro` = beacon laranja + `KLA`**`R`**`IM`, réplica
+  do `Logo.jsx`) + favicon beacon; **contato** vira página `/contato` (Astro SSR,
+  `prerender=false`, honeypot + IP real via `X-Real-IP`) que **reusa** o endpoint
+  existente `POST /contact` — o footer aponta pra `/contato` (sem `mailto`). A API interna
+  para os fetches SSR do Astro é `KLARIM_API_URL` (`http://api:8000`, no serviço `astro`).
+- **Nginx:** `/scan` e `/contato` entram na regex das rotas Astro (`~ ^/(termos|
+  privacidade|sobre|contato|scan|…)`). `/api/scan/*` **não** conflita (casa o prefixo
+  `/api/`, não a âncora `^/scan`). O fluxo Vite de scan (`/scan` antigo) fica sombreado.

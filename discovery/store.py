@@ -1075,6 +1075,30 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    async def sector_avg_score(self, sector: str) -> Dict[str, Any]:
+        """Média de score dos alvos de um setor (benchmark do resultado — KL-51 f2).
+        Usa `targets.last_scan_score` (1 valor por alvo, já escaneado)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT COUNT(*), COALESCE(ROUND(AVG(last_scan_score)), 0) FROM targets "
+                "WHERE sector = %s AND last_scan_score IS NOT NULL",
+                (sector,))
+            count, avg = cur.fetchone()
+            return {"count": int(count or 0), "avg_score": int(avg or 0)}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def global_avg_score(self) -> Dict[str, Any]:
+        """Média de score de todos os alvos escaneados (benchmark geral)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT COUNT(*), COALESCE(ROUND(AVG(last_scan_score)), 0) FROM targets "
+                "WHERE last_scan_score IS NOT NULL")
+            count, avg = cur.fetchone()
+            return {"count": int(count or 0), "avg_score": int(avg or 0)}
+
+        return await asyncio.to_thread(self._run, _fn)
+
     # --- métricas operacionais (KL-16) ------------------------------------- #
 
     async def scan_today_stats(self) -> Dict[str, Any]:

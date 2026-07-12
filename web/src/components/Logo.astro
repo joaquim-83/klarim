@@ -1,16 +1,24 @@
 ---
+// Logo Klarim: beacon (farol de alerta) laranja + wordmark "KLARIM" com o R em
+// destaque laranja. Réplica fiel do Logo.jsx do app antigo (frontend/).
 interface Props {
+  size?: number;
   class?: string;
 }
-const { class: cls = '' } = Astro.props;
+const { size = 30, class: cls = '' } = Astro.props;
 ---
 
 <span class={`inline-flex items-center gap-2 ${cls}`}>
-  <svg width="30" height="30" viewBox="0 0 32 32" fill="none" aria-hidden="true">
-    <rect width="32" height="32" rx="7" fill="#020617"></rect>
-    <circle cx="16" cy="21" r="2.6" fill="#10b981"></circle>
-    <path d="M10.5 16.5a7 7 0 0 1 11 0" stroke="#10b981" stroke-width="2" stroke-linecap="round"></path>
-    <path d="M7 13a11 11 0 0 1 18 0" stroke="#10b981" stroke-width="2" stroke-linecap="round" opacity="0.45"></path>
+  <svg viewBox="0 0 64 64" width={size} height={size} aria-hidden="true">
+    <g stroke="#FF6B35" stroke-width="3.5" stroke-linecap="round">
+      <line x1="32" y1="4" x2="32" y2="13"></line>
+      <line x1="12" y1="12" x2="18" y2="18"></line>
+      <line x1="52" y1="12" x2="46" y2="18"></line>
+      <line x1="6" y1="30" x2="15" y2="30"></line>
+      <line x1="58" y1="30" x2="49" y2="30"></line>
+    </g>
+    <circle cx="32" cy="38" r="17" fill="#FF6B35"></circle>
+    <circle cx="32" cy="38" r="7.5" fill="#0D1117"></circle>
   </svg>
-  <span class="text-lg font-bold tracking-tight text-white">Klarim</span>
+  <span class="text-xl font-extrabold tracking-widest text-white">KLA<span class="text-[#FF6B35]">R</span>IM</span>
 </span>

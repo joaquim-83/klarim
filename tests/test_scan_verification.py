@@ -111,6 +111,7 @@ def test_request_code_cleans_url_encoded_email(env, monkeypatch):
 
 
 def test_request_code_limit_reached(env, monkeypatch):
+    monkeypatch.setenv("PAYWALL_ENABLED", "true")  # o limite de 1 scan/e-mail é do gate KL-27
     store = FakeStore(credit={"free_scans_used": 1, "first_scan_url": "https://outro.com.br"})
     c = _client(monkeypatch, store)
     r = c.post("/scan/request-code", json={"email": "a@b.com.br", "url": "novo.com.br"})
@@ -118,10 +119,19 @@ def test_request_code_limit_reached(env, monkeypatch):
 
 
 def test_request_code_already_scanned_same_url(env, monkeypatch):
+    monkeypatch.setenv("PAYWALL_ENABLED", "true")  # gate KL-27 ligado para este teste
     store = FakeStore(credit={"free_scans_used": 1, "first_scan_url": "https://x.com.br"})
     c = _client(monkeypatch, store)
     r = c.post("/scan/request-code", json={"email": "a@b.com.br", "url": "x.com.br"})
     assert r.json()["status"] == "already_scanned"
+
+
+def test_request_code_open_paywall_no_limit(env, monkeypatch):
+    # KL-51 f2: paywall aberto (default) → sem limite de 1 scan/e-mail; envia o código.
+    store = FakeStore(credit={"free_scans_used": 1, "first_scan_url": "https://outro.com.br"})
+    c = _client(monkeypatch, store)
+    r = c.post("/scan/request-code", json={"email": "a@b.com.br", "url": "novo.com.br"})
+    assert r.json()["status"] == "code_sent" and env["mailer"].sent
 
 
 def test_request_code_rate_limit(env, monkeypatch):

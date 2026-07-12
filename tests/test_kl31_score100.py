@@ -104,6 +104,7 @@ def test_summary_use_bonus_runs_full(monkeypatch):
 
 def test_summary_use_bonus_without_credit_falls_back_basic(monkeypatch):
     monkeypatch.setenv("JWT_SECRET", "x" * 40)
+    monkeypatch.setenv("PAYWALL_ENABLED", "true")  # gate KL-27/31: básico vs completo
     store = _CreditStore(consume_ok=False)  # sem crédito → não autoriza completo
     monkeypatch.setattr(m, "get_target_store", lambda: store)
 
@@ -122,6 +123,7 @@ def test_summary_use_bonus_without_credit_falls_back_basic(monkeypatch):
 
 def test_summary_bonus_token_without_use_bonus_is_basic(monkeypatch):
     monkeypatch.setenv("JWT_SECRET", "x" * 40)
+    monkeypatch.setenv("PAYWALL_ENABLED", "true")  # gate KL-27/31: básico vs completo
     store = _CreditStore(consume_ok=True)
     monkeypatch.setattr(m, "get_target_store", lambda: store)
 
@@ -136,3 +138,21 @@ def test_summary_bonus_token_without_use_bonus_is_basic(monkeypatch):
     r = c.get("/scan/summary?url=x.com.br", headers={"X-Scan-Token": tok})
     assert r.status_code == 200 and r.json()["is_full"] is False
     assert fake_safe_scan.full is False and store.consumed == []
+
+
+def test_summary_open_paywall_is_full(monkeypatch):
+    # KL-51 f2: paywall aberto (default) → um token BÁSICO já vê o resultado completo.
+    monkeypatch.setenv("JWT_SECRET", "x" * 40)
+    store = _CreditStore(consume_ok=True)
+    monkeypatch.setattr(m, "get_target_store", lambda: store)
+
+    async def fake_safe_scan(url, full=True, ingest_source=None, scanned_by_email=None):
+        fake_safe_scan.full = full
+        return _FakeReport(80)
+    monkeypatch.setattr(m, "_safe_scan", fake_safe_scan)
+
+    tok = m._make_scan_token("a@b.com.br", "https://x.com.br", full=False)
+    c = _client(monkeypatch)
+    r = c.get("/scan/summary?url=x.com.br", headers={"X-Scan-Token": tok})
+    assert r.status_code == 200 and r.json()["is_full"] is True
+    assert fake_safe_scan.full is True

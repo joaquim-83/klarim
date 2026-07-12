@@ -1,0 +1,116 @@
+---
+export const prerender = false; // SSR: processa o POST do formulário sem exigir JS
+
+import Base from '../layouts/Base.astro';
+import Header from '../components/Header.astro';
+import Footer from '../components/Footer.astro';
+
+let sent = false;
+let error = '';
+let name = '';
+let email = '';
+let message = '';
+
+if (Astro.request.method === 'POST') {
+  const form = await Astro.request.formData();
+  name = (form.get('name') ?? '').toString().trim();
+  email = (form.get('email') ?? '').toString().trim();
+  message = (form.get('message') ?? '').toString().trim();
+  const honeypot = (form.get('website') ?? '').toString().trim(); // campo oculto anti-bot
+
+  if (honeypot) {
+    sent = true; // bot preencheu o honeypot → finge sucesso, não envia nada
+  } else if (!email || !message) {
+    error = 'Preencha e-mail e mensagem.';
+  } else {
+    const API = process.env.KLARIM_API_URL || 'http://api:8000';
+    try {
+      const res = await fetch(`${API}/contact`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          // Propaga o IP real do cliente (o Nginx o envia em X-Real-IP) para o
+          // rate limit da API funcionar por usuário, não por container.
+          'X-Real-IP': Astro.request.headers.get('x-real-ip') || Astro.clientAddress || '',
+        },
+        body: JSON.stringify({ name, email, message }),
+      });
+      if (res.ok) {
+        sent = true;
+        name = email = message = '';
+      } else if (res.status === 429) {
+        error = 'Muitas mensagens em pouco tempo. Tente novamente mais tarde.';
+      } else {
+        const d = await res.json().catch(() => ({}));
+        error = d?.detail || 'Não foi possível enviar. Tente novamente.';
+      }
+    } catch {
+      error = 'Erro de conexão. Tente novamente em instantes.';
+    }
+  }
+}
+
+const field =
+  'w-full rounded-xl border border-slate-700 bg-slate-800/80 px-4 py-3 text-base text-white ' +
+  'placeholder:text-slate-500 outline-none transition-colors focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/30';
+---
+
+<Base
+  title="Fale conosco"
+  description="Fale com o time do Klarim. Envie sua mensagem e respondemos em até 48h, ou escreva para seguranca@klarim.net."
+  path="/contato"
+>
+  <Header />
+  <main class="mx-auto max-w-xl px-5 pt-28 pb-20 sm:pt-32">
+    <h1 class="text-3xl font-bold tracking-tight text-white sm:text-4xl">Fale conosco</h1>
+
+    {sent ? (
+      <div class="mt-8 rounded-2xl border border-emerald-500/30 bg-emerald-500/10 p-6">
+        <p class="font-semibold text-emerald-300">Mensagem enviada!</p>
+        <p class="mt-1 text-sm text-slate-300">Respondemos em até 48h.</p>
+        <a href="/" class="mt-4 inline-block text-sm text-emerald-400 hover:text-emerald-300">← Voltar ao início</a>
+      </div>
+    ) : (
+      <>
+        <p class="mt-3 text-slate-400">Dúvidas, sugestões ou suporte? Escreva pra gente.</p>
+
+        {error && (
+          <p class="mt-6 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">{error}</p>
+        )}
+
+        <form method="POST" class="mt-6 flex flex-col gap-4">
+          <div>
+            <label for="name" class="mb-1.5 block text-sm text-slate-300">Nome</label>
+            <input id="name" name="name" type="text" value={name} autocomplete="name" class={field} />
+          </div>
+          <div>
+            <label for="email" class="mb-1.5 block text-sm text-slate-300">
+              E-mail <span class="text-red-400">*</span>
+            </label>
+            <input id="email" name="email" type="email" required value={email} autocomplete="email" class={field} />
+          </div>
+          <div>
+            <label for="message" class="mb-1.5 block text-sm text-slate-300">
+              Mensagem <span class="text-red-400">*</span>
+            </label>
+            <textarea id="message" name="message" required rows="5" class={field}>{message}</textarea>
+          </div>
+
+          {/* honeypot: invisível para humanos, atraente para bots */}
+          <input type="text" name="website" tabindex="-1" autocomplete="off" aria-hidden="true"
+            class="absolute left-[-9999px] h-0 w-0 opacity-0" />
+
+          <button type="submit"
+            class="inline-flex items-center justify-center rounded-xl bg-emerald-500 px-6 py-3.5 text-base font-semibold text-slate-950 transition-colors hover:bg-emerald-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-emerald-300">
+            Enviar mensagem
+          </button>
+        </form>
+
+        <p class="mt-6 text-sm text-slate-500">
+          Ou, se preferir: <a href="mailto:seguranca@klarim.net" class="text-emerald-400 hover:text-emerald-300">seguranca@klarim.net</a>
+        </p>
+      </>
+    )}
+  </main>
+  <Footer />
+</Base>
