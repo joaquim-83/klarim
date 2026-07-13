@@ -28,6 +28,7 @@ class FakeStore:
         self.sites = {}      # (user_id, target_id) -> {"is_owner": bool}
         self.resets = {}     # email -> code
         self.targets = {}    # target_id -> target dict
+        self.scanned_by = {} # email -> [target_ids] (histórico KL-25)
 
     # --- users ---
     async def create_user(self, email, password_hash, name=None):
@@ -117,6 +118,9 @@ class FakeStore:
         self.targets[tid] = {"id": tid, "url": url, "domain": domain, "contact_email": None, **kw}
         return tid
 
+    async def get_targets_scanned_by_email(self, email, limit=10):
+        return list(self.scanned_by.get(email.lower().strip(), []))[:limit]
+
 
 @pytest.fixture
 def store(monkeypatch):
@@ -127,7 +131,8 @@ def store(monkeypatch):
     monkeypatch.setattr("discovery.store.get_target_store", lambda: s)
     monkeypatch.setattr(auth_users, "_secret", lambda: "k" * 64)
     # zera os rate limits in-memory entre testes
-    for bucket in (m._signup_attempts, m._forgot_attempts, m._reset_attempts):
+    for bucket in (m._signup_attempts, m._forgot_attempts, m._reset_attempts,
+                   m._send_report_attempts):
         bucket.clear()
     return s
 
@@ -278,6 +283,64 @@ def test_list_and_remove_site(client, store):
     assert rm.status_code == 200
     assert (u["id"], 20) not in store.sites
     assert client.delete("/account/sites/999", headers=_bearer(u)).status_code == 404
+
+
+# --- fix UX (KL-51 f3): histórico no signup, mask, send-report ------------- #
+
+def test_mask_email():
+    assert m._mask_email("joao@empresa.com.br") == "j***o@empresa.com.br"
+    assert m._mask_email("ab@x.com").endswith("@x.com")
+    assert "***" in m._mask_email("joao@empresa.com.br")
+
+
+def test_signup_links_previous_scans(client, store):
+    # e-mail já escaneou o target 55 antes de criar conta → vincula ao dashboard
+    store.targets[55] = {"id": 55, "url": "https://old.com.br", "domain": "old.com.br",
+                         "contact_email": None}
+    store.scanned_by["hist@x.com.br"] = [55]
+    u = client.post("/account/signup", json={"email": "hist@x.com.br", "password": "segredo123"}).json()["user"]
+    assert (u["id"], 55) in store.sites
+
+
+def test_signup_history_respects_plan_limit(client, store):
+    # free = 1 site: url do signup ocupa a vaga, o histórico não excede o limite
+    store.targets[60] = {"id": 60, "url": m._norm_scan_url("https://novo.com.br"),
+                         "domain": "novo.com.br", "contact_email": None}
+    store.targets[61] = {"id": 61, "url": "https://antigo.com.br", "domain": "antigo.com.br",
+                         "contact_email": None}
+    store.scanned_by["cap@x.com.br"] = [61]
+    u = client.post("/account/signup", json={
+        "email": "cap@x.com.br", "password": "segredo123", "url": "https://novo.com.br"}).json()["user"]
+    assert sum(1 for (uid, _) in store.sites if uid == u["id"]) == 1  # só 1 (limite free)
+
+
+def test_send_report_masked(client, store, monkeypatch):
+    monkeypatch.setattr(m, "_email_enabled", lambda: True)
+    monkeypatch.setattr(m, "_spawn", lambda coro: coro.close())  # não roda o background
+    r = client.post("/scan/send-report", json={"url": "https://x.com.br", "email": "joao@empresa.com.br"})
+    assert r.status_code == 200
+    assert r.json()["email"] == "j***o@empresa.com.br"
+
+
+def test_send_report_bad_email(client, store, monkeypatch):
+    monkeypatch.setattr(m, "_email_enabled", lambda: True)
+    assert client.post("/scan/send-report", json={"url": "https://x.com.br", "email": "nope"}).status_code == 422
+
+
+def test_send_report_uses_session_email(client, store, monkeypatch):
+    monkeypatch.setattr(m, "_email_enabled", lambda: True)
+    monkeypatch.setattr(m, "_spawn", lambda coro: coro.close())
+    u = client.post("/account/signup", json={"email": "sess@x.com.br", "password": "segredo123"}).json()["user"]
+    r = client.post("/scan/send-report", json={"url": "https://x.com.br"}, headers=_bearer(u))
+    assert r.status_code == 200 and r.json()["email"].endswith("@x.com.br")
+
+
+def test_send_report_rate_limit(client, store, monkeypatch):
+    monkeypatch.setattr(m, "_email_enabled", lambda: True)
+    monkeypatch.setattr(m, "_spawn", lambda coro: coro.close())
+    for _ in range(3):
+        assert client.post("/scan/send-report", json={"url": "https://x.com.br", "email": "rl@x.com.br"}).status_code == 200
+    assert client.post("/scan/send-report", json={"url": "https://x.com.br", "email": "rl@x.com.br"}).status_code == 429
 
 
 def test_claim_requires_email_match(client, store):

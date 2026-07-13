@@ -8,6 +8,18 @@ import ScanFlow from '../components/scan/ScanFlow.jsx';
 
 const url = Astro.url.searchParams.get('url') || '';
 
+// Auth (KL-51 f3 fix UX): usuário logado escaneia sem código de e-mail. Lê o cookie
+// e valida no backend; passa o user (ou null) ao island.
+const API = process.env.KLARIM_API_URL || 'http://api:8000';
+let user = null;
+const sessionToken = Astro.cookies.get('klarim_session')?.value;
+if (sessionToken) {
+  try {
+    const res = await fetch(`${API}/account/me`, { headers: { Authorization: `Bearer ${sessionToken}` } });
+    if (res.ok) user = (await res.json()).user;
+  } catch { /* deslogado */ }
+}
+
 function safeDomain(u) {
   if (!u) return '';
   try {
@@ -26,7 +38,7 @@ const domain = safeDomain(url);
 >
   <Header />
   <main class="mx-auto max-w-3xl px-5 pt-28 pb-20 sm:pt-32">
-    <ScanFlow url={url} client:load />
+    <ScanFlow url={url} user={user} client:load />
     <noscript>
       <p class="mt-6 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
         A análise interativa precisa de JavaScript. Ative-o para escanear seu site.

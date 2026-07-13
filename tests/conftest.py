@@ -20,6 +20,7 @@ def _reset_api_rate_limits():
         m._signup_attempts.clear()   # KL-51 f3
         m._forgot_attempts.clear()
         m._reset_attempts.clear()
+        m._send_report_attempts.clear()   # KL-51 f3 fix UX
     except Exception:  # noqa: BLE001 - testes que não tocam a API seguem normais
         pass
     yield

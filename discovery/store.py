@@ -1221,6 +1221,22 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    async def get_targets_scanned_by_email(self, email: str, limit: int = 10) -> List[int]:
+        """IDs de alvos que este e-mail já escaneou (KL-25, `scans.scanned_by_email`) ou
+        cujo contato público bate o e-mail — mais recente primeiro. Para vincular o
+        histórico de consultas a uma conta recém-criada (KL-51 f3)."""
+        e = (email or "").lower().strip()
+
+        def _fn(cur):
+            cur.execute(
+                "SELECT t.id, MAX(s.scanned_at) AS last_scan "
+                "FROM targets t JOIN scans s ON s.target_id = t.id "
+                "WHERE lower(s.scanned_by_email) = %s OR lower(t.contact_email) = %s "
+                "GROUP BY t.id ORDER BY last_scan DESC NULLS LAST LIMIT %s", (e, e, limit))
+            return [r[0] for r in cur.fetchall()]
+
+        return await asyncio.to_thread(self._run, _fn)
+
     async def get_user_sites_for_monitoring(self, age_days: int = 30) -> List[Dict[str, Any]]:
         """Sites de contas ATIVAS cujo último scan tem mais de `age_days` dias — o
         monitoramento mensal (KL-51 f3). Uma linha por (usuário, site): o mesmo site

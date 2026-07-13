@@ -285,6 +285,20 @@ _RESET_CODE_TTL = 3600
 _signup_attempts: dict = {}
 _forgot_attempts: dict = {}
 _reset_attempts: dict = {}
+_send_report_attempts: dict = {}
+
+
+def _mask_email(email: str) -> str:
+    """`joao@empresa.com.br` → `j***o@empresa.com.br` (feedback sem vazar o e-mail)."""
+    email = (email or "").strip()
+    if "@" not in email:
+        return email
+    local, _, domain = email.partition("@")
+    if len(local) <= 2:
+        masked = (local[:1] or "*") + "***"
+    else:
+        masked = local[0] + "***" + local[-1]
+    return f"{masked}@{domain}"
 
 
 def _ip_rate_limit(bucket: dict, key: str, max_hits: int, window: int) -> bool:
@@ -380,12 +394,25 @@ async def account_signup(body: SignupBody, request: Request) -> JSONResponse:
                                    name=(body.name or None))
     if user is None:
         raise HTTPException(status_code=409, detail="Já existe uma conta com este e-mail.")
+    max_sites = int(user.get("max_sites", 1))
     # vincula o site recém-escaneado (best-effort)
     if body.url:
         tid = await _resolve_or_create_target(body.url, source="signup")
         if tid:
             owner = await _email_owns_target(email, tid)
             await store.link_user_site(user["id"], tid, is_owner=owner)
+    # histórico: vincula scans anteriores do mesmo e-mail (KL-25) até o limite do plano
+    try:
+        used = await store.count_user_sites(user["id"])
+        if used < max_sites:
+            for tid in await store.get_targets_scanned_by_email(email, limit=max_sites):
+                if used >= max_sites:
+                    break
+                if await store.link_user_site(user["id"], tid,
+                                              is_owner=await _email_owns_target(email, tid)):
+                    used += 1
+    except Exception as exc:  # noqa: BLE001 - histórico é best-effort
+        print(f"[account] vínculo de histórico falhou {email}: {exc!r}", flush=True)
     await store.touch_user_login(user["id"])
     token = auth_users.create_user_token(user)
     resp = JSONResponse({"user": _user_public(user)})
@@ -1046,6 +1073,15 @@ async def scan_summary(url: str = Query(..., description="URL alvo."),
                 else:
                     full = bool(payload.get("full"))  # re-verificação → completo
 
+        # (3) usuário logado (KL-51 f3): escanear é ILIMITADO para conta autenticada —
+        # sem código de e-mail. O e-mail da conta vira scanned_by (liga o scan à conta,
+        # e alimenta o histórico do dashboard). O limite do plano vale só p/ MONITORAR.
+        if not authorized and request is not None:
+            _user = await auth_users.optional_user(request)
+            if _user:
+                authorized = True
+                scanned_by = (_user.get("email") or "").strip() or None
+
     # Paywall aberto (KL-51 f2, default): o resultado web mostra os 48 checks com
     # detalhe. `open_all` reflete o flag; `full` só é forçado para o resultado
     # (não muda quem PODE escanear — isso continua exigindo autorização acima).
@@ -1503,6 +1539,45 @@ async def report_technical(
     report = await _safe_scan(url, full=True)
     pdf = await _safe_pdf(generate_technical_pdf, report, url)
     return _pdf_response(pdf, pdf_filename("technical", url, report.started_at))
+
+
+class SendReportBody(BaseModel):
+    url: str
+    email: Optional[str] = None
+
+
+@app.post("/scan/send-report")
+async def scan_send_report(body: SendReportBody, request: Request) -> dict:
+    """Envia os 2 PDFs (executivo + técnico) do scan por e-mail (KL-51 f3, fix UX).
+    E-mail do corpo ou, se logado e sem e-mail, o da conta. Rate limit 3/e-mail/h.
+    O envio roda em background — resposta imediata com o e-mail mascarado."""
+    url = _norm_scan_url((body.url or "").strip())
+    if not url:
+        raise HTTPException(status_code=422, detail="URL inválida.")
+    email = (body.email or "").strip().lower()
+    if not email and request is not None:
+        user = await auth_users.optional_user(request)
+        email = ((user or {}).get("email") or "").strip().lower()
+    if not email or not _ACCOUNT_EMAIL_RE.match(email):
+        raise HTTPException(status_code=422, detail="Informe um e-mail válido.")
+    if not _ip_rate_limit(_send_report_attempts, email, 3, 3600):
+        raise HTTPException(status_code=429, detail="Muitos envios. Tente novamente mais tarde.")
+    if not _email_enabled():
+        raise HTTPException(status_code=503, detail="Envio de e-mail indisponível no momento.")
+
+    async def _do():
+        try:
+            report = await get_or_scan(url, full=True)
+            executive = await generate_executive_pdf(report, url)
+            technical = await generate_technical_pdf(report, url)
+            score = report.score.score if report.score else 0
+            res = await _mailer().send_report(email, url, score, executive, technical)
+            print(f"[email] PDFs de {url} enviados para {email} (id={res.get('email_id')})", flush=True)
+        except Exception as exc:  # noqa: BLE001 - background; nunca derruba nada
+            print(f"[email] falha ao enviar PDFs de {url} para {email}: {exc!r}", flush=True)
+
+    _spawn(_do())
+    return {"ok": True, "email": _mask_email(email)}
 
 
 async def _require_paid(charge_id: Optional[str]) -> None:
@@ -2781,8 +2856,8 @@ def _unsubscribe_html(email: str, success: bool) -> str:
     else:
         title, msg = "Link inválido", (
             "Este link de descadastro é inválido ou expirou. "
-            "Se preferir, escreva para <a href=\"mailto:seguranca@klarim.net\" "
-            "style=\"color:#FF6B35\">seguranca@klarim.net</a>.")
+            "Se preferir, escreva para <a href=\"mailto:scan@klarim.net\" "
+            "style=\"color:#FF6B35\">scan@klarim.net</a>.")
     return (
         "<!DOCTYPE html><html lang=\"pt-BR\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">"

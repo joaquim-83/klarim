@@ -367,6 +367,12 @@ HttpOnly) — separado do login do operador (`/auth/login`); os dois JWT levam u
 (`scripts/monitor_rescan.py`): re-scan completo de sites de contas ativas com >30 dias +
 e-mail de evolução — **independente** do rescan worker antigo (pausado).
 
+**Fix de UX pós-teste:** escanear é **ilimitado** para conta logada (sem código de
+e-mail — a sessão autoriza o scan; o limite do plano vale só para **monitorar**); o
+signup vincula o **histórico** de scans do e-mail; o resultado tem **CTA de conta no topo**
++ **dropdown de PDF** (executivo/técnico) e **"enviar por e-mail"** (`POST /scan/send-report`,
+os 2 PDFs via Resend). Contato do site é `scan@klarim.net`.
+
 O restante do frontend (fluxo de scan + painel) segue em **React + Vite + Tailwind v4**
 em [`frontend/`](./frontend/), servido como build estático pelo **Nginx** (que também faz
 proxy de `/api` → API). Telas:

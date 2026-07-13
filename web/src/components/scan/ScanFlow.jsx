@@ -10,9 +10,12 @@ const TIPS = [
 ];
 
 // --- helpers de API (mesma origem; o Nginx roteia /api → FastAPI) ------------ #
+// `credentials: 'include'` envia o cookie de sessão (KL-51 f3) — o backend autoriza
+// scan/monitoramento por conta logada sem código de e-mail.
 async function apiPost(path, body, token) {
   const res = await fetch(`/api${path}`, {
     method: 'POST',
+    credentials: 'include',
     headers: { 'Content-Type': 'application/json', ...(token ? { 'X-Scan-Token': token } : {}) },
     body: JSON.stringify(body),
   });
@@ -22,6 +25,7 @@ async function apiPost(path, body, token) {
 
 async function fetchSummary(url, token) {
   const res = await fetch(`/api/scan/summary?url=${encodeURIComponent(url)}`, {
+    credentials: 'include',
     headers: token ? { 'X-Scan-Token': token } : {},
   });
   return res.json();
@@ -52,9 +56,10 @@ const card = 'rounded-2xl border border-slate-800 bg-slate-900/60 p-6 sm:p-8';
 
 // --------------------------------------------------------------------------- #
 
-export default function ScanFlow({ url: initialUrl = '' }) {
+export default function ScanFlow({ url: initialUrl = '', user = null }) {
   const [url] = useState(() => initialUrl || (typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('url') || '' : ''));
-  const [step, setStep] = useState('email'); // email | code | progress | result | limit
+  // Usuário logado (KL-51 f3): pula e-mail/código e escaneia direto.
+  const [step, setStep] = useState(user ? 'progress' : 'email'); // email | code | progress | result | limit
   const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
   const [busy, setBusy] = useState(false);
@@ -62,8 +67,18 @@ export default function ScanFlow({ url: initialUrl = '' }) {
   const [limitMsg, setLimitMsg] = useState('');
   const [result, setResult] = useState(null);
   const tokenRef = useRef('');
+  const startedRef = useRef(false);
 
   const domain = domainOf(url);
+
+  // Logado: dispara o scan na montagem (o cookie autoriza, sem código de e-mail).
+  useEffect(() => {
+    if (user && url && !startedRef.current) {
+      startedRef.current = true;
+      runScan('');
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (!url) {
     return (
@@ -139,7 +154,7 @@ export default function ScanFlow({ url: initialUrl = '' }) {
       {step === 'email' && <EmailStep {...{ domain, email, setEmail, busy, submitEmail }} />}
       {step === 'code' && <CodeStep {...{ email, code, setCode, busy, submitCode, resendCode, setStep }} />}
       {step === 'progress' && <ProgressStep domain={domain} />}
-      {step === 'result' && result && <ResultView data={result} domain={domain} email={email} url={url} />}
+      {step === 'result' && result && <ResultView data={result} domain={domain} email={email} url={url} user={user} />}
       {step === 'limit' && <LimitStep message={limitMsg} />}
     </div>
   );
@@ -250,7 +265,7 @@ function phraseFor(sema, fails) {
   return `Seu site tem ${fails} ponto(s) de atenção. A maioria é simples de corrigir.`;
 }
 
-function ResultView({ data, domain, email = '', url = '' }) {
+function ResultView({ data, domain, email = '', url = '', user = null }) {
   const sema = SEMA[data.semaphore] || SEMA.amarelo;
   const checks = [...(data.free_checks || []), ...(data.paid_checks || [])];
   const groups = groupByCategory(checks);
@@ -306,15 +321,11 @@ function ResultView({ data, domain, email = '', url = '' }) {
         </div>
       )}
 
-      {/* CTAs */}
-      <div className="flex flex-col gap-3 sm:flex-row">
-        {exec && <a href={exec} className={btn}>📄 Baixar relatório (executivo)</a>}
-        {tech && (
-          <a href={tech} className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-700 px-6 py-3.5 text-base font-semibold text-slate-200 transition-colors hover:bg-slate-800">
-            📑 Relatório técnico
-          </a>
-        )}
-      </div>
+      {/* CTA de conta — posição 1 (topo, logo após o score/benchmark) */}
+      <AccountCTA user={user} url={url} email={email} />
+
+      {/* Baixar PDF (dropdown) + enviar por e-mail */}
+      <PdfControls exec={exec} tech={tech} url={url} email={email} user={user} />
 
       {/* Detalhes por categoria */}
       <div>
@@ -336,22 +347,141 @@ function ResultView({ data, domain, email = '', url = '' }) {
         </div>
       </div>
 
-      {/* CTA: criar conta (o e-mail já foi verificado no scan) */}
-      <div className={`${card} border-brand-500/30 bg-brand-500/5 text-center`}>
-        <h3 className="text-lg font-bold text-white">Quer monitorar seu site gratuitamente?</h3>
-        <p className="mt-1 text-sm text-slate-300">
-          Crie sua conta em 10 segundos. O e-mail já foi verificado — só falta uma senha.
-        </p>
-        <form action="/cadastrar" method="GET" className="mt-4">
-          {email && <input type="hidden" name="email" value={email} />}
-          {url && <input type="hidden" name="url" value={url} />}
-          <button type="submit" className={`${btn} sm:w-auto`}>Criar conta grátis →</button>
-        </form>
-      </div>
+      {/* CTA de conta — posição 2 (reforço no fim do relatório) */}
+      <AccountCTA user={user} url={url} email={email} variant="bottom" />
 
       <div className="text-center">
         <a href="/" className="text-sm text-brand-400 hover:text-brand-300">← Escanear outro site</a>
       </div>
+    </div>
+  );
+}
+
+// CTA de conta: deslogado → criar conta; logado → adicionar ao monitoramento (com
+// tratamento do limite de plano). `variant='bottom'` é o reforço no fim do relatório.
+function AccountCTA({ user, url, email, variant }) {
+  const [state, setState] = useState(''); // '' | 'added' | 'limit' | 'error'
+  const [busy, setBusy] = useState(false);
+
+  async function addToMonitoring() {
+    setBusy(true);
+    const { ok, status } = await apiPost('/account/sites', { url });
+    setBusy(false);
+    setState(ok ? 'added' : status === 403 ? 'limit' : 'error');
+  }
+
+  const box = `${card} border-brand-500/30 bg-brand-500/5 text-center`;
+
+  // Logado ---------------------------------------------------------------- #
+  if (user) {
+    if (state === 'added') {
+      return (
+        <div className={box}>
+          <p className="font-semibold text-brand-300">✓ Site adicionado ao seu monitoramento</p>
+          <a href="/dashboard" className="mt-2 inline-block text-sm text-brand-400 hover:text-brand-300">Ver no dashboard →</a>
+        </div>
+      );
+    }
+    if (state === 'limit') {
+      return (
+        <div className={box}>
+          <p className="font-semibold text-white">Limite de monitoramento atingido</p>
+          <p className="mt-1 text-sm text-slate-300">Seu plano permite monitorar 1 site. Faça upgrade para acompanhar mais — em breve.</p>
+        </div>
+      );
+    }
+    return (
+      <div className={box}>
+        <h3 className="text-lg font-bold text-white">📊 Monitore este site</h3>
+        <p className="mt-1 text-sm text-slate-300">Adicione ao seu dashboard e acompanhe a evolução do score todo mês.</p>
+        <button onClick={addToMonitoring} disabled={busy} className={`${btn} mt-4 sm:w-auto`}>
+          {busy ? 'Adicionando…' : 'Adicionar ao monitoramento'}
+        </button>
+      </div>
+    );
+  }
+
+  // Deslogado ------------------------------------------------------------- #
+  return (
+    <div className={box}>
+      <h3 className="text-lg font-bold text-white">📊 Monitore seu site gratuitamente</h3>
+      <p className="mt-1 text-sm text-slate-300">
+        {variant === 'bottom'
+          ? 'Crie sua conta e acompanhe a evolução do score.'
+          : 'Crie sua conta em 10 segundos. O e-mail já foi verificado — só falta uma senha.'}
+      </p>
+      <form action="/cadastrar" method="GET" className="mt-4">
+        {email && <input type="hidden" name="email" value={email} />}
+        {url && <input type="hidden" name="url" value={url} />}
+        <button type="submit" className={`${btn} sm:w-auto`}>Criar conta →</button>
+      </form>
+    </div>
+  );
+}
+
+// Botão de PDF com dropdown (executivo/técnico) + enviar por e-mail.
+function PdfControls({ exec, tech, url, email, user }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [sent, setSent] = useState('');
+  const [sendErr, setSendErr] = useState('');
+  const [askEmail, setAskEmail] = useState('');
+
+  async function sendByEmail(toEmail) {
+    setSendErr(''); setBusy(true);
+    // Logado → backend usa o e-mail da conta; deslogado → manda o e-mail verificado.
+    const body = user ? { url } : { url, email: toEmail || email };
+    const { ok, data } = await apiPost('/scan/send-report', body);
+    setBusy(false);
+    if (ok) { setSent(data.email || toEmail || email); setAskEmail(''); }
+    else setSendErr(data.detail || 'Não foi possível enviar. Tente novamente.');
+  }
+
+  function onSendClick() {
+    if (user || email) return sendByEmail();
+    setAskEmail('open'); // deslogado e sem e-mail conhecido → pede
+  }
+
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-col gap-3 sm:flex-row">
+        {(exec || tech) && (
+          <div className="relative">
+            <button type="button" onClick={() => setOpen((o) => !o)} className={`${btn} w-full sm:w-auto`}>
+              📄 Baixar PDF <span className="text-sm">▾</span>
+            </button>
+            {open && (
+              <div className="absolute z-10 mt-2 w-64 overflow-hidden rounded-xl border border-slate-700 bg-slate-900 shadow-xl">
+                {exec && (
+                  <a href={exec} className="block px-4 py-3 text-sm text-slate-200 hover:bg-slate-800" onClick={() => setOpen(false)}>
+                    📋 Relatório Executivo<br /><span className="text-xs text-slate-500">linguagem acessível</span>
+                  </a>
+                )}
+                {tech && (
+                  <a href={tech} className="block border-t border-slate-800 px-4 py-3 text-sm text-slate-200 hover:bg-slate-800" onClick={() => setOpen(false)}>
+                    📊 Relatório Técnico<br /><span className="text-xs text-slate-500">OWASP / CWE / LGPD</span>
+                  </a>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+        <button type="button" onClick={onSendClick} disabled={busy}
+          className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-700 px-6 py-3.5 text-base font-semibold text-slate-200 transition-colors hover:bg-slate-800 disabled:opacity-60">
+          {busy ? 'Enviando…' : '📧 Enviar por e-mail'}
+        </button>
+      </div>
+
+      {askEmail === 'open' && !sent && (
+        <form onSubmit={(e) => { e.preventDefault(); sendByEmail(e.target.elements.pdfemail.value); }}
+          className="flex flex-col gap-2 sm:flex-row">
+          <input name="pdfemail" type="email" required placeholder="voce@empresa.com.br"
+            className={`${field} sm:flex-1`} />
+          <button type="submit" disabled={busy} className={`${btn} sm:w-auto`}>Enviar</button>
+        </form>
+      )}
+      {sent && <p className="text-sm text-brand-300">Relatórios enviados para {sent} ✓</p>}
+      {sendErr && <p className="text-sm text-red-300">{sendErr}</p>}
     </div>
   );
 }

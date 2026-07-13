@@ -1715,6 +1715,28 @@ sem isso um cookie de usuário passaria no middleware admin.
 no scan (KL-25) é reaproveitado no signup (sem re-verificar). O limite de sites do plano
 é servidor-autoritativo (403 no `POST /account/sites`, nunca só no frontend).
 
+**Ajustes de UX pós-teste (KL-51 f3 fix):**
+- **Escanear ≠ monitorar.** Escanear (consulta) é **ilimitado** para conta logada —
+  **sem código de e-mail**. O `scan/summary` autoriza um scan novo também via sessão
+  (`auth_users.optional_user`, cookie ou Bearer): `scanned_by` vira o e-mail da conta.
+  O limite do plano vale **só para monitorar** (o 403 fica no `POST /account/sites`,
+  nunca bloqueia o scan). No `scan.astro` (SSR) o cookie é validado e o `user` é passado
+  ao `ScanFlow`; logado ⇒ pula e-mail/código e escaneia direto (`fetchSummary` com
+  `credentials:'include'`).
+- **Histórico no signup.** `store.get_targets_scanned_by_email` (via `scans.scanned_by_email`
+  do KL-25, ou `targets.contact_email`) vincula os scans anteriores do e-mail à conta
+  recém-criada, **respeitando `max_sites`** (o site do signup ocupa a vaga primeiro).
+- **CTAs de conta em 2 posições** no resultado (topo, após o benchmark + reforço no fim):
+  deslogado → "Criar conta"; logado → "Adicionar ao monitoramento" (trata 403 = limite).
+- **PDF com dropdown** (Executivo/Técnico) + **"Enviar por e-mail"**: `POST /scan/send-report
+  {url, email?}` gera os 2 PDFs e envia via Resend em **background** (rate limit 3/e-mail/h),
+  resposta imediata com o e-mail **mascarado** (`_mask_email`); logado usa o e-mail da
+  conta (sem pedir), deslogado usa o e-mail já verificado.
+- **Contato → `scan@klarim.net`** (era `seguranca@`) em todas as superfícies públicas
+  (páginas, templates de e-mail, HTML de descadastro). `send_contact` já mandava para
+  `scan@`; só o texto exibido mudou. **Nenhuma mudança de sender no Resend** — `scan@` é
+  só destinatário/mailto; os envios saem sempre do `RESEND_FROM` verificado.
+
 ## 40. Classificação CNAE multi-setor + descrição natural + tags (KL-55)
 
 A taxonomia fixa de 48 setores (KL-54) é insuficiente: ~54% dos sites caem em `outro`
