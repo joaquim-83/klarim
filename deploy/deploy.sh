@@ -49,7 +49,9 @@ docker compose up -d --build
 #     `builder prune` limpa o cache; `image prune -f` remove só imagens não usadas
 #     (os containers em execução mantêm as suas). Nunca toca em volumes/dados.
 echo "==> limpando build cache + imagens antigas (evita disco cheio)"
-docker builder prune -f || true
+# `-af`: sem o `-a`, o prune deixa o cache do build recém-feito (~1.7GB) — só o -a
+# limpa tudo (regenera no próximo build, ~1min a mais). Sem isto o disco enche.
+docker builder prune -af || true
 docker image prune -f || true
 
 # 4) Show container state.
