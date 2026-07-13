@@ -441,6 +441,20 @@ para HTTPS). Em modo sem-cert (`http.conf`, catch-all), o subdomínio também
 funciona e a raiz redireciona ao login. Sem nova regra de firewall (mesmo IP/porta).
 Acesso: `https://painel.klarim.net` (equivalente a `https://klarim.net/painel`).
 
+**Subdomínio `mta-sts.klarim.net` (policy MTA-STS, RFC 8461, check_39).** Dois server
+blocks dedicados (80 **e** 443) em `https.conf.template` servem
+`/.well-known/mta-sts.txt` (arquivo estático `frontend/nginx/mta-sts.txt` →
+`/etc/nginx/klarim_mta-sts.txt` via `alias`), com o conteúdo `version/mode:
+enforce/mx: mx1|mx2.hostinger.com/max_age`. O **Cloudflare** (proxy) faz o TLS
+voltado ao cliente; a origem responde em **80** (CF Flexible) **e 443** (CF Full, com
+o cert do klarim.net — que **não** cobre `mta-sts.`, então CF Full **strict** exigiria
+`certbot --expand -d mta-sts.klarim.net`). O bloco 80 **não** redireciona p/ HTTPS
+(senão o Flexible quebra). O server principal 443 ganhou `default_server` explícito
+(os blocos mta-sts não podem virar o default de SNI não-casado). Falta o dono criar o
+**DNS** (`mta-sts.klarim.net` proxied no CF + TXT `_mta-sts.klarim.net` com o `id` da
+policy) — só então `https://mta-sts.klarim.net/.well-known/mta-sts.txt` responde e o
+check_39 passa. A **MX da policy tem que casar** a MX real do domínio (mx1/mx2.hostinger.com).
+
 ### Hardening de segurança (auto-auditoria)
 
 O Klarim pratica o que prega — a superfície de ataque real é minimizada:

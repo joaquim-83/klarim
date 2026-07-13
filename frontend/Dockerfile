@@ -20,6 +20,8 @@ COPY nginx/http.conf /klarim/http.conf
 COPY nginx/https.conf.template /klarim/https.conf.template
 # Security headers compartilhados (incluídos pelo server block e pelos locations).
 COPY nginx/security_headers.conf /etc/nginx/klarim_security_headers.conf
+# Policy MTA-STS (servida em mta-sts.<domínio>/.well-known/mta-sts.txt).
+COPY nginx/mta-sts.txt /etc/nginx/klarim_mta-sts.txt
 COPY docker-entrypoint.d/40-klarim-tls.sh /docker-entrypoint.d/40-klarim-tls.sh
 RUN chmod +x /docker-entrypoint.d/40-klarim-tls.sh \
     && rm -f /etc/nginx/conf.d/default.conf

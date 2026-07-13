@@ -16,8 +16,44 @@ server {
     }
 }
 
+# MTA-STS (RFC 8461): serve a policy em mta-sts.${DOMAIN}/.well-known/mta-sts.txt.
+# O Cloudflare (proxy) faz o TLS voltado ao cliente; a origem responde nas duas portas
+# para funcionar tanto em modo Flexible (CF -> origem :80) quanto Full (CF -> origem
+# :443, com o cert do klarim.net). O TXT `_mta-sts.${DOMAIN}` (id da policy) é DNS —
+# configurado pelo dono. NÃO redireciona 80->443 aqui (senão o modo Flexible quebra).
+server {
+    listen 80;
+    server_name mta-sts.${DOMAIN};
+    server_tokens off;
+    location = /.well-known/mta-sts.txt {
+        default_type text/plain;
+        add_header Cache-Control "max-age=3600" always;
+        alias /etc/nginx/klarim_mta-sts.txt;
+    }
+    location / { return 404; }
+}
 server {
     listen 443 ssl;
+    http2 on;
+    server_name mta-sts.${DOMAIN};
+    server_tokens off;
+    # Reusa o cert do klarim.net (não cobre mta-sts.; o CF Full não valida o cert da
+    # origem — Full strict exigiria expandir o cert com certbot -d mta-sts.${DOMAIN}).
+    ssl_certificate     /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+    location = /.well-known/mta-sts.txt {
+        default_type text/plain;
+        add_header Cache-Control "max-age=3600" always;
+        alias /etc/nginx/klarim_mta-sts.txt;
+    }
+    location / { return 404; }
+}
+
+server {
+    # default_server: continua sendo o server 443 padrão (SNI não-casado), mesmo com
+    # o bloco mta-sts. antes (implícito por ser o 1º); agora explícito.
+    listen 443 ssl default_server;
     http2 on;
     server_name ${DOMAIN} www.${DOMAIN};
     server_tokens off;

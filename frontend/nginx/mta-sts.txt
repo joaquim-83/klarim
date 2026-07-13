@@ -1,0 +1,5 @@
+version: STSv1
+mode: enforce
+mx: mx1.hostinger.com
+mx: mx2.hostinger.com
+max_age: 604800
