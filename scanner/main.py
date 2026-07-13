@@ -24,6 +24,7 @@ import sys
 from datetime import datetime, timezone
 
 from .runner import run_scan, format_report
+from .enrichment import enrich_profile  # KL-51 f5: perfil compartilhado (worker + API)
 
 
 SCAN_QUEUE = os.environ.get("KLARIM_SCAN_QUEUE", "klarim:scan_queue")
@@ -62,66 +63,6 @@ async def _write_pdfs(report, url: str) -> None:
     with open(tech_name, "wb") as fh:
         fh.write(tech_bytes)
     print(f"\nPDFs gerados:\n  - {exec_name} ({len(exec_bytes)} bytes)\n  - {tech_name} ({len(tech_bytes)} bytes)")
-
-
-async def _enrich_profile(store, target_id: int, url: str, security_score) -> None:
-    """KL-50: extrai o perfil comercial (multi-page + parsers) e grava em site_profile.
-    Best-effort — qualquer erro é só logado (não afeta o scan nem o score)."""
-    try:
-        from scanner import profiler
-        from scanner.checks import dns_util
-        from scanner.checks.base import fetch, base_url, registrable_domain, domain_of
-
-        headers, homepage_html = {}, None
-        try:
-            hp = await fetch(base_url(url) + "/", method="GET", follow_redirects=True)
-            headers = dict(hp.headers)
-            homepage_html = hp.text if hp.status_code == 200 else None
-        except Exception:  # noqa: BLE001
-            pass
-        dom = registrable_domain(domain_of(url))
-        mx = await asyncio.to_thread(dns_util.resolve_mx, dom)
-        ns = await asyncio.to_thread(dns_util.resolve_ns, dom)
-        profile = await profiler.build_profile(
-            url, homepage_html=homepage_html, headers=headers,
-            mx_records=mx, ns_records=ns, security_score=security_score)
-
-        # KL-47A: enriquecimento por IA (só se OPENAI_API_KEY configurada). Complementa o
-        # regex — preenche campos vazios do perfil e refina o setor quando fraco/outro.
-        await _ai_enrich_profile(store, target_id, dom, homepage_html, profile)
-
-        await store.upsert_site_profile(target_id, profile)
-        found = [k for k in ("commercial_email", "phone", "whatsapp", "cnpj", "instagram")
-                 if profile.get(k)]
-        print(f"[profile] {url} -> maturity {profile.get('maturity_score')} "
-              f"({', '.join(found) or 'sem sinais'})", flush=True)
-    except Exception as exc:  # noqa: BLE001 - enriquecimento nunca derruba o worker
-        print(f"[profile] falha em {url}: {exc!r}", flush=True)
-
-
-async def _ai_enrich_profile(store, target_id: int, domain: str, homepage_html, profile: dict) -> None:
-    """KL-47A: enriquece com IA. Best-effort — sem chave ou erro, não faz nada."""
-    try:
-        from scanner.ai_enrichment import AI_ENRICHMENT_ENABLED, ai_enrich, merge_ai_into_profile
-        from discovery.classifier import PRICE_TIERS
-    except Exception:  # noqa: BLE001
-        return
-    if not AI_ENRICHMENT_ENABLED or not homepage_html:
-        return
-    try:
-        ai = await ai_enrich(domain, homepage_html, current_profile=profile)
-        if not ai:
-            return
-        changed = merge_ai_into_profile(profile, ai)   # só campos vazios
-        sector = ai.get("sector")
-        conf = float(ai.get("sector_confidence") or 0.0)
-        if sector and sector != "outro" and conf > 0.7:
-            tier = PRICE_TIERS.get(sector, "standard")
-            await store.ai_update_classification(target_id, sector, tier, conf)  # revê regex; preserva manual/ai (KL-54)
-        print(f"[ai] {domain}: sector={sector} conf={conf:.2f} "
-              f"preenchidos={changed or 'nenhum'}", flush=True)
-    except Exception as exc:  # noqa: BLE001 - IA nunca derruba o worker
-        print(f"[ai] falha em {domain}: {exc!r}", flush=True)
 
 
 def _parse_queue_item(raw: str):
@@ -203,7 +144,7 @@ async def _worker_loop() -> None:
                     s.inconclusive, report.to_dict(), source=source)
                 await store.update_scan_result(target_id, scan_id, s.score)
                 # KL-50: extrai o perfil comercial (best-effort, não afeta o scan).
-                await _enrich_profile(store, target_id, url, s.score if s else None)
+                await enrich_profile(store, target_id, url, s.score if s else None)
             last_scan_at = datetime.now(timezone.utc).isoformat()
             print(f"[klarim-worker] {url} -> score {s.score if s else 'n/a'}"
                   f"{' (target ' + str(target_id) + ')' if target_id else ''}", flush=True)

@@ -2708,6 +2708,11 @@ async def api_admin_scan_and_report(body: ScanAndReportBody) -> dict:
     url = normalize_url(body.url)
     report = await _safe_scan(url)  # sem auto-ingest; ingerimos abaixo com os ids
     meta = await ingest_scan(get_target_store(), url, report, source="admin")
+    # KL-51 f5: gera o perfil completo (profiler + IA + CNAE) em background.
+    if meta.get("target_id"):
+        from scanner.enrichment import enrich_profile
+        _spawn(enrich_profile(get_target_store(), meta["target_id"], url,
+                              report.score.score if report.score else None))
     s = report.score
     risk_messages = get_risk_messages(report)
     result = {
@@ -3455,8 +3460,16 @@ async def get_recent_only(url: str, full: bool = False) -> Optional[ScanReport]:
 async def _ingest_scan_bg(url: str, report: ScanReport, source: str,
                           scanned_by_email: Optional[str] = None) -> None:
     try:
-        await ingest_scan(get_target_store(), url, report, source, scanned_by_email)
+        meta = await ingest_scan(get_target_store(), url, report, source, scanned_by_email)
         print(f"[ingest] {url} registrado no banco (source={source})", flush=True)
+        # KL-51 f5: TODO scan gera perfil completo (profiler + IA + CNAE), não só o worker.
+        # Já estamos em background (este bg roda depois da resposta do scan) — enriquece
+        # inline aqui, mesmo módulo que o scan worker usa.
+        tid = (meta or {}).get("target_id")
+        if tid:
+            from scanner.enrichment import enrich_profile
+            score = report.score.score if report.score else None
+            await enrich_profile(get_target_store(), tid, url, score)
     except Exception as exc:  # noqa: BLE001 - ingestão é best-effort, não quebra o scan
         print(f"[ingest] falha ao registrar {url} ({exc!r})", flush=True)
 

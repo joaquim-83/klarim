@@ -1853,6 +1853,34 @@ de linguagem:** o Klarim avalia a segurança do **SITE**, não do negócio.
 passivo) + o score — **nunca** e-mail/CNPJ/WhatsApp/detalhe de check. og:image e sitemap
 são best-effort/fail-open. A notificação respeita 1/domínio/24h e o opt-out.
 
+### Fase 5 — enriquecimento de perfil em TODO scan (KL-51 f5)
+
+Bug: só o **scan worker** gerava `site_profile`, e nem ele gravava os CNAEs (só o
+`enrich_all.py` fazia). Scan manual do site (`/scan/summary`) e o fluxo admin não
+enriqueciam nada — o perfil público `/site/{dominio}` (KL-51 f4) saía vazio. Fix: **todo**
+caminho de scan gera o perfil **completo**.
+
+- **`scanner/enrichment.py` (novo, módulo compartilhado):** `enrich_profile(store,
+  target_id, url, security_score)` — crawl multi-page + `profiler.build_profile` (KL-50) +
+  IA (`_ai_enrich`: setor + descrição + tags + **CNAEs**, KL-47A/55) → grava `site_profile`
+  **e** `target_classifications`. **Best-effort** (erro só loga, nunca derruba
+  scan/worker/request); imports lazy (evita ciclo e não pesa no boot). O `_ai_enrich` grava
+  os CNAEs da IA com `source='ai'` (a Receita, `source='receita'`, nunca é sobrescrita —
+  KL-55) e só refina o setor de alvo fraco preservando `manual`/`ai` (KL-54).
+- **Um único ponto de verdade, três chamadores:** (1) **scan worker**
+  (`scanner/main.py`) chama inline após salvar o scan — antes tinha `_enrich_profile`/
+  `_ai_enrich_profile` locais (removidos), e o AI local **não** gravava CNAE; (2)
+  **`/scan/summary`** (público + logado) via `_ingest_scan_bg` — que já roda em
+  **background** (`_spawn`, depois da resposta do scan), então o profiler+IA (~10-20s) **não**
+  entram no tempo de resposta nem no timeout de 180s; (3) **`/admin/scan-and-report`** via
+  `_spawn(enrich_profile(...))`. O caminho pago/re-verificação ingere pelo mesmo
+  `_ingest_scan_bg`.
+
+**Regra inviolável:** o enriquecimento é **best-effort** e roda **fora do caminho síncrono**
+do `/scan/summary` (background) — nunca atrasa a resposta do scan nem estoura o timeout. O
+perfil comercial **não altera o score de segurança** (KL-50). CNAE da IA nunca sobrescreve a
+Receita (KL-55); a classificação de setor preserva `manual`/`ai` (KL-54).
+
 ## 40. Classificação CNAE multi-setor + descrição natural + tags (KL-55)
 
 A taxonomia fixa de 48 setores (KL-54) é insuficiente: ~54% dos sites caem em `outro`
