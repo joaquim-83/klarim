@@ -1318,6 +1318,21 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    async def list_public_profile_domains(self, limit: int = 50000) -> List[Dict[str, Any]]:
+        """Domínios com **perfil público** (para o sitemap, KL-51 f4): sites com scan
+        real (`scanned`/`alerted`, com score) e `site_profile`. Exclui descartado/
+        sem_contato. `domain` + `last_scan_at` (lastmod), mais recente primeiro."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT t.domain, t.last_scan_at FROM targets t "
+                "JOIN site_profile sp ON sp.target_id = t.id "
+                "WHERE t.status IN ('scanned', 'alerted') AND t.last_scan_score IS NOT NULL "
+                "  AND t.domain IS NOT NULL AND t.domain <> '' "
+                "ORDER BY t.last_scan_at DESC NULLS LAST LIMIT %s", (limit,))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
     async def list_users_with_sites(self) -> List[Dict[str, Any]]:
         """Contas de usuário (KL-51 f3) + os sites vinculados (via `user_sites`), para a
         Gestão de Clientes no painel admin. 2 queries numa conexão (evita N+1)."""

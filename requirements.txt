@@ -23,6 +23,7 @@ dnspython>=2.4,<3.0        # MX (KL-24) + SPF/DKIM/DMARC/CNAME dos checks 21-23/
 # --- Reporting ---
 weasyprint>=62,<64          # server-side PDF generation (executive/technical)
 jinja2>=3.1,<4.0            # HTML templating for the PDF reports
+cairosvg>=2.7,<3.0         # og:image dinâmico dos perfis públicos (SVG→PNG; usa o cairo do WeasyPrint) (KL-51 f4)
 
 # --- Email ---
 resend>=2.0,<3.0           # transactional email (alerts + report delivery)

@@ -1,0 +1,6 @@
+---
+export const prerender = false;
+// URL curta de compartilhamento → 301 para o perfil público.
+const { domain } = Astro.params;
+return Astro.redirect(`/site/${domain}`, 301);
+---

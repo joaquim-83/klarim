@@ -462,6 +462,25 @@ class KlarimMailer:
             "html": html,
         })
 
+    async def send_profile_view(self, to_email: str, domain: str, score: int,
+                                semaphore: str, cta_url: str,
+                                unsubscribe_link: Optional[str] = None) -> Dict[str, Any]:
+        """Avisa o dono que alguém consultou o perfil público do site (KL-51 f4)."""
+        if unsubscribe_link is None:
+            secret = os.environ.get("UNSUBSCRIBE_SECRET") or os.environ.get("JWT_SECRET") or ""
+            if secret:
+                unsubscribe_link = build_unsubscribe_link(to_email, secret)
+        emoji = {"verde": "🟢", "amarelo": "🟡", "vermelho": "🔴"}.get(semaphore, "🟡")
+        html = _env.get_template("profile_view.html").render(
+            domain=domain, score=score, semaphore_emoji=emoji, cta_url=cta_url,
+            unsubscribe_link=unsubscribe_link)
+        return await self._send({
+            "from": self.from_address,
+            "to": [to_email],
+            "subject": f"Alguém verificou a segurança do site {domain}",
+            "html": html,
+        })
+
     async def send_account_evolution(self, to_email: str, domain: str, prev_score: int,
                                      new_score: int, fixed: int, remaining: int,
                                      link: str) -> Dict[str, Any]:

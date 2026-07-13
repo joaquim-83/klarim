@@ -8,14 +8,29 @@ export interface Props {
   path?: string;
   /** Rotas privadas (dashboard) não devem ser indexadas. */
   noindex?: boolean;
+  /** URL absoluta do og:image (default: favicon). */
+  ogImage?: string;
+  /** og:type (default 'website'). */
+  ogType?: string;
+  /** twitter:card (default 'summary'; 'summary_large_image' p/ perfis). */
+  twitterCard?: string;
+  /** Título completo exato (ignora o sufixo "· Klarim"). Ex.: perfis públicos. */
+  fullTitleOverride?: string;
+  /** JSON-LD (structured data) — objeto serializado num <script ld+json>. */
+  jsonLd?: unknown;
 }
 
-const { title, description, path = '/', noindex = false } = Astro.props;
+const {
+  title, description, path = '/', noindex = false,
+  ogImage, ogType = 'website', twitterCard = 'summary',
+  fullTitleOverride, jsonLd,
+} = Astro.props;
 const SITE = 'https://klarim.net';
 const canonical = new URL(path, SITE).href;
-const fullTitle = title === 'Klarim'
-  ? 'Klarim — Segurança web para o Brasil'
-  : `${title} · Klarim`;
+const fullTitle = fullTitleOverride
+  ? fullTitleOverride
+  : title === 'Klarim' ? 'Klarim — Segurança web para o Brasil' : `${title} · Klarim`;
+const ogImageUrl = ogImage || `${SITE}/favicon.svg`;
 ---
 
 <!doctype html>
@@ -33,18 +48,23 @@ const fullTitle = title === 'Klarim'
     <meta name="robots" content={noindex ? 'noindex, nofollow' : 'index, follow'} />
 
     <!-- Open Graph -->
-    <meta property="og:type" content="website" />
+    <meta property="og:type" content={ogType} />
     <meta property="og:site_name" content="Klarim" />
     <meta property="og:locale" content="pt_BR" />
     <meta property="og:title" content={fullTitle} />
     <meta property="og:description" content={description} />
     <meta property="og:url" content={canonical} />
-    <meta property="og:image" content={`${SITE}/favicon.svg`} />
+    <meta property="og:image" content={ogImageUrl} />
 
     <!-- Twitter -->
-    <meta name="twitter:card" content="summary" />
+    <meta name="twitter:card" content={twitterCard} />
     <meta name="twitter:title" content={fullTitle} />
     <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImageUrl} />
+
+    {jsonLd && (
+      <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} is:inline />
+    )}
 
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   </head>

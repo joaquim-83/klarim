@@ -1,0 +1,172 @@
+---
+export const prerender = false; // SSR: busca dados por domínio + SEO por página
+
+import Base from '../../layouts/Base.astro';
+import Header from '../../components/Header.astro';
+import Footer from '../../components/Footer.astro';
+
+const SITE = 'https://klarim.net';
+const API = process.env.KLARIM_API_URL || 'http://api:8000';
+const domain = (Astro.params.domain || '').toLowerCase();
+
+let data = null;
+try {
+  const res = await fetch(`${API}/public/profile/${encodeURIComponent(domain)}`, {
+    signal: AbortSignal.timeout(6000),
+  });
+  if (res.ok) data = await res.json();
+} catch { /* API indisponível → trata como não analisado */ }
+
+const status = data?.status || 'not_found';
+
+// Notifica o dono (best-effort) que o perfil foi consultado. /notify responde na hora
+// (envio em background no backend) — await rápido com timeout curto.
+if (status === 'ok') {
+  try {
+    await fetch(`${API}/notify/profile-view`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain }),
+      signal: AbortSignal.timeout(2500),
+    });
+  } catch { /* nunca bloqueia o perfil */ }
+}
+
+const SEMA = {
+  verde: { dot: '🟢', label: 'Verde', ring: 'ring-green-500/50', text: 'text-green-400' },
+  amarelo: { dot: '🟡', label: 'Amarelo', ring: 'ring-yellow-500/50', text: 'text-yellow-400' },
+  vermelho: { dot: '🔴', label: 'Vermelho', ring: 'ring-red-500/50', text: 'text-red-400' },
+};
+const t = data?.target || {};
+const p = data?.profile || {};
+const cls = data?.classifications || [];
+const bench = data?.benchmark || null;
+const sema = SEMA[t.semaphore] || SEMA.amarelo;
+const scoreN = t.score ?? null;
+const lastScan = t.last_scan_at ? new Date(t.last_scan_at).toLocaleDateString('pt-BR') : '—';
+const pct = bench && bench.count > 0 && scoreN != null && bench.avg_score
+  ? Math.min(99, Math.max(1, Math.round((scoreN / (bench.avg_score * 2 || 100)) * 100)))
+  : null;
+
+// SEO
+const okTitle = `${domain} — Score de segurança: ${scoreN}/100 | Klarim`;
+const okDesc = ((p.description ? p.description + ' ' : '')
+  + `Score de segurança do site: ${scoreN}/100. Análise com 48 verificações.`).slice(0, 300);
+const ogImage = status === 'ok' ? `${SITE}/api/og/${encodeURIComponent(domain)}.png` : undefined;
+const jsonLd = status === 'ok' ? {
+  '@context': 'https://schema.org', '@type': 'WebPage',
+  name: `Análise de segurança de ${domain}`,
+  description: `Score de segurança do site: ${scoreN}/100`,
+  url: `${SITE}/site/${domain}`,
+} : undefined;
+
+const card = 'rounded-2xl border border-slate-800 bg-slate-900/60 p-6';
+---
+
+<Base
+  title={status === 'ok' ? domain : `Segurança de ${domain}`}
+  fullTitleOverride={status === 'ok' ? okTitle : undefined}
+  description={status === 'ok' ? okDesc : `Análise de segurança do site ${domain}.`}
+  path={`/site/${domain}`}
+  ogType="website"
+  ogImage={ogImage}
+  twitterCard={status === 'ok' ? 'summary_large_image' : 'summary'}
+  jsonLd={jsonLd}
+  noindex={status !== 'ok'}
+>
+  <Header />
+  <main class="mx-auto max-w-2xl px-5 pt-28 pb-20 sm:pt-32">
+    {status === 'discarded' && (
+      <div class={card}>
+        <h1 class="text-2xl font-bold text-white">{domain}</h1>
+        <p class="mt-3 text-slate-300">Este site não está disponível para análise.</p>
+        <a href="/" class="mt-6 inline-block text-brand-400 hover:text-brand-300">← Voltar ao início</a>
+      </div>
+    )}
+
+    {(status === 'not_found' || status === 'not_scanned') && (
+      <div class={card}>
+        <h1 class="text-2xl font-bold text-white">{domain}</h1>
+        <p class="mt-3 text-slate-300">Este site ainda não foi analisado pelo Klarim.</p>
+        <a href={`/scan?url=${encodeURIComponent(domain)}`}
+          class="mt-6 inline-flex rounded-xl bg-brand-500 px-6 py-3.5 text-base font-semibold text-slate-950 hover:bg-brand-400">
+          Verificar agora →
+        </a>
+      </div>
+    )}
+
+    {status === 'ok' && (
+      <div class="space-y-6">
+        <div>
+          <h1 class="text-2xl font-bold tracking-tight text-white sm:text-3xl">{domain}</h1>
+          <p class="mt-1 text-sm text-slate-500">Análise passiva de segurança do site</p>
+        </div>
+
+        <div class={`${card} flex items-center gap-6`}>
+          <div class={`flex h-32 w-32 shrink-0 flex-col items-center justify-center rounded-full ring-4 ${sema.ring}`}>
+            <span class={`text-5xl font-extrabold ${sema.text}`}>{scoreN}</span>
+            <span class="text-xs text-slate-500">/100</span>
+          </div>
+          <div>
+            <p class="text-2xl">{sema.dot} <span class="align-middle text-lg text-slate-300">{sema.label}</span></p>
+            <p class="mt-2 text-sm text-slate-400">Score de segurança do site</p>
+            <p class="text-sm text-slate-500">Última análise: {lastScan}</p>
+          </div>
+        </div>
+
+        {(p.description || p.business_type || cls.length > 0 || (p.tags && p.tags.length > 0) || p.maturity_score != null || t.platform) && (
+          <div class={card}>
+            <h2 class="text-lg font-bold text-white">Sobre este site</h2>
+            {p.description && <p class="mt-2 text-slate-300">{p.description}</p>}
+            <dl class="mt-4 space-y-1.5 text-sm">
+              {p.business_type && <div class="flex gap-2"><dt class="w-32 shrink-0 text-slate-500">Tipo</dt><dd class="text-slate-200">{p.business_type}</dd></div>}
+              {cls.length > 0 && (
+                <div class="flex gap-2"><dt class="w-32 shrink-0 text-slate-500">CNAE</dt>
+                  <dd class="text-slate-200">{cls.slice(0, 3).map((c) => `${c.cnae_code} ${c.cnae_description || ''}`.trim()).join(' · ')}</dd></div>
+              )}
+              {Array.isArray(p.tags) && p.tags.length > 0 && <div class="flex gap-2"><dt class="w-32 shrink-0 text-slate-500">Tags</dt><dd class="text-slate-200">{p.tags.join(', ')}</dd></div>}
+              {p.maturity_score != null && <div class="flex gap-2"><dt class="w-32 shrink-0 text-slate-500">Maturidade digital</dt><dd class="text-slate-200">{p.maturity_score}/10</dd></div>}
+              {t.platform && <div class="flex gap-2"><dt class="w-32 shrink-0 text-slate-500">Plataforma</dt><dd class="text-slate-200">{t.platform}</dd></div>}
+            </dl>
+          </div>
+        )}
+
+        {bench && bench.count > 0 && (
+          <div class={card}>
+            <p class="text-sm font-medium uppercase tracking-wide text-brand-400/80">Benchmark</p>
+            <p class="mt-2 text-slate-300">Score deste site: <span class="font-bold text-white">{scoreN}</span> · Média{bench.scope === 'sector' ? ' do setor' : ' nacional'}: <span class="font-bold text-white">{bench.avg_score}</span></p>
+            <p class="mt-1 text-sm text-slate-400">{scoreN >= bench.avg_score ? 'Acima da média.' : 'Abaixo da média — há espaço para melhorar.'}</p>
+          </div>
+        )}
+
+        <div class={`${card} border-brand-500/30 bg-brand-500/5`}>
+          <h2 class="text-lg font-bold text-white">É o seu site?</h2>
+          <p class="mt-1 text-sm text-slate-300">Gerencie gratuitamente: monitore o score, receba alertas e melhore a segurança.</p>
+          <a href={`/cadastrar?url=${encodeURIComponent(t.url || 'https://' + domain)}`} data-cta="claim"
+            class="mt-4 inline-flex rounded-xl bg-brand-500 px-6 py-3 text-sm font-semibold text-slate-950 hover:bg-brand-400">
+            Reivindicar este site →
+          </a>
+        </div>
+
+        <div class="text-center">
+          <a href="/scan" data-cta="verify-other" class="text-sm text-brand-400 hover:text-brand-300">🔍 Verificar outro site →</a>
+        </div>
+
+        {(p.phone || p.address || p.instagram) && (
+          <div class="border-t border-slate-800 pt-6 text-sm text-slate-400">
+            <p class="mb-2 font-medium text-slate-500">Informações de contato</p>
+            {p.phone && <p>📞 {p.phone}</p>}
+            {p.address && <p>📍 {p.address}</p>}
+            {p.instagram && <p>📸 {p.instagram}</p>}
+          </div>
+        )}
+
+        <p class="border-t border-slate-800 pt-6 text-xs leading-relaxed text-slate-600">
+          Este score é baseado em análise passiva automatizada do site e não constitui auditoria de
+          segurança. O Klarim avalia a segurança do <strong>site</strong>, não do negócio.
+        </p>
+      </div>
+    )}
+  </main>
+  <Footer />
+</Base>

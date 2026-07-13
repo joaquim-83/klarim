@@ -1813,6 +1813,46 @@ FAIL. Os 4 checks de **DNS** (DNSSEC/CAA/MTA-STS/BIMI) são configuração manua
 ⚠️ Ao mexer nos scripts inline do Astro (Header) ou subir a versão do Astro, **recalcular
 os 3 hashes** da CSP (curl das páginas + sha256) — senão os scripts são bloqueados.
 
+### Fase 4 — perfis públicos SEO + og:image + sitemap + notificação (KL-51 f4)
+
+Expõe os ~18k sites como landing pages indexáveis (tráfego orgânico + viralidade). **Regra
+de linguagem:** o Klarim avalia a segurança do **SITE**, não do negócio.
+
+- **Página `/site/{dominio}` (Astro SSR, `web/src/pages/site/[domain].astro`).** Uma
+  chamada ao backend **`GET /public/profile/{domain}`** (agregado: alvo + perfil + CNAEs
+  + benchmark). Estados: `ok` (perfil completo), `not_found`/`not_scanned` ("ainda não
+  analisado" + CTA `/scan?url=`), `discarded` ("não disponível"). **Privacidade
+  inviolável:** o perfil público **nunca** expõe `contact_email`, `cnpj` nem `whatsapp`
+  (`_PUBLIC_PROFILE_FIELDS` filtra) — nem os detalhes PASS/FAIL dos checks. `/score/{dominio}`
+  → 301 para `/site/`. Rotas em `/public`, `/og`, `/notify` (NÃO nos prefixos protegidos
+  por JWT admin; `/targets` é admin, por isso o endpoint é `/public/profile/`, não
+  `/targets/by-domain`).
+- **og:image dinâmico** (`GET /og/{dominio}.png`, 1200×630): SVG template (`_og_svg`) →
+  PNG via **cairosvg** (reusa o cairo do WeasyPrint; import **lazy** → o CI/suite não
+  precisa do libcairo). Cache em processo 24h + `Cache-Control: public, max-age=86400`.
+  **Fail-open:** alvo sem score / render falho → 302 para o favicon. Servido via `/api/og/`
+  (location `/api/` existente).
+- **Sitemap** (`web/src/pages/sitemap.xml.js`, SSR): páginas estáticas + 1 URL por perfil,
+  domínios de **`GET /public/sitemap-domains`** (`store.list_public_profile_domains`: só
+  `scanned`/`alerted` com `site_profile`; exclui descartado/sem_contato). `robots.txt` já
+  aponta o sitemap.
+- **Notificação ao dono** (`POST /notify/profile-view {domain}`): fire-and-forget, envia
+  o aviso "alguém consultou seu site" via Resend. **Rate limit 1/domínio/24h** (Redis SET
+  NX EX). Pula alvos sem e-mail, `descartado`, `unsubscribed`, ou cujo e-mail já é de
+  **usuário registrado** (o dono já acompanha). Opt-out reusa o `/api/unsubscribe` (KL-12).
+  O `[domain].astro` chama `/notify` no SSR (best-effort, com timeout).
+- **Base.astro** ganhou props `ogImage`/`ogType`/`twitterCard`/`fullTitleOverride`/`jsonLd`
+  (structured data WebPage). O `jsonLd` é `<script type="application/ld+json">` — **dado**,
+  não script executável, então **não** é governado pela CSP `script-src` (não precisa de
+  hash). **Tracking** (`track.js`): dispara `profile_view` (com o domínio) nas páginas
+  `/site/`.
+- **Nginx:** location `~ ^/(site|score|sitemap\.xml)(/|$)` → Astro, com os security headers
+  (include) + `Cache-Control: public, max-age=300` (perfis são cacheáveis, sem formulário).
+
+**Regra inviolável:** o perfil público é só **dado que o próprio site já publica** (GET
+passivo) + o score — **nunca** e-mail/CNPJ/WhatsApp/detalhe de check. og:image e sitemap
+são best-effort/fail-open. A notificação respeita 1/domínio/24h e o opt-out.
+
 ## 40. Classificação CNAE multi-setor + descrição natural + tags (KL-55)
 
 A taxonomia fixa de 48 setores (KL-54) é insuficiente: ~54% dos sites caem em `outro`

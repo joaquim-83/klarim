@@ -25,7 +25,7 @@ from typing import Optional
 from urllib.parse import urlparse, quote
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import JSONResponse, Response, HTMLResponse
+from fastapi.responses import JSONResponse, Response, HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 
 from scanner import (run_scan, summarize_fails, Severity, ScanReport,
@@ -758,6 +758,215 @@ async def api_benchmark_cnae(division: str) -> dict:
         return {"scope": "global", "division": division, "avg_score": 0, "count": 0}
     return {"scope": "cnae_division", "division": division, "avg_score": data["avg_score"],
             "count": data["count"]}
+
+
+# --------------------------------------------------------------------------- #
+# Perfis públicos SEO (KL-51 f4) — /site/{dominio} no Astro consome estes endpoints.
+# Rotas em /public, /og, /notify (NÃO nos prefixos protegidos por JWT admin). O perfil
+# NUNCA expõe e-mail de contato nem CNPJ (privacidade). O Klarim avalia a segurança do
+# SITE, não do negócio.
+# --------------------------------------------------------------------------- #
+
+# Campos do site_profile seguros para exibição pública (sem cnpj/commercial_email/whatsapp).
+_PUBLIC_PROFILE_FIELDS = (
+    "description", "business_type", "company_name", "tags", "maturity_score",
+    "phone", "address", "instagram", "facebook", "linkedin", "youtube", "tiktok",
+    "google_maps_url", "logo_url",
+)
+
+
+def _norm_domain(domain: str) -> str:
+    d = (domain or "").strip().lower().rstrip("/")
+    if "://" in d:
+        from urllib.parse import urlparse
+        d = urlparse(d).hostname or d
+    return d.replace("www.", "", 1) if d.startswith("www.") else d
+
+
+@app.get("/public/profile/{domain}")
+async def public_profile(domain: str) -> dict:
+    """Perfil público agregado de um site (1 chamada para o Astro): dados do alvo
+    (sem e-mail), perfil comercial (sem cnpj/whatsapp), CNAEs e benchmark do setor."""
+    domain = _norm_domain(domain)
+    store = get_target_store()
+    target = await store.get_target_by_domain(domain)
+    if not target:
+        return {"status": "not_found", "domain": domain}
+    if target.get("status") == "descartado":
+        return {"status": "discarded", "domain": domain}
+    score = target.get("last_scan_score")
+    if score is None:
+        return {"status": "not_scanned", "domain": domain}
+
+    tid = target["id"]
+    profile = (await store.get_site_profile(tid)) or {}
+    classifications = await store.get_target_classifications(tid)
+    # semáforo real do último scan (KL-12); fallback por score p/ scans antigos.
+    semaphore = _semaphore_from_score(score)
+    try:
+        recent = await store.list_scans(target_id=tid, limit=1)
+        if recent and recent[0].get("semaphore"):
+            semaphore = recent[0]["semaphore"]
+    except Exception:  # noqa: BLE001
+        pass
+
+    sector = target.get("sector")
+    benchmark = None
+    try:
+        b = (await store.sector_avg_score(sector)) if sector and sector != "outro" else None
+        if not b or b.get("count", 0) < 5:
+            b = await store.global_avg_score()
+            benchmark = {"scope": "global", **b}
+        else:
+            benchmark = {"scope": "sector", "sector": sector, **b}
+    except Exception:  # noqa: BLE001
+        benchmark = None
+
+    last_at = target.get("last_scan_at")
+    return {
+        "status": "ok",
+        "domain": domain,
+        "target": {
+            "id": tid, "url": target.get("url"), "domain": domain,
+            "sector": sector, "platform": target.get("platform"),
+            "score": score, "semaphore": semaphore,
+            "last_scan_at": last_at.isoformat() if last_at else None,
+        },
+        "profile": {k: profile.get(k) for k in _PUBLIC_PROFILE_FIELDS},
+        "classifications": classifications,
+        "benchmark": benchmark,
+    }
+
+
+@app.get("/public/sitemap-domains")
+async def public_sitemap_domains() -> dict:
+    """Domínios com perfil público (para o sitemap.xml gerado pelo Astro)."""
+    try:
+        rows = await get_target_store().list_public_profile_domains()
+    except Exception:  # noqa: BLE001
+        rows = []
+    return {"domains": [
+        {"domain": r["domain"],
+         "lastmod": r["last_scan_at"].date().isoformat() if r.get("last_scan_at") else None}
+        for r in rows if r.get("domain")]}
+
+
+# --- og:image dinâmico (SVG → PNG via cairosvg; cairo já vem do WeasyPrint) --- #
+_OG_CACHE: dict = {}  # domain -> (png_bytes, expiry_monotonic)
+_OG_TTL = 86400
+_SEMA_COLOR = {"verde": "#00D26A", "amarelo": "#F0C000", "vermelho": "#F85149"}
+
+
+def _og_svg(domain: str, score: int, semaphore: str, description: str) -> str:
+    from html import escape
+    color = _SEMA_COLOR.get(semaphore, "#F0C000")
+    desc = (description or "Análise passiva de segurança do site.").strip()
+    if len(desc) > 74:
+        desc = desc[:71].rstrip() + "…"
+    dom = domain if len(domain) <= 34 else domain[:33] + "…"
+    return f"""<svg width="1200" height="630" viewBox="0 0 1200 630" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="630" fill="#0D1117"/>
+  <rect x="0" y="0" width="1200" height="10" fill="#FF6B35"/>
+  <circle cx="76" cy="82" r="15" fill="#FF6B35"/>
+  <text x="104" y="94" font-family="sans-serif" font-size="34" font-weight="bold" fill="#E6EDF3" letter-spacing="3">KLA<tspan fill="#FF6B35">R</tspan>IM</text>
+  <text x="72" y="240" font-family="sans-serif" font-size="52" font-weight="bold" fill="#E6EDF3">{escape(dom)}</text>
+  <text x="72" y="430" font-family="sans-serif" font-size="170" font-weight="bold" fill="{color}">{score}</text>
+  <text x="{72 + 105 * len(str(score))}" y="430" font-family="sans-serif" font-size="56" fill="#8B949E">/100</text>
+  <circle cx="{130 + 105 * len(str(score))}" cy="388" r="34" fill="{color}"/>
+  <text x="72" y="500" font-family="sans-serif" font-size="30" fill="#8B949E">Score de segurança do site</text>
+  <text x="72" y="552" font-family="sans-serif" font-size="27" fill="#C9D1D9">{escape(desc)}</text>
+  <text x="72" y="602" font-family="sans-serif" font-size="24" fill="#8B949E">48 verificações · klarim.net</text>
+</svg>"""
+
+
+@app.get("/og/{domain}.png")
+async def og_image(domain: str) -> Response:
+    """og:image (1200x630 PNG) do perfil público. Cache em processo 24h + Cache-Control.
+    Fail-open: se o alvo não existe/sem score ou o render falha, cai para o favicon."""
+    dom = _norm_domain(domain)
+    now = time.monotonic()
+    cached = _OG_CACHE.get(dom)
+    if cached and cached[1] > now:
+        return Response(content=cached[0], media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=86400"})
+    store = get_target_store()
+    target = await store.get_target_by_domain(dom)
+    score = (target or {}).get("last_scan_score")
+    if not target or score is None or target.get("status") == "descartado":
+        return RedirectResponse(url="/favicon.svg", status_code=302)
+    profile = (await store.get_site_profile(target["id"])) or {}
+    semaphore = _semaphore_from_score(score)
+    try:
+        recent = await store.list_scans(target_id=target["id"], limit=1)
+        if recent and recent[0].get("semaphore"):
+            semaphore = recent[0]["semaphore"]
+    except Exception:  # noqa: BLE001
+        pass
+    svg = _og_svg(dom, int(score), semaphore,
+                  profile.get("business_type") or profile.get("description") or "")
+    try:
+        import cairosvg  # lazy: precisa do libcairo (presente na imagem; ausente no CI)
+        png = cairosvg.svg2png(bytestring=svg.encode("utf-8"),
+                               output_width=1200, output_height=630)
+    except Exception as exc:  # noqa: BLE001 - render é best-effort
+        print(f"[og] falha ao renderizar {dom}: {exc!r}", flush=True)
+        return RedirectResponse(url="/favicon.svg", status_code=302)
+    _OG_CACHE[dom] = (png, now + _OG_TTL)
+    if len(_OG_CACHE) > 5000:  # limpeza oportunista
+        for k, (_, exp) in list(_OG_CACHE.items()):
+            if exp <= now:
+                _OG_CACHE.pop(k, None)
+    return Response(content=png, media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=86400"})
+
+
+# --- notificação ao dono (perfil consultado) — rate limit 1/domínio/24h ------ #
+class ProfileViewBody(BaseModel):
+    domain: str
+
+
+@app.post("/notify/profile-view")
+async def notify_profile_view(body: ProfileViewBody) -> dict:
+    """Avisa o dono que alguém consultou o perfil público (KL-51 f4). Fire-and-forget:
+    responde na hora e envia em background. Rate limit 1/domínio/24h (Redis). Pula alvos
+    sem e-mail, descartados, unsubscribed, ou cujo e-mail já é de usuário registrado."""
+    domain = _norm_domain(body.domain)
+    if not domain:
+        return {"ok": True, "notified": False}
+
+    async def _do():
+        try:
+            store = get_target_store()
+            target = await store.get_target_by_domain(domain)
+            if not target:
+                return
+            email = (target.get("contact_email") or "").strip()
+            status = target.get("status")
+            if not email or status in ("descartado", "unsubscribed"):
+                return
+            # rate limit 1/domínio/24h (Redis SET NX EX); sem Redis, deixa passar.
+            if _cache is not None and _cache.redis is not None:
+                key = f"notify:{domain}"
+                if not await _cache.redis.set(key, "1", nx=True, ex=86400):
+                    return  # já notificado nas últimas 24h
+            # não notificar se o e-mail já tem conta (o dono já acompanha)
+            try:
+                if await store.get_user_by_email(email):
+                    return
+            except Exception:  # noqa: BLE001
+                pass
+            if not _email_enabled():
+                return
+            score = target.get("last_scan_score") or 0
+            semaphore = _semaphore_from_score(score)
+            cta = f"{os.environ.get('SITE_BASE', 'https://klarim.net')}/cadastrar"
+            await _mailer().send_profile_view(email, domain, int(score), semaphore, cta)
+            print(f"[notify] perfil {domain} consultado → aviso enviado a {email}", flush=True)
+        except Exception as exc:  # noqa: BLE001 - nunca derruba nada
+            print(f"[notify] profile-view erro {domain}: {exc!r}", flush=True)
+
+    _spawn(_do())
+    return {"ok": True}
 
 
 # --------------------------------------------------------------------------- #

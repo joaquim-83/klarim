@@ -373,6 +373,15 @@ signup vincula o **histórico** de scans do e-mail; o resultado tem **CTA de con
 + **dropdown de PDF** (executivo/técnico) e **"enviar por e-mail"** (`POST /scan/send-report`,
 os 2 PDFs via Resend). Contato do site é `scan@klarim.net`.
 
+**Perfis públicos SEO (fase 4, KL-51 f4):** cada site vira uma landing indexável em
+**`/site/{dominio}`** (Astro SSR) — score, descrição (IA), tags, CNAEs, maturidade,
+plataforma, benchmark + disclaimer, **sem** e-mail/CNPJ/WhatsApp (privacidade). Uma chamada
+ao backend agregado `GET /public/profile/{domain}`. **og:image dinâmico** (`GET
+/og/{dominio}.png`, SVG→PNG via cairosvg, cache 24h) para compartilhamento; **sitemap.xml**
+dinâmico (só sites com scan + perfil); **notificação ao dono** quando o perfil é consultado
+(`POST /notify/profile-view`, 1/domínio/24h, pula quem já tem conta). `/score/{dominio}` →
+301 para `/site/`. O Klarim avalia a segurança do **site**, não do negócio.
+
 O restante do frontend (fluxo de scan + painel) segue em **React + Vite + Tailwind v4**
 em [`frontend/`](./frontend/), servido como build estático pelo **Nginx** (que também faz
 proxy de `/api` → API). Telas:

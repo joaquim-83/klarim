@@ -60,5 +60,11 @@
   var path = window.location.pathname;
   if (path.indexOf('/painel') !== 0 && path.indexOf('/dashboard') !== 0) {
     track('page_view');
+    // profile_view em /site/{dominio} — mede tráfego dos perfis públicos (KL-51 f4).
+    var m = path.match(/^\/site\/([^/]+)/);
+    if (m) {
+      var dom = decodeURIComponent(m[1]);
+      track('profile_view', { domain: dom }, 'https://' + dom);
+    }
   }
 })();
