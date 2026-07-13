@@ -153,6 +153,12 @@ class FakeStore:
     async def get_target(self, target_id):
         return None if target_id == 999 else {"id": target_id, "url": "https://x.com.br"}
 
+    async def get_site_profile(self, target_id):
+        return None
+
+    async def get_target_classifications(self, target_id):
+        return []
+
     async def list_scans(self, **kw):
         return [{"id": 10, "score": 80}]
 
