@@ -2480,6 +2480,8 @@ _KNOWN_EVENTS = {
     # KL-29/KL-31 — monitoramento + bônus de score 100
     "score100_full_scan_started", "score100_full_scan_completed",
     "score100_monitoring_offered", "score100_monitoring_accepted",
+    # KL-51 f4 — perfis públicos SEO
+    "profile_view",
 }
 _EVENT_RL_MAX = 100          # eventos/minuto por sessão
 _event_rl: dict = {}         # session_id -> lista de timestamps (janela de 60s)
