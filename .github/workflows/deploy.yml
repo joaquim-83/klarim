@@ -115,6 +115,7 @@ jobs:
           docker run --rm \
             -v "$PWD/https.rendered.conf:/etc/nginx/conf.d/default.conf:ro" \
             -v "$PWD/le:/etc/letsencrypt:ro" \
+            -v "$PWD/frontend/nginx/security_headers.conf:/etc/nginx/klarim_security_headers.conf:ro" \
             nginx:alpine nginx -t
 
   deploy:

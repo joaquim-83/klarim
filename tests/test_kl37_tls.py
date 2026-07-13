@@ -110,10 +110,12 @@ def test_ocsp_uri_present_pass(monkeypatch):
     assert _run(ocsp.check(URL)).status == Status.PASS
 
 
-def test_ocsp_no_uri_fail_baixa(monkeypatch):
+def test_ocsp_no_uri_inconcluso(monkeypatch):
+    # KL-51 f3 fix: sem OCSP URI é o novo normal (Let's Encrypt descontinuou o OCSP) —
+    # INCONCLUSO (neutro), não FAIL.
     _patch(monkeypatch, ocsp, _info(cert=_cert(ocsp_uri=None)))
     r = _run(ocsp.check(URL))
-    assert r.status == Status.FAIL and r.severity == Severity.BAIXA
+    assert r.status == Status.INCONCLUSO and r.severity == Severity.BAIXA
 
 
 # --- 10-12: key strength --------------------------------------------------- #

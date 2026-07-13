@@ -75,6 +75,7 @@ export default function ScanFlow({ url: initialUrl = '', user = null }) {
   useEffect(() => {
     if (user && url && !startedRef.current) {
       startedRef.current = true;
+      window.klarimTrack?.('scan_started', {}, url);
       runScan('');
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -95,8 +96,9 @@ export default function ScanFlow({ url: initialUrl = '', user = null }) {
     setBusy(true);
     try {
       const { data } = await apiPost('/scan/request-code', { email, url });
-      if (data.status === 'code_sent') setStep('code');
+      if (data.status === 'code_sent') { window.klarimTrack?.('code_requested', {}, url); setStep('code'); }
       else if (data.status === 'limit_reached' || data.status === 'already_scanned') {
+        window.klarimTrack?.('scan_limit_reached', {}, url);
         setLimitMsg(data.message || 'Limite atingido.');
         setStep('limit');
       } else setError(data.detail || data.message || 'Não foi possível enviar o código.');
@@ -114,7 +116,9 @@ export default function ScanFlow({ url: initialUrl = '', user = null }) {
     try {
       const { data } = await apiPost('/scan/verify-code', { email, code, url });
       if (data.status === 'verified' && data.scan_token) {
+        window.klarimTrack?.('code_verified', {}, url);
         tokenRef.current = data.scan_token;
+        window.klarimTrack?.('scan_started', {}, url);
         setStep('progress');
         runScan(data.scan_token);
       } else setError(data.message || 'Código inválido ou expirado.');
@@ -142,6 +146,8 @@ export default function ScanFlow({ url: initialUrl = '', user = null }) {
         return;
       }
       setResult(data);
+      window.klarimTrack?.('scan_completed', { score: data.score }, url);
+      window.klarimTrack?.('result_viewed', {}, url);
       setStep('result');
     } catch {
       // Scan lento pode estourar o timeout do proxy (504) — mas o servidor termina e

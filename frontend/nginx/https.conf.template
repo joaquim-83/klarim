@@ -29,12 +29,8 @@ server {
     ssl_session_cache shared:SSL:10m;
     ssl_session_timeout 1d;
 
-    # Security headers — o Klarim pratica o que prega (self-scan deve passar).
-    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
-    add_header X-Frame-Options "DENY" always;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'" always;
+    # Security headers — o Klarim pratica o que prega (self-scan deve passar 100/100).
+    include /etc/nginx/klarim_security_headers.conf;
 
     root /usr/share/nginx/html;
     index index.html;
@@ -66,8 +62,12 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        # add_header próprio (Cache-Control) quebra a herança — reinclui os de segurança.
+        # A landing tem o formulário de scan → Cache-Control no-store (check_36).
+        include /etc/nginx/klarim_security_headers.conf;
+        add_header Cache-Control "no-store" always;
     }
-    location ~ ^/(termos|privacidade|sobre|contato|scan|cadastrar|entrar|recuperar-senha|dashboard|favicon\.svg|robots\.txt)(/|$) {
+    location ~ ^/(termos|privacidade|sobre|contato|scan|cadastrar|entrar|recuperar-senha|dashboard|favicon\.svg|robots\.txt|track\.js)(/|$) {
         resolver 127.0.0.11 valid=10s ipv6=off;
         set $klarim_astro astro:4321;
         proxy_pass http://$klarim_astro;
@@ -76,6 +76,9 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
+        # Páginas com formulário (/scan, /contato, /entrar, /cadastrar…) → no-store (check_36).
+        include /etc/nginx/klarim_security_headers.conf;
+        add_header Cache-Control "no-store" always;
     }
     location ^~ /_astro/ {
         resolver 127.0.0.11 valid=10s ipv6=off;
@@ -85,26 +88,16 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto $scheme;
         expires 1y;
+        # add_header próprio quebra a herança dos headers do server — reincluir.
+        include /etc/nginx/klarim_security_headers.conf;
         add_header Cache-Control "public, immutable";
-        # add_header próprio quebra a herança dos headers do server — repetir os de segurança.
-        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
-        add_header X-Frame-Options "DENY" always;
-        add_header X-Content-Type-Options "nosniff" always;
-        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'" always;
     }
 
     location /assets/ {
         expires 1y;
+        # add_header próprio quebra a herança dos headers do server — reincluir.
+        include /etc/nginx/klarim_security_headers.conf;
         add_header Cache-Control "public, immutable";
-        # Um add_header próprio quebra a herança dos headers do server block — por
-        # isso repetimos os de segurança aqui, senão os assets (JS/CSS) sairiam sem
-        # HSTS/CSP (regressão flagrada na auditoria pós-MCP).
-        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
-        add_header X-Frame-Options "DENY" always;
-        add_header X-Content-Type-Options "nosniff" always;
-        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'" always;
         try_files $uri =404;
     }
 

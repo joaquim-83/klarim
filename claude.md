@@ -1775,6 +1775,30 @@ sites (score/último scan), criação, último login e status, via `GET /admin/c
 (`store.list_users_with_sites`); a rota antiga `/painel/monitorados` redireciona. O item
 **"Escanear"** saiu da navegação do painel (redundante com a página Alvos).
 
+**3ª rodada de correções (KL-51 f3 fix).** (1) **PDF grátis com o paywall desligado.**
+`_require_paid` devolvia 402 mesmo com `PAYWALL_ENABLED=false` (só liberava em dev/sem
+chave AbacatePay). Fix: `if not _paywall_enabled() or _free_access(): return` — com o
+paywall off (default, freemium) o PDF (`/report/*`) é gratuito. (2) **Tracking na
+plataforma Astro.** O Astro (`web/`) não tinha o tracker do KL-21 → `site_events` parava
+de receber atividade nova → "Eventos recentes" do painel vazio. Fix: `web/public/track.js`
+(asset **externo** → passa na CSP `script-src 'self'`) dispara `page_view` e expõe
+`window.klarimTrack`; `Base.astro` o inclui; o `ScanFlow` emite o funil
+(`scan_started/code_requested/code_verified/scan_completed/result_viewed`). (3) **Headers
+do Nginx p/ score 100.** Snippet compartilhado `frontend/nginx/security_headers.conf`
+(incluído via `include` no server + em cada location com `add_header` próprio; o
+`nginx-check` do CI monta o arquivo): **CSP** sem `'unsafe-inline'` no `script-src` — os
+**3 scripts inline** do Astro (toggle de auth do Header + 2 do runtime de island) entram
+por **hash SHA-256** (estáveis; todo script novo é externo), `style-src` mantém
+`'unsafe-inline'` (só script-src/default-src reprovam); **Permissions-Policy** (nega
+câmera/mic/geo/…); **COOP** `same-origin`; **COEP** `require-corp` (seguro — site 100%
+same-origin, todo recurso leva CORP); **CORP** `same-origin`; **Cache-Control** `no-store`
+na landing + páginas com formulário (check_36). **OCSP (check_43):** `ssl_stapling` **não**
+resolve (o check lê o **OCSP URI do certificado**, que a Let's Encrypt **removeu** em 2025);
+o check foi ajustado — ausência de OCSP URI é o novo normal ⇒ **INCONCLUSO** (neutro), não
+FAIL. Os 4 checks de **DNS** (DNSSEC/CAA/MTA-STS/BIMI) são configuração manual do dono.
+⚠️ Ao mexer nos scripts inline do Astro (Header) ou subir a versão do Astro, **recalcular
+os 3 hashes** da CSP (curl das páginas + sha256) — senão os scripts são bloqueados.
+
 ## 40. Classificação CNAE multi-setor + descrição natural + tags (KL-55)
 
 A taxonomia fixa de 48 setores (KL-54) é insuficiente: ~54% dos sites caem em `outro`

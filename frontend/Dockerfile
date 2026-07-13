@@ -18,6 +18,8 @@ COPY --from=build /app/dist /usr/share/nginx/html
 # Templates de config e o hook que escolhe HTTP x HTTPS em runtime.
 COPY nginx/http.conf /klarim/http.conf
 COPY nginx/https.conf.template /klarim/https.conf.template
+# Security headers compartilhados (incluídos pelo server block e pelos locations).
+COPY nginx/security_headers.conf /etc/nginx/klarim_security_headers.conf
 COPY docker-entrypoint.d/40-klarim-tls.sh /docker-entrypoint.d/40-klarim-tls.sh
 RUN chmod +x /docker-entrypoint.d/40-klarim-tls.sh \
     && rm -f /etc/nginx/conf.d/default.conf

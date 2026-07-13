@@ -50,5 +50,7 @@ const fullTitle = title === 'Klarim'
   </head>
   <body class="min-h-screen bg-slate-950 text-slate-100 antialiased selection:bg-brand-500/30">
     <slot />
+    <!-- Tracking (KL-21): asset EXTERNO (não inline) → passa na CSP `script-src 'self'`. -->
+    <script src="/track.js" is:inline></script>
   </body>
 </html>

@@ -1606,8 +1606,10 @@ async def scan_send_report(body: SendReportBody, request: Request) -> dict:
 
 
 async def _require_paid(charge_id: Optional[str]) -> None:
-    """Exige uma cobrança paga, exceto em modo dev / pagamentos desativados."""
-    if _free_access():
+    """Exige uma cobrança paga, exceto quando o **paywall está desligado** (KL-51 f2 —
+    default; produto freemium, PDF sempre gratuito), em modo dev, ou sem cobrança
+    configurada. Com `PAYWALL_ENABLED=true` volta a exigir o pagamento."""
+    if not _paywall_enabled() or _free_access():
         return
     if not charge_id:
         raise HTTPException(status_code=402, detail="Pagamento necessário para o relatório completo.")

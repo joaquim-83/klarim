@@ -148,14 +148,24 @@ def test_require_paid_free_when_no_key(monkeypatch):
 def test_require_paid_402_without_charge(monkeypatch):
     monkeypatch.setenv("KLARIM_DEV_MODE", "false")
     monkeypatch.setenv("ABACATEPAY_API_KEY", "key")
+    monkeypatch.setenv("PAYWALL_ENABLED", "true")  # 402 só faz sentido com o paywall LIGADO
     with pytest.raises(HTTPException) as ei:
         asyncio.run(apimain._require_paid(None))
     assert ei.value.status_code == 402
 
 
+def test_require_paid_free_when_paywall_off(monkeypatch):
+    # KL-51 f3 fix: paywall desligado (default) → PDF gratuito mesmo com cobrança configurada.
+    monkeypatch.setenv("KLARIM_DEV_MODE", "false")
+    monkeypatch.setenv("ABACATEPAY_API_KEY", "key")
+    monkeypatch.setenv("PAYWALL_ENABLED", "false")
+    asyncio.run(apimain._require_paid(None))  # não levanta
+
+
 def test_require_paid_ok_when_paid(monkeypatch):
     monkeypatch.setenv("KLARIM_DEV_MODE", "false")
     monkeypatch.setenv("ABACATEPAY_API_KEY", "key")
+    monkeypatch.setenv("PAYWALL_ENABLED", "true")
     asyncio.run(store_mod._store.save(
         Charge("char_paid", "https://x.com", 2900, status=PaymentStatus.PAID)))
     asyncio.run(apimain._require_paid("char_paid"))  # não levanta
@@ -211,6 +221,7 @@ def test_require_paid_402_when_pending_no_network(monkeypatch):
     monkeypatch.setenv("KLARIM_DEV_MODE", "false")
     monkeypatch.delenv("ABACATEPAY_API_KEY", raising=False)  # payments off p/ evitar rede
     monkeypatch.setenv("ABACATEPAY_API_KEY", "key")  # on, mas _refresh tenta rede
+    monkeypatch.setenv("PAYWALL_ENABLED", "true")  # 402 só faz sentido com o paywall LIGADO
     # Sem rede real, check_payment falha -> status permanece PENDING -> 402.
     asyncio.run(store_mod._store.save(Charge("char_pending", "https://x.com", 2900)))
     # Evita chamada de rede: força check_payment a lançar.
