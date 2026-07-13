@@ -6,10 +6,21 @@
 # API:     http://localhost:8000
 # Worker:  consumes the Redis queue 'klarim:scan_queue' and writes reports back.
 
+# Rotação de logs — CRÍTICO. Sem isto, os logs JSON dos containers (sobretudo o
+# httpx verboso do discovery/batch) crescem SEM LIMITE e enchem o disco da VM,
+# quebrando tudo. Cada serviço fica limitado a 3×10MB = 30MB de log. Aplicado a
+# todos via âncora YAML `*default-logging`.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
 services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    logging: *default-logging
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-klarim}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
@@ -29,6 +40,7 @@ services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
+    logging: *default-logging
     command: ["redis-server", "--save", "60", "1", "--loglevel", "warning"]
     ports:
       # Bind to localhost only — Redis must not be reachable from the VM's
@@ -45,6 +57,7 @@ services:
   api:
     build: .
     restart: unless-stopped
+    logging: *default-logging
     command: ["uvicorn", "api.main:app", "--host", "0.0.0.0", "--port", "8000"]
     env_file: .env
     # KL-32: monta o dir de deploy LEITURA+ESCRITA — o MCP grava o worker_control.json
@@ -71,6 +84,7 @@ services:
   astro:
     build: ./web
     restart: unless-stopped
+    logging: *default-logging
     environment:
       HOST: 0.0.0.0
       PORT: 4321
@@ -89,6 +103,7 @@ services:
   web:
     build: ./frontend
     restart: unless-stopped
+    logging: *default-logging
     environment:
       # Vazio => modo HTTP. Definido (no .env da VM) + cert presente => HTTPS.
       DOMAIN: ${DOMAIN:-}
@@ -106,6 +121,7 @@ services:
   worker:
     build: .
     restart: unless-stopped
+    logging: *default-logging
     command: ["python", "-m", "scanner.main", "--worker"]
     env_file: .env
     # KL-32: lê o worker_control.json (pausa/retoma o scan worker sem redeploy).
@@ -125,6 +141,7 @@ services:
   discovery:
     build: .
     restart: unless-stopped
+    logging: *default-logging
     command: ["python", "-m", "discovery.worker"]
     env_file: .env
     # Kill-switch de alertas (KL-27): monta o dir de deploy (onde vive o flag

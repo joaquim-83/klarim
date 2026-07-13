@@ -43,6 +43,15 @@ docker compose down --remove-orphans
 echo "==> docker compose up -d --build"
 docker compose up -d --build
 
+# 3b) Limpeza de disco — CRÍTICO. Cada `--build` acumula build cache (GBs) e deixa
+#     a imagem anterior como dangling; sem podar, o disco da VM (9.7G) enche e QUEBRA
+#     tudo (batch, scans, banco — incidente de disco 100% após 3 deploys seguidos).
+#     `builder prune` limpa o cache; `image prune -f` remove só imagens não usadas
+#     (os containers em execução mantêm as suas). Nunca toca em volumes/dados.
+echo "==> limpando build cache + imagens antigas (evita disco cheio)"
+docker builder prune -f || true
+docker image prune -f || true
+
 # 4) Show container state.
 echo "==> docker compose ps"
 docker compose ps
