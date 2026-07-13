@@ -59,6 +59,7 @@ from discovery import worker_control
 from discovery.ingest import ingest_scan, _fetch_html
 from discovery.classifier import classify_sector, classify_by_domain, PRICE_TIERS
 from api import health_checks
+from api import auth_users
 
 
 # --------------------------------------------------------------------------- #
@@ -135,15 +136,21 @@ def _create_token(username: str) -> str:
     import jwt
 
     now = datetime.now(timezone.utc)
-    payload = {"sub": username, "iat": now, "exp": now + timedelta(seconds=JWT_TTL_SECONDS)}
+    payload = {"sub": username, "typ": "admin",
+               "iat": now, "exp": now + timedelta(seconds=JWT_TTL_SECONDS)}
     return jwt.encode(payload, _jwt_secret(), algorithm=JWT_ALGO)
 
 
 def _verify_token(token: str) -> dict:
-    """Decodifica/valida o JWT (levanta em token inválido/expirado)."""
+    """Decodifica/valida o JWT do operador (levanta em token inválido/expirado ou se
+    o `typ` não é `admin` — impede que um cookie de usuário, assinado com o mesmo
+    segredo, seja aceito como admin, KL-51 f3)."""
     import jwt
 
-    return jwt.decode(token, _jwt_secret(), algorithms=[JWT_ALGO])
+    payload = jwt.decode(token, _jwt_secret(), algorithms=[JWT_ALGO])
+    if payload.get("typ") != "admin":
+        raise ValueError("token não é de admin")
+    return payload
 
 
 def _is_protected(path: str) -> bool:
@@ -263,6 +270,316 @@ async def auth_login(body: LoginBody) -> dict:
     if not ok:
         raise HTTPException(status_code=401, detail="Credenciais inválidas.")
     return {"token": _create_token(body.username), "expires_in": JWT_TTL_SECONDS}
+
+
+# --------------------------------------------------------------------------- #
+# Contas de usuário (KL-51 f3) — signup/login/logout/forgot/reset/me + sites.
+# Namespace /account/* (o /auth/login já é o operador/admin). JWT no cookie.
+# --------------------------------------------------------------------------- #
+
+_ACCOUNT_EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$")
+_PW_MIN = 8
+_PWRESET_TTL = 3600          # 1h
+_RESET_CODE_TTL = 3600
+# rate limits in-memory (MVP single-process; mover p/ Redis se escalar)
+_signup_attempts: dict = {}
+_forgot_attempts: dict = {}
+_reset_attempts: dict = {}
+
+
+def _ip_rate_limit(bucket: dict, key: str, max_hits: int, window: int) -> bool:
+    """True se DENTRO do limite (permite); False se excedeu. Janela deslizante."""
+    now = time.monotonic()
+    q = bucket.setdefault(key, [])
+    cutoff = now - window
+    while q and q[0] < cutoff:
+        q.pop(0)
+    if len(q) >= max_hits:
+        return False
+    q.append(now)
+    if len(bucket) > 5000:  # limpeza oportunista
+        for k in [k for k, ts in bucket.items() if not ts or ts[-1] < cutoff]:
+            bucket.pop(k, None)
+    return True
+
+
+def _user_public(user: dict) -> dict:
+    """Campos seguros do usuário para devolver ao frontend (sem hash)."""
+    return {
+        "id": user["id"], "email": user["email"], "name": user.get("name"),
+        "plan": user.get("plan", "free"), "max_sites": user.get("max_sites", 1),
+    }
+
+
+def _set_session_cookie(resp: JSONResponse, token: str) -> None:
+    resp.set_cookie(
+        key=auth_users.USER_COOKIE, value=token, max_age=auth_users.USER_JWT_TTL,
+        httponly=True, secure=True, samesite="lax", path="/")
+
+
+class SignupBody(BaseModel):
+    email: str
+    password: str
+    name: Optional[str] = None
+    url: Optional[str] = None   # site recém-escaneado, para vincular no signup
+
+
+class AccountLoginBody(BaseModel):
+    email: str
+    password: str
+
+
+class ForgotBody(BaseModel):
+    email: str
+
+
+class ResetBody(BaseModel):
+    email: str
+    code: str
+    new_password: str
+
+
+class SiteBody(BaseModel):
+    url: str
+
+
+async def _resolve_or_create_target(url: str, source: str = "manual") -> Optional[int]:
+    """target_id de uma URL: reusa o existente ou registra + enfileira scan."""
+    store = get_target_store()
+    norm = _norm_scan_url(url)
+    existing = await store.get_target_by_url(norm)
+    if existing:
+        return existing["id"]
+    # registra um alvo mínimo e enfileira scan (o worker preenche o resto)
+    from urllib.parse import urlparse
+    domain = urlparse(norm if "://" in norm else f"https://{norm}").hostname or norm
+    try:
+        tid = await store.register_target(
+            url=norm, domain=domain, platform="", sector="outro",
+            price_tier="standard", contact_email=None, source=source, status="discovered")
+        await _enqueue_scan(tid, norm, source=source)
+        return tid
+    except Exception as exc:  # noqa: BLE001
+        print(f"[account] resolve target falhou {url}: {exc!r}", flush=True)
+        return None
+
+
+@app.post("/account/signup")
+async def account_signup(body: SignupBody, request: Request) -> JSONResponse:
+    """Cria uma conta (o e-mail já foi verificado no fluxo de scan, KL-25). Vincula
+    automaticamente o site recém-escaneado. Rate limit 5/IP/h."""
+    if not _ip_rate_limit(_signup_attempts, _client_ip(request), 5, 3600):
+        raise HTTPException(status_code=429, detail="Muitas contas criadas. Tente mais tarde.")
+    email = (body.email or "").lower().strip()
+    if not _ACCOUNT_EMAIL_RE.match(email):
+        raise HTTPException(status_code=400, detail="E-mail inválido.")
+    if len(body.password or "") < _PW_MIN:
+        raise HTTPException(status_code=400, detail="A senha precisa ter ao menos 8 caracteres.")
+    store = get_target_store()
+    user = await store.create_user(email, auth_users.hash_password(body.password),
+                                   name=(body.name or None))
+    if user is None:
+        raise HTTPException(status_code=409, detail="Já existe uma conta com este e-mail.")
+    # vincula o site recém-escaneado (best-effort)
+    if body.url:
+        tid = await _resolve_or_create_target(body.url, source="signup")
+        if tid:
+            owner = await _email_owns_target(email, tid)
+            await store.link_user_site(user["id"], tid, is_owner=owner)
+    await store.touch_user_login(user["id"])
+    token = auth_users.create_user_token(user)
+    resp = JSONResponse({"user": _user_public(user)})
+    _set_session_cookie(resp, token)
+    return resp
+
+
+@app.post("/account/login")
+async def account_login(body: AccountLoginBody, request: Request) -> JSONResponse:
+    """Login de conta de usuário. Rate limit 10/IP/min (anti brute-force)."""
+    if not _ip_rate_limit(_signup_attempts, "login:" + _client_ip(request), 10, 60):
+        raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde um momento.")
+    email = (body.email or "").lower().strip()
+    store = get_target_store()
+    user = await store.get_user_by_email(email, with_hash=True)
+    if not user or not auth_users.verify_password(body.password, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="E-mail ou senha incorretos.")
+    if not user.get("is_active", True):
+        raise HTTPException(status_code=403, detail="Conta desativada.")
+    await store.touch_user_login(user["id"])
+    token = auth_users.create_user_token(user)
+    resp = JSONResponse({"user": _user_public(user)})
+    _set_session_cookie(resp, token)
+    return resp
+
+
+@app.post("/account/logout")
+async def account_logout() -> JSONResponse:
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(key=auth_users.USER_COOKIE, path="/")
+    return resp
+
+
+@app.post("/account/forgot")
+async def account_forgot(body: ForgotBody, request: Request) -> dict:
+    """Envia um código de 6 dígitos para redefinir a senha. Resposta SEMPRE genérica
+    (não revela se o e-mail existe). Rate limit 3/e-mail/h. Roda em background."""
+    email = (body.email or "").lower().strip()
+    generic = {"ok": True, "message": "Se houver uma conta com este e-mail, enviamos um código."}
+    if not _ACCOUNT_EMAIL_RE.match(email):
+        return generic
+    if not _ip_rate_limit(_forgot_attempts, email, 3, 3600):
+        return generic  # silencioso — não vaza que passou do limite
+
+    async def _do():
+        store = get_target_store()
+        user = await store.get_user_by_email(email)
+        if not user:
+            return  # não existe → nada (resposta já foi genérica)
+        code = f"{secrets.randbelow(1_000_000):06d}"
+        await store.create_password_reset(email, code, _RESET_CODE_TTL)
+        if _email_enabled():
+            try:
+                await _mailer().send_password_reset_code(email, code)
+            except KlarimMailerError as exc:
+                print(f"[account] reset e-mail falhou {email}: {exc!r}", flush=True)
+
+    _spawn(_do())
+    return generic
+
+
+@app.post("/account/reset")
+async def account_reset(body: ResetBody, request: Request) -> dict:
+    """Valida o código e define a nova senha. Rate limit 5/e-mail/10min."""
+    email = (body.email or "").lower().strip()
+    if not _ip_rate_limit(_reset_attempts, email, 5, 600):
+        raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde alguns minutos.")
+    if len(body.new_password or "") < _PW_MIN:
+        raise HTTPException(status_code=400, detail="A senha precisa ter ao menos 8 caracteres.")
+    store = get_target_store()
+    if not await store.verify_password_reset(email, (body.code or "").strip()):
+        raise HTTPException(status_code=400, detail="Código inválido ou expirado.")
+    ok = await store.set_user_password(email, auth_users.hash_password(body.new_password))
+    if not ok:
+        raise HTTPException(status_code=400, detail="Não foi possível redefinir a senha.")
+    return {"ok": True}
+
+
+@app.get("/account/me")
+async def account_me(request: Request) -> dict:
+    user = await auth_users.require_user(request)
+    store = get_target_store()
+    return {"user": _user_public(user),
+            "sites_count": await store.count_user_sites(user["id"])}
+
+
+# --- sites do usuário ------------------------------------------------------- #
+
+async def _email_owns_target(email: str, target_id: int) -> bool:
+    """Propriedade por e-mail: o e-mail da conta bate com o contact_email do alvo."""
+    try:
+        t = await get_target_store().get_target(target_id)
+    except Exception:  # noqa: BLE001
+        return False
+    ce = (t or {}).get("contact_email") or ""
+    return bool(ce) and ce.lower().strip() == (email or "").lower().strip()
+
+
+@app.get("/account/sites")
+async def account_sites(request: Request) -> dict:
+    user = await auth_users.require_user(request)
+    store = get_target_store()
+    return {"sites": await store.list_user_sites(user["id"]),
+            "max_sites": user.get("max_sites", 1)}
+
+
+@app.get("/account/sites/{target_id}")
+async def account_site_detail(target_id: int, request: Request) -> dict:
+    """Detalhe de um site do usuário: alvo + histórico de score + checks do último
+    scan + perfil comercial + CNAEs. 404 se o site não está vinculado à conta."""
+    user = await auth_users.require_user(request)
+    store = get_target_store()
+    link = await store.get_user_site(user["id"], target_id)
+    if not link:
+        raise HTTPException(status_code=404, detail="Site não encontrado na sua conta.")
+    target = await store.get_target(target_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Site não encontrado.")
+    scans = await store.list_scans(target_id=target_id, limit=12)
+    history = [{"score": s.get("score"), "semaphore": s.get("semaphore"),
+                "scanned_at": (s.get("scanned_at").isoformat() if s.get("scanned_at") else None)}
+               for s in reversed(scans)]
+    checks: list = []
+    score = target.get("last_scan_score")
+    semaphore = None
+    fail_count = 0
+    if scans:
+        full = await store.get_scan(scans[0]["id"])
+        cj = (full or {}).get("checks_json") or {}
+        if isinstance(cj, dict):
+            checks = cj.get("checks") or []
+            sc = cj.get("score") or {}
+            score = sc.get("score", score)
+            semaphore = sc.get("semaphore")
+        fail_count = scans[0].get("fail_count") or 0
+    profile = await store.get_site_profile(target_id)
+    classifications = await store.get_target_classifications(target_id)
+    return {
+        "target": {
+            "id": target_id, "url": target.get("url"), "domain": target.get("domain"),
+            "sector": target.get("sector"), "platform": target.get("platform"),
+            "last_scan_at": (target.get("last_scan_at").isoformat()
+                             if target.get("last_scan_at") else None),
+        },
+        "is_owner": bool(link.get("is_owner")),
+        "score": score, "semaphore": semaphore, "fail_count": fail_count,
+        "history": history, "checks": checks,
+        "profile": profile, "classifications": classifications,
+    }
+
+
+@app.post("/account/sites")
+async def account_add_site(body: SiteBody, request: Request) -> dict:
+    user = await auth_users.require_user(request)
+    store = get_target_store()
+    used = await store.count_user_sites(user["id"])
+    if used >= int(user.get("max_sites", 1)):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Seu plano permite {user.get('max_sites', 1)} site(s). "
+                   "Faça upgrade para monitorar mais.")
+    tid = await _resolve_or_create_target(body.url, source="dashboard")
+    if not tid:
+        raise HTTPException(status_code=400, detail="Não foi possível analisar esta URL.")
+    owner = await _email_owns_target(user["email"], tid)
+    await store.link_user_site(user["id"], tid, is_owner=owner)
+    return {"ok": True, "target_id": tid, "is_owner": owner}
+
+
+@app.delete("/account/sites/{target_id}")
+async def account_remove_site(target_id: int, request: Request) -> dict:
+    user = await auth_users.require_user(request)
+    removed = await get_target_store().unlink_user_site(user["id"], target_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail="Site não encontrado na sua conta.")
+    return {"ok": True}
+
+
+@app.post("/account/sites/{target_id}/claim")
+async def account_claim_site(target_id: int, request: Request) -> dict:
+    """Reivindica a propriedade de um site: o e-mail da conta precisa bater com o
+    contact_email do alvo (verificação por meta tag/DNS fica p/ a fase de perfis)."""
+    user = await auth_users.require_user(request)
+    store = get_target_store()
+    link = await store.get_user_site(user["id"], target_id)
+    if not link:
+        raise HTTPException(status_code=404, detail="Vincule o site à sua conta primeiro.")
+    if not await _email_owns_target(user["email"], target_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Não foi possível confirmar a propriedade: o e-mail da conta não "
+                   "corresponde ao contato público do site.")
+    await store.set_user_site_owner(user["id"], target_id, True)
+    return {"ok": True, "is_owner": True}
 
 
 @app.get("/")

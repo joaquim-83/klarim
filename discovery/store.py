@@ -213,6 +213,44 @@ CREATE INDEX IF NOT EXISTS idx_tc_target ON target_classifications(target_id);
 CREATE INDEX IF NOT EXISTS idx_tc_cnae ON target_classifications(cnae_code);
 CREATE INDEX IF NOT EXISTS idx_tc_division ON target_classifications(cnae_division);
 CREATE INDEX IF NOT EXISTS idx_tc_section ON target_classifications(cnae_section);
+
+-- Contas de usuário (KL-51 f3). Separadas do operador/admin (que é único, via
+-- ADMIN_USER/ADMIN_PASSWORD). Senha com bcrypt; JWT de usuário no cookie.
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    name TEXT,
+    plan TEXT NOT NULL DEFAULT 'free',        -- 'free' | 'basic' | 'enterprise'
+    max_sites INTEGER NOT NULL DEFAULT 1,     -- 1 no free, 5 no basic
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    last_login_at TIMESTAMPTZ,
+    is_active BOOLEAN DEFAULT TRUE
+);
+CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+
+-- Vínculo usuário ↔ target (site monitorado). is_owner = reivindicou propriedade.
+CREATE TABLE IF NOT EXISTS user_sites (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    target_id INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    added_at TIMESTAMPTZ DEFAULT NOW(),
+    is_owner BOOLEAN DEFAULT FALSE,
+    UNIQUE(user_id, target_id)
+);
+CREATE INDEX IF NOT EXISTS idx_us_user ON user_sites(user_id);
+CREATE INDEX IF NOT EXISTS idx_us_target ON user_sites(target_id);
+
+-- Recuperação de senha: código 6 dígitos, TTL curto, rate-limited (KL-51 f3).
+CREATE TABLE IF NOT EXISTS password_resets (
+    id SERIAL PRIMARY KEY,
+    email TEXT NOT NULL,
+    code TEXT NOT NULL,
+    expires_at TIMESTAMPTZ NOT NULL,
+    used BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_pwreset_email ON password_resets(email);
 """
 
 # --------------------------------------------------------------------------- #
@@ -1065,6 +1103,186 @@ class TargetStore:
                 "WHERE tc.cnae_division = %s AND t.last_scan_score IS NOT NULL", (division,))
             count, avg = cur.fetchone()
             return {"count": int(count or 0), "avg_score": int(avg or 0)}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- contas de usuário (KL-51 f3) -------------------------------------- #
+
+    _USER_COLS = ("id", "email", "name", "plan", "max_sites", "created_at",
+                  "last_login_at", "is_active")
+
+    async def create_user(self, email: str, password_hash: str,
+                          name: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Cria um usuário. Retorna o dict do user (sem hash) ou ``None`` se o e-mail
+        já existe (violação da UNIQUE constraint)."""
+        def _fn(cur):
+            try:
+                cur.execute(
+                    "INSERT INTO users (email, password_hash, name) VALUES (%s, %s, %s) "
+                    "RETURNING " + ", ".join(self._USER_COLS),
+                    (email.lower().strip(), password_hash, name))
+            except Exception:  # noqa: BLE001 - e-mail duplicado (UNIQUE) → None
+                return None
+            return self._rows_to_dicts(cur)[0]
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_user_by_email(self, email: str, *, with_hash: bool = False
+                                ) -> Optional[Dict[str, Any]]:
+        """Usuário pelo e-mail. `with_hash=True` inclui `password_hash` (só p/ login)."""
+        cols = ", ".join(self._USER_COLS) + (", password_hash" if with_hash else "")
+
+        def _fn(cur):
+            cur.execute(f"SELECT {cols} FROM users WHERE email = %s", (email.lower().strip(),))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_user_by_id(self, user_id: int) -> Optional[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute(f"SELECT {', '.join(self._USER_COLS)} FROM users WHERE id = %s",
+                        (user_id,))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def touch_user_login(self, user_id: int) -> None:
+        await asyncio.to_thread(self._run, lambda cur: cur.execute(
+            "UPDATE users SET last_login_at = NOW() WHERE id = %s", (user_id,)))
+
+    async def set_user_password(self, email: str, password_hash: str) -> bool:
+        """Atualiza a senha (hash). Retorna True se um usuário foi afetado."""
+        def _fn(cur):
+            cur.execute("UPDATE users SET password_hash = %s WHERE email = %s",
+                        (password_hash, email.lower().strip()))
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def list_user_sites(self, user_id: int) -> List[Dict[str, Any]]:
+        """Sites do usuário com dados do target (score, último scan, setor, semáforo)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT us.target_id, us.is_owner, us.added_at, "
+                "       t.url, t.domain, t.sector, t.last_scan_score, t.last_scan_at, "
+                "       t.platform, s.semaphore AS last_semaphore "
+                "FROM user_sites us "
+                "JOIN targets t ON t.id = us.target_id "
+                "LEFT JOIN LATERAL (SELECT semaphore FROM scans WHERE target_id = t.id "
+                "                   ORDER BY scanned_at DESC LIMIT 1) s ON TRUE "
+                "WHERE us.user_id = %s ORDER BY us.added_at DESC", (user_id,))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def count_user_sites(self, user_id: int) -> int:
+        def _fn(cur):
+            cur.execute("SELECT COUNT(*) FROM user_sites WHERE user_id = %s", (user_id,))
+            return int(cur.fetchone()[0])
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_user_site(self, user_id: int, target_id: int) -> Optional[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute("SELECT id, user_id, target_id, is_owner FROM user_sites "
+                        "WHERE user_id = %s AND target_id = %s", (user_id, target_id))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def link_user_site(self, user_id: int, target_id: int,
+                             is_owner: bool = False) -> bool:
+        """Vincula um target ao usuário (idempotente). Retorna True se inseriu."""
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO user_sites (user_id, target_id, is_owner) VALUES (%s, %s, %s) "
+                "ON CONFLICT (user_id, target_id) DO NOTHING", (user_id, target_id, is_owner))
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def unlink_user_site(self, user_id: int, target_id: int) -> bool:
+        def _fn(cur):
+            cur.execute("DELETE FROM user_sites WHERE user_id = %s AND target_id = %s",
+                        (user_id, target_id))
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def set_user_site_owner(self, user_id: int, target_id: int,
+                                  is_owner: bool = True) -> bool:
+        def _fn(cur):
+            cur.execute("UPDATE user_sites SET is_owner = %s "
+                        "WHERE user_id = %s AND target_id = %s", (is_owner, user_id, target_id))
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_user_sites_for_monitoring(self, age_days: int = 30) -> List[Dict[str, Any]]:
+        """Sites de contas ATIVAS cujo último scan tem mais de `age_days` dias — o
+        monitoramento mensal (KL-51 f3). Uma linha por (usuário, site): o mesmo site
+        pode ter vários donos, cada um recebe seu e-mail (o scan é deduplicado no script)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT us.user_id, u.email AS user_email, t.id AS target_id, t.url, "
+                "       t.domain, t.last_scan_score "
+                "FROM user_sites us "
+                "JOIN users u ON u.id = us.user_id AND u.is_active = TRUE "
+                "JOIN targets t ON t.id = us.target_id "
+                "WHERE t.last_scan_at IS NULL "
+                "   OR t.last_scan_at < NOW() - (%s || ' days')::interval "
+                "ORDER BY t.id", (str(age_days),))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def latest_scan_meta(self, target_id: int) -> Optional[Dict[str, Any]]:
+        """Score + fail_count do scan mais recente do alvo (p/ comparar evolução)."""
+        def _fn(cur):
+            cur.execute("SELECT score, fail_count FROM scans WHERE target_id = %s "
+                        "ORDER BY scanned_at DESC LIMIT 1", (target_id,))
+            row = cur.fetchone()
+            return {"score": row[0], "fail_count": row[1]} if row else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- recuperação de senha (código 6 dígitos) --------------------------- #
+
+    async def create_password_reset(self, email: str, code: str, ttl_seconds: int) -> None:
+        """Grava um código de reset e limpa os expirados do mesmo e-mail (sem cron)."""
+        def _fn(cur):
+            cur.execute("DELETE FROM password_resets WHERE email = %s AND "
+                        "(used = TRUE OR expires_at < NOW())", (email.lower().strip(),))
+            cur.execute(
+                "INSERT INTO password_resets (email, code, expires_at) "
+                "VALUES (%s, %s, NOW() + (%s || ' seconds')::interval)",
+                (email.lower().strip(), code, str(ttl_seconds)))
+
+        await asyncio.to_thread(self._run, _fn)
+
+    async def count_password_resets_last_hour(self, email: str) -> int:
+        def _fn(cur):
+            cur.execute("SELECT COUNT(*) FROM password_resets WHERE email = %s "
+                        "AND created_at > NOW() - INTERVAL '1 hour'", (email.lower().strip(),))
+            return int(cur.fetchone()[0])
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def verify_password_reset(self, email: str, code: str) -> bool:
+        """Valida (e consome) um código de reset. True se válido, não usado, não expirado."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT id FROM password_resets WHERE email = %s AND code = %s "
+                "AND used = FALSE AND expires_at > NOW() ORDER BY created_at DESC LIMIT 1",
+                (email.lower().strip(), code))
+            row = cur.fetchone()
+            if not row:
+                return False
+            cur.execute("UPDATE password_resets SET used = TRUE WHERE id = %s", (row[0],))
+            return True
 
         return await asyncio.to_thread(self._run, _fn)
 

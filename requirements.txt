@@ -8,7 +8,8 @@ packaging>=23,<25            # comparação semver de versão nos CVEs (KL-33)
 # --- API ---
 fastapi>=0.115,<0.116        # async, typed HTTP API
 uvicorn[standard]>=0.30,<0.35  # ASGI server for the API
-pyjwt>=2.8,<3.0             # JWT do dashboard admin (KL-14)
+pyjwt>=2.8,<3.0             # JWT do dashboard admin (KL-14) + contas de usuário (KL-51 f3)
+bcrypt>=4.1,<5.0           # hash de senha das contas de usuário (KL-51 f3)
 # Starlette travado (KL-18): o mcp/sse-starlette novos puxariam Starlette 1.x, que
 # quebra o FastAPI 0.115. Mantemos a faixa que o FastAPI 0.115 exige.
 starlette>=0.40,<0.42

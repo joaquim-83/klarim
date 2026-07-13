@@ -1,0 +1,20 @@
+---
+export const prerender = false; // SSR + protegido pelo middleware
+
+import Base from '../../../layouts/Base.astro';
+import Header from '../../../components/Header.astro';
+import Footer from '../../../components/Footer.astro';
+import SiteDetail from '../../../components/account/SiteDetail.jsx';
+
+const { id } = Astro.params;
+const targetId = Number.parseInt(id ?? '', 10);
+if (!Number.isFinite(targetId)) return Astro.redirect('/dashboard');
+---
+
+<Base title="Detalhes do site" description="Detalhes de segurança do site monitorado." path={`/dashboard/site/${targetId}`} noindex={true}>
+  <Header />
+  <main class="mx-auto max-w-2xl px-5 pt-28 pb-20 sm:pt-32">
+    <SiteDetail client:load targetId={targetId} />
+  </main>
+  <Footer />
+</Base>

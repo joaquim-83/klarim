@@ -355,6 +355,18 @@ checks por categoria, PDF), reusando os endpoints KL-25. **Paywall aberto por fl
 de 1 scan/e-mail (o PDF é sempre gratuito); `=true` volta o gate KL-27. **Contato** em
 `/contato` (reusa `POST /contact`).
 
+**Contas de usuário + dashboard (fase 3, KL-51 f3):** o visitante que viu o resultado
+cria conta (o e-mail já foi verificado no scan — só falta uma senha) e ganha um
+**dashboard** com seus sites, evolução de score, benchmark do setor e monitoramento
+mensal. Auth em namespace **`/account/*`** (senha **bcrypt**, JWT de 30d no **cookie**
+HttpOnly) — separado do login do operador (`/auth/login`); os dois JWT levam um claim
+`typ` (`admin`/`user`) e cada camada só aceita o seu. Páginas Astro SSR `/cadastrar`,
+`/entrar`, `/recuperar-senha`, `/dashboard`, `/dashboard/site/[id]` (ilhas React +
+`middleware.js` que protege `/dashboard/*` validando o cookie no backend). Plano free =
+**1 site** (2º site → 403 com CTA de upgrade). Monitoramento mensal por cron
+(`scripts/monitor_rescan.py`): re-scan completo de sites de contas ativas com >30 dias +
+e-mail de evolução — **independente** do rescan worker antigo (pausado).
+
 O restante do frontend (fluxo de scan + painel) segue em **React + Vite + Tailwind v4**
 em [`frontend/`](./frontend/), servido como build estático pelo **Nginx** (que também faz
 proxy de `/api` → API). Telas:

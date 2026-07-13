@@ -1,0 +1,18 @@
+---
+export const prerender = false; // SSR: lê ?redirect= para voltar à rota protegida
+
+import Base from '../layouts/Base.astro';
+import Header from '../components/Header.astro';
+import Footer from '../components/Footer.astro';
+import LoginForm from '../components/account/LoginForm.jsx';
+
+const redirect = Astro.url.searchParams.get('redirect') || '/dashboard';
+---
+
+<Base title="Entrar" description="Acesse sua conta Klarim." path="/entrar">
+  <Header />
+  <main class="mx-auto max-w-md px-5 pt-28 pb-20 sm:pt-32">
+    <LoginForm client:load redirect={redirect} />
+  </main>
+  <Footer />
+</Base>

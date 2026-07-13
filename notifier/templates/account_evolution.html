@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Klarim — Atualização da avaliação de segurança</title>
+</head>
+<body style="margin:0; padding:0; background-color:#0D1117;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#0D1117;">
+    <tr>
+      <td align="center" style="padding:24px 12px;">
+        <table role="presentation" width="520" cellpadding="0" cellspacing="0" style="width:520px; max-width:100%; background-color:#161B22; border:1px solid #30363D; border-radius:12px; overflow:hidden; font-family:Arial,Helvetica,sans-serif;">
+
+          <tr>
+            <td style="padding:24px 28px 8px 28px;">
+              <span style="font-size:22px; font-weight:bold; letter-spacing:2px; color:#E6EDF3;">KLA<span style="color:#FF6B35;">R</span>IM</span>
+              <div style="color:#8B949E; font-size:13px; margin-top:2px;">Monitoramento mensal</div>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:8px 28px; color:#E6EDF3; font-size:15px; line-height:1.6;">
+              Fizemos uma nova análise de <strong>{{ domain }}</strong>. Veja como está:
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:12px 28px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#0D1117; border:1px solid #30363D; border-radius:8px;">
+                <tr><td align="center" style="padding:20px; color:#E6EDF3; font-size:15px; line-height:1.8;">
+                  Score anterior: <strong style="color:#8B949E;">{{ prev_score }}/100</strong><br>
+                  Score atual: <strong style="color:#FF6B35; font-size:24px;">{{ new_score }}/100</strong>
+                  {% if delta > 0 %}<span style="color:#00D26A;">(&#8593; +{{ delta }})</span>
+                  {% elif delta < 0 %}<span style="color:#F85149;">(&#8595; {{ delta }})</span>
+                  {% else %}<span style="color:#8B949E;">(&#8594; estável)</span>{% endif %}
+                </td></tr>
+              </table>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:4px 28px 12px 28px; color:#E6EDF3; font-size:14px; line-height:1.7;">
+              {% if fixed > 0 %}{{ fixed }} ponto(s) de atenção foram corrigidos desde a última análise.<br>{% endif %}
+              {% if remaining > 0 %}Ainda restam <strong>{{ remaining }}</strong> ponto(s) de atenção.{% else %}Nenhum ponto de atenção no momento. 👏{% endif %}
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:8px 28px 20px 28px;">
+              <a href="{{ link }}" style="display:inline-block; background-color:#FF6B35; color:#0D1117; font-weight:bold; font-size:15px; text-decoration:none; padding:12px 24px; border-radius:8px;">Ver relatório completo &#8594;</a>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:16px 28px; border-top:1px solid #30363D; color:#484F58; font-size:11px; line-height:1.6;">
+              Você recebe este e-mail porque monitora este site no Klarim.
+              <br>Klarim Scanner — <a href="https://klarim.net" style="color:#8B949E;">klarim.net</a>
+            </td>
+          </tr>
+
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

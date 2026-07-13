@@ -1,0 +1,163 @@
+import { useEffect, useState } from 'react';
+import { apiGet } from '../../lib/api.js';
+import { card } from './ui.js';
+import { groupByCategory } from '../scan/checks.js';
+
+const SEMA = {
+  verde: { dot: '🟢', ring: 'ring-green-500/50', text: 'text-green-400' },
+  amarelo: { dot: '🟡', ring: 'ring-yellow-500/50', text: 'text-yellow-400' },
+  vermelho: { dot: '🔴', ring: 'ring-red-500/50', text: 'text-red-400' },
+};
+
+function fmtDate(s) {
+  if (!s) return '—';
+  try { return new Date(s).toLocaleDateString('pt-BR'); } catch { return '—'; }
+}
+
+// Gráfico de evolução leve (SVG inline, sem dependência) — score x tempo.
+function EvolutionChart({ history }) {
+  const pts = history.filter((h) => h.score != null);
+  if (pts.length < 2) return <p className="text-sm text-slate-400">Ainda não há histórico suficiente para o gráfico. A evolução aparece a partir do 2º scan.</p>;
+  const W = 520, H = 120, pad = 24;
+  const xs = (i) => pad + (i * (W - 2 * pad)) / (pts.length - 1);
+  const ys = (v) => H - pad - (v / 100) * (H - 2 * pad);
+  const line = pts.map((p, i) => `${i === 0 ? 'M' : 'L'}${xs(i).toFixed(1)},${ys(p.score).toFixed(1)}`).join(' ');
+  const first = pts[0].score, last = pts[pts.length - 1].score;
+  const delta = last - first;
+  return (
+    <div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full" role="img" aria-label="Evolução do score">
+        <line x1={pad} y1={ys(50)} x2={W - pad} y2={ys(50)} stroke="#30363D" strokeDasharray="4 4" />
+        <path d={line} fill="none" stroke="#FF6B35" strokeWidth="2.5" />
+        {pts.map((p, i) => <circle key={i} cx={xs(i)} cy={ys(p.score)} r="3.5" fill="#FF6B35" />)}
+      </svg>
+      <p className="mt-2 text-sm text-slate-400">
+        {fmtDate(pts[0].scanned_at)}: {first} → {fmtDate(pts[pts.length - 1].scanned_at)}: {last}{' '}
+        <span className={delta > 0 ? 'text-green-400' : delta < 0 ? 'text-red-400' : 'text-slate-400'}>
+          ({delta > 0 ? `↑ +${delta}` : delta < 0 ? `↓ ${delta}` : '→ estável'})
+        </span>
+      </p>
+    </div>
+  );
+}
+
+export default function SiteDetail({ targetId }) {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState('');
+
+  useEffect(() => {
+    apiGet(`/account/sites/${targetId}`).then(({ ok, data, error }) => {
+      if (ok) setData(data); else setErr(error || 'Não foi possível carregar.');
+    });
+  }, [targetId]);
+
+  if (err) return <p className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">{err}</p>;
+  if (!data) return <p className="text-slate-400">Carregando…</p>;
+
+  const sema = SEMA[data.semaphore] || SEMA.amarelo;
+  const groups = groupByCategory(data.checks || []);
+  const t = data.target || {};
+  const p = data.profile || {};
+  const encoded = encodeURIComponent(t.url || '');
+
+  return (
+    <div className="space-y-8">
+      <div>
+        <a href="/dashboard" className="text-sm text-brand-400 hover:text-brand-300">← Voltar</a>
+        <h1 className="mt-1 text-2xl font-bold text-white">{t.domain || t.url}</h1>
+      </div>
+
+      {/* Score */}
+      <div className={`${card} text-center`}>
+        <div className={`mx-auto flex h-32 w-32 flex-col items-center justify-center rounded-full ring-4 ${sema.ring}`}>
+          <span className={`text-4xl font-extrabold ${sema.text}`}>{data.score ?? '—'}</span>
+          <span className="text-sm text-slate-400">/100</span>
+        </div>
+        <p className="mt-3 text-xl">{sema.dot}</p>
+        <p className="mt-1 text-sm text-slate-400">Último scan: {fmtDate(t.last_scan_at)}</p>
+      </div>
+
+      {/* Evolução */}
+      <div className={card}>
+        <h2 className="text-lg font-bold text-white">Evolução</h2>
+        <div className="mt-4"><EvolutionChart history={data.history || []} /></div>
+      </div>
+
+      {/* Perfil comercial */}
+      {(p.description || p.business_type || (data.classifications || []).length > 0) && (
+        <div className={card}>
+          <h2 className="text-lg font-bold text-white">Perfil comercial</h2>
+          <dl className="mt-3 space-y-2 text-sm">
+            {p.company_name && <Row k="Nome" v={p.company_name} />}
+            {p.business_type && <Row k="Tipo" v={p.business_type} />}
+            {p.description && <Row k="Descrição" v={p.description} />}
+            {(data.classifications || []).length > 0 && (
+              <Row k="CNAE" v={data.classifications.slice(0, 3).map((c) => `${c.cnae_code} ${c.cnae_description || ''}`.trim()).join(' · ')} />
+            )}
+            {Array.isArray(p.tags) && p.tags.length > 0 && <Row k="Tags" v={p.tags.join(', ')} />}
+            {p.maturity_score != null && <Row k="Maturidade digital" v={`${p.maturity_score}/10`} />}
+          </dl>
+        </div>
+      )}
+
+      {/* PDFs */}
+      <div className="flex flex-wrap gap-3">
+        <a href={`/api/report/executive?url=${encoded}`}
+          className="rounded-xl bg-brand-500 px-5 py-3 text-sm font-semibold text-slate-950 hover:bg-brand-400">📄 PDF Executivo</a>
+        <a href={`/api/report/technical?url=${encoded}`}
+          className="rounded-xl border border-slate-700 px-5 py-3 text-sm text-slate-200 hover:bg-slate-800">📑 PDF Técnico</a>
+      </div>
+
+      {/* Checks */}
+      <div>
+        <h2 className="text-lg font-bold text-white">Verificações ({(data.checks || []).length})</h2>
+        <div className="mt-4 space-y-4">
+          {groups.map(([cat, list]) => {
+            const ok = list.filter((c) => c.status === 'PASS').length;
+            return (
+              <div key={cat} className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
+                <p className="font-semibold text-white">{cat} <span className="text-sm font-normal text-slate-400">({ok}/{list.length} ✅)</span></p>
+                <ul className="mt-3 space-y-1.5">
+                  {list.map((c) => <CheckRow key={c.check_id} check={c} />)}
+                </ul>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Row({ k, v }) {
+  return (
+    <div className="flex flex-col gap-0.5 sm:flex-row sm:gap-3">
+      <dt className="w-40 shrink-0 text-slate-500">{k}</dt>
+      <dd className="text-slate-200">{v}</dd>
+    </div>
+  );
+}
+
+function CheckRow({ check }) {
+  const [open, setOpen] = useState(false);
+  const isFail = check.status === 'FAIL';
+  const icon = isFail ? '❌' : check.status === 'PASS' ? '✅' : check.status === 'INCONCLUSO' ? '⚪' : '🔒';
+  const canExpand = isFail && check.evidence;
+  return (
+    <li className="text-sm">
+      <div className={`flex items-start gap-2 ${canExpand ? 'cursor-pointer' : ''}`} onClick={() => canExpand && setOpen((o) => !o)}>
+        <span aria-hidden="true">{icon}</span>
+        <span className={isFail ? 'text-slate-100' : 'text-slate-300'}>{check.name}</span>
+        {canExpand && <span className="ml-auto text-xs text-slate-500">{open ? 'ocultar' : 'detalhes'}</span>}
+      </div>
+      {open && canExpand && (
+        <div className="ml-6 mt-1.5 space-y-1.5 rounded-lg border border-slate-800 bg-slate-950/50 p-3 text-slate-400">
+          {check.evidence && <p><span className="text-slate-300">Evidência:</span> {check.evidence}</p>}
+          {(check.owasp || check.cwe || check.lgpd) && (
+            <p className="text-xs text-slate-500">{[check.owasp, check.cwe, check.lgpd].filter(Boolean).join(' · ')}</p>
+          )}
+        </div>
+      )}
+    </li>
+  );
+}

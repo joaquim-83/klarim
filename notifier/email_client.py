@@ -452,6 +452,30 @@ class KlarimMailer:
             "html": html,
         })
 
+    async def send_password_reset_code(self, to_email: str, code: str) -> Dict[str, Any]:
+        """Envia o código de 6 dígitos para redefinir a senha da conta (KL-51 f3)."""
+        html = _env.get_template("password_reset_code.html").render(code=code)
+        return await self._send({
+            "from": self.from_address,
+            "to": [to_email],
+            "subject": f"🔑 Redefinição de senha Klarim: {code}",
+            "html": html,
+        })
+
+    async def send_account_evolution(self, to_email: str, domain: str, prev_score: int,
+                                     new_score: int, fixed: int, remaining: int,
+                                     link: str) -> Dict[str, Any]:
+        """E-mail de evolução do monitoramento mensal de uma conta (KL-51 f3)."""
+        html = _env.get_template("account_evolution.html").render(
+            domain=domain, prev_score=prev_score, new_score=new_score,
+            delta=new_score - prev_score, fixed=fixed, remaining=remaining, link=link)
+        return await self._send({
+            "from": self.from_address,
+            "to": [to_email],
+            "subject": f"{domain} — seu score de segurança mudou",
+            "html": html,
+        })
+
     async def send_monitor_offer(self, to_email: str, domain: str,
                                  approve_url: str) -> Dict[str, Any]:
         """Oferta de monitoramento gratuito para um site que atingiu score 100 (KL-29)."""

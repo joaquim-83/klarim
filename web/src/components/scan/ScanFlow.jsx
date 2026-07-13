@@ -139,7 +139,7 @@ export default function ScanFlow({ url: initialUrl = '' }) {
       {step === 'email' && <EmailStep {...{ domain, email, setEmail, busy, submitEmail }} />}
       {step === 'code' && <CodeStep {...{ email, code, setCode, busy, submitCode, resendCode, setStep }} />}
       {step === 'progress' && <ProgressStep domain={domain} />}
-      {step === 'result' && result && <ResultView data={result} domain={domain} />}
+      {step === 'result' && result && <ResultView data={result} domain={domain} email={email} url={url} />}
       {step === 'limit' && <LimitStep message={limitMsg} />}
     </div>
   );
@@ -250,7 +250,7 @@ function phraseFor(sema, fails) {
   return `Seu site tem ${fails} ponto(s) de atenção. A maioria é simples de corrigir.`;
 }
 
-function ResultView({ data, domain }) {
+function ResultView({ data, domain, email = '', url = '' }) {
   const sema = SEMA[data.semaphore] || SEMA.amarelo;
   const checks = [...(data.free_checks || []), ...(data.paid_checks || [])];
   const groups = groupByCategory(checks);
@@ -334,6 +334,19 @@ function ResultView({ data, domain }) {
             );
           })}
         </div>
+      </div>
+
+      {/* CTA: criar conta (o e-mail já foi verificado no scan) */}
+      <div className={`${card} border-brand-500/30 bg-brand-500/5 text-center`}>
+        <h3 className="text-lg font-bold text-white">Quer monitorar seu site gratuitamente?</h3>
+        <p className="mt-1 text-sm text-slate-300">
+          Crie sua conta em 10 segundos. O e-mail já foi verificado — só falta uma senha.
+        </p>
+        <form action="/cadastrar" method="GET" className="mt-4">
+          {email && <input type="hidden" name="email" value={email} />}
+          {url && <input type="hidden" name="url" value={url} />}
+          <button type="submit" className={`${btn} sm:w-auto`}>Criar conta grátis →</button>
+        </form>
       </div>
 
       <div className="text-center">

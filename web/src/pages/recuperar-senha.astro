@@ -1,0 +1,16 @@
+---
+export const prerender = false;
+
+import Base from '../layouts/Base.astro';
+import Header from '../components/Header.astro';
+import Footer from '../components/Footer.astro';
+import ForgotForm from '../components/account/ForgotForm.jsx';
+---
+
+<Base title="Recuperar senha" description="Redefina a senha da sua conta Klarim." path="/recuperar-senha">
+  <Header />
+  <main class="mx-auto max-w-md px-5 pt-28 pb-20 sm:pt-32">
+    <ForgotForm client:load />
+  </main>
+  <Footer />
+</Base>

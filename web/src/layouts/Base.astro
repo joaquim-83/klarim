@@ -6,9 +6,11 @@ export interface Props {
   description: string;
   /** Caminho da rota (para canonical/og:url). Ex.: "/termos". */
   path?: string;
+  /** Rotas privadas (dashboard) não devem ser indexadas. */
+  noindex?: boolean;
 }
 
-const { title, description, path = '/' } = Astro.props;
+const { title, description, path = '/', noindex = false } = Astro.props;
 const SITE = 'https://klarim.net';
 const canonical = new URL(path, SITE).href;
 const fullTitle = title === 'Klarim'
@@ -28,7 +30,7 @@ const fullTitle = title === 'Klarim'
     <link rel="canonical" href={canonical} />
     <meta name="theme-color" content="#020617" />
     <meta name="color-scheme" content="dark" />
-    <meta name="robots" content="index, follow" />
+    <meta name="robots" content={noindex ? 'noindex, nofollow' : 'index, follow'} />
 
     <!-- Open Graph -->
     <meta property="og:type" content="website" />

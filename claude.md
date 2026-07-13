@@ -1666,6 +1666,55 @@ Astro (ver o doc de arquitetura).
   privacidade|sobre|contato|scan|…)`). `/api/scan/*` **não** conflita (casa o prefixo
   `/api/`, não a âncora `^/scan`). O fluxo Vite de scan (`/scan` antigo) fica sombreado.
 
+### Fase 3 — contas de usuário + dashboard (KL-51 f3)
+
+Transforma o visitante em usuário retido: conta (e-mail já verificado no scan) +
+dashboard com evolução/benchmark + monitoramento mensal. **Duas superfícies de auth
+distintas:** o operador/admin (`/auth/login`, `{username,password}` do `.env`, token
+Bearer 24h — inalterado) e as **contas de usuário** (namespace **`/account/*`**, senha
+bcrypt, JWT 30d no **cookie** HttpOnly). Como os dois JWT são assinados com o mesmo
+`JWT_SECRET`, cada token carrega `typ` (`admin`|`user`) e cada camada só aceita o seu
+(`_verify_token` exige `typ=admin`; `auth_users.verify_user_token` exige `typ=user`) —
+sem isso um cookie de usuário passaria no middleware admin.
+
+- **Backend (`api/auth_users.py` + `api/main.py`):** `bcrypt` (`hash_password`/
+  `verify_password`), JWT de usuário (`create_user_token`/`verify_user_token`), e a
+  dependency **`require_user`** (aceita `Authorization: Bearer` **ou** o cookie
+  `klarim_session`). Endpoints `/account/*`: `signup` (e-mail verificado no scan +
+  senha ≥8; vincula o site recém-escaneado; rate limit 5/IP/h; 409 se duplicado),
+  `login`, `logout`, `forgot` (código 6 dígitos por e-mail, resposta **genérica**
+  anti-enumeração, 3/e-mail/h), `reset`, `me`, e `sites` (`GET` lista, `GET /{id}`
+  detalhe — alvo+histórico+checks+perfil+CNAE, `POST` adiciona respeitando
+  `max_sites` do plano → **403 upgrade**, `DELETE`, `POST /{id}/claim` — dono só se o
+  e-mail da conta bate o `contact_email` do alvo). Cookie `Secure/HttpOnly/SameSite=Lax`.
+- **Tabelas (`discovery/store.py`):** `users` (email UNIQUE, `password_hash`, `plan`,
+  `max_sites` 1 no free), `user_sites` (vínculo N-N, `is_owner`), `password_resets`
+  (código TTL 1h, `used`). Métodos de user/site/reset + `get_user_sites_for_monitoring`
+  e `latest_scan_meta` (monitoramento). `bcrypt` no `requirements.txt`.
+- **Frontend Astro (`web/`):** páginas SSR (`prerender=false`) `/cadastrar`, `/entrar`,
+  `/recuperar-senha`, `/dashboard`, `/dashboard/site/[id]` + ilhas React
+  (`components/account/*`: SignupForm/LoginForm/ForgotForm/Dashboard/SiteDetail) que
+  falam com `/api/account/*` via `lib/api.js` (`credentials: 'include'`).
+  **`src/middleware.js`** protege `/dashboard/*`: lê o cookie, valida no backend
+  (`GET /account/me`), injeta `Astro.locals.user`, senão redireciona a `/entrar?redirect=`.
+  **`Header.astro`** é dinâmico: o cookie é HttpOnly (JS não lê), então um script
+  consulta `/api/account/me` e alterna Entrar/Cadastrar ↔ Dashboard/Sair. O **CTA de
+  cadastro** entra no resultado do scan (`ScanFlow.jsx`), passando e-mail+url à
+  `/cadastrar`. Gráfico de evolução é **SVG inline** (sem Recharts no bundle Astro).
+- **Monitoramento mensal (`scripts/monitor_rescan.py`, cron diário):** re-scan
+  **completo (48)** de todo site de conta ativa com último scan >30d, salva, e envia o
+  e-mail de evolução novo (`send_account_evolution`, `account_evolution.html`). É
+  **independente** do rescan worker antigo (pausado; não mexe em alert_log/rescan_log).
+  Deduplica o scan por site (1 scan, e-mail a cada dono).
+- **Nginx:** `cadastrar|entrar|recuperar-senha|dashboard` entram na regex das rotas
+  Astro do server block **principal** (não no subdomínio painel). `/api/account/*` casa
+  o prefixo `/api/`, não a âncora `^/`.
+
+**Regra inviolável:** admin e usuário são superfícies separadas — o `typ` do JWT nunca
+é ignorado (um cookie de usuário jamais acessa `/targets` etc.). O e-mail já verificado
+no scan (KL-25) é reaproveitado no signup (sem re-verificar). O limite de sites do plano
+é servidor-autoritativo (403 no `POST /account/sites`, nunca só no frontend).
+
 ## 40. Classificação CNAE multi-setor + descrição natural + tags (KL-55)
 
 A taxonomia fixa de 48 setores (KL-54) é insuficiente: ~54% dos sites caem em `outro`
