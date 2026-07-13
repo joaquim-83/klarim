@@ -64,6 +64,7 @@ from discovery.store import get_target_store  # noqa: E402
 from discovery.contact import (  # noqa: E402
     extract_email, _clean_email, _is_valid_email, _is_junk, email_has_mx)
 from discovery.classifier import PRICE_TIERS  # noqa: E402
+from discovery.cnpj import enrich_from_cnpj  # noqa: E402
 from scanner.ai_enrichment import (  # noqa: E402
     AI_ENRICHMENT_ENABLED, ai_enrich, merge_ai_into_profile)
 
@@ -83,10 +84,11 @@ log = logging.getLogger("enrich_all")
 # --------------------------------------------------------------------------- #
 
 def enrichment_group(row: Dict[str, Any]) -> Optional[int]:
-    """Grupo do alvo (1/2/3) ou ``None`` se não precisa de enriquecimento.
+    """Grupo do alvo (1..4) ou ``None`` se não precisa de enriquecimento.
 
     Espelha o WHERE de `store.list_enrichment_candidates` para taggear cada linha
-    (contagem por grupo) sem uma nova ida ao banco."""
+    (contagem por grupo) sem uma nova ida ao banco. KL-55: G4 = perfil + IA/manual +
+    descrição mas SEM classificação CNAE (reclassificação CNAE do banco)."""
     if row.get("status") in _SKIP_STATUSES:
         return None
     if row.get("profile_id") is None:
@@ -97,6 +99,8 @@ def enrichment_group(row: Dict[str, Any]) -> Optional[int]:
         return 2
     if source == "ai" and not (row.get("profile_description") or "").strip():
         return 3
+    if not row.get("has_cnae") and (row.get("profile_description") or "").strip():
+        return 4  # KL-55: completo pelo KL-54 mas sem CNAE
     return None
 
 
@@ -121,6 +125,8 @@ def needs_ai(row: Dict[str, Any], profile: Optional[Dict[str, Any]]) -> bool:
     if row.get("classification_source") not in ("ai", "manual"):
         return True
     if profile is not None and not (profile.get("description") or "").strip():
+        return True
+    if not row.get("has_cnae"):   # KL-55: sem CNAE → a IA gera os códigos CNAE
         return True
     return False
 
@@ -265,9 +271,36 @@ async def process_target(store, redis, row: Dict[str, Any], args, stats: Dict[st
                         (ai.get("contacts_found") or {}).get("email"))
                     if ai_email:
                         parts.append("e-mail via IA")
+                # KL-55: grava as classificações CNAE da IA (source='ai'; a Receita,
+                # se rodar depois, tem precedência e não é sobrescrita).
+                cnaes = ai.get("cnaes") or []
+                if cnaes:
+                    try:
+                        await store.upsert_target_classifications(tid, [
+                            {"cnae_code": c.get("code"), "cnae_description": c.get("description"),
+                             "cnae_section": c.get("section"), "cnae_division": c.get("division"),
+                             "confidence": c.get("confidence", 0.0), "source": "ai", "rank": i + 1}
+                            for i, c in enumerate(cnaes)])
+                        stats["cnae_ai"] += 1
+                        parts.append(f"CNAE IA ({len(cnaes)})")
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning("cnae ai erro %s: %r", url, exc)
             await asyncio.sleep(args.ai_delay)  # rate limit OpenAI
         else:
             parts.append("IA skip (sem HTML)")
+
+    # ---- Passo 2b: CNPJ → Receita Federal (CNAEs oficiais, KL-55) ----
+    cnpj = (profile or {}).get("cnpj")
+    if cnpj:
+        try:
+            if not await store.has_receita_cnae(tid):
+                n = await enrich_from_cnpj(cnpj, store, tid)
+                if n:
+                    stats["cnae_receita"] += 1
+                    parts.append(f"CNAE Receita ({n})")
+                    await asyncio.sleep(args.cnpj_delay)  # rate limit Receita
+        except Exception as exc:  # noqa: BLE001
+            log.warning("cnpj/receita erro %s: %r", url, exc)
 
     # ---- Passo 3: gravar o perfil ----
     if profile:
@@ -302,13 +335,15 @@ def _print_summary(stats: Dict[str, int], groups: Dict[str, int],
     log.info("---")
     log.info("Resumo:")
     log.info("  Processados:                %d", stats["processed"])
-    log.info("  Grupos (G1/G2/G3):          %d / %d / %d",
-             stats["group1"], stats["group2"], stats["group3"])
+    log.info("  Grupos (G1/G2/G3/G4):       %d / %d / %d / %d",
+             stats["group1"], stats["group2"], stats["group3"], stats["group4"])
     log.info("  Crawls OK:                  %d", stats["crawled"])
     log.info("  Erros de crawl:             %d", stats["crawl_err"])
     log.info("  Perfis gravados:            %d", stats["profiles"])
     log.info("  Chamadas IA:                %d", stats["ai_calls"])
     log.info("  Setores reclassif. (IA):    %d", stats["reclassified"])
+    log.info("  CNAE via IA:                %d", stats["cnae_ai"])
+    log.info("  CNAE via Receita:           %d", stats["cnae_receita"])
     log.info("  E-mails novos → discovered: %d", stats["emails"])
     log.info("  Erros:                      %d", stats["erros"])
     log.info("  Custo IA estimado:          ~US$%.2f", stats["ai_calls"] * AI_COST_PER_CALL)
@@ -334,13 +369,14 @@ async def main(args) -> None:
         groups = await store.count_enrichment_groups(mode)
     except Exception as exc:  # noqa: BLE001
         log.warning("count_enrichment_groups: %r", exc)
-        groups = {"group1": 0, "group2": 0, "group3": 0, "total": 0}
+        groups = {"group1": 0, "group2": 0, "group3": 0, "group4": 0, "total": 0}
 
     log.info("=== enrich_all (mode=%s, limit=%s) ===",
              mode, "sem limite" if limit is None else limit)
     log.info("Grupo 1 (sem perfil):       %d", groups["group1"])
     log.info("Grupo 2 (sem IA):           %d", groups["group2"])
     log.info("Grupo 3 (sem descrição):    %d", groups["group3"])
+    log.info("Grupo 4 (sem CNAE):         %d", groups.get("group4", 0))
     log.info("Backlog total: %d — processando %s",
              groups["total"], "todos" if limit is None else f"até {limit}")
     if not AI_ENRICHMENT_ENABLED:
@@ -351,8 +387,8 @@ async def main(args) -> None:
     log.info("---")
 
     stats = {k: 0 for k in ("processed", "crawled", "crawl_err", "profiles",
-                            "ai_calls", "reclassified", "emails", "erros",
-                            "group1", "group2", "group3")}
+                            "ai_calls", "reclassified", "cnae_ai", "cnae_receita",
+                            "emails", "erros", "group1", "group2", "group3", "group4")}
     t0 = time.monotonic()
 
     for i, row in enumerate(targets, 1):
@@ -406,6 +442,8 @@ def _parse_args(argv=None):
                     help="mostra o que faria, sem crawl/IA/gravação.")
     ap.add_argument("--ai-delay", type=float, default=1.0,
                     help="segundos entre chamadas OpenAI (rate limit; padrão 1.0).")
+    ap.add_argument("--cnpj-delay", type=float, default=20.0,
+                    help="segundos entre consultas de CNPJ à Receita (KL-55; padrão 20).")
     return ap.parse_args(argv)
 
 

@@ -1665,3 +1665,60 @@ Astro (ver o doc de arquitetura).
 - **Nginx:** `/scan` e `/contato` entram na regex das rotas Astro (`~ ^/(termos|
   privacidade|sobre|contato|scan|…)`). `/api/scan/*` **não** conflita (casa o prefixo
   `/api/`, não a âncora `^/scan`). O fluxo Vite de scan (`/scan` antigo) fica sombreado.
+
+## 40. Classificação CNAE multi-setor + descrição natural + tags (KL-55)
+
+A taxonomia fixa de 48 setores (KL-54) é insuficiente: ~54% dos sites caem em `outro`
+porque negócios reais são **multi-setor** e muitos não têm equivalente. O KL-55 troca o
+"1 setor por alvo" por **N classificações CNAE 2.0 (IBGE)** por alvo + uma **descrição em
+linguagem natural** + **tags** de busca. É **dado comercial** — **não altera o score de
+segurança**. **Retrocompatível:** `targets.sector` continua existindo (a IA devolve
+`sector_legacy`, espelhado em `sector`), então todo o funil/painel/preço segue funcionando.
+
+- **`discovery/cnae.py` — referência estrutural CNAE 2.0.** `derive_division` (2 dígitos)
+  e `derive_section` (A–U) são **puros e offline** (mapa `_SECTION_RANGES` embutido: 21
+  seções, faixas de divisão) — a classificação **nunca** depende de rede. `format_cnae`
+  normaliza p/ `NN.NN-N`. `CNAETable` baixa `/classes` do IBGE em **runtime**, cacheia em
+  `KLARIM_CACHE_DIR/cnae_table.json` (**TTL 30d**, escrita atômica) e é **fail-open**
+  (sem rede/cache ⇒ tabela vazia; `validate_code` aceita 5+ dígitos, só a descrição é
+  pulada). `get_cnae_table()` singleton; `sections()` (21) / `divisions()` (87) p/ a API.
+- **Tabela `target_classifications`** (`discovery/store.py`): `target_id` (FK ON DELETE
+  CASCADE), `cnae_code`, `cnae_description`, `cnae_section`, `cnae_division`, `confidence`,
+  `source` (`receita|ai|manual|schema_org`), `rank`, `UNIQUE(target_id, cnae_code)` + 4
+  índices. `site_profile` ganhou `tags TEXT[]` e `business_type`. Métodos:
+  `upsert_target_classifications` (idempotente por (target,cnae)), `get_target_classifications`
+  (ORDER BY rank), `has_receita_cnae`, `count_targets_without_cnae`, `cnae_division_avg_score`.
+  **Regra inviolável (no WHERE do ON CONFLICT):** `source='receita'` (oficial) **nunca** é
+  sobrescrito por `ai`/`schema_org` — só por `receita` nova ou `manual`.
+- **IA (`scanner/ai_enrichment.py`) — prompt novo, 1 chamada.** O GPT-4o mini agora
+  devolve `description` (1-3 frases), `business_type`, `company_name`, `tags` (5-10),
+  `cnaes` (2-5, cada `code`/`description`/`confidence`), `sector_legacy` (taxonomia antiga)
+  + `sector_confidence` + `contacts_found`. `_normalize_cnaes` formata o código e **deriva
+  seção/divisão offline** (≤5). `ai_enrich` mapeia `sector_legacy → sector` (normalizado;
+  alias `saude→clinica`; inválido⇒`outro`) p/ retrocompat, `max_tokens=900`.
+  `merge_ai_into_profile`: `business_type` só preenche vazio (regra de ouro), `tags` a IA
+  é a fonte (sobrescreve).
+- **CNPJ → Receita Federal (`discovery/cnpj.py`).** Quando o profiler (KL-50) extrai um
+  CNPJ, `fetch_cnpj` consulta **BrasilAPI → ReceitaWS** (cache 90d, fail-open) e
+  `build_receita_classifications` monta os CNAEs **oficiais** (principal rank 1,
+  secundários 2..N; `source='receita'`, `confidence=1.0`). `enrich_from_cnpj(cnpj, store,
+  target_id)` grava — best-effort, nunca levanta. **Runtime-only** (as APIs podem faltar
+  no CI; os testes mockam).
+- **enrich_all G4 (`scripts/enrich_all.py`).** Novo **Grupo 4**: alvo "completo" pelo
+  KL-54 (perfil + classificação IA/manual + descrição) mas **sem** CNAE — reclassificação
+  CNAE de todo o banco. `_HAS_CNAE` (EXISTS, não JOIN — evita multiplicar linhas). Por
+  alvo: a IA grava os CNAEs (`source='ai'`); se há CNPJ e ainda não tem Receita,
+  `enrich_from_cnpj` grava os oficiais (`--cnpj-delay`, default 20s). `has_receita_cnae`
+  evita reconsulta (idempotente). Stats: `cnae_ai`/`cnae_receita`/`group4`.
+- **API + MCP.** `GET /targets/{id}` anexa `classifications`; `GET
+  /targets/{id}/classifications` (JWT); públicos `GET /cnaes/sections`, `/cnaes/divisions`,
+  `/benchmark/cnae/{division}` (nome `cnae/` p/ não colidir com `/benchmark/{sector}` do
+  KL-51). MCP: `get_target` traz classifications + a tool nova `get_target_classifications`
+  (**36 tools** no total: as 25 do KL-18 + monitoramento 2 + worker control 6 + perfil 1 +
+  esta 2 — incl. `get_site_profile`).
+
+**Regra inviolável:** o CNAE é **referência estrutural** + dado comercial — **não muda o
+score de segurança**. `derive_section`/`derive_division` são offline (a classificação nunca
+depende do IBGE estar no ar). `source='receita'` nunca é sobrescrito pela IA. Toda a
+extração (CNAE/CNPJ/tags) é **best-effort/fail-open**: erro só loga, nunca derruba
+scan/worker/batch. `targets.sector` permanece (retrocompat via `sector_legacy`).

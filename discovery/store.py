@@ -189,6 +189,30 @@ CREATE TABLE IF NOT EXISTS site_profile (
 );
 CREATE INDEX IF NOT EXISTS idx_site_profile_cnpj ON site_profile(cnpj) WHERE cnpj IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_site_profile_maturity ON site_profile(maturity_score);
+
+-- KL-55: descrição natural + tags de negócio no perfil (gerados pela IA).
+ALTER TABLE site_profile ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT '{}';
+ALTER TABLE site_profile ADD COLUMN IF NOT EXISTS business_type TEXT;
+
+-- Classificação multi-setor via CNAE (KL-55): N classificações por alvo, cada uma
+-- de uma fonte (receita/ai/manual/schema_org). CNAE = referência estrutural do IBGE.
+CREATE TABLE IF NOT EXISTS target_classifications (
+    id SERIAL PRIMARY KEY,
+    target_id INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    cnae_code TEXT NOT NULL,
+    cnae_description TEXT,
+    cnae_section TEXT,
+    cnae_division TEXT,
+    confidence REAL DEFAULT 0.0,
+    source TEXT NOT NULL,            -- 'receita' | 'ai' | 'manual' | 'schema_org'
+    rank INTEGER DEFAULT 1,
+    created_at TIMESTAMP DEFAULT NOW(),
+    UNIQUE (target_id, cnae_code)
+);
+CREATE INDEX IF NOT EXISTS idx_tc_target ON target_classifications(target_id);
+CREATE INDEX IF NOT EXISTS idx_tc_cnae ON target_classifications(cnae_code);
+CREATE INDEX IF NOT EXISTS idx_tc_division ON target_classifications(cnae_division);
+CREATE INDEX IF NOT EXISTS idx_tc_section ON target_classifications(cnae_section);
 """
 
 # --------------------------------------------------------------------------- #
@@ -201,25 +225,34 @@ CREATE INDEX IF NOT EXISTS idx_site_profile_maturity ON site_profile(maturity_sc
 # que é 'manual' (operador) ou já é 'ai'.
 # --------------------------------------------------------------------------- #
 
+# EXISTS (não JOIN) — target_classifications tem N linhas por alvo; um JOIN
+# multiplicaria as linhas do candidato. Só queremos "tem alguma classificação CNAE?".
+_HAS_CNAE = "EXISTS (SELECT 1 FROM target_classifications tc WHERE tc.target_id = t.id)"
+
 _ENRICH_G1 = "sp.id IS NULL"
 _ENRICH_G2 = ("(sp.id IS NOT NULL AND t.classification_source IS DISTINCT FROM 'ai' "
               "AND t.classification_source IS DISTINCT FROM 'manual')")
 _ENRICH_G3 = ("(sp.id IS NOT NULL AND (sp.description IS NULL OR sp.description = '') "
               "AND t.classification_source = 'ai')")
+# KL-55 G4: alvo "completo" pelo KL-54 (perfil + classificação IA/manual + descrição)
+# mas SEM classificação CNAE. É a reclassificação CNAE de todo o banco.
+_ENRICH_G4 = ("(sp.id IS NOT NULL AND t.classification_source IN ('ai', 'manual') "
+              "AND sp.description IS NOT NULL AND sp.description <> '' "
+              f"AND NOT {_HAS_CNAE})")
 
 
 def _enrichment_where(mode: str = "all") -> str:
     """Cláusula WHERE (sem a palavra WHERE) para os alvos que precisam de
-    enriquecimento. `mode`: 'all' | 'only_ai' (só G2/G3) | 'sem_contato'."""
+    enriquecimento. `mode`: 'all' | 'only_ai' (sem G1/crawl) | 'sem_contato'."""
     parts = ["t.status <> 'descartado'"]
     if mode == "sem_contato":
         parts.append("t.status = 'sem_contato'")
     if mode == "only_ai":
         # Só alvos que já têm perfil — pula o crawl (G1 fica de fora).
         parts.append("sp.id IS NOT NULL")
-        parts.append(f"({_ENRICH_G2} OR {_ENRICH_G3})")
+        parts.append(f"({_ENRICH_G2} OR {_ENRICH_G3} OR {_ENRICH_G4})")
     else:
-        parts.append(f"({_ENRICH_G1} OR {_ENRICH_G2} OR {_ENRICH_G3})")
+        parts.append(f"({_ENRICH_G1} OR {_ENRICH_G2} OR {_ENRICH_G3} OR {_ENRICH_G4})")
     return " AND ".join(parts)
 
 
@@ -917,7 +950,7 @@ class TargetStore:
                   "instagram", "facebook", "linkedin", "youtube", "tiktok",
                   "google_maps_url", "has_blog", "has_app", "email_provider",
                   "hosting_provider", "cdn", "dns_provider", "certificate_authority",
-                  "maturity_score")
+                  "maturity_score", "business_type")  # KL-55: business_type
 
     async def upsert_site_profile(self, target_id: int, profile: Dict[str, Any]) -> None:
         """Grava (ou atualiza) o perfil comercial de um alvo (1 por target)."""
@@ -925,18 +958,20 @@ class TargetStore:
         vals = [profile.get(f) for f in fields]
         tech = json.dumps(profile.get("technologies") or {})
         sources = list(profile.get("extraction_sources") or [])
+        tags = list(profile.get("tags") or [])  # KL-55: TEXT[] (como extraction_sources)
 
         def _fn(cur):
-            cols = ", ".join(fields) + ", technologies, extraction_sources, extracted_at"
-            ph = ", ".join(["%s"] * len(fields)) + ", %s, %s, NOW()"
+            cols = ", ".join(fields) + ", technologies, extraction_sources, tags, extracted_at"
+            ph = ", ".join(["%s"] * len(fields)) + ", %s, %s, %s, NOW()"
             updates = ", ".join(f"{f} = EXCLUDED.{f}" for f in fields)
             cur.execute(
                 f"INSERT INTO site_profile (target_id, {cols}) "
                 f"VALUES (%s, {ph}) "
                 f"ON CONFLICT (target_id) DO UPDATE SET {updates}, "
                 f"  technologies = EXCLUDED.technologies, "
-                f"  extraction_sources = EXCLUDED.extraction_sources, extracted_at = NOW()",
-                [target_id, *vals, tech, sources],
+                f"  extraction_sources = EXCLUDED.extraction_sources, "
+                f"  tags = EXCLUDED.tags, extracted_at = NOW()",
+                [target_id, *vals, tech, sources, tags],
             )
 
         await asyncio.to_thread(self._run, _fn)
@@ -949,9 +984,93 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    # --- classificação CNAE multi-setor (KL-55) ---------------------------- #
+
+    async def upsert_target_classifications(
+        self, target_id: int, classifications: List[Dict[str, Any]]
+    ) -> None:
+        """Grava N classificações CNAE de um alvo (idempotente por (target,cnae)).
+
+        **Regra inviolável:** uma classificação `source='receita'` (oficial, IBGE via
+        Receita) NUNCA é sobrescrita por `ai`/`schema_org` — só por `receita` nova ou
+        `manual` (operador). Implementado no WHERE do ON CONFLICT."""
+        rows = []
+        for c in classifications or []:
+            code = (c.get("cnae_code") or "").strip()
+            if not code:
+                continue
+            rows.append((
+                target_id, code, c.get("cnae_description"), c.get("cnae_section"),
+                c.get("cnae_division"), float(c.get("confidence") or 0.0),
+                c.get("source") or "ai", int(c.get("rank") or 1),
+            ))
+        if not rows:
+            return
+
+        def _fn(cur):
+            cur.executemany(
+                "INSERT INTO target_classifications "
+                "(target_id, cnae_code, cnae_description, cnae_section, cnae_division, "
+                " confidence, source, rank) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
+                "ON CONFLICT (target_id, cnae_code) DO UPDATE SET "
+                "  cnae_description = EXCLUDED.cnae_description, "
+                "  cnae_section = EXCLUDED.cnae_section, "
+                "  cnae_division = EXCLUDED.cnae_division, "
+                "  confidence = EXCLUDED.confidence, source = EXCLUDED.source, "
+                "  rank = EXCLUDED.rank "
+                "WHERE target_classifications.source IS DISTINCT FROM 'receita' "
+                "   OR EXCLUDED.source IN ('receita', 'manual')",
+                rows,
+            )
+
+        await asyncio.to_thread(self._run, _fn)
+
+    async def get_target_classifications(self, target_id: int) -> List[Dict[str, Any]]:
+        """Classificações CNAE de um alvo, ordenadas por rank (mais relevante 1º)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT cnae_code, cnae_description, cnae_section, cnae_division, "
+                "confidence, source, rank FROM target_classifications "
+                "WHERE target_id = %s ORDER BY rank, confidence DESC", (target_id,))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def has_receita_cnae(self, target_id: int) -> bool:
+        """Se o alvo já tem CNAE oficial da Receita (evita reconsulta no batch)."""
+        def _fn(cur):
+            cur.execute("SELECT 1 FROM target_classifications "
+                        "WHERE target_id = %s AND source = 'receita' LIMIT 1", (target_id,))
+            return cur.fetchone() is not None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def count_targets_without_cnae(self) -> int:
+        """Alvos (não descartados) sem nenhuma classificação CNAE — G4 do enrich_all."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT COUNT(*) FROM targets t "
+                "LEFT JOIN target_classifications tc ON tc.target_id = t.id "
+                "WHERE tc.id IS NULL AND t.status <> 'descartado'")
+            return int(cur.fetchone()[0])
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def cnae_division_avg_score(self, division: str) -> Dict[str, Any]:
+        """Benchmark por divisão CNAE: média de score dos alvos classificados nela."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT COUNT(DISTINCT t.id), COALESCE(ROUND(AVG(t.last_scan_score)), 0) "
+                "FROM targets t JOIN target_classifications tc ON tc.target_id = t.id "
+                "WHERE tc.cnae_division = %s AND t.last_scan_score IS NOT NULL", (division,))
+            count, avg = cur.fetchone()
+            return {"count": int(count or 0), "avg_score": int(avg or 0)}
+
+        return await asyncio.to_thread(self._run, _fn)
+
     async def count_enrichment_groups(self, mode: str = "all") -> Dict[str, int]:
-        """Conta os alvos pendentes de enriquecimento por grupo (G1/G2/G3) e o
-        total. Ignora `limit` — é o panorama completo do backlog."""
+        """Conta os alvos pendentes de enriquecimento por grupo (G1..G4) e o total.
+        Ignora `limit` — é o panorama completo do backlog."""
         where = _enrichment_where(mode)
 
         def _fn(cur):
@@ -960,13 +1079,14 @@ class TargetStore:
                 f"  COUNT(*) FILTER (WHERE {_ENRICH_G1}) AS g1, "
                 f"  COUNT(*) FILTER (WHERE {_ENRICH_G2}) AS g2, "
                 f"  COUNT(*) FILTER (WHERE {_ENRICH_G3}) AS g3, "
+                f"  COUNT(*) FILTER (WHERE {_ENRICH_G4}) AS g4, "
                 f"  COUNT(*) AS total "
                 f"FROM targets t LEFT JOIN site_profile sp ON sp.target_id = t.id "
                 f"WHERE {where}"
             )
-            g1, g2, g3, total = cur.fetchone()
+            g1, g2, g3, g4, total = cur.fetchone()
             return {"group1": int(g1 or 0), "group2": int(g2 or 0),
-                    "group3": int(g3 or 0), "total": int(total or 0)}
+                    "group3": int(g3 or 0), "group4": int(g4 or 0), "total": int(total or 0)}
 
         return await asyncio.to_thread(self._run, _fn)
 
@@ -984,12 +1104,13 @@ class TargetStore:
                 "SELECT t.id, t.url, t.domain, t.sector, t.status, t.contact_email, "
                 "       t.classification_source, t.classification_confidence, "
                 "       sp.id AS profile_id, sp.description AS profile_description, "
-                "       sp.extraction_sources AS profile_sources "
+                "       sp.extraction_sources AS profile_sources, "
+                f"       {_HAS_CNAE} AS has_cnae "
                 "FROM targets t LEFT JOIN site_profile sp ON sp.target_id = t.id "
                 f"WHERE {where} "
                 "ORDER BY "
-                f"  CASE WHEN {_ENRICH_G1} THEN 0 "
-                f"       WHEN {_ENRICH_G2} THEN 1 ELSE 2 END, "
+                f"  CASE WHEN {_ENRICH_G1} THEN 0 WHEN {_ENRICH_G2} THEN 1 "
+                f"       WHEN {_ENRICH_G3} THEN 2 ELSE 3 END, "
                 "  CASE t.status WHEN 'alerted' THEN 1 WHEN 'scanned' THEN 2 "
                 "       WHEN 'sem_contato' THEN 3 WHEN 'discovered' THEN 4 ELSE 5 END, "
                 "  t.id"

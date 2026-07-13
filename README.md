@@ -501,11 +501,12 @@ worker (best-effort, **não** altera o score de segurança). Reprocessar os
 
 **Reprocessamento completo (`scripts/enrich_all.py`):** para dar perfil + IA a
 **todos** os alvos (não só `sem_contato`) — os que foram escaneados antes do
-profiler/IA e os classificados como `outro`. Seleciona por prioridade em 3 grupos
+profiler/IA e os classificados como `outro`. Seleciona por prioridade em 4 grupos
 disjuntos: **G1** sem perfil (`alerted` > `scanned` > `sem_contato` > `discovered`),
 **G2** com perfil mas classificação fraca (a IA acerta o setor), **G3** com perfil +
-setor por IA mas sem descrição. Idempotente (nunca traz um alvo já completo),
-fail-open e controla custo (`--ai-delay`). Uso:
+setor por IA mas sem descrição, **G4** (KL-55) completo mas **sem CNAE**
+(reclassificação CNAE do banco). Idempotente (nunca traz um alvo já completo),
+fail-open e controla custo (`--ai-delay`, `--cnpj-delay`). Uso:
 `docker compose exec api python scripts/enrich_all.py [--limit 500 | --no-limit]
 [--only-ai | --only-sem-contato] [--dry-run] [--ai-delay 2]`. Automatizável por
 cron (2×/dia, 500 alvos → ~6 dias para drenar o backlog).
@@ -527,6 +528,19 @@ dinamicamente daí; o classificador regex derruba `PRICE_TIERS` (preço único �
 `clinica`); o profiler mapeia `@type` do Schema.org para os setores finos; a API expõe
 `GET /api/sectors` (48 setores + 13 macros) para dropdowns. Sem impacto no score, sem
 migration.
+
+**Classificação CNAE multi-setor (KL-55):** como ~54% dos sites ainda caíam em `outro`
+(negócios reais são **multi-setor**), o "1 setor por alvo" ganhou **N classificações
+CNAE 2.0 (IBGE)** por alvo — tabela `target_classifications` (`cnae_code`/`section`/
+`division`/`confidence`/`source`/`rank`), + `description` em linguagem natural e `tags`
+no `site_profile`. `discovery/cnae.py` deriva **seção (A–U) e divisão offline** (a
+classificação nunca depende do IBGE) e cacheia a tabela oficial (TTL 30d, fail-open). A
+IA passou a devolver `cnaes` + `tags` + `business_type` + `sector_legacy` (retrocompat com
+`targets.sector`). Quando o profiler extrai um **CNPJ**, `discovery/cnpj.py` busca os CNAEs
+**oficiais** na Receita (BrasilAPI → ReceitaWS, cache 90d) com `source='receita'` —
+**nunca** sobrescritos pela IA. Endpoints públicos `GET /api/cnaes/{sections,divisions}` e
+`/api/benchmark/cnae/{division}`; `GET /api/targets/{id}/classifications`. **Dado
+comercial — não altera o score de segurança.**
 
 ## Dashboard admin (`klarim.net/painel`)
 
@@ -613,10 +627,11 @@ Histórico em `rescan_log`. Gestão via API: `GET /api/rescans`, `/api/rescans/s
 
 O módulo [`mcp_server/`](./mcp_server/) expõe um **servidor MCP** montado no mesmo
 FastAPI (endpoint SSE em **`https://klarim.net/mcp/sse`**), permitindo operar o
-Klarim por linguagem natural no Claude: **25 tools** (17 de leitura — sistema,
-alvos, scans, alertas, pagamentos, analytics, saúde de e-mail; 8 de escrita —
-scan, adicionar alvo, editar e-mail/status/setor, disparar alerta, enviar
-relatório, classificar em lote). Cada tool é um wrapper fino sobre a API/`store`
+Klarim por linguagem natural no Claude: **36 tools** (leitura — sistema, alvos,
+perfil, classificações CNAE, scans, alertas, pagamentos, analytics, saúde de e-mail;
+escrita — scan, adicionar alvo, editar e-mail/status/setor, disparar alerta, enviar
+relatório, classificar em lote, controlar workers, ofertar monitoramento). Cada tool
+é um wrapper fino sobre a API/`store`
 existente. Transporte **SSE** em `/mcp/sse` (modelo Traka), com autenticação por
 `MCPAuthMiddleware` (`MCP_API_KEY`, fail-closed, constant-time, `Authorization:
 Bearer` ou `?token=`). O endpoint SSE **propaga o token** para os POSTs de mensagens,

@@ -356,6 +356,42 @@ async def api_benchmark_sector(sector: str) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# CNAE (KL-55) — seções/divisões (referência estrutural do IBGE) + benchmark.
+# Públicos. `/benchmark/cnae/{division}` (não `/benchmark/{division}`) para não
+# colidir com o `/benchmark/{sector}` acima (path de 1 segmento).
+# --------------------------------------------------------------------------- #
+
+@app.get("/cnaes/sections")
+async def api_cnae_sections() -> dict:
+    """As 21 seções CNAE (A–U). Offline (mapa embutido)."""
+    from discovery.cnae import sections
+    return {"sections": sections()}
+
+
+@app.get("/cnaes/divisions")
+async def api_cnae_divisions() -> dict:
+    """As 87 divisões CNAE (2 dígitos → seção). Offline (mapa embutido)."""
+    from discovery.cnae import divisions
+    return {"divisions": divisions()}
+
+
+@app.get("/benchmark/cnae/{division}")
+async def api_benchmark_cnae(division: str) -> dict:
+    """Benchmark de score por divisão CNAE (2 dígitos). Cai para o geral se amostra < 5."""
+    store = get_target_store()
+    try:
+        data = await store.cnae_division_avg_score(division)
+        if data["count"] < 5:
+            g = await store.global_avg_score()
+            return {"scope": "global", "division": division, "avg_score": g["avg_score"],
+                    "count": g["count"]}
+    except Exception:  # noqa: BLE001
+        return {"scope": "global", "division": division, "avg_score": 0, "count": 0}
+    return {"scope": "cnae_division", "division": division, "avg_score": data["avg_score"],
+            "count": data["count"]}
+
+
+# --------------------------------------------------------------------------- #
 # Verificação de e-mail (código 6 dígitos) antes do scan público — KL-25
 # --------------------------------------------------------------------------- #
 
@@ -1423,7 +1459,19 @@ async def api_get_target(target_id: int) -> dict:
         target["profile"] = await store.get_site_profile(target_id)
     except Exception:  # noqa: BLE001
         target["profile"] = None
+    # KL-55: anexa as classificações CNAE multi-setor.
+    try:
+        target["classifications"] = await store.get_target_classifications(target_id)
+    except Exception:  # noqa: BLE001
+        target["classifications"] = []
     return target
+
+
+@app.get("/targets/{target_id}/classifications")
+async def api_target_classifications(target_id: int) -> dict:
+    """Classificações CNAE multi-setor de um alvo (KL-55), ordenadas por rank."""
+    rows = await get_target_store().get_target_classifications(target_id)
+    return {"target_id": target_id, "classifications": rows}
 
 
 @app.get("/targets/{target_id}/profile")

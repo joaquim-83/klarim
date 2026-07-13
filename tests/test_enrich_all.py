@@ -24,12 +24,25 @@ def _args(**kw):
 
 
 def _row(**kw):
+    # has_cnae=True por padrão: um alvo "completo" (KL-54) já tem CNAE, então não
+    # cai em G4 (KL-55). Testes de G4 passam has_cnae=False explicitamente.
     base = dict(id=1, url="https://x.com.br", domain="x.com.br", status="scanned",
                 contact_email=None, profile_id=None, sector="outro",
                 classification_source="auto", classification_confidence=0.0,
-                profile_description=None, profile_sources=None)
+                profile_description=None, profile_sources=None, has_cnae=True)
     base.update(kw)
     return base
+
+
+def test_select_group4_no_cnae():
+    # KL-55: perfil + IA + descrição mas SEM CNAE → G4.
+    assert e.enrichment_group(_row(
+        profile_id=9, classification_source="ai", classification_confidence=0.9,
+        profile_description="Uma clínica.", has_cnae=False)) == 4
+    # com CNAE → completo (None)
+    assert e.enrichment_group(_row(
+        profile_id=9, classification_source="ai", classification_confidence=0.9,
+        profile_description="Uma clínica.", has_cnae=True)) is None
 
 
 class FakeStore:

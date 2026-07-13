@@ -24,6 +24,7 @@ from typing import Optional
 import httpx
 
 from discovery.sector_taxonomy import VALID_SECTORS, normalize_sector
+from discovery.cnae import derive_section, derive_division, format_cnae
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 OPENAI_MODEL = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
@@ -41,22 +42,34 @@ _MAX_TEXT_CHARS = 3000
 # Lista de setores (sem `outro`) para o prompt — gerada da taxonomia, nunca à mão.
 _SECTOR_LIST = ", ".join(sorted(VALID_SECTORS - {"outro"}))
 
+# KL-55: CNAE (estrutura) + descrição/tags (identidade). O prompt pede classificação
+# multi-setor via CNAE 2.0 do IBGE + descrição em linguagem natural + tags. Mantém
+# `sector_legacy` + `sector_confidence` para a retrocompatibilidade com `targets.sector`.
 SYSTEM_PROMPT = (
     "Você é um analista de inteligência comercial que examina sites brasileiros.\n"
     "Analise o texto extraído de um site e retorne um JSON com os campos abaixo.\n"
     "Responda APENAS com JSON válido, sem markdown, sem explicação.\n\n"
     "Campos obrigatórios:\n"
-    '- "sector": um dos valores exatos: ' + _SECTOR_LIST + ", outro\n"
-    "  (escolha o mais específico; use 'outro' só se nenhum servir)\n"
-    '- "sector_confidence": float 0.0 a 1.0\n'
-    '- "company_name": nome da empresa (limpo, sem slogan)\n'
-    '- "description": resumo do negócio em 1-2 frases em português\n'
+    '- "description": descrição do negócio em 1-3 frases, linguagem natural, PT-BR.\n'
+    "  Descreva O QUE a empresa realmente faz, não o que a CNAE diz.\n"
+    '- "business_type": tipo do negócio em 3-5 palavras (ex: "PropTech SaaS", '
+    '"Segurança patrimonial", "Hamburgueria artesanal", "Clínica odontológica").\n'
+    '- "company_name": nome da empresa (limpo, sem slogan); null se não estiver claro.\n'
+    '- "tags": lista de 5-10 palavras-chave do negócio para busca, em português, '
+    'minúsculas (ex: ["proptech", "saas", "gestão condominial", "airbnb"]).\n'
+    '- "cnaes": lista de 2-5 códigos CNAE 2.0 do IBGE mais relevantes, em ordem de '
+    "relevância (mais relevante primeiro). Cada item:\n"
+    '  - "code": código no formato classe (ex: "62.01-5") ou grupo (ex: "80.1")\n'
+    '  - "description": descrição oficial da atividade CNAE\n'
+    '  - "confidence": float 0.0 a 1.0\n'
+    "  Uma empresa pode ter múltiplos CNAEs — liste todos os aplicáveis.\n"
+    '- "sector_legacy": setor da taxonomia antiga (retrocompatibilidade). Um dos valores '
+    "exatos: " + _SECTOR_LIST + ", outro. Use 'outro' se nenhum encaixar bem.\n"
+    '- "sector_confidence": float 0.0 a 1.0 (confiança no sector_legacy).\n'
     '- "contacts_found": objeto com campos opcionais:\n'
-    '  - "email": email comercial encontrado no texto (null se não encontrado)\n'
+    '  - "email": email comercial (null se não encontrado)\n'
     '  - "phone": telefone no formato (DD) XXXXX-XXXX (null se não encontrado)\n'
-    '  - "whatsapp": número WhatsApp com DDI+DDD (null se não encontrado)\n'
-    '- "business_type": tipo de negócio em 3-5 palavras (ex: "software jurídico", '
-    '"hotel boutique", "clínica odontológica")'
+    '  - "whatsapp": número WhatsApp com DDI+DDD (null se não encontrado)'
 )
 
 # Remoção de script/style/tags para extrair texto limpo (alimenta a IA barato).
@@ -114,36 +127,69 @@ async def call_openai(system: str, user: str, max_tokens: int = 500) -> Optional
         return None
 
 
+def _normalize_cnaes(raw) -> list:
+    """Limpa a lista de CNAEs da IA: formata o código, deriva seção/divisão (offline),
+    valida a confiança. Descarta itens sem código utilizável."""
+    out = []
+    for c in (raw or []):
+        if not isinstance(c, dict):
+            continue
+        code = format_cnae(c.get("code") or "")
+        if len(re.sub(r"\D", "", code)) < 3:  # nem grupo (3 dígitos)
+            continue
+        try:
+            conf = float(c.get("confidence") or 0.0)
+        except (TypeError, ValueError):
+            conf = 0.0
+        out.append({
+            "code": code,
+            "description": (str(c.get("description") or "").strip() or None),
+            "confidence": conf,
+            "section": derive_section(code),
+            "division": derive_division(code),
+        })
+    return out[:5]
+
+
 async def ai_enrich(domain: str, html_text: str, current_profile: Optional[dict] = None,
                     current_sector: str = "outro") -> Optional[dict]:
     """Enriquece os dados do site com IA numa única chamada. ``None`` se indisponível.
 
-    Retorna ``{sector, sector_confidence, company_name, description, contacts_found,
-    business_type}``. O ``sector`` é normalizado para ``outro`` se vier fora do enum.
-    """
+    Retorna ``{description, business_type, company_name, tags, cnaes, sector_legacy,
+    sector, sector_confidence, contacts_found}``. **Retrocompatibilidade:** `sector`
+    espelha `sector_legacy` normalizado (callers do KL-47A/54 leem `sector`)."""
     if not OPENAI_API_KEY:
         return None
     text = extract_clean_text(html_text) if "<" in (html_text or "") else (html_text or "")
     prompt = build_user_prompt(domain, text, current_profile)
-    result = await call_openai(SYSTEM_PROMPT, prompt)
+    result = await call_openai(SYSTEM_PROMPT, prompt, max_tokens=900)  # KL-55: resposta maior
     if not result:
         return None
-    # Normaliza (limpa + resolve aliases legados como saude→clinica); inválido ⇒ outro.
-    result["sector"] = normalize_sector(result.get("sector", ""))
+    # Retrocompat: sector_legacy → sector (normalizado; alias saude→clinica; inválido⇒outro).
+    legacy = normalize_sector(result.get("sector_legacy") or result.get("sector") or "outro")
+    result["sector_legacy"] = legacy
+    result["sector"] = legacy
     try:
         result["sector_confidence"] = float(result.get("sector_confidence") or 0.0)
     except (TypeError, ValueError):
         result["sector_confidence"] = 0.0
+    # CNAEs (formata + deriva seção/divisão offline) e tags (strings limpas, minúsculas).
+    result["cnaes"] = _normalize_cnaes(result.get("cnaes"))
+    tags = result.get("tags")
+    result["tags"] = ([str(t).strip().lower() for t in tags if str(t).strip()][:10]
+                      if isinstance(tags, list) else [])
     return result
 
 
 def merge_ai_into_profile(profile: dict, ai: dict) -> list:
-    """Aplica os dados da IA ao ``profile`` **só nos campos vazios**. Retorna o que mudou."""
+    """Aplica os dados da IA ao ``profile``. Campos de identidade só preenchem VAZIO
+    (regra de ouro); **tags** a IA é a fonte, então sobrescreve. Retorna o que mudou."""
     changed = []
     contacts = ai.get("contacts_found") or {}
     mapping = [
         ("company_name", ai.get("company_name")),
         ("description", ai.get("description")),
+        ("business_type", ai.get("business_type")),  # KL-55
         ("commercial_email", contacts.get("email")),
         ("phone", contacts.get("phone")),
         ("whatsapp", contacts.get("whatsapp")),
@@ -152,4 +198,8 @@ def merge_ai_into_profile(profile: dict, ai: dict) -> list:
         if value and not profile.get(field):
             profile[field] = value
             changed.append(field)
+    tags = ai.get("tags")  # KL-55: tags são da IA (sobrescreve se vier lista não vazia)
+    if tags:
+        profile["tags"] = tags
+        changed.append("tags")
     return changed

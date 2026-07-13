@@ -41,10 +41,23 @@ async def get_target(target_id: int) -> dict:
             return {"error": "Alvo não encontrado."}
         return {
             "target": target,
+            "profile": await store.get_site_profile(target_id),
+            "classifications": await store.get_target_classifications(target_id),  # KL-55
             "recent_scans": await store.list_scans(target_id=target_id, limit=10),
             "alerts": await store.list_alerts(target_id=target_id, limit=10),
             "rescans": await store.list_rescans(target_id=target_id, limit=10),
         }
+
+    return await _guard(_impl)
+
+
+@mcp.tool()
+async def get_target_classifications(target_id: int) -> dict:
+    """Classificações CNAE multi-setor de um alvo (KL-55): código CNAE, seção (A–U),
+    divisão, confiança, fonte (receita/ai/manual) e rank. Um alvo pode ter vários."""
+    async def _impl():
+        rows = await _store().get_target_classifications(target_id)
+        return {"target_id": target_id, "classifications": rows}
 
     return await _guard(_impl)
 
