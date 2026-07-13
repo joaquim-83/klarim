@@ -30,6 +30,7 @@ export default function Dashboard({ user = {} }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [upgrade, setUpgrade] = useState(false);
+  const [history, setHistory] = useState(null);
 
   async function load() {
     const { ok, data } = await apiGet('/account/sites');
@@ -37,6 +38,11 @@ export default function Dashboard({ user = {} }) {
     else setSites([]);
   }
   useEffect(() => { load(); }, []);
+
+  // histórico de consultas (scans que o usuário fez, KL-25 → scanned_by_email)
+  useEffect(() => {
+    apiGet('/account/scan-history').then(({ ok, data }) => setHistory(ok ? (data.scans || []) : []));
+  }, []);
 
   // benchmark do setor do primeiro site
   useEffect(() => {
@@ -63,19 +69,37 @@ export default function Dashboard({ user = {} }) {
   const used = sites.length;
   const atLimit = used >= maxSites;
 
+  // histórico: não duplicar os sites já monitorados (o signup pode ter vinculado um)
+  const norm = (u) => (u || '').toLowerCase().replace(/\/+$/, '');
+  const monitored = new Set(sites.map((s) => norm(s.url)));
+  const historyItems = (history || []).filter((h) => !monitored.has(norm(h.url)));
+
   return (
     <div className="space-y-8">
       <div>
         <h1 className="text-2xl font-bold text-white">Olá{user.name ? `, ${user.name}` : ''}</h1>
-        <p className="mt-1 text-slate-400">Seus sites monitorados pelo Klarim.</p>
+        <p className="mt-1 text-slate-400">Verifique qualquer site à vontade; monitore os que importam.</p>
       </div>
 
+      {/* Verificar um site — consulta livre e ILIMITADA (vai para /scan) */}
+      <form action="/scan" method="GET" className={`${card} border-brand-500/30 bg-brand-500/5`}>
+        <p className="text-lg font-bold text-white">🔍 Verificar um site</p>
+        <p className="mt-0.5 text-sm text-slate-400">Consulte a segurança de qualquer site — sem limite.</p>
+        <div className="mt-3 flex flex-col gap-2 sm:flex-row">
+          <input type="text" name="url" required placeholder="site.com.br" className={field} />
+          <button type="submit"
+            className="rounded-xl bg-brand-500 px-6 py-3.5 text-sm font-semibold text-slate-950 hover:bg-brand-400">
+            Verificar →
+          </button>
+        </div>
+      </form>
+
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-semibold text-white">Meus sites ({used}/{maxSites})</h2>
+        <h2 className="text-lg font-semibold text-white">Sites monitorados ({used}/{maxSites})</h2>
         {!adding && (
           <button onClick={() => (atLimit ? setUpgrade(true) : setAdding(true))}
-            className="rounded-lg bg-brand-500 px-3.5 py-2 text-sm font-semibold text-slate-950 hover:bg-brand-400">
-            + Novo site
+            className="rounded-lg border border-slate-700 px-3.5 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800">
+            + Monitorar outro site
           </button>
         )}
       </div>
@@ -87,7 +111,7 @@ export default function Dashboard({ user = {} }) {
           <div className="flex gap-2">
             <button type="submit" disabled={busy}
               className="rounded-xl bg-brand-500 px-5 py-3.5 text-sm font-semibold text-slate-950 hover:bg-brand-400 disabled:opacity-60">
-              {busy ? 'Adicionando…' : 'Adicionar'}
+              {busy ? 'Adicionando…' : 'Monitorar'}
             </button>
             <button type="button" onClick={() => { setAdding(false); setError(''); }}
               className="rounded-xl border border-slate-700 px-5 py-3.5 text-sm text-slate-300 hover:bg-slate-800">
@@ -110,7 +134,7 @@ export default function Dashboard({ user = {} }) {
       {sites.length === 0 ? (
         <div className={card}>
           <p className="text-slate-300">Você ainda não monitora nenhum site.</p>
-          <p className="mt-1 text-sm text-slate-400">Adicione o site que você escaneou para acompanhar a evolução.</p>
+          <p className="mt-1 text-sm text-slate-400">Monitore um site para acompanhar a evolução do score todo mês.</p>
         </div>
       ) : (
         <div className="space-y-4">
@@ -122,6 +146,18 @@ export default function Dashboard({ user = {} }) {
         <BenchmarkBar b={benchmark} />
       )}
 
+      {/* Histórico de consultas (somente leitura — não conta como monitorado) */}
+      {historyItems.length > 0 && (
+        <div>
+          <h2 className="text-lg font-semibold text-white">Histórico de consultas</h2>
+          <div className={`${card} mt-3 !p-0`}>
+            <ul className="divide-y divide-slate-800">
+              {historyItems.map((h) => <HistoryRow key={h.id} scan={h} />)}
+            </ul>
+          </div>
+        </div>
+      )}
+
       <div className={card}>
         <p className="text-sm text-slate-400">Plano</p>
         <p className="mt-1 font-semibold text-white">
@@ -130,6 +166,28 @@ export default function Dashboard({ user = {} }) {
         <p className="mt-2 text-sm text-slate-500">Upgrade para até 5 sites — em breve.</p>
       </div>
     </div>
+  );
+}
+
+const HSEMA = { verde: '🟢', amarelo: '🟡', vermelho: '🔴' };
+
+function HistoryRow({ scan }) {
+  const domain = (() => {
+    try { return new URL(scan.url.includes('://') ? scan.url : `https://${scan.url}`).hostname.replace(/^www\./, ''); }
+    catch { return scan.url; }
+  })();
+  return (
+    <li className="flex flex-wrap items-center justify-between gap-2 px-5 py-3 text-sm">
+      <div className="min-w-0">
+        <p className="truncate font-medium text-white">{domain}</p>
+        <p className="text-xs text-slate-500">{fmtDate(scan.scanned_at)}</p>
+      </div>
+      <div className="flex items-center gap-4">
+        <span className="text-slate-300">{HSEMA[scan.semaphore] || '⚪'} {scan.score ?? '—'}</span>
+        <a href={`/scan?url=${encodeURIComponent(scan.url)}`}
+          className="text-brand-400 hover:text-brand-300">Ver resultado →</a>
+      </div>
+    </li>
   );
 }
 

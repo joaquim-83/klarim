@@ -30,6 +30,8 @@ class FakeStore:
         self.resets = {}     # email -> code
         self.targets = {}    # target_id -> target dict
         self.scanned_by = {} # email -> [target_ids] (histórico KL-25)
+        self.scan_history = []       # linhas de /account/scan-history
+        self.users_with_sites = []   # linhas de /admin/clients
 
     # --- users ---
     async def create_user(self, email, password_hash, name=None):
@@ -121,6 +123,12 @@ class FakeStore:
 
     async def get_targets_scanned_by_email(self, email, limit=10):
         return list(self.scanned_by.get(email.lower().strip(), []))[:limit]
+
+    async def get_scan_history_for_email(self, email, limit=20):
+        return self.scan_history[:limit]
+
+    async def list_users_with_sites(self):
+        return self.users_with_sites
 
 
 @pytest.fixture
@@ -287,6 +295,50 @@ def test_list_and_remove_site(client, store):
 
 
 # --- fix UX (KL-51 f3): histórico no signup, mask, send-report ------------- #
+
+# --- histórico de consultas + gestão de clientes (KL-51 f3 fix) ------------ #
+
+def test_scan_history_requires_auth(client):
+    assert client.get("/account/scan-history").status_code == 401
+
+
+def test_scan_history_returns_scans(client, store):
+    u = client.post("/account/signup", json={"email": "hst@x.com.br", "password": "segredo123"}).json()["user"]
+    store.scan_history = [
+        {"id": 5, "url": "https://a.com.br", "score": 82, "semaphore": "amarelo",
+         "scanned_at": datetime(2026, 7, 12, tzinfo=timezone.utc)},
+        {"id": 6, "url": "https://b.com.br", "score": 95, "semaphore": None,  # fallback por score
+         "scanned_at": None},
+    ]
+    r = client.get("/account/scan-history", headers=_bearer(u))
+    assert r.status_code == 200
+    scans = r.json()["scans"]
+    assert len(scans) == 2
+    assert scans[0]["semaphore"] == "amarelo" and scans[0]["scanned_at"].startswith("2026-07-12")
+    assert scans[1]["semaphore"] == "verde"   # score 95 → fallback verde
+
+
+def test_admin_clients_requires_admin(client):
+    # sem token → o middleware admin devolve 401
+    assert client.get("/admin/clients").status_code == 401
+
+
+def test_admin_clients_lists_accounts(client, store, monkeypatch):
+    monkeypatch.setenv("ADMIN_USER", "op")
+    monkeypatch.setenv("ADMIN_PASSWORD", "pw")
+    store.users_with_sites = [
+        {"id": 1, "email": "a@x.com.br", "plan": "free", "max_sites": 1, "is_active": True,
+         "sites": [{"target_id": 9, "url": "https://a.com.br", "domain": "a.com.br",
+                    "last_scan_score": 80, "last_semaphore": "amarelo", "is_owner": True}]},
+        {"id": 2, "email": "b@x.com.br", "plan": "free", "max_sites": 1, "is_active": False, "sites": []},
+    ]
+    admin_tok = m._create_token("op")
+    r = client.get("/admin/clients", headers={"Authorization": f"Bearer {admin_tok}"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["total"] == 2 and body["active"] == 1 and body["total_sites"] == 1
+    assert body["clients"][0]["sites"][0]["domain"] == "a.com.br"
+
 
 def test_optional_user_never_raises(store, monkeypatch):
     # auth OPCIONAL: sem token → None; e qualquer erro do store → None (nunca levanta).

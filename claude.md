@@ -1760,6 +1760,21 @@ pega o cache quente). ⚠️ Paralelizar faz os checks 41-44 poderem abrir algun
 a mais (cache por host, ainda passivo) — sem impacto no score. Teto por
 `SCAN_MAX_CONCURRENCY` p/ não estourar o event loop / thread pool do worker único.
 
+**2ª rodada de UX (KL-51 f3 fix).** (1) **Headline** da landing: "Seu site é seguro?
+Descubra em 30 segundos." (+ meta/og description). (2) **Linguagem consistente**:
+**Verificar/Consultar** = scan (ilimitado) · **Monitorar** = adicionar ao dashboard
+(limitado pelo plano). No dashboard: form "🔍 Verificar um site" (GET `/scan`, consulta
+livre) + o antigo "+ Novo site" virou **"+ Monitorar outro site"**. (3) **Histórico de
+consultas** no dashboard: `GET /account/scan-history` (JWT de usuário) lê
+`scans.scanned_by_email` (KL-25), 1 linha por URL, mais recente 1º; cada item abre o
+resultado (`/scan?url=`); dedup dos sites já monitorados. O signup já vincula o histórico
+a `user_sites` (KL-51 f3, `get_targets_scanned_by_email`). (4) **Painel admin**: a página
+"Sites Monitorados" (KL-29) virou **"Gestão de Clientes"** (`/painel/clientes`,
+`Clientes.jsx`) — lista as **contas de usuário** (`users` + `user_sites`) com plano,
+sites (score/último scan), criação, último login e status, via `GET /admin/clients`
+(`store.list_users_with_sites`); a rota antiga `/painel/monitorados` redireciona. O item
+**"Escanear"** saiu da navegação do painel (redundante com a página Alvos).
+
 ## 40. Classificação CNAE multi-setor + descrição natural + tags (KL-55)
 
 A taxonomia fixa de 48 setores (KL-54) é insuficiente: ~54% dos sites caem em `outro`

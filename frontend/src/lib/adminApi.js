@@ -119,6 +119,9 @@ export const admin = {
   monitoredSetStatus: (id, status, reason) =>
     post(`/monitoring/admin/${id}/status`, { status, reason }),
 
+  // gestão de clientes — contas de usuário + sites (KL-51 f3 fix)
+  clients: () => get('/admin/clients'),
+
   // configurações operacionais (read-only)
   config: () => get('/config'),
 

@@ -28,14 +28,13 @@ const ICONS = {
 
 const NAV = [
   { to: '/painel', label: 'Visão geral', icon: 'overview', end: true },
-  { to: '/painel/escanear', label: 'Escanear', icon: 'radar' },
   { to: '/painel/alvos', label: 'Alvos', icon: 'targets' },
   { to: '/painel/scans', label: 'Scans', icon: 'scans' },
   { to: '/painel/alertas', label: 'Alertas', icon: 'alerts' },
   { to: '/painel/pagamentos', label: 'Pagamentos', icon: 'payments' },
   { to: '/painel/rescans', label: 'Re-scans', icon: 'rescans' },
   { to: '/painel/analytics', label: 'Analytics', icon: 'analytics' },
-  { to: '/painel/monitorados', label: 'Monitorados', icon: 'monitored' },
+  { to: '/painel/clientes', label: 'Gestão de Clientes', icon: 'monitored' },
   { to: '/painel/sistema', label: 'Sistema', icon: 'system' },
   { to: '/painel/config', label: 'Configurações', icon: 'config' },
 ]

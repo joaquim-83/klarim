@@ -499,6 +499,31 @@ async def account_me(request: Request) -> dict:
             "sites_count": await store.count_user_sites(user["id"])}
 
 
+def _semaphore_from_score(score: Optional[int]) -> str:
+    """Fallback de semáforo por score (para scans antigos sem a coluna)."""
+    if score is None:
+        return "amarelo"
+    if score >= 90:
+        return "verde"
+    if score >= 50:
+        return "amarelo"
+    return "vermelho"
+
+
+@app.get("/account/scan-history")
+async def account_scan_history(request: Request) -> dict:
+    """Histórico de consultas do usuário (KL-51 f3 fix): scans que ele solicitou
+    (via `scans.scanned_by_email`, KL-25), 1 por URL, mais recente primeiro. Só leitura
+    — não conta como site monitorado."""
+    user = await auth_users.require_user(request)
+    rows = await get_target_store().get_scan_history_for_email(user["email"], limit=20)
+    return {"scans": [
+        {"id": r["id"], "url": r["url"], "score": r["score"],
+         "semaphore": r.get("semaphore") or _semaphore_from_score(r.get("score")),
+         "scanned_at": r["scanned_at"].isoformat() if r.get("scanned_at") else None}
+        for r in rows]}
+
+
 # --- sites do usuário ------------------------------------------------------- #
 
 async def _email_owns_target(email: str, target_id: int) -> bool:
@@ -3071,6 +3096,17 @@ async def monitoring_admin_set_status(site_id: int, body: MonitorAdminStatusBody
     if site is None:
         raise HTTPException(status_code=404, detail="Site monitorado não encontrado.")
     return site
+
+
+@app.get("/admin/clients")
+async def admin_clients() -> dict:
+    """Gestão de Clientes (KL-51 f3 fix): contas de usuário + os sites monitorados de
+    cada uma (via `user_sites`). Protegido pelo middleware admin (prefixo `/admin`)."""
+    clients = await get_target_store().list_users_with_sites()
+    active = sum(1 for c in clients if c.get("is_active"))
+    total_sites = sum(len(c.get("sites") or []) for c in clients)
+    return {"clients": clients, "total": len(clients),
+            "active": active, "total_sites": total_sites}
 
 
 # --------------------------------------------------------------------------- #

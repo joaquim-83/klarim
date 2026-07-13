@@ -1302,6 +1302,46 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    async def get_scan_history_for_email(self, email: str, limit: int = 20
+                                         ) -> List[Dict[str, Any]]:
+        """Histórico de consultas de um e-mail (KL-25 `scans.scanned_by_email`) — 1 linha
+        por URL (o scan mais recente), mais recente primeiro. Alimenta o "Histórico de
+        consultas" do dashboard (KL-51 f3 fix)."""
+        e = (email or "").lower().strip()
+
+        def _fn(cur):
+            cur.execute(
+                "SELECT * FROM (SELECT DISTINCT ON (url) id, url, score, semaphore, scanned_at "
+                "FROM scans WHERE lower(scanned_by_email) = %s AND score IS NOT NULL "
+                "ORDER BY url, scanned_at DESC) t ORDER BY scanned_at DESC LIMIT %s", (e, limit))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def list_users_with_sites(self) -> List[Dict[str, Any]]:
+        """Contas de usuário (KL-51 f3) + os sites vinculados (via `user_sites`), para a
+        Gestão de Clientes no painel admin. 2 queries numa conexão (evita N+1)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT id, email, name, plan, max_sites, created_at, last_login_at, is_active "
+                "FROM users ORDER BY created_at DESC")
+            users = self._rows_to_dicts(cur)
+            cur.execute(
+                "SELECT us.user_id, us.is_owner, t.id AS target_id, t.url, t.domain, "
+                "       t.sector, t.last_scan_score, t.last_scan_at, s.semaphore AS last_semaphore "
+                "FROM user_sites us JOIN targets t ON t.id = us.target_id "
+                "LEFT JOIN LATERAL (SELECT semaphore FROM scans WHERE target_id = t.id "
+                "                   ORDER BY scanned_at DESC LIMIT 1) s ON TRUE "
+                "ORDER BY us.added_at DESC")
+            by_user: Dict[int, List[Dict[str, Any]]] = {}
+            for st in self._rows_to_dicts(cur):
+                by_user.setdefault(st["user_id"], []).append(st)
+            for u in users:
+                u["sites"] = by_user.get(u["id"], [])
+            return users
+
+        return await asyncio.to_thread(self._run, _fn)
+
     async def count_enrichment_groups(self, mode: str = "all") -> Dict[str, int]:
         """Conta os alvos pendentes de enriquecimento por grupo (G1..G4) e o total.
         Ignora `limit` — é o panorama completo do backlog."""

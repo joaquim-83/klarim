@@ -19,7 +19,6 @@ import ProtectedRoute from './components/admin/ProtectedRoute'
 const AdminLayout = lazy(() => import('./components/admin/AdminLayout'))
 const Login = lazy(() => import('./pages/admin/Login'))
 const Overview = lazy(() => import('./pages/admin/Overview'))
-const Escanear = lazy(() => import('./pages/admin/Escanear'))
 const Alvos = lazy(() => import('./pages/admin/Alvos'))
 const AlvoDetalhe = lazy(() => import('./pages/admin/AlvoDetalhe'))
 const Scans = lazy(() => import('./pages/admin/Scans'))
@@ -28,7 +27,7 @@ const Alertas = lazy(() => import('./pages/admin/Alertas'))
 const Pagamentos = lazy(() => import('./pages/admin/Pagamentos'))
 const Rescans = lazy(() => import('./pages/admin/Rescans'))
 const Analytics = lazy(() => import('./pages/admin/Analytics'))
-const MonitoradosAdmin = lazy(() => import('./pages/admin/Monitorados'))
+const Clientes = lazy(() => import('./pages/admin/Clientes'))
 const Sistema = lazy(() => import('./pages/admin/Sistema'))
 const Config = lazy(() => import('./pages/admin/Config'))
 
@@ -87,7 +86,6 @@ export default function App() {
         }
       >
         <Route index element={<Overview />} />
-        <Route path="escanear" element={<Escanear />} />
         <Route path="alvos" element={<Alvos />} />
         <Route path="alvos/:id" element={<AlvoDetalhe />} />
         <Route path="scans" element={<Scans />} />
@@ -96,7 +94,8 @@ export default function App() {
         <Route path="pagamentos" element={<Pagamentos />} />
         <Route path="rescans" element={<Rescans />} />
         <Route path="analytics" element={<Analytics />} />
-        <Route path="monitorados" element={<MonitoradosAdmin />} />
+        <Route path="clientes" element={<Clientes />} />
+        <Route path="monitorados" element={<Navigate to="/painel/clientes" replace />} />
         <Route path="sistema" element={<Sistema />} />
         <Route path="config" element={<Config />} />
       </Route>
