@@ -12,12 +12,22 @@ which also keeps the per-domain rate limit trivially satisfied.
 from __future__ import annotations
 
 import asyncio
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import List, Optional
 
 from .checks import ALL_CHECKS, FREE_CHECKS
 from .checks.base import CheckResult, Status, Severity, normalize_url
+
+# Concorrência dos checks (KL-51 f3 hotfix): rodar os 48 checks em SEQUÊNCIA levava
+# ~80s (site grande) a >180s (site grande + cache frio) → estourava o timeout do proxy
+# (504). Rodamos em paralelo com um teto: o rate limiter de `base.fetch` é por-domínio
+# (asyncio.Lock), então requests ao MESMO domínio continuam serializados em 1 req/s
+# (regra do scanner passivo preservada); só os checks de domínios distintos (crt.sh,
+# HIBP, DNS, TLS…) é que passam a se sobrepor. Teto p/ não estourar o event loop /
+# thread pool do worker único.
+SCAN_MAX_CONCURRENCY = int(os.environ.get("SCAN_MAX_CONCURRENCY", "12"))
 from .checks.classifications import classify
 from .scoring import ScoreBreakdown, compute_score
 
@@ -56,11 +66,16 @@ class ScanReport:
 
 
 async def run_scan(url: str, full: bool = True) -> ScanReport:
-    """Run the registered checks against ``url`` sequentially and score them.
+    """Run the registered checks against ``url`` concurrently and score them.
 
     ``full=True`` (padrão) roda todos os checks (tier pago, 29). ``full=False`` roda
     só o tier gratuito (15 primeiros, KL-27) — economiza tempo de scan e requests
     DNS/API do funil público.
+
+    Os checks rodam em **paralelo** com teto ``SCAN_MAX_CONCURRENCY`` (KL-51 f3 hotfix).
+    O rate limiter por-domínio (`base.fetch`) mantém 1 req/s por domínio — a regra do
+    scanner passivo é preservada; a paralelização só sobrepõe checks de domínios
+    distintos. ``asyncio.gather`` devolve os resultados **na ordem dos checks**.
     """
     target = normalize_url(url)
     loop = asyncio.get_event_loop()
@@ -68,10 +83,12 @@ async def run_scan(url: str, full: bool = True) -> ScanReport:
     t0 = loop.time()
 
     checks = ALL_CHECKS if full else FREE_CHECKS
-    results: List[CheckResult] = []
-    for check_id, check_fn in checks:
+    sem = asyncio.Semaphore(SCAN_MAX_CONCURRENCY)
+
+    async def _run_one(check_id: str, check_fn) -> CheckResult:
         try:
-            result = await check_fn(target)
+            async with sem:
+                result = await check_fn(target)
         except Exception as exc:  # noqa: BLE001 - one bad check must not kill the scan
             result = CheckResult(
                 name=check_id,
@@ -84,7 +101,11 @@ async def run_scan(url: str, full: bool = True) -> ScanReport:
         # aqui (onde o check_id é setado) para não editar as ~100 return sites dos checks.
         cls = classify(check_id)
         result.owasp, result.cwe, result.lgpd = cls.owasp, cls.cwe, cls.lgpd
-        results.append(result)
+        return result
+
+    # gather preserva a ordem de entrada → o relatório mantém a ordem dos checks.
+    results: List[CheckResult] = list(
+        await asyncio.gather(*(_run_one(cid, fn) for cid, fn in checks)))
 
     duration = loop.time() - t0
     finished_at = datetime.now(timezone.utc)

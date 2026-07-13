@@ -1745,14 +1745,20 @@ recém-limpos) passam de 120s ⇒ o Nginx **desconecta** ⇒ o handler atrás do
 `_admin_auth_mw` (BaseHTTPMiddleware) tenta responder a um cliente já desconectado ⇒
 `AssertionError` (ruído; o worker se recupera). **A auth do `scan/summary` já era
 opcional** (anônimo → `auth_required` em ~0,5s; logado → escaneia). Fixes: (1)
-`auth_users.optional_user` captura **qualquer** exceção → `None` (auth opcional nunca
-derruba o scan); (2) `proxy_read_timeout`/`send_timeout` do `/api/` **120s → 180s** (folga
-p/ scan frio); (3) o fetch SSR de `/account/me` no `scan.astro` ganhou timeout (4s,
-`AbortSignal.timeout`) p/ não travar o render; (4) `runScan` re-tenta 1× após pausa (o
-scan lento termina e **cacheia** no servidor mesmo com 504 no cliente → a re-tentativa
-pega o cache quente). **Não** paralelizei o runner (risco: handshake TLS compartilhado
-dos checks 41-44, contenção no rate limiter, init concorrente de caches, possível
-mudança de score) — fica como otimização futura com testes.
+**paralelizar o `runner`** — só bumpar o timeout não bastou (um scan frio de
+`correios.com.br` deu 504 aos 180,6s). Fixes: (1) **`scanner/runner.py` roda os checks em
+paralelo** (`asyncio.gather` + `Semaphore(SCAN_MAX_CONCURRENCY=12)`); é **seguro** porque o
+rate limiter de `base.fetch` é **por-domínio** (`asyncio.Lock` segurado durante o request
+inteiro) — requests ao MESMO domínio seguem serializados em **1 req/s** (regra do scanner
+passivo preservada), só checks de domínios distintos (crt.sh/HIBP/DNS/TLS/CVE) se sobrepõem;
+`gather` preserva a **ordem** dos checks; (2) `auth_users.optional_user` captura **qualquer**
+exceção → `None` (auth opcional nunca derruba o scan); (3) `proxy_read_timeout`/`send_timeout`
+do `/api/` **120s → 180s** (folga extra); (4) o fetch SSR de `/account/me` no `scan.astro`
+ganhou timeout (4s, `AbortSignal.timeout`) p/ não travar o render; (5) `runScan` re-tenta 1×
+após pausa (o scan lento **cacheia** no servidor mesmo com 504 no cliente → a re-tentativa
+pega o cache quente). ⚠️ Paralelizar faz os checks 41-44 poderem abrir alguns handshakes TLS
+a mais (cache por host, ainda passivo) — sem impacto no score. Teto por
+`SCAN_MAX_CONCURRENCY` p/ não estourar o event loop / thread pool do worker único.
 
 ## 40. Classificação CNAE multi-setor + descrição natural + tags (KL-55)
 

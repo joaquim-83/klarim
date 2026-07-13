@@ -28,35 +28,40 @@ recupera e os scans seguintes voltam 200).
 O "401 em recurso" do console é o `/api/account/me` do Header (esperado quando deslogado),
 não o scan — pista secundária.
 
-## Correções (todas de baixo risco)
+## Correções
 
-1. **`auth_users.optional_user` captura QUALQUER exceção → `None`** (antes só
-   `HTTPException`). Auth opcional **nunca** pode derrubar o scan — se o token é inválido
-   ou o banco falha, trata como anônimo. Atende diretamente à diretriz do card.
-2. **`proxy_read_timeout`/`proxy_send_timeout` do `/api/`: 120s → 180s** (nos 3 blocks:
-   `http.conf` + os 2 `/api/` do `https.conf.template`). Dá folga para o scan frio
-   terminar **antes** do desconecta — o que também elimina o `AssertionError` na maioria
-   dos casos.
-3. **`scan.astro`**: o fetch SSR de `/account/me` ganhou timeout (`AbortSignal.timeout(4000)`)
-   — se a API estiver ocupada, o render da página `/scan` não trava (cai para deslogado; o
-   fluxo com e-mail/código ainda funciona).
-4. **`ScanFlow.runScan` re-tenta 1×** após uma pausa de 20s em caso de falha/timeout: o
-   scan lento **termina e cacheia** no servidor mesmo quando o cliente recebe 504, então a
-   re-tentativa pega o **cache quente** e devolve o resultado.
+**Descoberta na verificação:** só bumpar o timeout **não bastou** — um scan **frio** de
+site grande (`correios.com.br`) deu **504 aos 180,6s**. O gargalo é o scan **sequencial**.
+Então a correção principal virou **paralelizar o runner**.
 
-**Não** paralelizei o `runner` (seria o ganho real de latência) por ser arriscado num
-hotfix: os checks 41-44 compartilham um handshake TLS (dependente de ordem sequencial), há
-contenção possível no rate limiter (1 req/s por domínio) e init concorrente dos caches
-CVE/CNAE, com risco de mudar score. Fica como **otimização futura com testes**.
+1. **`scanner/runner.py` — checks em paralelo** (`asyncio.gather` + `Semaphore
+   (SCAN_MAX_CONCURRENCY=12)`). Seguro: o rate limiter de `base.fetch` é **por-domínio**
+   (`asyncio.Lock` segurado durante todo o request), então requests ao MESMO domínio
+   continuam **serializados em 1 req/s** (regra do scanner passivo preservada); só os
+   checks de **domínios distintos** (crt.sh, HIBP, DNS, TLS, CVE…) passam a se sobrepor.
+   `gather` devolve os resultados **na ordem dos checks** (relatório inalterado). Medido:
+   example.com 48 checks, score 75, ordem preservada, sem erro.
+2. **`auth_users.optional_user` captura QUALQUER exceção → `None`** (antes só
+   `HTTPException`). Auth opcional **nunca** pode derrubar o scan. Atende à diretriz do card.
+3. **`proxy_read_timeout`/`proxy_send_timeout` do `/api/`: 120s → 180s** (3 blocks) — folga
+   extra além da paralelização.
+4. **`scan.astro`**: fetch SSR de `/account/me` com timeout (`AbortSignal.timeout(4000)`) —
+   API ocupada não trava o render da `/scan`.
+5. **`ScanFlow.runScan` re-tenta 1×** após 20s em falha/timeout: o scan lento **cacheia** no
+   servidor mesmo com 504 no cliente → a re-tentativa pega o cache quente.
+
+Sobre a paralelização: os checks 41-44 compartilham um handshake TLS por host (cache ~2min);
+em paralelo podem fazer alguns handshakes a mais (mais requests, ainda passivo) — sem
+impacto no score. O rate limiter garante a política de 1 req/s por domínio.
 
 ## Testes
 
-`tests/test_accounts.py` → **25** (novo `test_optional_user_never_raises`: sem token → None;
-store que explode → None, nunca levanta). SQL/JS validados. O comportamento do scan real
-(80s < 180s) é verificado **em produção** após o deploy.
+- `tests/test_accounts.py` → **25** (`test_optional_user_never_raises`).
+- `tests/test_runner_concurrency.py` (novo): `run_scan` com checks mockados roda em
+  **paralelo** (duração < soma dos delays) e **preserva a ordem** + carimba `check_id`.
+- Scan real de example.com (48 checks, score coerente, ordem ok) rodado localmente.
 
 ## Verificação pós-deploy
 
-Anônimo (`auth_required` rápido) + logado (scan real < 180s, 200) + um scan completo fresco
-retornando 200 dentro do novo timeout. `nginx -t` no CI (job `nginx-check`) valida os
-timeouts novos.
+Anônimo (`auth_required` rápido) + o mesmo `correios.com.br` **frio** agora retornando
+**200 bem abaixo de 180s**. `nginx -t` no CI valida os timeouts.
