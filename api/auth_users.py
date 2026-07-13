@@ -93,8 +93,12 @@ async def require_user(request: Request) -> dict:
 
 
 async def optional_user(request: Request) -> Optional[dict]:
-    """Como `require_user`, mas devolve ``None`` em vez de 401 (para o Header/CTA)."""
+    """Auth **opcional**: devolve o usuário se logado, senão ``None`` — **nunca** levanta.
+
+    Usado no `scan/summary` (logado escaneia sem código) e no Header. Captura QUALQUER
+    erro (não só HTTPException: token inválido, DB fora, etc.) → ``None`` = anônimo. Um
+    erro aqui jamais pode derrubar o scan (KL-51 f3 fix UX)."""
     try:
         return await require_user(request)
-    except HTTPException:
+    except Exception:  # noqa: BLE001 - auth opcional: qualquer falha → anônimo
         return None

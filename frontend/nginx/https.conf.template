@@ -129,8 +129,8 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_connect_timeout 10s;
-        proxy_read_timeout 120s;
-        proxy_send_timeout 120s;
+        proxy_read_timeout 180s;
+        proxy_send_timeout 180s;
     }
 
     # Streamable HTTP do MCP: o endpoint é /mcp/ (com barra). O /mcp "pelado" cairia
@@ -233,8 +233,8 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
         proxy_connect_timeout 10s;
-        proxy_read_timeout 120s;
-        proxy_send_timeout 120s;
+        proxy_read_timeout 180s;
+        proxy_send_timeout 180s;
     }
 
     # Streamable HTTP do MCP: o endpoint é /mcp/ (com barra). O /mcp "pelado" cairia

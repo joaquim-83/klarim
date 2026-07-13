@@ -7,6 +7,7 @@ aceita ambos, então o Bearer exercita o mesmo caminho.
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -286,6 +287,26 @@ def test_list_and_remove_site(client, store):
 
 
 # --- fix UX (KL-51 f3): histórico no signup, mask, send-report ------------- #
+
+def test_optional_user_never_raises(store, monkeypatch):
+    # auth OPCIONAL: sem token → None; e qualquer erro do store → None (nunca levanta).
+    from starlette.requests import Request as SRequest
+
+    def _req(headers=None, cookies_hdr=""):
+        hdrs = [(k.lower().encode(), v.encode()) for k, v in (headers or {}).items()]
+        if cookies_hdr:
+            hdrs.append((b"cookie", cookies_hdr.encode()))
+        return SRequest({"type": "http", "headers": hdrs, "method": "GET", "path": "/scan/summary"})
+
+    # sem token → None
+    assert asyncio.run(auth_users.optional_user(_req())) is None
+    # token válido mas store explode → None (não levanta)
+    async def _boom(uid):
+        raise RuntimeError("db down")
+    monkeypatch.setattr(store, "get_user_by_id", _boom)
+    tok = auth_users.create_user_token({"id": 1, "email": "a@b.com.br", "plan": "free"})
+    assert asyncio.run(auth_users.optional_user(_req({"authorization": f"Bearer {tok}"}))) is None
+
 
 def test_mask_email():
     assert m._mask_email("joao@empresa.com.br") == "j***o@empresa.com.br"

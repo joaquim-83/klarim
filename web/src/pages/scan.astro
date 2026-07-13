@@ -15,9 +15,14 @@ let user = null;
 const sessionToken = Astro.cookies.get('klarim_session')?.value;
 if (sessionToken) {
   try {
-    const res = await fetch(`${API}/account/me`, { headers: { Authorization: `Bearer ${sessionToken}` } });
+    // Timeout curto: se a API estiver ocupada (scan em andamento), não travar o render
+    // da página — cai para deslogado (o fluxo com e-mail/código ainda funciona).
+    const res = await fetch(`${API}/account/me`, {
+      headers: { Authorization: `Bearer ${sessionToken}` },
+      signal: AbortSignal.timeout(4000),
+    });
     if (res.ok) user = (await res.json()).user;
-  } catch { /* deslogado */ }
+  } catch { /* deslogado ou timeout */ }
 }
 
 function safeDomain(u) {

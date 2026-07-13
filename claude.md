@@ -1737,6 +1737,23 @@ no scan (KL-25) é reaproveitado no signup (sem re-verificar). O limite de sites
   `scan@`; só o texto exibido mudou. **Nenhuma mudança de sender no Resend** — `scan@` é
   só destinatário/mailto; os envios saem sempre do `RESEND_FROM` verificado.
 
+**Hotfix do 504 no `scan/summary`.** Sintoma pós-deploy: 504 no scan + `AssertionError`
+nos logs. **Causa:** o scan roda **inline** e **sequencial** (`runner`: `for check: await`)
+— um site grande leva ~80s (gov.br medido), perto do `proxy_read_timeout` de 120s do
+`/api/`. Sites lentos (ou a janela de cache frio logo após o deploy — Redis + CVE/CNAE
+recém-limpos) passam de 120s ⇒ o Nginx **desconecta** ⇒ o handler atrás do
+`_admin_auth_mw` (BaseHTTPMiddleware) tenta responder a um cliente já desconectado ⇒
+`AssertionError` (ruído; o worker se recupera). **A auth do `scan/summary` já era
+opcional** (anônimo → `auth_required` em ~0,5s; logado → escaneia). Fixes: (1)
+`auth_users.optional_user` captura **qualquer** exceção → `None` (auth opcional nunca
+derruba o scan); (2) `proxy_read_timeout`/`send_timeout` do `/api/` **120s → 180s** (folga
+p/ scan frio); (3) o fetch SSR de `/account/me` no `scan.astro` ganhou timeout (4s,
+`AbortSignal.timeout`) p/ não travar o render; (4) `runScan` re-tenta 1× após pausa (o
+scan lento termina e **cacheia** no servidor mesmo com 504 no cliente → a re-tentativa
+pega o cache quente). **Não** paralelizei o runner (risco: handshake TLS compartilhado
+dos checks 41-44, contenção no rate limiter, init concorrente de caches, possível
+mudança de score) — fica como otimização futura com testes.
+
 ## 40. Classificação CNAE multi-setor + descrição natural + tags (KL-55)
 
 A taxonomia fixa de 48 setores (KL-54) é insuficiente: ~54% dos sites caem em `outro`

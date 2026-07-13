@@ -130,19 +130,28 @@ export default function ScanFlow({ url: initialUrl = '', user = null }) {
     await apiPost('/scan/request-code', { email, url });
   }
 
-  async function runScan(token) {
+  async function runScan(token, attempt = 0) {
     try {
       const data = await fetchSummary(url, token);
       if (data && data.status === 'auth_required') {
+        // Logado (cookie) ou anônimo com token válido não deveria cair aqui; se cair,
+        // uma re-tentativa costuma resolver (o scan pode ter cacheado no servidor).
+        if (attempt < 2) return runScan(token, attempt + 1);
         setError('Sessão expirada. Verifique o e-mail novamente.');
-        setStep('email');
+        setStep(user ? 'progress' : 'email');
         return;
       }
       setResult(data);
       setStep('result');
     } catch {
-      setError('Não foi possível concluir o scan. Tente novamente.');
-      setStep('email');
+      // Scan lento pode estourar o timeout do proxy (504) — mas o servidor termina e
+      // CACHEIA o resultado. Uma re-tentativa após uma pausa pega o cache quente.
+      if (attempt < 2) {
+        await new Promise((r) => setTimeout(r, 20000));
+        return runScan(token, attempt + 1);
+      }
+      setError('A análise está demorando mais que o esperado. Tente novamente em instantes.');
+      setStep(user ? 'progress' : 'email');
     }
   }
 
