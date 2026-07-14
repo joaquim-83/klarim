@@ -17,6 +17,7 @@ import mcp_server.tools.targets as targets_tools
 import mcp_server.tools.system as system_tools
 import mcp_server.tools.scans as scans_tools
 import mcp_server.tools.inbox as inbox_tools
+import mcp_server.tools.leads as leads_tools
 
 
 # --- registro das 25 tools ------------------------------------------------- #
@@ -28,6 +29,8 @@ READ_TOOLS = [
     "list_payments", "get_payment_stats", "get_funnel", "get_rescan_stats",
     # fix MCP: novas tools de dados
     "get_dashboard_stats", "get_enrichment_status", "get_user_accounts", "search_inbox",
+    # KL-61: leads
+    "list_leads", "get_lead_stats", "get_lead_funnel",
 ]
 WRITE_TOOLS = [
     "scan_url", "add_target", "update_target_email", "update_target_status",
@@ -209,6 +212,25 @@ class FakeStore:
         self.kw = {"box": box, "source": source, "search": search}
         return [{"id": 1, "subject": "oi", "source": source or "webhook"}]
 
+    # --- KL-61: leads ---
+    async def list_leads(self, **kw):
+        self.kw = kw
+        return {"leads": [{"id": 1, "email": "dono@empresa.com.br", "classification": "hot",
+                           "lead_score": 45}],
+                "total": 1, "by_classification": {"cold": 3, "warm": 2, "hot": 1, "pql": 0}}
+
+    async def lead_stats(self):
+        return {"total": 6, "by_classification": {"cold": 3, "warm": 2, "hot": 1, "pql": 0},
+                "with_account": 2, "with_monitoring": 1, "avg_lead_score": 30,
+                "corporate_emails": 4, "multi_scan": 1, "top_sectors": [],
+                "today": 1, "last_7_days": 4, "conversion_by_sector": [],
+                "pain_sectors": [{"sector": "hotel", "avg_worst_score": 42}], "pql_rate": 0.0}
+
+    async def lead_funnel(self):
+        return {"email_verified": 6, "scan_completed": 6, "account_created": 2,
+                "monitoring_added": 1, "conversion_rate_scan_to_account": 33.3,
+                "conversion_rate_account_to_monitoring": 50.0}
+
 
 @pytest.fixture
 def fake_store(monkeypatch):
@@ -277,6 +299,28 @@ def test_search_inbox_tool(fake_store):
     assert res["count"] == 1 and res["unread_total"] == 2
     assert fake_store.kw["search"] == "oi" and fake_store.kw["source"] == "contact_form"
     assert fake_store.kw["box"] == "unread"
+
+
+def test_list_leads_tool(fake_store):
+    res = asyncio.run(leads_tools.list_leads(classification="hot", search="empresa"))
+    assert res["total"] == 1 and len(res["leads"]) == 1
+    assert fake_store.kw["classification"] == "hot" and fake_store.kw["search"] == "empresa"
+
+
+def test_list_leads_tool_bad_classification_ignored(fake_store):
+    asyncio.run(leads_tools.list_leads(classification="banana"))
+    assert fake_store.kw["classification"] is None
+
+
+def test_get_lead_stats_tool(fake_store):
+    res = asyncio.run(leads_tools.get_lead_stats())
+    assert res["total"] == 6 and res["with_account"] == 2
+    assert res["pain_sectors"][0]["sector"] == "hotel"
+
+
+def test_get_lead_funnel_tool(fake_store):
+    res = asyncio.run(leads_tools.get_lead_funnel())
+    assert res["email_verified"] == 6 and res["account_created"] == 2
 
 
 def test_update_target_status_tool_invalid(fake_store, monkeypatch):

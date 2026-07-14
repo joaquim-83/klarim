@@ -172,6 +172,14 @@ export const admin = {
   classifyBatch: (ids, sector, priceTier) =>
     post('/admin/classify-batch', { target_ids: ids, sector, price_tier: priceTier }),
 
+  // leads — KL-61
+  leads: (params) => get(`/leads${qs(params)}`),
+  lead: (id) => get(`/leads/${id}`),
+  leadStats: () => get('/leads/stats'),
+  leadFunnel: () => get('/leads/funnel'),
+  updateLead: (id, fields) => patch(`/leads/${id}`, fields),
+  recalcLeads: () => post('/leads/recalculate'),
+
   // fluxo integrado (KL-17)
   scanAndReport: (body) => post('/admin/scan-and-report', body),
   resendAlert: (targetId) => post('/admin/resend-alert', { target_id: targetId }),

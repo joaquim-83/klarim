@@ -25,6 +25,7 @@ const ICONS = {
   analytics: I(<><line x1="18" y1="20" x2="18" y2="10" /><line x1="12" y1="20" x2="12" y2="4" /><line x1="6" y1="20" x2="6" y2="14" /></>),
   monitored: I(<><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="M9 12l2 2 4-4" /></>),
   inbox: I(<><path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z" /><polyline points="22,6 12,13 2,6" /></>),
+  leads: I(<><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></>),
   logout: I(<><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></>),
 }
 
@@ -33,6 +34,7 @@ const NAV = [
   { to: '/painel/alvos', label: 'Alvos', icon: 'targets' },
   { to: '/painel/scans', label: 'Scans', icon: 'scans' },
   { to: '/painel/alertas', label: 'Alertas', icon: 'alerts' },
+  { to: '/painel/leads', label: 'Leads', icon: 'leads' },
   { to: '/painel/pagamentos', label: 'Pagamentos', icon: 'payments' },
   { to: '/painel/inbox', label: 'Inbox', icon: 'inbox' },
   { to: '/painel/rescans', label: 'Re-scans', icon: 'rescans' },

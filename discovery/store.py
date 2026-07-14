@@ -282,6 +282,45 @@ CREATE INDEX IF NOT EXISTS idx_inbox_read ON inbox_messages(is_read);
 -- KL-60: origem da mensagem — 'webhook' (e-mails da Hostinger) | 'contact_form'
 -- (formulário do site, gravado direto no inbox mesmo se o e-mail via Resend falhar).
 ALTER TABLE inbox_messages ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'webhook';
+
+-- Leads (KL-61): 1 registro por e-mail verificado (`scans.scanned_by_email`). Camada
+-- de agregação sobre scans/contas — PQL scoring. `classification` é SEMPRE derivada do
+-- `lead_score` (nunca setada à mão). E-mail normalizado em lowercase (UNIQUE).
+CREATE TABLE IF NOT EXISTS scan_leads (
+    id SERIAL PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE,
+    first_scan_at TIMESTAMPTZ,
+    last_activity_at TIMESTAMPTZ,
+    total_scans INTEGER DEFAULT 0,
+    urls_scanned TEXT[] DEFAULT '{}',
+    domains_scanned TEXT[] DEFAULT '{}',
+    best_score INTEGER,
+    worst_score INTEGER,
+    last_score INTEGER,
+    last_domain TEXT,
+    has_account BOOLEAN DEFAULT FALSE,
+    account_id INTEGER,
+    has_monitoring BOOLEAN DEFAULT FALSE,
+    lead_score INTEGER DEFAULT 0,
+    classification TEXT DEFAULT 'cold'
+        CHECK (classification IN ('cold', 'warm', 'hot', 'pql')),
+    sector TEXT,
+    platform TEXT,
+    is_corporate_email BOOLEAN DEFAULT FALSE,
+    source TEXT DEFAULT 'scan',
+    tags TEXT[] DEFAULT '{}',
+    notes TEXT,
+    last_email_sent_at TIMESTAMPTZ,
+    emails_sent INTEGER DEFAULT 0,
+    opted_out BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_scan_leads_classification ON scan_leads(classification);
+CREATE INDEX IF NOT EXISTS idx_scan_leads_lead_score ON scan_leads(lead_score DESC);
+CREATE INDEX IF NOT EXISTS idx_scan_leads_last_activity ON scan_leads(last_activity_at DESC);
+CREATE INDEX IF NOT EXISTS idx_scan_leads_sector ON scan_leads(sector);
+CREATE INDEX IF NOT EXISTS idx_scan_leads_has_account ON scan_leads(has_account);
 """
 
 # --------------------------------------------------------------------------- #
@@ -1762,6 +1801,363 @@ class TargetStore:
             with_cnae = int(cur.fetchone()[0])
             return {"total": int(total), "with_description": int(with_desc),
                     "with_cnae": with_cnae, "public_visible": int(public)}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- leads (KL-61) — PQL scoring ----------------------------------------- #
+
+    @staticmethod
+    def _lead_domain(url: Optional[str]) -> Optional[str]:
+        if not url:
+            return None
+        try:
+            from urllib.parse import urlparse
+            d = (urlparse(url if "://" in url else "https://" + url).hostname or url).lower()
+            return d[4:] if d.startswith("www.") else d
+        except Exception:  # noqa: BLE001
+            return url
+
+    @staticmethod
+    def _recalc_lead_row(cur, lead_id: int) -> None:
+        """Recalcula lead_score + classification (SEMPRE derivada) na mesma transação."""
+        from api.lead_scoring import calculate_lead_score
+        cur.execute(
+            "SELECT total_scans, urls_scanned, worst_score, has_account, has_monitoring, "
+            "is_corporate_email, last_activity_at FROM scan_leads WHERE id = %s", (lead_id,))
+        row = cur.fetchone()
+        if not row:
+            return
+        total_scans, urls, worst, has_acc, has_mon, is_corp, last_act = row
+        score, classification = calculate_lead_score({
+            "total_scans": total_scans, "distinct_urls": len(urls or []),
+            "worst_score": worst, "has_account": has_acc, "has_monitoring": has_mon,
+            "is_corporate_email": is_corp, "last_activity_at": last_act})
+        cur.execute("UPDATE scan_leads SET lead_score = %s, classification = %s, "
+                    "updated_at = NOW() WHERE id = %s", (score, classification, lead_id))
+
+    async def upsert_scan_lead(self, email: str, url: str, score: Optional[int],
+                               sector: Optional[str] = None,
+                               platform: Optional[str] = None) -> None:
+        """Cria/atualiza o lead após um scan verificado (KL-61). Idempotente por e-mail
+        (lowercase). Agrega e recalcula o score. Best-effort (o chamador é fire-and-forget)."""
+        from api.lead_scoring import is_corporate_email
+        email = (email or "").lower().strip()
+        if not email or "@" not in email:
+            return
+        domain = self._lead_domain(url)
+        is_corp = is_corporate_email(email)
+
+        def _fn(cur):
+            cur.execute(
+                """
+                INSERT INTO scan_leads (email, first_scan_at, last_activity_at, total_scans,
+                    urls_scanned, domains_scanned, best_score, worst_score, last_score,
+                    last_domain, sector, platform, is_corporate_email, source, updated_at)
+                VALUES (%(email)s, NOW(), NOW(), 1,
+                    CASE WHEN %(url)s IS NULL THEN '{}'::text[] ELSE ARRAY[%(url)s] END,
+                    CASE WHEN %(domain)s IS NULL THEN '{}'::text[] ELSE ARRAY[%(domain)s] END,
+                    %(score)s, %(score)s, %(score)s, %(domain)s, %(sector)s, %(platform)s,
+                    %(is_corp)s, 'scan', NOW())
+                ON CONFLICT (email) DO UPDATE SET
+                    total_scans = scan_leads.total_scans + 1,
+                    urls_scanned = CASE WHEN %(url)s IS NULL THEN scan_leads.urls_scanned
+                        ELSE ARRAY(SELECT DISTINCT unnest(scan_leads.urls_scanned || ARRAY[%(url)s])) END,
+                    domains_scanned = CASE WHEN %(domain)s IS NULL THEN scan_leads.domains_scanned
+                        ELSE ARRAY(SELECT DISTINCT unnest(scan_leads.domains_scanned || ARRAY[%(domain)s])) END,
+                    best_score = CASE WHEN %(score)s IS NULL THEN scan_leads.best_score
+                        ELSE GREATEST(COALESCE(scan_leads.best_score, %(score)s), %(score)s) END,
+                    worst_score = CASE WHEN %(score)s IS NULL THEN scan_leads.worst_score
+                        ELSE LEAST(COALESCE(scan_leads.worst_score, %(score)s), %(score)s) END,
+                    last_score = COALESCE(%(score)s, scan_leads.last_score),
+                    last_domain = COALESCE(%(domain)s, scan_leads.last_domain),
+                    last_activity_at = NOW(),
+                    sector = COALESCE(scan_leads.sector, %(sector)s),
+                    platform = COALESCE(scan_leads.platform, %(platform)s),
+                    is_corporate_email = %(is_corp)s,
+                    updated_at = NOW()
+                RETURNING id
+                """,
+                {"email": email, "url": url, "domain": domain, "score": score,
+                 "sector": sector, "platform": platform, "is_corp": is_corp})
+            self._recalc_lead_row(cur, cur.fetchone()[0])
+
+        await asyncio.to_thread(self._run, _fn)
+
+    async def set_lead_account(self, email: str, account_id: int) -> None:
+        """Marca o lead como tendo conta (KL-61 3b). Cria um lead mínimo se ainda não
+        existe (signup sem lead prévio). Recalcula o score (+conta)."""
+        from api.lead_scoring import is_corporate_email
+        email = (email or "").lower().strip()
+        if not email:
+            return
+        is_corp = is_corporate_email(email)
+
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO scan_leads (email, has_account, account_id, source, "
+                "  first_scan_at, last_activity_at, is_corporate_email, updated_at) "
+                "VALUES (%s, TRUE, %s, 'account', NOW(), NOW(), %s, NOW()) "
+                "ON CONFLICT (email) DO UPDATE SET has_account = TRUE, "
+                "  account_id = EXCLUDED.account_id, last_activity_at = NOW(), updated_at = NOW() "
+                "RETURNING id",
+                (email, account_id, is_corp))
+            self._recalc_lead_row(cur, cur.fetchone()[0])
+
+        await asyncio.to_thread(self._run, _fn)
+
+    async def set_lead_monitoring(self, email: str) -> None:
+        """Marca o lead como tendo monitoramento (KL-61 3c). Só se o lead existe."""
+        email = (email or "").lower().strip()
+        if not email:
+            return
+
+        def _fn(cur):
+            cur.execute("UPDATE scan_leads SET has_monitoring = TRUE, last_activity_at = NOW(), "
+                        "updated_at = NOW() WHERE email = %s RETURNING id", (email,))
+            row = cur.fetchone()
+            if row:
+                self._recalc_lead_row(cur, row[0])
+
+        await asyncio.to_thread(self._run, _fn)
+
+    _LEAD_SORTS = {
+        "lead_score": "lead_score DESC, last_activity_at DESC NULLS LAST",
+        "last_activity_at": "last_activity_at DESC NULLS LAST",
+        "total_scans": "total_scans DESC",
+        "worst_score": "worst_score ASC NULLS LAST",
+    }
+
+    async def list_leads(self, classification: Optional[str] = None,
+                         sector: Optional[str] = None, has_account: Optional[bool] = None,
+                         search: Optional[str] = None, sort: str = "lead_score",
+                         limit: int = 20, offset: int = 0) -> Dict[str, Any]:
+        """Lista paginada de leads + total + contagem por classificação (KL-61)."""
+        order = self._LEAD_SORTS.get(sort, self._LEAD_SORTS["lead_score"])
+
+        def _fn(cur):
+            base, params = [], []
+            if sector:
+                base.append("sector = %s")
+                params.append(sector)
+            if has_account is not None:
+                base.append("has_account = %s")
+                params.append(bool(has_account))
+            if search:
+                like = f"%{search.lower().strip()}%"
+                base.append("(LOWER(email) LIKE %s OR LOWER(COALESCE(last_domain, '')) LIKE %s "
+                            "OR EXISTS (SELECT 1 FROM unnest(domains_scanned) d WHERE LOWER(d) LIKE %s))")
+                params.extend([like, like, like])
+            base_clause = ("WHERE " + " AND ".join(base)) if base else ""
+            cur.execute(f"SELECT classification, COUNT(*) FROM scan_leads {base_clause} "
+                        f"GROUP BY classification", params)
+            by_class = {r[0]: int(r[1]) for r in cur.fetchall()}
+            for c in ("cold", "warm", "hot", "pql"):
+                by_class.setdefault(c, 0)
+            where, wparams = list(base), list(params)
+            if classification in ("cold", "warm", "hot", "pql"):
+                where.append("classification = %s")
+                wparams.append(classification)
+            clause = ("WHERE " + " AND ".join(where)) if where else ""
+            cur.execute(f"SELECT COUNT(*) FROM scan_leads {clause}", wparams)
+            total = int(cur.fetchone()[0])
+            cur.execute(f"SELECT * FROM scan_leads {clause} ORDER BY {order} "
+                        f"LIMIT %s OFFSET %s", wparams + [limit, offset])
+            return {"leads": self._rows_to_dicts(cur), "total": total,
+                    "by_classification": by_class}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_lead(self, lead_id: int) -> Optional[Dict[str, Any]]:
+        """Detalhe do lead + os scans desse e-mail (JOIN por `scanned_by_email`)."""
+        def _fn(cur):
+            cur.execute("SELECT * FROM scan_leads WHERE id = %s", (lead_id,))
+            rows = self._rows_to_dicts(cur)
+            if not rows:
+                return None
+            lead = rows[0]
+            cur.execute(
+                "SELECT s.id, s.url, t.domain, s.score, s.semaphore, s.source, s.scanned_at "
+                "FROM scans s LEFT JOIN targets t ON t.id = s.target_id "
+                "WHERE LOWER(s.scanned_by_email) = %s ORDER BY s.scanned_at DESC LIMIT 50",
+                ((lead.get("email") or "").lower(),))
+            lead["scans"] = self._rows_to_dicts(cur)
+            return lead
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def lead_stats(self) -> Dict[str, Any]:
+        """Totalizadores de leads + dados de analytics (KL-57): conversão por setor,
+        setores com maior dor (menor avg worst_score), taxa PQL."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT COUNT(*), COUNT(*) FILTER (WHERE has_account), "
+                "  COUNT(*) FILTER (WHERE has_monitoring), COALESCE(ROUND(AVG(lead_score)), 0), "
+                "  COUNT(*) FILTER (WHERE is_corporate_email), "
+                "  COUNT(*) FILTER (WHERE total_scans >= 2), "
+                "  COUNT(*) FILTER (WHERE created_at >= date_trunc('day', NOW())), "
+                "  COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '7 days') "
+                "FROM scan_leads")
+            total, w_acc, w_mon, avg, corp, multi, today, d7 = cur.fetchone()
+            cur.execute("SELECT classification, COUNT(*) FROM scan_leads GROUP BY classification")
+            by_class = {r[0]: int(r[1]) for r in cur.fetchall()}
+            for c in ("cold", "warm", "hot", "pql"):
+                by_class.setdefault(c, 0)
+            cur.execute("SELECT sector, COUNT(*) FROM scan_leads "
+                        "WHERE sector IS NOT NULL AND sector <> '' GROUP BY sector "
+                        "ORDER BY COUNT(*) DESC LIMIT 5")
+            top_sectors = [{"sector": r[0], "count": int(r[1])} for r in cur.fetchall()]
+            cur.execute("SELECT sector, COUNT(*) FILTER (WHERE has_account) FROM scan_leads "
+                        "WHERE sector IS NOT NULL AND sector <> '' GROUP BY sector "
+                        "HAVING COUNT(*) FILTER (WHERE has_account) > 0 ORDER BY 2 DESC LIMIT 5")
+            conv_by_sector = [{"sector": r[0], "accounts": int(r[1])} for r in cur.fetchall()]
+            cur.execute("SELECT sector, COALESCE(ROUND(AVG(worst_score)), 0) FROM scan_leads "
+                        "WHERE worst_score IS NOT NULL AND sector IS NOT NULL AND sector <> '' "
+                        "GROUP BY sector HAVING COUNT(*) >= 2 ORDER BY 2 ASC LIMIT 5")
+            pain_sectors = [{"sector": r[0], "avg_worst_score": int(r[1])} for r in cur.fetchall()]
+            total = int(total)
+            return {
+                "total": total, "by_classification": by_class, "with_account": int(w_acc),
+                "with_monitoring": int(w_mon), "avg_lead_score": int(avg),
+                "corporate_emails": int(corp), "multi_scan": int(multi),
+                "top_sectors": top_sectors, "today": int(today), "last_7_days": int(d7),
+                "conversion_by_sector": conv_by_sector, "pain_sectors": pain_sectors,
+                "pql_rate": round(100.0 * by_class.get("pql", 0) / total, 1) if total else 0.0,
+            }
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def lead_funnel(self) -> Dict[str, Any]:
+        """Funil de conversão dos leads (KL-61): verificado → scan → conta → monitoramento."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT COUNT(*), COUNT(*) FILTER (WHERE total_scans >= 1), "
+                "  COUNT(*) FILTER (WHERE has_account), COUNT(*) FILTER (WHERE has_monitoring) "
+                "FROM scan_leads")
+            return cur.fetchone()
+
+        total, scanned, acc, mon = await asyncio.to_thread(self._run, _fn)
+        total, scanned, acc, mon = int(total), int(scanned), int(acc), int(mon)
+        return {
+            "email_verified": total, "scan_completed": scanned,
+            "account_created": acc, "monitoring_added": mon,
+            "conversion_rate_scan_to_account": round(100.0 * acc / total, 1) if total else 0.0,
+            "conversion_rate_account_to_monitoring": round(100.0 * mon / acc, 1) if acc else 0.0,
+        }
+
+    async def update_lead(self, lead_id: int, tags=None, notes=None,
+                          opted_out=None) -> bool:
+        """Atualiza campos MANUAIS (tags/notes/opted_out) — nunca lead_score/classification
+        (sempre calculados). Recalcula o score depois. Retorna True se afetou."""
+        def _fn(cur):
+            sets, params = [], []
+            if tags is not None:
+                sets.append("tags = %s")
+                params.append(list(tags))
+            if notes is not None:
+                sets.append("notes = %s")
+                params.append(notes)
+            if opted_out is not None:
+                sets.append("opted_out = %s")
+                params.append(bool(opted_out))
+            if not sets:
+                cur.execute("SELECT id FROM scan_leads WHERE id = %s", (lead_id,))
+                return cur.fetchone() is not None
+            sets.append("updated_at = NOW()")
+            cur.execute(f"UPDATE scan_leads SET {', '.join(sets)} WHERE id = %s RETURNING id",
+                        params + [lead_id])
+            row = cur.fetchone()
+            if row:
+                self._recalc_lead_row(cur, row[0])
+            return row is not None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def recalculate_all_leads(self) -> int:
+        """Recalcula o score+classificação de TODOS os leads (KL-61). Retorna a contagem."""
+        def _fn(cur):
+            cur.execute("SELECT id FROM scan_leads")
+            ids = [r[0] for r in cur.fetchall()]
+            for lid in ids:
+                self._recalc_lead_row(cur, lid)
+            return len(ids)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def backfill_leads(self) -> int:
+        """Popula `scan_leads` a partir dos scans existentes (KL-61). Idempotente
+        (ON CONFLICT DO UPDATE recomputa dos scans — a fonte da verdade); preserva os
+        campos manuais (tags/notes/opted_out). Retorna a contagem de leads processados."""
+        from api.lead_scoring import is_corporate_email, calculate_lead_score
+        _AGG = """
+            WITH scan_data AS (
+                SELECT LOWER(s.scanned_by_email) AS email,
+                    COUNT(*) AS total_scans,
+                    array_agg(DISTINCT s.url) AS urls_scanned,
+                    array_remove(array_agg(DISTINCT t.domain), NULL) AS domains_scanned,
+                    MAX(s.score) AS best_score, MIN(s.score) AS worst_score,
+                    (array_agg(s.score ORDER BY s.scanned_at DESC))[1] AS last_score,
+                    (array_agg(t.domain ORDER BY s.scanned_at DESC))[1] AS last_domain,
+                    (array_agg(t.sector ORDER BY s.scanned_at DESC))[1] AS sector,
+                    (array_agg(t.platform ORDER BY s.scanned_at DESC))[1] AS platform,
+                    MIN(s.scanned_at) AS first_scan_at, MAX(s.scanned_at) AS last_activity_at
+                FROM scans s LEFT JOIN targets t ON s.target_id = t.id
+                WHERE s.scanned_by_email IS NOT NULL AND s.scanned_by_email <> ''
+                GROUP BY LOWER(s.scanned_by_email)
+            )
+            SELECT sd.*, u.id AS account_id, (u.id IS NOT NULL) AS has_account,
+                COALESCE(EXISTS (SELECT 1 FROM user_sites us WHERE us.user_id = u.id), FALSE)
+                    AS has_monitoring
+            FROM scan_data sd LEFT JOIN users u ON LOWER(u.email) = sd.email
+        """
+        _UPSERT = """
+            INSERT INTO scan_leads (email, first_scan_at, last_activity_at, total_scans,
+                urls_scanned, domains_scanned, best_score, worst_score, last_score,
+                last_domain, has_account, account_id, has_monitoring, lead_score,
+                classification, sector, platform, is_corporate_email, source, updated_at)
+            VALUES (%(email)s, %(first)s, %(last)s, %(total)s, %(urls)s, %(domains)s,
+                %(best)s, %(worst)s, %(last_score)s, %(last_domain)s, %(has_account)s,
+                %(account_id)s, %(has_monitoring)s, %(score)s, %(classification)s,
+                %(sector)s, %(platform)s, %(is_corp)s, 'scan', NOW())
+            ON CONFLICT (email) DO UPDATE SET
+                first_scan_at = LEAST(scan_leads.first_scan_at, EXCLUDED.first_scan_at),
+                last_activity_at = GREATEST(scan_leads.last_activity_at, EXCLUDED.last_activity_at),
+                total_scans = EXCLUDED.total_scans, urls_scanned = EXCLUDED.urls_scanned,
+                domains_scanned = EXCLUDED.domains_scanned, best_score = EXCLUDED.best_score,
+                worst_score = EXCLUDED.worst_score, last_score = EXCLUDED.last_score,
+                last_domain = EXCLUDED.last_domain, has_account = EXCLUDED.has_account,
+                account_id = EXCLUDED.account_id, has_monitoring = EXCLUDED.has_monitoring,
+                lead_score = EXCLUDED.lead_score, classification = EXCLUDED.classification,
+                sector = COALESCE(EXCLUDED.sector, scan_leads.sector),
+                platform = COALESCE(EXCLUDED.platform, scan_leads.platform),
+                is_corporate_email = EXCLUDED.is_corporate_email, updated_at = NOW()
+        """
+
+        def _fn(cur):
+            cur.execute(_AGG)
+            rows = self._rows_to_dicts(cur)
+            n = 0
+            for r in rows:
+                email = (r["email"] or "").lower().strip()
+                if not email or "@" not in email:
+                    continue
+                is_corp = is_corporate_email(email)
+                score, classification = calculate_lead_score({
+                    "total_scans": r["total_scans"],
+                    "distinct_urls": len(r["urls_scanned"] or []),
+                    "worst_score": r["worst_score"], "has_account": r["has_account"],
+                    "has_monitoring": r["has_monitoring"], "is_corporate_email": is_corp,
+                    "last_activity_at": r["last_activity_at"]})
+                cur.execute(_UPSERT, {
+                    "email": email, "first": r["first_scan_at"], "last": r["last_activity_at"],
+                    "total": r["total_scans"], "urls": list(r["urls_scanned"] or []),
+                    "domains": list(r["domains_scanned"] or []), "best": r["best_score"],
+                    "worst": r["worst_score"], "last_score": r["last_score"],
+                    "last_domain": r["last_domain"], "has_account": r["has_account"],
+                    "account_id": r["account_id"], "has_monitoring": r["has_monitoring"],
+                    "score": score, "classification": classification, "sector": r["sector"],
+                    "platform": r["platform"], "is_corp": is_corp})
+                n += 1
+            return n
 
         return await asyncio.to_thread(self._run, _fn)
 

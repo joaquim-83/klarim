@@ -24,6 +24,8 @@ const AlvoDetalhe = lazy(() => import('./pages/admin/AlvoDetalhe'))
 const Scans = lazy(() => import('./pages/admin/Scans'))
 const ScanDetalhe = lazy(() => import('./pages/admin/ScanDetalhe'))
 const Alertas = lazy(() => import('./pages/admin/Alertas'))
+const Leads = lazy(() => import('./pages/admin/Leads'))
+const LeadDetalhe = lazy(() => import('./pages/admin/LeadDetalhe'))
 const Pagamentos = lazy(() => import('./pages/admin/Pagamentos'))
 const Inbox = lazy(() => import('./pages/admin/Inbox'))
 const Rescans = lazy(() => import('./pages/admin/Rescans'))
@@ -92,6 +94,8 @@ export default function App() {
         <Route path="scans" element={<Scans />} />
         <Route path="scans/:id" element={<ScanDetalhe />} />
         <Route path="alertas" element={<Alertas />} />
+        <Route path="leads" element={<Leads />} />
+        <Route path="leads/:id" element={<LeadDetalhe />} />
         <Route path="pagamentos" element={<Pagamentos />} />
         <Route path="inbox" element={<Inbox />} />
         <Route path="rescans" element={<Rescans />} />

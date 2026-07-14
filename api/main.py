@@ -122,6 +122,7 @@ JWT_TTL_SECONDS = 86400  # 24h
 # payment, report, webhooks, recovery, unsubscribe, health, auth/login).
 _PROTECTED_PREFIXES = ("/targets", "/scans", "/alerts", "/rescans", "/email", "/payments",
                        "/config", "/discovery", "/admin", "/system", "/analytics",
+                       "/leads",  # KL-61: gestão de leads (admin JWT)
                        "/monitoring/admin")  # KL-29: só o /monitoring/admin/* é protegido
 
 
@@ -437,6 +438,8 @@ async def account_signup(body: SignupBody, request: Request) -> JSONResponse:
     except Exception as exc:  # noqa: BLE001 - histórico é best-effort
         print(f"[account] vínculo de histórico falhou {email}: {exc!r}", flush=True)
     await store.touch_user_login(user["id"])
+    # KL-61: liga o lead à conta (fire-and-forget; nunca bloqueia o signup).
+    _spawn(_safe_lead(store.set_lead_account(email, user["id"])))
     token = auth_users.create_user_token(user)
     resp = JSONResponse({"user": _user_public(user)})
     _set_session_cookie(resp, token)
@@ -698,6 +701,8 @@ async def account_add_site(body: SiteBody, request: Request) -> dict:
         raise HTTPException(status_code=400, detail="Não foi possível analisar esta URL.")
     owner = await _email_owns_target(user["email"], tid)
     await store.link_user_site(user["id"], tid, is_owner=owner)
+    # KL-61: marca o lead como tendo monitoramento (fire-and-forget).
+    _spawn(_safe_lead(store.set_lead_monitoring(user["email"])))
     return {"ok": True, "target_id": tid, "is_owner": owner}
 
 
@@ -2097,6 +2102,14 @@ def _spawn(coro) -> None:
     task.add_done_callback(_background_tasks.discard)
 
 
+async def _safe_lead(coro) -> None:
+    """Envolve uma coroutine de lead (KL-61) — nunca derruba o fluxo do chamador."""
+    try:
+        await coro
+    except Exception as exc:  # noqa: BLE001
+        print(f"[lead] {exc!r}", flush=True)
+
+
 async def _send_report_email_task(charge_id: str, target_url: str, to_email: str) -> None:
     try:
         # Relatório PAGO → scan COMPLETO (29 checks, KL-27); ingere como 'paid'.
@@ -2693,6 +2706,92 @@ async def api_dashboard_stats() -> dict:
     except Exception:  # noqa: BLE001 - inbox é best-effort (tabela pode faltar)
         summary["inbox"] = {"unread": 0}
     return summary
+
+
+# --------------------------------------------------------------------------- #
+# Leads (KL-61) — gestão de leads PQL. Prefixo /leads (admin JWT). classification e
+# lead_score são SEMPRE calculados (nunca editados à mão).
+# --------------------------------------------------------------------------- #
+
+_LEAD_SORTS = ("lead_score", "last_activity_at", "total_scans", "worst_score")
+
+
+class LeadUpdateBody(BaseModel):
+    tags: Optional[list] = None
+    notes: Optional[str] = None
+    opted_out: Optional[bool] = None
+
+
+@app.get("/leads/stats")
+async def api_leads_stats() -> dict:
+    """Totalizadores de leads: por classificação, com conta/monitoramento, score médio,
+    corporativos, multi-scan, top setores, conversão por setor, setores com maior dor,
+    taxa PQL, hoje/7 dias (KL-61 + analytics KL-57)."""
+    return await get_target_store().lead_stats()
+
+
+@app.get("/leads/funnel")
+async def api_leads_funnel() -> dict:
+    """Funil de conversão: e-mail verificado → scan → conta → monitoramento + taxas."""
+    return await get_target_store().lead_funnel()
+
+
+@app.post("/leads/recalculate")
+async def api_leads_recalculate() -> dict:
+    """Recalcula o score+classificação de TODOS os leads (KL-61). Útil se as regras mudam."""
+    n = await get_target_store().recalculate_all_leads()
+    return {"ok": True, "recalculated": n}
+
+
+@app.get("/leads")
+async def api_leads_list(
+    classification: Optional[str] = Query(default=None),
+    sector: Optional[str] = Query(default=None),
+    has_account: Optional[bool] = Query(default=None),
+    search: Optional[str] = Query(default=None),
+    sort: str = Query(default="lead_score"),
+    limit: int = Query(default=20, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> dict:
+    """Lista paginada de leads + total + contagem por classificação (KL-61)."""
+    cls = classification if classification in ("cold", "warm", "hot", "pql") else None
+    srt = sort if sort in _LEAD_SORTS else "lead_score"
+    q = (search or "").strip() or None
+    return await get_target_store().list_leads(
+        classification=cls, sector=(sector or None), has_account=has_account,
+        search=q, sort=srt, limit=limit, offset=offset)
+
+
+@app.get("/leads/{lead_id}")
+async def api_lead_get(lead_id: int) -> dict:
+    """Detalhe do lead + scans do e-mail + composição do score (KL-61)."""
+    lead = await get_target_store().get_lead(lead_id)
+    if lead is None:
+        raise HTTPException(status_code=404, detail="Lead não encontrado.")
+    from api.lead_scoring import score_breakdown
+    lead["score_breakdown"] = score_breakdown({
+        "total_scans": lead.get("total_scans"),
+        "distinct_urls": len(lead.get("urls_scanned") or []),
+        "worst_score": lead.get("worst_score"), "has_account": lead.get("has_account"),
+        "has_monitoring": lead.get("has_monitoring"),
+        "is_corporate_email": lead.get("is_corporate_email"),
+        "last_activity_at": lead.get("last_activity_at")})
+    return lead
+
+
+@app.patch("/leads/{lead_id}")
+async def api_lead_update(lead_id: int, body: LeadUpdateBody) -> dict:
+    """Atualiza campos MANUAIS (tags/notes/opted_out). NÃO permite alterar lead_score
+    nem classification (são sempre calculados). Recalcula o score depois."""
+    tags = None
+    if body.tags is not None:
+        tags = [_sanitize_str(str(t), 60) for t in body.tags][:20]
+    notes = _sanitize_str(body.notes, 5000) if body.notes is not None else None
+    ok = await get_target_store().update_lead(lead_id, tags=tags, notes=notes,
+                                              opted_out=body.opted_out)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Lead não encontrado.")
+    return {"ok": True}
 
 
 @app.get("/targets/{target_id}")
@@ -4143,10 +4242,20 @@ async def _ingest_scan_bg(url: str, report: ScanReport, source: str,
         # Já estamos em background (este bg roda depois da resposta do scan) — enriquece
         # inline aqui, mesmo módulo que o scan worker usa.
         tid = (meta or {}).get("target_id")
+        score = report.score.score if report.score else None
         if tid:
             from scanner.enrichment import enrich_profile
-            score = report.score.score if report.score else None
             await enrich_profile(get_target_store(), tid, url, score)
+        # KL-61: captura o lead (e-mail verificado). Já em background — best-effort.
+        if scanned_by_email:
+            try:
+                store = get_target_store()
+                t = await store.get_target(tid) if tid else None
+                await store.upsert_scan_lead(
+                    scanned_by_email, url, score,
+                    sector=(t or {}).get("sector"), platform=(t or {}).get("platform"))
+            except Exception as exc:  # noqa: BLE001 - lead nunca derruba o ingest
+                print(f"[lead] upsert falhou {scanned_by_email} ({exc!r})", flush=True)
     except Exception as exc:  # noqa: BLE001 - ingestão é best-effort, não quebra o scan
         print(f"[ingest] falha ao registrar {url} ({exc!r})", flush=True)
 

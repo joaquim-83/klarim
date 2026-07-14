@@ -58,6 +58,13 @@ class FakeStore:
     async def touch_user_login(self, uid):
         pass
 
+    # KL-61: hooks de lead (fire-and-forget no signup/add_site)
+    async def set_lead_account(self, email, account_id):
+        pass
+
+    async def set_lead_monitoring(self, email):
+        pass
+
     async def set_user_password(self, email, ph):
         u = self.users.get(email.lower().strip())
         if not u:

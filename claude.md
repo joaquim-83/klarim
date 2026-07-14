@@ -2181,3 +2181,59 @@ foram **pulados** de propósito (o container `api` não lê o crontab nem o disc
 sempre do **banco** (nunca de heartbeat em memória, que diverge). Toda tool nova é **leitura**,
 passa pelo `_guard` (nunca derruba a sessão) e reusa métodos/endpoints existentes (sem lógica
 duplicada). As MCP tools são o wrapper fino sobre a API/store (KL-18).
+
+## 45. Gestão de Leads — scan_leads + scoring PQL + admin + MCP (KL-61)
+
+CRM interno mínimo: cada e-mail que **verifica um scan** (KL-25) vira um **lead** com
+**score comportamental** (modelo PQL — *Product Qualified Lead*) e classificação
+`cold`/`warm`/`hot`/`pql`. Não é CRM externo, não muda o fluxo de scan, não envia
+e-mail sozinho — só **registra e pontua** o interesse já demonstrado no produto.
+
+- **`api/lead_scoring.py` — módulo puro** (sem I/O, sem import de `api.main`/`store`).
+  `SCORING_RULES` (email_verified 10, scan_completed 15, score_below_70 10,
+  score_below_50 20 [cumulativo com <70], account_created 25, monitoring_added 30,
+  multiple_scans 20 [2+ URLs distintas], rescan 15 [total_scans > distinct], corporate_email 5),
+  `DECAY_RULES` (inactive_14d −15), `CLASSIFICATION_THRESHOLDS` (cold 0–20, warm 21–40,
+  hot 41–60, pql 61+), `GENERIC_DOMAINS` (gmail/hotmail/…). `calculate_lead_score(data) →
+  (score, classification)` — score **mínimo 0** (nunca negativo), classificação **SEMPRE**
+  derivada do score (`classify`). `score_breakdown` devolve `[{key,label,points,applied}]`
+  (composição no detalhe). `is_corporate_email` (domínio fora dos genéricos).
+- **Tabela `scan_leads`** (`discovery/store.py`, via `ensure_schema` — sem Alembic): 1
+  linha por **e-mail** (UNIQUE, `LOWER()`), agrega os scans (`total_scans`, `urls_scanned`/
+  `domains_scanned` TEXT[], `best/worst/last_score`, `last_domain`, `sector`, `platform`),
+  flags (`has_account`/`account_id`, `has_monitoring`, `is_corporate_email`, `opted_out`),
+  `lead_score`+`classification` (CHECK), e os campos **manuais** `tags`/`notes`. O
+  `_recalc_lead_row` recomputa score+classificação **na mesma transação** (fonte da verdade
+  = a linha agregada). Métodos: `upsert_scan_lead` (UPSERT idempotente por e-mail, dedup de
+  ARRAY, trata score NULL), `set_lead_account` (UPSERT create-if-missing, +conta),
+  `set_lead_monitoring` (UPDATE-only), `list_leads` (filtros + contagem por classificação),
+  `get_lead` (+ scans do e-mail via `scanned_by_email`), `lead_stats` (+ analytics KL-57:
+  conversão por setor, **setores com maior dor** = menor avg `worst_score`, taxa PQL),
+  `lead_funnel`, `update_lead` (só tags/notes/opted_out + recalc), `recalculate_all_leads`,
+  `backfill_leads`.
+- **Captura fire-and-forget** (`api/main.py`, `_safe_lead` engole exceção — nunca derruba
+  o chamador): após o scan público no `_ingest_scan_bg` (já em background) →
+  `upsert_scan_lead`; no `account_signup` → `_spawn(_safe_lead(set_lead_account))`;
+  no `account_add_site` → `_spawn(_safe_lead(set_lead_monitoring))`.
+- **API (prefixo `/leads`, admin JWT — em `_PROTECTED_PREFIXES`):** `GET /leads`
+  (lista+filtros+`by_classification`), `GET /leads/{id}` (detalhe + `score_breakdown`
+  injetado), `GET /leads/stats`, `GET /leads/funnel`, `PATCH /leads/{id}` (**só**
+  tags/notes/opted_out — `LeadUpdateBody` não tem lead_score/classification, então são
+  impossíveis de setar), `POST /leads/recalculate`. ⚠️ `/leads/stats|funnel|recalculate`
+  são declarados **antes** de `/leads/{id}` (senão "stats" vira id inválido).
+- **Painel `/painel/leads`** (`Leads.jsx` + `LeadDetalhe.jsx`): cards clicáveis por
+  classificação, busca (e-mail/domínio), filtro com/sem conta, setores com maior dor,
+  botão **Recalcular**; detalhe com **barra de score** + composição (breakdown) + dados +
+  scans do e-mail + editor de tags/notas/opt-out. Item **Leads** no menu (entre Alertas e
+  Pagamentos). **MCP (3 tools):** `list_leads`, `get_lead_stats`, `get_lead_funnel`
+  (**45 tools** no total).
+- **Backfill:** `scripts/backfill_leads.py` (`docker compose exec -T api python
+  scripts/backfill_leads.py [--dry-run]`) — agrega `scans.scanned_by_email` (NOT NULL),
+  cruza com `users`/`user_sites`, **idempotente** (ON CONFLICT DO UPDATE recomputa dos
+  scans, preserva tags/notes/opted_out).
+
+**Regra inviolável:** `lead_score`/`classification` são **sempre calculados** (nunca
+editados à mão); a captura é **fire-and-forget** e roda **após** o scan (nunca o bloqueia
+nem o derruba); e-mails normalizados com `LOWER()`; `scanned_by_email` pode ser NULL
+(filtrado). O lead não dispara e-mail automático — é só registro/pontuação. Ao mudar as
+regras de score, rode `POST /leads/recalculate` (ou o backfill).

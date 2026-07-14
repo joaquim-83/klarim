@@ -636,6 +636,21 @@ pause|resume`, JWT), sem redeploy. O estado vive em `worker_control.json` (monta
 volume, persiste entre restarts) e é lido no início de cada ciclo — **fail-open** (erro
 de leitura nunca pausa por engano). Aditivo ao kill-switch `STOP_ALERTS`.
 
+**Gestão de Leads (KL-61).** Cada e-mail que verifica um scan vira um **lead** na
+tabela `scan_leads` (modelo PQL — *Product Qualified Lead*). O `api/lead_scoring.py`
+calcula um **score comportamental** (e-mail verificado, scan completado, site com
+score baixo = dor, conta criada, monitoramento, múltiplos scans, re-scan, e-mail
+corporativo; decai com inatividade) e deriva a **classificação** (`cold` / `warm` /
+`hot` / `pql`) — sempre calculada, nunca editada à mão. A captura é **fire-and-forget**
+(não bloqueia o scan): após o scan público (`upsert_scan_lead`), no signup (+conta) e
+ao adicionar monitoramento. A tela **Leads** (`/painel/leads`) tem cards clicáveis por
+classificação, busca por e-mail/domínio, análise de conversão e **setores com maior
+dor** (KL-57), e o detalhe mostra a **composição do score** + scans do e-mail + tags/
+notas. Endpoints (JWT): `GET /api/leads` (lista+filtros), `/api/leads/{id}` (detalhe+
+breakdown), `/api/leads/stats`, `/api/leads/funnel`, `PATCH /api/leads/{id}` (só tags/
+notas/opt-out), `POST /api/leads/recalculate`. MCP: `list_leads`, `get_lead_stats`,
+`get_lead_funnel`. Backfill: `scripts/backfill_leads.py` (idempotente).
+
 ### Alert Worker (disparo automático — envio em lote, KL-23)
 
 No mesmo container do Discovery Worker (via `asyncio.gather`), o **Alert Worker**
@@ -669,12 +684,13 @@ Histórico em `rescan_log`. Gestão via API: `GET /api/rescans`, `/api/rescans/s
 
 O módulo [`mcp_server/`](./mcp_server/) expõe um **servidor MCP** montado no mesmo
 FastAPI (endpoint SSE em **`https://klarim.net/mcp/sse`**), permitindo operar o
-Klarim por linguagem natural no Claude: **42 tools** (leitura — sistema, **totalizadores
+Klarim por linguagem natural no Claude: **45 tools** (leitura — sistema, **totalizadores
 do painel** (`get_dashboard_stats`), **enriquecimento** (`get_enrichment_status`), **contas**
 (`get_user_accounts`), alvos, perfil, classificações CNAE, scans, alertas, pagamentos,
-analytics, saúde de e-mail, **busca no inbox** (`search_inbox`); escrita — scan, adicionar
-alvo, editar e-mail/status/setor, disparar alerta, enviar relatório, classificar em lote,
-controlar workers, ofertar monitoramento). O MCP e o painel mostram os **mesmos dados** (ex.:
+analytics, saúde de e-mail, **busca no inbox** (`search_inbox`), **leads** (`list_leads`/
+`get_lead_stats`/`get_lead_funnel`, KL-61); escrita — scan, adicionar alvo, editar
+e-mail/status/setor, disparar alerta, enviar relatório, classificar em lote, controlar
+workers, ofertar monitoramento). O MCP e o painel mostram os **mesmos dados** (ex.:
 `last_scan_at` vem do banco, não do heartbeat — fix de divergência). Cada tool é um wrapper
 fino sobre a API/`store` existente. Transporte **SSE** em `/mcp/sse` (modelo Traka), com autenticação por
 `MCPAuthMiddleware` (`MCP_API_KEY`, fail-closed, constant-time, `Authorization:
