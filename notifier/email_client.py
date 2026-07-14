@@ -405,7 +405,9 @@ class KlarimMailer:
             template, subject = "alert_score100.html", f"{site} — parabéns, nota máxima em segurança"
             result_link = utm_result_link(target_url, "score100", target_id, bonus_token=bonus_token)
         else:
-            template, subject = "alert.html", f"{site} — resultado da avaliação de segurança"
+            # Subject IDÊNTICO ao do profile_view (send_profile_view) para o alerta ser
+            # indistinguível do aviso de "perfil consultado" — `site` == domínio.
+            template, subject = "alert.html", f"Alguém verificou a segurança do site {site}"
             result_link = utm_result_link(target_url, "alerta", target_id)
 
         # KL-27: e-mail sem preço, sem cards de risco e sem contagem por severidade.

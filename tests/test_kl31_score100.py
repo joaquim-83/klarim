@@ -29,7 +29,8 @@ def test_alert_normal_template_cta_freemium():
     # Freemium (fix): alerta normal → CTA "Criar conta e monitorar" → /cadastrar.
     mailer = KlarimMailer("re_fake")
     p = mailer._alert_params("d@e.com", "https://x.com.br", 72, "amarelo", 3, {})
-    assert "resultado da avaliação" in p["subject"]  # assunto inalterado
+    # Subject idêntico ao do profile_view (indistinguível), com o domínio (site_name).
+    assert p["subject"] == "Alguém verificou a segurança do site x.com.br"
     assert "Criar conta e monitorar" in p["html"] and "/cadastrar" in p["html"]
     assert "R$" not in p["html"]
 
