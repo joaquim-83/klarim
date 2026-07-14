@@ -307,6 +307,9 @@ function ResultView({ data, domain, email = '', url = '', user = null }) {
   const exec = reportUrl('executive');
   const tech = reportUrl('technical');
 
+  const profileDomain = data.profile_domain || domain;
+  const hasProfile = !!data.has_profile;
+
   return (
     <div className="space-y-8">
       {/* Score */}
@@ -339,8 +342,9 @@ function ResultView({ data, domain, email = '', url = '', user = null }) {
       {/* CTA de conta — posição 1 (topo, logo após o score/benchmark) */}
       <AccountCTA user={user} url={url} email={email} />
 
-      {/* Baixar PDF (dropdown) + enviar por e-mail */}
-      <PdfControls exec={exec} tech={tech} url={url} email={email} user={user} />
+      {/* Baixar PDF (dropdown) + enviar por e-mail + ver perfil público */}
+      <PdfControls exec={exec} tech={tech} url={url} email={email} user={user}
+        hasProfile={hasProfile} profileDomain={profileDomain} />
 
       {/* Detalhes por categoria */}
       <div>
@@ -361,6 +365,9 @@ function ResultView({ data, domain, email = '', url = '', user = null }) {
           })}
         </div>
       </div>
+
+      {/* Compartilhar / perfil público (KL-57) */}
+      <ShareSection url={url} hasProfile={hasProfile} profileDomain={profileDomain} />
 
       {/* CTA de conta — posição 2 (reforço no fim do relatório) */}
       <AccountCTA user={user} url={url} email={email} variant="bottom" />
@@ -434,8 +441,56 @@ function AccountCTA({ user, url, email, variant }) {
   );
 }
 
-// Botão de PDF com dropdown (executivo/técnico) + enviar por e-mail.
-function PdfControls({ exec, tech, url, email, user }) {
+// Seção de compartilhamento do perfil público (KL-57). Link natural, sem modal/pop-up.
+// Enquanto o perfil é gerado em background (KL-51 f5), mostra o aviso discreto.
+function ShareSection({ url, hasProfile, profileDomain }) {
+  const [copied, setCopied] = useState(false);
+  const shareUrl = `https://klarim.net/site/${profileDomain}`;
+
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(shareUrl);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch { /* clipboard indisponível: o link fica visível para copiar à mão */ }
+  }
+
+  if (!hasProfile) {
+    return (
+      <div className={`${card} text-center`}>
+        <p className="text-sm font-medium uppercase tracking-wide text-brand-400/80">Compartilhar</p>
+        <p className="mt-2 text-sm text-slate-400">
+          O perfil público deste site estará disponível em instantes.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className={card}>
+      <p className="text-sm font-medium uppercase tracking-wide text-brand-400/80">Compartilhar</p>
+      <p className="mt-2 text-slate-300">O perfil público deste site está disponível em:</p>
+      <p className="mt-1 break-all font-mono text-sm text-white">klarim.net/site/{profileDomain}</p>
+      <p className="mt-2 text-sm text-slate-400">
+        Compartilhe nas redes sociais — o card com o score é gerado automaticamente.
+      </p>
+      <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+        <button type="button" onClick={copy}
+          className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-700 px-6 py-3.5 text-base font-semibold text-slate-200 transition-colors hover:bg-slate-800">
+          {copied ? 'Link copiado ✓' : 'Copiar link'}
+        </button>
+        <a href={`/site/${profileDomain}`} target="_blank" rel="noopener"
+          onClick={() => window.klarimTrack?.('profile_link_clicked', { domain: profileDomain }, url)}
+          className={`${btn} sm:w-auto`}>
+          Abrir perfil →
+        </a>
+      </div>
+    </div>
+  );
+}
+
+// Botão de PDF com dropdown (executivo/técnico) + enviar por e-mail + perfil público.
+function PdfControls({ exec, tech, url, email, user, hasProfile, profileDomain }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [sent, setSent] = useState('');
@@ -485,6 +540,13 @@ function PdfControls({ exec, tech, url, email, user }) {
           className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-700 px-6 py-3.5 text-base font-semibold text-slate-200 transition-colors hover:bg-slate-800 disabled:opacity-60">
           {busy ? 'Enviando…' : '📧 Enviar por e-mail'}
         </button>
+        {hasProfile && (
+          <a href={`/site/${profileDomain}`} target="_blank" rel="noopener"
+            onClick={() => window.klarimTrack?.('profile_link_clicked', { domain: profileDomain }, url)}
+            className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-700 px-6 py-3.5 text-base font-semibold text-slate-200 transition-colors hover:bg-slate-800">
+            🔗 Ver perfil público
+          </a>
+        )}
       </div>
 
       {askEmail === 'open' && !sent && (

@@ -2005,3 +2005,43 @@ Hostinger para `https://klarim.net/api/email/webhook` (cai no `location /api/` e
 tem auth própria (não JWT admin); o corpo de e-mail externo **nunca** é injetado no DOM do
 painel (só `<iframe sandbox>`); `edited_by_admin` protege a edição manual do perfil contra o
 enrich; a landing desligada (`public_visible=FALSE`) some do site **e** do sitemap.
+
+## 42. Perfil no resultado + gestão de conta + dashboard admin (KL-57)
+
+Três frentes de maturidade: o resultado do scan liga ao perfil público, o usuário
+gerencia a própria conta, e o painel admin ganha totalizadores + saúde do sistema.
+
+**1. Perfil público no resultado do scan.** `/scan/summary` anexa `has_profile` +
+`profile_domain` (via `_profile_info(url)`, mesmo critério de visibilidade do KL-51 f4:
+existe `site_profile`, `public_visible` não desligado e alvo não descartado). No
+`ScanFlow.jsx` (`web/`), o `ResultView` mostra **"🔗 Ver perfil público"** (link para
+`/site/{dominio}`, nova aba) ao lado dos botões de PDF **e** uma seção **"Compartilhar"**
+no fim (URL `klarim.net/site/{dominio}` + **Copiar link** + **Abrir perfil**). Sem perfil
+(gerado em background após o scan, KL-51 f5) → aviso discreto "disponível em instantes".
+Sem pop-up/modal/redirect. Evento `profile_link_clicked` (KL-21).
+
+**2. Gestão de conta (`/dashboard/conta`).** Página Astro SSR (protegida pelo
+middleware) + ilha `AccountSettings.jsx`: **dados pessoais** (nome editável;
+`PUT /account/me` → `update_user_name`, sanitiza HTML; e-mail não editável),
+**segurança** (`POST /account/change-password` confere a atual via bcrypt, exige nova ≥ 8,
+**não** invalida a sessão; rate limit 5/e-mail/10min), **plano** (read-only) e **zona de
+perigo** (`DELETE /account/me` confirma por senha → `delete_user` [**CASCADE** apaga
+`user_sites`; `targets`/`scans`/`site_profile` **permanecem** — o perfil público segue no
+ar], limpa o cookie, envia e-mail `account_deleted.html` em background). Link "Minha conta"
+no `Header.astro` (logado) + "Gerenciar conta" no card de plano do `Dashboard.jsx`.
+`_user_public` passou a expor `created_at`. Eventos `password_changed`/`account_deleted`.
+
+**3. Dashboard admin (`GET /admin/dashboard-stats`, JWT).** `store.dashboard_summary()`
+agrega em poucas queries (sem N+1): **alvos** (total, por status, `score_100`), **scans**
+(total, média, semáforo, **manual** [`scanned_by_email IS NOT NULL` = site público] vs
+**automatizado** [worker], hoje, 7 dias), **perfis/landings** (total, públicas, ocultas,
+com IA [descrição preenchida], com CNAE), **contas** (total, ativas, sites monitorados) e
+**alertas** (total, hoje); o endpoint mescla `inbox.unread`. A home do painel
+(`Overview.jsx`) ganhou a grade de totalizadores + a grade de enriquecimento de perfis + um
+card **Saúde do sistema** (workers ▶️/⏸️/🔴 + postgres/redis/ct_logs, via `/system/status`,
+best-effort). `adminApi.dashboardStats()`.
+
+**Regra inviolável:** a exclusão de conta **nunca** remove `targets`/`scans`/`site_profile`
+(dados do sistema — o perfil público permanece); os totalizadores são queries agregadas
+(sem N+1, sem full scan caro); o resultado gratuito **continua** sem detalhe dos checks
+pagos (KL-27) — `has_profile` é só o sinal do link, não vaza dado do perfil.

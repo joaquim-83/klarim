@@ -159,11 +159,18 @@ export default function Dashboard({ user = {} }) {
       )}
 
       <div className={card}>
-        <p className="text-sm text-slate-400">Plano</p>
-        <p className="mt-1 font-semibold text-white">
-          {user.plan === 'free' ? 'Gratuito' : user.plan} ({maxSites} site{maxSites > 1 ? 's' : ''})
-        </p>
-        <p className="mt-2 text-sm text-slate-500">Upgrade para até 5 sites — em breve.</p>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-sm text-slate-400">Plano</p>
+            <p className="mt-1 font-semibold text-white">
+              {user.plan === 'free' ? 'Gratuito' : user.plan} ({maxSites} site{maxSites > 1 ? 's' : ''})
+            </p>
+            <p className="mt-2 text-sm text-slate-500">Upgrade para até 5 sites — em breve.</p>
+          </div>
+          <a href="/dashboard/conta" className="shrink-0 text-sm text-brand-400 hover:text-brand-300">
+            Gerenciar conta →
+          </a>
+        </div>
       </div>
     </div>
   );

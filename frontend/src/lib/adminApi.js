@@ -87,6 +87,7 @@ export async function login(username, password) {
 
 export const admin = {
   // dashboard
+  dashboardStats: () => get('/admin/dashboard-stats'),  // totalizadores KL-57
   targetsStats: () => get('/targets/stats'),
   alertsStats: () => get('/alerts/stats'),
   rescansStats: () => get('/rescans/stats'),

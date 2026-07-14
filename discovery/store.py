@@ -1261,6 +1261,26 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    async def update_user_name(self, user_id: int, name: Optional[str]) -> bool:
+        """Atualiza o nome do usuário (KL-57). Retorna True se afetou uma linha."""
+        clean = (name or "").strip() or None
+
+        def _fn(cur):
+            cur.execute("UPDATE users SET name = %s WHERE id = %s", (clean, user_id))
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def delete_user(self, user_id: int) -> bool:
+        """Exclui a conta do usuário (KL-57). O `ON DELETE CASCADE` remove os vínculos
+        em `user_sites`; `targets`/`scans`/`site_profile` são dados do sistema e
+        **permanecem**. Retorna True se um usuário foi removido."""
+        def _fn(cur):
+            cur.execute("DELETE FROM users WHERE id = %s", (user_id,))
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
     async def list_user_sites(self, user_id: int) -> List[Dict[str, Any]]:
         """Sites do usuário com dados do target (score, último scan, setor, semáforo)."""
         def _fn(cur):
@@ -1456,6 +1476,73 @@ class TargetStore:
             for u in users:
                 u["sites"] = by_user.get(u["id"], [])
             return users
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def dashboard_summary(self) -> Dict[str, Any]:
+        """Totalizadores do painel admin (KL-57): alvos, scans (manual/automatizado),
+        perfis/landings, contas e alertas — em poucas queries numa conexão (sem N+1,
+        sem full scan caro). `manual` = scan com `scanned_by_email` (veio do site
+        público, alguém digitou a URL); `automated` = sem e-mail (scan worker)."""
+        def _fn(cur):
+            # alvos
+            cur.execute("SELECT status, COUNT(*) FROM targets GROUP BY status")
+            by_status = {r[0]: int(r[1]) for r in cur.fetchall()}
+            cur.execute("SELECT COUNT(*) FROM targets WHERE last_scan_score = 100")
+            score_100 = int(cur.fetchone()[0])
+
+            # scans: total, média, manual vs automatizado, hoje, 7 dias
+            cur.execute(
+                "SELECT COUNT(*), COALESCE(ROUND(AVG(score)), 0), "
+                "  COUNT(*) FILTER (WHERE scanned_by_email IS NOT NULL), "
+                "  COUNT(*) FILTER (WHERE scanned_by_email IS NULL), "
+                "  COUNT(*) FILTER (WHERE scanned_at >= date_trunc('day', NOW())), "
+                "  COUNT(*) FILTER (WHERE scanned_at > NOW() - INTERVAL '7 days') "
+                "FROM scans")
+            s_total, s_avg, s_manual, s_auto, s_today, s_7d = cur.fetchone()
+            cur.execute("SELECT semaphore, COUNT(*) FROM scans GROUP BY semaphore")
+            by_semaphore = {r[0]: int(r[1]) for r in cur.fetchall()}
+
+            # perfis / landings públicas
+            cur.execute(
+                "SELECT COUNT(*), "
+                "  COUNT(*) FILTER (WHERE COALESCE(public_visible, TRUE)), "
+                "  COUNT(*) FILTER (WHERE public_visible = FALSE), "
+                "  COUNT(*) FILTER (WHERE description IS NOT NULL AND description <> '') "
+                "FROM site_profile")
+            p_total, p_public, p_hidden, p_ai = cur.fetchone()
+            cur.execute("SELECT COUNT(DISTINCT target_id) FROM target_classifications")
+            p_cnae = int(cur.fetchone()[0])
+
+            # contas de usuário
+            cur.execute("SELECT COUNT(*), COUNT(*) FILTER (WHERE COALESCE(is_active, TRUE)) "
+                        "FROM users")
+            u_total, u_active = cur.fetchone()
+            cur.execute("SELECT COUNT(DISTINCT target_id) FROM user_sites")
+            u_sites = int(cur.fetchone()[0])
+
+            # alertas
+            cur.execute(
+                "SELECT COUNT(*) FILTER (WHERE status = 'sent'), "
+                "  COUNT(*) FILTER (WHERE status = 'sent' "
+                "                   AND sent_at >= date_trunc('day', NOW())) "
+                "FROM alert_log")
+            a_total, a_today = cur.fetchone()
+
+            return {
+                "targets": {"total": sum(by_status.values()), "by_status": by_status,
+                            "score_100": score_100},
+                "scans": {"total": int(s_total), "avg_score": int(s_avg),
+                          "by_semaphore": by_semaphore, "manual": int(s_manual),
+                          "automated": int(s_auto), "today": int(s_today),
+                          "last_7_days": int(s_7d)},
+                "profiles": {"total": int(p_total), "public": int(p_public),
+                             "hidden": int(p_hidden), "with_ai": int(p_ai),
+                             "with_cnae": p_cnae},
+                "accounts": {"total": int(u_total), "active": int(u_active),
+                             "sites_monitored": u_sites},
+                "alerts": {"total": int(a_total), "today": int(a_today)},
+            }
 
         return await asyncio.to_thread(self._run, _fn)
 

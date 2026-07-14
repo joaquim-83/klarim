@@ -42,15 +42,32 @@ function ChartCard({ title, children }) {
   )
 }
 
+// Estado de um worker para a saúde do sistema (KL-57): pausado > vivo > parado.
+function workerState(w) {
+  if (!w) return ['🔴', 'sem dados']
+  if (w.enabled === false) return ['⏸️', 'pausado']
+  if (w.alive) return ['▶️', 'ativo']
+  return ['🔴', 'parado']
+}
+
+function depState(d) {
+  if (!d) return ['—', '#8B949E']
+  const ok = ['ok', 'streaming', 'connected'].includes(d.status)
+  return [ok ? `ok (${d.latency_ms ?? '?'}ms)` : (d.status || 'erro'), ok ? '#00D26A' : '#F85149']
+}
+
 export default function Overview() {
   const { data, loading, error } = useAsync(() =>
     Promise.all([
       admin.targetsStats(), admin.alertsStats(), admin.scansStats(),
       admin.paymentsStats(), admin.scansDaily(30), admin.alertsDaily(30),
       admin.scans({ limit: 10, distinct_url: true }),  // 1 linha por site (Fix pós-KL-27)
-    ]).then(([targets, alerts, scans, payments, scansD, alertsD, recent]) => ({
+      admin.dashboardStats(),                            // totalizadores KL-57
+      admin.systemStatus().catch(() => null),            // saúde do sistema (best-effort)
+    ]).then(([targets, alerts, scans, payments, scansD, alertsD, recent, dash, system]) => ({
       targets, alerts, scans, payments,
       scansD: scansD.series, alertsD: alertsD.series, recent: recent.scans,
+      dash, system,
     })),
   )
 
@@ -66,6 +83,13 @@ export default function Overview() {
     name: k, value: v, color: PLATFORM_COLOR[k] || '#8B949E',
   }))
 
+  const dash = data.dash || {}
+  const dScans = dash.scans || {}
+  const dProfiles = dash.profiles || {}
+  const dAccounts = dash.accounts || {}
+  const workers = data.system?.workers || {}
+  const deps = data.system?.dependencies || {}
+
   return (
     <div className="space-y-6">
       <h1 className="text-xl font-bold">Visão geral</h1>
@@ -79,6 +103,55 @@ export default function Overview() {
         <StatCard label="Receita" value={data.payments.revenue_display ?? 'R$ 0,00'} accent="#00D26A" />
         <StatCard label="Score médio" value={data.scans.avg_score ?? 0} accent="#F0C000" />
       </div>
+
+      {/* Totalizadores da plataforma (KL-57) */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+        <StatCard label="Scans (total)" value={dScans.total ?? 0} accent="#3B82F6" />
+        <StatCard label="Landings" value={dProfiles.public ?? 0}
+          sub={dProfiles.hidden ? `${dProfiles.hidden} ocultas` : undefined} accent="#A371F7" />
+        <StatCard label="Score 100" value={dash.targets?.score_100 ?? 0} accent="#00D26A" />
+        <StatCard label="Contas" value={dAccounts.total ?? 0}
+          sub={`${dAccounts.sites_monitored ?? 0} sites`} accent="#FF6B35" />
+        <StatCard label="Scans manuais" value={dScans.manual ?? 0}
+          sub="site público" accent="#F0C000" />
+        <StatCard label="Scans automáticos" value={dScans.automated ?? 0}
+          sub="worker" accent="#8B949E" />
+      </div>
+
+      {/* Enriquecimento de perfis (KL-57) */}
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+        <StatCard label="Perfis" value={dProfiles.total ?? 0} />
+        <StatCard label="Perfis com IA" value={dProfiles.with_ai ?? 0} accent="#A371F7" />
+        <StatCard label="Perfis com CNAE" value={dProfiles.with_cnae ?? 0} accent="#3B82F6" />
+        <StatCard label="Scans (7 dias)" value={dScans.last_7_days ?? 0} accent="#F0C000" />
+      </div>
+
+      {/* Saúde do sistema (KL-57) */}
+      {data.system && (
+        <Card title="Saúde do sistema">
+          <div className="flex flex-wrap gap-x-6 gap-y-2 text-sm">
+            {['discovery', 'scan', 'alert', 'rescan'].map((w) => {
+              const [icon, txt] = workerState(workers[w])
+              return (
+                <span key={w} className="text-klarim-text">
+                  <span className="text-klarim-muted capitalize">{w}:</span> {icon} {txt}
+                </span>
+              )
+            })}
+          </div>
+          <div className="mt-3 flex flex-wrap gap-x-6 gap-y-2 text-sm">
+            {['postgres', 'redis', 'ct_logs'].map((d) => {
+              const [txt, color] = depState(deps[d])
+              return (
+                <span key={d} className="text-klarim-muted">
+                  {d}: <span style={{ color }}>{txt}</span>
+                </span>
+              )
+            })}
+            <Link to="/painel/sistema" className="text-klarim-alert hover:underline">ver detalhes →</Link>
+          </div>
+        </Card>
+      )}
 
       {/* Gráficos */}
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">

@@ -462,6 +462,16 @@ class KlarimMailer:
             "html": html,
         })
 
+    async def send_account_deleted(self, to_email: str) -> Dict[str, Any]:
+        """Confirma ao usuário que a conta foi excluída (KL-57)."""
+        html = _env.get_template("account_deleted.html").render()
+        return await self._send({
+            "from": self.from_address,
+            "to": [to_email],
+            "subject": "Sua conta Klarim foi excluída",
+            "html": html,
+        })
+
     async def send_profile_view(self, to_email: str, domain: str, score: int,
                                 semaphore: str, cta_url: str,
                                 unsubscribe_link: Optional[str] = None) -> Dict[str, Any]:

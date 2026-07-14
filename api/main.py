@@ -327,9 +327,11 @@ def _ip_rate_limit(bucket: dict, key: str, max_hits: int, window: int) -> bool:
 
 def _user_public(user: dict) -> dict:
     """Campos seguros do usuário para devolver ao frontend (sem hash)."""
+    created = user.get("created_at")
     return {
         "id": user["id"], "email": user["email"], "name": user.get("name"),
         "plan": user.get("plan", "free"), "max_sites": user.get("max_sites", 1),
+        "created_at": created.isoformat() if hasattr(created, "isoformat") else created,
     }
 
 
@@ -363,6 +365,19 @@ class ResetBody(BaseModel):
 
 class SiteBody(BaseModel):
     url: str
+
+
+class UpdateAccountBody(BaseModel):
+    name: Optional[str] = None
+
+
+class ChangePasswordBody(BaseModel):
+    current_password: str
+    new_password: str
+
+
+class DeleteAccountBody(BaseModel):
+    password: str
 
 
 async def _resolve_or_create_target(url: str, source: str = "manual") -> Optional[int]:
@@ -505,6 +520,62 @@ async def account_me(request: Request) -> dict:
     store = get_target_store()
     return {"user": _user_public(user),
             "sites_count": await store.count_user_sites(user["id"])}
+
+
+@app.put("/account/me")
+async def account_update(body: UpdateAccountBody, request: Request) -> dict:
+    """Atualiza dados editáveis da conta (KL-57) — hoje só o nome. O e-mail é a
+    identidade da conta e não muda por aqui."""
+    user = await auth_users.require_user(request)
+    name = _sanitize_str((body.name or ""), 120).strip() or None
+    await get_target_store().update_user_name(user["id"], name)
+    updated = {**user, "name": name}
+    return {"ok": True, "user": _user_public(updated)}
+
+
+@app.post("/account/change-password")
+async def account_change_password(body: ChangePasswordBody, request: Request) -> dict:
+    """Altera a senha da conta (KL-57): confere a atual, exige a nova ≥ 8 chars. NÃO
+    invalida a sessão (o JWT atual continua válido). Rate limit 5/e-mail/10min."""
+    user = await auth_users.require_user(request)
+    email = (user.get("email") or "").lower().strip()
+    if not _ip_rate_limit(_reset_attempts, "change:" + email, 5, 600):
+        raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde alguns minutos.")
+    if len(body.new_password or "") < _PW_MIN:
+        raise HTTPException(status_code=400, detail="A nova senha precisa ter ao menos 8 caracteres.")
+    store = get_target_store()
+    full = await store.get_user_by_email(email, with_hash=True)
+    if not full or not auth_users.verify_password(body.current_password or "",
+                                                  full.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Senha atual incorreta.")
+    await store.set_user_password(email, auth_users.hash_password(body.new_password))
+    return {"ok": True}
+
+
+@app.delete("/account/me")
+async def account_delete(body: DeleteAccountBody, request: Request) -> JSONResponse:
+    """Exclui a conta (KL-57): confirma por senha, remove o usuário (CASCADE apaga os
+    vínculos em `user_sites`) e limpa o cookie de sessão. Os `targets`/`scans`/
+    `site_profile` são dados do sistema e **permanecem** (o perfil público segue no ar).
+    Envia um e-mail de confirmação em background."""
+    user = await auth_users.require_user(request)
+    email = (user.get("email") or "").lower().strip()
+    store = get_target_store()
+    full = await store.get_user_by_email(email, with_hash=True)
+    if not full or not auth_users.verify_password(body.password or "",
+                                                  full.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Senha incorreta.")
+    await store.delete_user(user["id"])
+    if _email_enabled():
+        async def _confirm():
+            try:
+                await _mailer().send_account_deleted(email)
+            except Exception as exc:  # noqa: BLE001 - e-mail é best-effort
+                print(f"[account] e-mail de exclusão falhou {email}: {exc!r}", flush=True)
+        _spawn(_confirm())
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(key=auth_users.USER_COOKIE, path="/")
+    return resp
 
 
 def _semaphore_from_score(score: Optional[int]) -> str:
@@ -1339,7 +1410,9 @@ async def scan_summary(url: str = Query(..., description="URL alvo."),
         if recent is None:
             return {"status": "auth_required",
                     "message": "Verifique seu e-mail para escanear este site."}
-        return _summary_payload(recent, full=open_all)
+        data = _summary_payload(recent, full=open_all)
+        data.update(await _profile_info(url))
+        return data
 
     # Caminho público gratuito (token, sem admin/charge) — é o que ingere (KL-17).
     # Capturado ANTES de abrir o paywall, senão o `full` mascararia o ingest.
@@ -1360,7 +1433,29 @@ async def scan_summary(url: str = Query(..., description="URL alvo."),
     data = _summary_payload(report, full=full)
     if full:
         data.update(await _full_extras(url, scanned_by, charge_id, scan_token))
+    data.update(await _profile_info(url))
     return data
+
+
+async def _profile_info(url: str) -> dict:
+    """`has_profile` + domínio para o link do perfil público (/site/{dominio}, KL-57).
+
+    `has_profile` é True só se existe `site_profile`, está público (`public_visible`
+    não desligado) e o alvo não foi descartado — o mesmo critério de visibilidade de
+    `/public/profile/{domain}`. O perfil é gerado em background após o scan (KL-51 f5),
+    então na 1ª análise de um site ainda pode não existir (o front mostra "sendo
+    gerado")."""
+    domain = _norm_domain(url)
+    info = {"profile_domain": domain, "has_profile": False}
+    try:
+        store = get_target_store()
+        target = await store.get_target_by_url(_norm_scan_url(url))
+        if target and target.get("status") != "descartado":
+            prof = await store.get_site_profile(target["id"])
+            info["has_profile"] = bool(prof) and prof.get("public_visible") is not False
+    except Exception:  # noqa: BLE001 - best-effort; sem perfil o front mostra "sendo gerado"
+        pass
+    return info
 
 
 async def _full_extras(url: str, email: Optional[str], charge_id: Optional[str],
@@ -2260,6 +2355,20 @@ async def api_targets_stats() -> dict:
     return await get_target_store().stats()
 
 
+@app.get("/admin/dashboard-stats")
+async def api_dashboard_stats() -> dict:
+    """Totalizadores da home do painel (KL-57): alvos, scans (manual/automatizado),
+    perfis/landings, contas, alertas + e-mails não lidos. Protegido pelo JWT admin
+    (prefixo `/admin`). Poucas queries agregadas — sem N+1."""
+    store = get_target_store()
+    summary = await store.dashboard_summary()
+    try:
+        summary["inbox"] = {"unread": await store.inbox_unread_count()}
+    except Exception:  # noqa: BLE001 - inbox é best-effort (tabela pode faltar)
+        summary["inbox"] = {"unread": 0}
+    return summary
+
+
 @app.get("/targets/{target_id}")
 async def api_get_target(target_id: int) -> dict:
     store = get_target_store()
@@ -2670,6 +2779,8 @@ _KNOWN_EVENTS = {
     "score100_monitoring_offered", "score100_monitoring_accepted",
     # KL-51 f4 — perfis públicos SEO
     "profile_view",
+    # KL-57 — perfil no resultado do scan + churn de conta
+    "profile_link_clicked", "password_changed", "account_deleted",
 }
 _EVENT_RL_MAX = 100          # eventos/minuto por sessão
 _event_rl: dict = {}         # session_id -> lista de timestamps (janela de 60s)

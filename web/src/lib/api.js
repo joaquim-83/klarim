@@ -25,4 +25,5 @@ async function req(method, path, body) {
 
 export const apiGet = (path) => req('GET', path);
 export const apiPost = (path, body) => req('POST', path, body || {});
-export const apiDelete = (path) => req('DELETE', path);
+export const apiPut = (path, body) => req('PUT', path, body || {});
+export const apiDelete = (path, body) => req('DELETE', path, body);
