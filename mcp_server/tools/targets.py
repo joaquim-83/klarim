@@ -130,3 +130,29 @@ async def classify_targets_batch(target_ids: list[int], sector: str) -> dict:
     m = _api()
     return await _guard(lambda: m.api_classify_batch(
         m.ClassifyBatchBody(target_ids=target_ids, sector=sector)))
+
+
+@mcp.tool()
+async def toggle_profile_visibility(target_id: int, visible: bool) -> dict:
+    """Liga/desliga a landing pública de um alvo (`/site/{dominio}`, KL-56). Desligada,
+    a página some do site e do sitemap (mesmo comportamento de descartado)."""
+    m = _api()
+    return await _guard(lambda: m.api_profile_visibility(
+        target_id, m.VisibilityBody(visible=visible)))
+
+
+@mcp.tool()
+async def update_site_profile(
+    target_id: int,
+    description: str | None = None,
+    business_type: str | None = None,
+    company_name: str | None = None,
+    tags: list[str] | None = None,
+) -> dict:
+    """Edita o perfil da landing (description/business_type/company_name/tags). Marca
+    o perfil como editado à mão — o enrich automático deixa de sobrescrever esses
+    campos (KL-56). Passe só os campos a alterar."""
+    m = _api()
+    body = m.ProfileEditBody(description=description, business_type=business_type,
+                             company_name=company_name, tags=tags)
+    return await _guard(lambda: m.api_update_profile(target_id, body))

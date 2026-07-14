@@ -1937,3 +1937,71 @@ score de segurança**. `derive_section`/`derive_division` são offline (a classi
 depende do IBGE estar no ar). `source='receita'` nunca é sobrescrito pela IA. Toda a
 extração (CNAE/CNPJ/tags) é **best-effort/fail-open**: erro só loga, nunca derruba
 scan/worker/batch. `targets.sector` permanece (retrocompat via `sector_legacy`).
+
+## 41. Gestão de landing + paginação de scans + inbox de e-mail (KL-56)
+
+Três frentes no painel admin + a caixa `scan@klarim.net` integrada.
+
+**1. Gestão da landing pública na página Alvos.** Cada alvo com `site_profile` e status
+`scanned`/`alerted` ganha o botão **"Landing"** (`components/admin/ProfileEditor.jsx`,
+modal) com: **Ver landing** (abre `/site/{dominio}` em nova aba), **editar** os campos
+(`description`/`business_type`/`company_name`/`tags`) e o **toggle** da landing pública.
+- **`site_profile` ganhou 3 colunas** (`ALTER … ADD COLUMN IF NOT EXISTS`): `public_visible`
+  (BOOLEAN default TRUE), `edited_by_admin` (BOOLEAN default FALSE), `edited_by_admin_at`.
+- **`PUT /targets/{id}/profile`** (`ProfileEditBody`, JWT admin) → `store.update_site_profile_fields`
+  atualiza só os campos editáveis e marca **`edited_by_admin=TRUE`**. A partir daí o enrich
+  automático **preserva** esses campos: o guard está no `ON CONFLICT` do `upsert_site_profile`
+  (`CASE WHEN site_profile.edited_by_admin THEN <valor antigo> ELSE EXCLUDED.<col> END` para
+  description/business_type/company_name/tags). `public_visible`/`edited_by_admin` **nunca**
+  entram no upsert (o enrich não os toca).
+- **`PATCH /targets/{id}/profile/visibility`** (`VisibilityBody`) → `store.set_profile_visibility`.
+  `public_visible=FALSE` faz `GET /public/profile/{domain}` retornar **`not_found`** (some do
+  site, mesmo comportamento de descartado) e **exclui do sitemap** (`list_public_profile_domains`
+  ganhou `AND COALESCE(sp.public_visible, TRUE) = TRUE`). `list_targets` traz `has_profile` +
+  `public_visible` (LEFT JOIN) para a linha saber o estado sem N+1.
+- **MCP:** `toggle_profile_visibility(target_id, visible)` + `update_site_profile(target_id,
+  description?, business_type?, company_name?, tags?)` (`mcp_server/tools/targets.py`).
+
+**2. Página Scans — paginação real + filtro por data.** O bug: o frontend tinha `page` na
+dependência mas **não mandava `offset`** — toda página repetia a primeira. Fix:
+`list_scans` ganhou **`offset`** + **`from_date`/`to_date`** (`YYYY-MM-DD`, `to_date` inclusivo
+via `< to_date + 1 day`); `GET /scans` expõe os 3; `Scans.jsx` manda `offset=page*PAGE_SIZE`
+e um **seletor de período** (Hoje / Últimos 7 dias / Últimos 30 dias / Personalizado /
+Todos) com **default 7 dias** (não "tudo desde o início"). O período custom tem 2 date
+pickers. Só a página Scans usa datas por default; os outros chamadores de `list_scans`
+(atividade recente, público) seguem sem filtro.
+
+**3. Inbox `scan@klarim.net` (Hostinger Agentic Mail).** Webhook recebe os e-mails e grava
+em `inbox_messages`; o painel lê/gere.
+- **Tabela `inbox_messages`** (independente, sem FK): `message_id` UNIQUE (dedup),
+  `from_address/from_name/to_address/subject/body_preview/body_html/received_at`,
+  `is_read/is_starred/is_archived` + índices.
+- **`POST /email/webhook` (público, auth PRÓPRIA).** `/email` é prefixo admin, então o webhook
+  está no **`_PUBLIC_UNDER_PROTECTED`** (`_is_protected` retorna False) — não passa pelo JWT
+  admin, tem **token próprio**. `_hostinger_token_ok` valida `HOSTINGER_WEBHOOK_TOKEN`
+  (constant-time, **fail-closed** sem a env) aceito em `Authorization: Bearer`, vários headers
+  custom **ou** `?token=`. `parse_inbox_payload` (função pura, testável) suporta o formato
+  **AgentMail** (`event_type=message.received` + objeto `message` com `from/to/subject/text/
+  html/message_id/timestamp`) **e** formas achatadas; sintetiza `message_id` (hash) se faltar;
+  usa `email.utils.parseaddr` no `from`. Payload não reconhecido → **loga o raw** (para
+  adaptar) e responde 200 (Hostinger não re-tenta). Grava via `insert_inbox_message`
+  (ON CONFLICT DO NOTHING → dedup). ⚠️ A AgentMail nativa usa **Svix**, mas a Hostinger hPanel
+  usa o token plano configurado — por isso a validação é por token + log do raw na 1ª recepção.
+- **API admin (JWT):** `GET /admin/inbox` (filtros `box=all|unread|starred|archived`, paginado),
+  `GET /admin/inbox/unread-count` (**declarado ANTES de `/{msg_id}`** senão vira id inválido),
+  `GET /admin/inbox/{id}` (corpo completo, marca lida ao abrir), `POST …/{id}/read|star|archive`.
+- **Frontend:** `pages/admin/Inbox.jsx` (rota `/painel/inbox`, `lazy` no `App.jsx`) — lista com
+  ●/○ (não-lida/lida), estrela, arquivar; **badge de não-lidas** no `AdminLayout` (poll 60s via
+  `admin.inboxUnread`). ⚠️ **Segurança:** o corpo HTML vem de remetente externo (não confiável)
+  → renderizado em **`<iframe sandbox="">`** (sem scripts, origem opaca) — **nunca**
+  `dangerouslySetInnerHTML` (evita stored-XSS roubando o JWT do operador). Responder = link
+  `mailto:`/webmail (envio via API Hostinger fica para fase opcional, `HOSTINGER_API_TOKEN`).
+
+**Config (nunca no git):** `HOSTINGER_WEBHOOK_TOKEN` + `HOSTINGER_API_TOKEN` vivem **só** no
+`/opt/klarim/.env` da VM (os serviços usam `env_file: .env`). Webhook já configurado na
+Hostinger para `https://klarim.net/api/email/webhook` (cai no `location /api/` existente).
+
+**Regra inviolável:** o webhook é **fail-closed** (sem `HOSTINGER_WEBHOOK_TOKEN`, tudo 401) e
+tem auth própria (não JWT admin); o corpo de e-mail externo **nunca** é injetado no DOM do
+painel (só `<iframe sandbox>`); `edited_by_admin` protege a edição manual do perfil contra o
+enrich; a landing desligada (`public_visible=FALSE`) some do site **e** do sitemap.

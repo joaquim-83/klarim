@@ -194,6 +194,14 @@ CREATE INDEX IF NOT EXISTS idx_site_profile_maturity ON site_profile(maturity_sc
 ALTER TABLE site_profile ADD COLUMN IF NOT EXISTS tags TEXT[] DEFAULT '{}';
 ALTER TABLE site_profile ADD COLUMN IF NOT EXISTS business_type TEXT;
 
+-- KL-56: gestão da landing pública pelo operador.
+--  public_visible = FALSE  -> /site/{dominio} some (mesmo comportamento de descartado)
+--  edited_by_admin = TRUE  -> o enrich (worker/enrich_all) NÃO sobrescreve os campos
+--                             editados à mão (description/business_type/tags/company_name).
+ALTER TABLE site_profile ADD COLUMN IF NOT EXISTS public_visible BOOLEAN DEFAULT TRUE;
+ALTER TABLE site_profile ADD COLUMN IF NOT EXISTS edited_by_admin BOOLEAN DEFAULT FALSE;
+ALTER TABLE site_profile ADD COLUMN IF NOT EXISTS edited_by_admin_at TIMESTAMP;
+
 -- Classificação multi-setor via CNAE (KL-55): N classificações por alvo, cada uma
 -- de uma fonte (receita/ai/manual/schema_org). CNAE = referência estrutural do IBGE.
 CREATE TABLE IF NOT EXISTS target_classifications (
@@ -251,6 +259,26 @@ CREATE TABLE IF NOT EXISTS password_resets (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_pwreset_email ON password_resets(email);
+
+-- Inbox do scan@klarim.net (KL-56): mensagens recebidas via webhook da Hostinger
+-- Agentic Mail. Independente do resto do sistema (nenhuma FK). Dedup por message_id.
+CREATE TABLE IF NOT EXISTS inbox_messages (
+    id SERIAL PRIMARY KEY,
+    message_id TEXT UNIQUE,
+    from_address TEXT NOT NULL,
+    from_name TEXT,
+    to_address TEXT DEFAULT 'scan@klarim.net',
+    subject TEXT,
+    body_preview TEXT,
+    body_html TEXT,
+    received_at TIMESTAMPTZ,
+    is_read BOOLEAN DEFAULT FALSE,
+    is_starred BOOLEAN DEFAULT FALSE,
+    is_archived BOOLEAN DEFAULT FALSE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_inbox_received ON inbox_messages(received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_inbox_read ON inbox_messages(is_read);
 """
 
 # --------------------------------------------------------------------------- #
@@ -580,10 +608,15 @@ class TargetStore:
                 params.extend([like, like, like])
             clause = ("WHERE " + " AND ".join(where)) if where else ""
             params.extend([limit, offset])
-            # JOIN traz o semáforo do último scan (KL-14: lista de alvos no painel).
+            # JOIN traz o semáforo do último scan (KL-14: lista de alvos no painel) e
+            # o estado da landing pública (KL-56: has_profile + public_visible).
             cur.execute(
-                f"SELECT t.*, s.semaphore AS last_semaphore FROM targets t "
-                f"LEFT JOIN scans s ON t.last_scan_id = s.id {clause} "
+                f"SELECT t.*, s.semaphore AS last_semaphore, "
+                f"       (sp.id IS NOT NULL) AS has_profile, "
+                f"       COALESCE(sp.public_visible, TRUE) AS public_visible "
+                f"FROM targets t "
+                f"LEFT JOIN scans s ON t.last_scan_id = s.id "
+                f"LEFT JOIN site_profile sp ON sp.target_id = t.id {clause} "
                 f"ORDER BY t.discovered_at DESC LIMIT %s OFFSET %s",
                 params,
             )
@@ -990,29 +1023,96 @@ class TargetStore:
                   "hosting_provider", "cdn", "dns_provider", "certificate_authority",
                   "maturity_score", "business_type")  # KL-55: business_type
 
+    # KL-56: campos que o operador edita à mão no painel — o enrich (worker/enrich_all)
+    # NÃO os sobrescreve quando `edited_by_admin` está ligado (guard no ON CONFLICT).
+    _SP_ADMIN_EDITABLE = ("company_name", "description", "business_type")  # + tags (TEXT[])
+
     async def upsert_site_profile(self, target_id: int, profile: Dict[str, Any]) -> None:
-        """Grava (ou atualiza) o perfil comercial de um alvo (1 por target)."""
+        """Grava (ou atualiza) o perfil comercial de um alvo (1 por target).
+
+        KL-56: se o perfil já foi editado pelo operador (`edited_by_admin=TRUE`), os
+        campos editáveis à mão (company_name/description/business_type/tags) são
+        **preservados** — o enrich automático só atualiza o resto. `public_visible` e
+        `edited_by_admin` nunca são tocados aqui (o upsert não os inclui)."""
         fields = list(self._SP_FIELDS)
         vals = [profile.get(f) for f in fields]
         tech = json.dumps(profile.get("technologies") or {})
         sources = list(profile.get("extraction_sources") or [])
         tags = list(profile.get("tags") or [])  # KL-55: TEXT[] (como extraction_sources)
 
+        def _upd(col: str) -> str:
+            # Preserva a edição manual: mantém o valor antigo quando edited_by_admin.
+            if col in self._SP_ADMIN_EDITABLE or col == "tags":
+                return (f"{col} = CASE WHEN site_profile.edited_by_admin "
+                        f"THEN site_profile.{col} ELSE EXCLUDED.{col} END")
+            return f"{col} = EXCLUDED.{col}"
+
         def _fn(cur):
             cols = ", ".join(fields) + ", technologies, extraction_sources, tags, extracted_at"
             ph = ", ".join(["%s"] * len(fields)) + ", %s, %s, %s, NOW()"
-            updates = ", ".join(f"{f} = EXCLUDED.{f}" for f in fields)
+            updates = ", ".join(_upd(f) for f in fields)
             cur.execute(
                 f"INSERT INTO site_profile (target_id, {cols}) "
                 f"VALUES (%s, {ph}) "
                 f"ON CONFLICT (target_id) DO UPDATE SET {updates}, "
                 f"  technologies = EXCLUDED.technologies, "
                 f"  extraction_sources = EXCLUDED.extraction_sources, "
-                f"  tags = EXCLUDED.tags, extracted_at = NOW()",
+                f"  {_upd('tags')}, extracted_at = NOW()",
                 [target_id, *vals, tech, sources, tags],
             )
 
         await asyncio.to_thread(self._run, _fn)
+
+    async def update_site_profile_fields(
+        self, target_id: int, fields: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        """Edição manual do perfil pelo operador (KL-56). Atualiza só os campos
+        editáveis (description/business_type/tags/company_name), marca
+        `edited_by_admin=TRUE` (o enrich passa a preservá-los). Retorna o perfil
+        atualizado (ou None se o alvo não tem perfil)."""
+        allowed = ("description", "business_type", "company_name")
+        sets, params = [], []
+        for col in allowed:
+            if col in fields:
+                sets.append(f"{col} = %s")
+                params.append(fields[col])
+        if "tags" in fields:
+            raw = fields["tags"]
+            tags = raw if isinstance(raw, list) else [
+                t.strip() for t in str(raw or "").split(",") if t.strip()]
+            sets.append("tags = %s")
+            params.append(list(tags))
+        if not sets:
+            return await self.get_site_profile(target_id)
+        sets.append("edited_by_admin = TRUE")
+        sets.append("edited_by_admin_at = NOW()")
+
+        def _fn(cur):
+            cur.execute(
+                f"UPDATE site_profile SET {', '.join(sets)} WHERE target_id = %s "
+                f"RETURNING *",
+                [*params, target_id],
+            )
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def set_profile_visibility(
+        self, target_id: int, visible: bool
+    ) -> Optional[Dict[str, Any]]:
+        """Liga/desliga a landing pública (KL-56). `public_visible=FALSE` faz
+        `/site/{dominio}` sumir e exclui o perfil do sitemap. Retorna o perfil."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE site_profile SET public_visible = %s WHERE target_id = %s "
+                "RETURNING *",
+                (bool(visible), target_id),
+            )
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
 
     async def get_site_profile(self, target_id: int) -> Optional[Dict[str, Any]]:
         def _fn(cur):
@@ -1321,13 +1421,15 @@ class TargetStore:
     async def list_public_profile_domains(self, limit: int = 50000) -> List[Dict[str, Any]]:
         """Domínios com **perfil público** (para o sitemap, KL-51 f4): sites com scan
         real (`scanned`/`alerted`, com score) e `site_profile`. Exclui descartado/
-        sem_contato. `domain` + `last_scan_at` (lastmod), mais recente primeiro."""
+        sem_contato e landings desligadas (`public_visible=FALSE`, KL-56).
+        `domain` + `last_scan_at` (lastmod), mais recente primeiro."""
         def _fn(cur):
             cur.execute(
                 "SELECT t.domain, t.last_scan_at FROM targets t "
                 "JOIN site_profile sp ON sp.target_id = t.id "
                 "WHERE t.status IN ('scanned', 'alerted') AND t.last_scan_score IS NOT NULL "
                 "  AND t.domain IS NOT NULL AND t.domain <> '' "
+                "  AND COALESCE(sp.public_visible, TRUE) = TRUE "  # KL-56: só landings ligadas
                 "ORDER BY t.last_scan_at DESC NULLS LAST LIMIT %s", (limit,))
             return self._rows_to_dicts(cur)
 
@@ -1432,11 +1534,14 @@ class TargetStore:
     async def list_scans(
         self, target_id: Optional[int] = None, score_min: Optional[int] = None,
         score_max: Optional[int] = None, source: Optional[str] = None, limit: int = 50,
-        distinct_url: bool = False,
+        distinct_url: bool = False, offset: int = 0,
+        from_date: Optional[str] = None, to_date: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Lista scans (mais recentes primeiro). ``distinct_url=True`` retorna apenas
         o scan MAIS RECENTE de cada URL — evita 3 linhas do mesmo site na "atividade
-        recente" quando ele foi escaneado várias vezes (Fix pós-KL-27)."""
+        recente" quando ele foi escaneado várias vezes (Fix pós-KL-27). KL-56:
+        ``offset`` (paginação real da página Scans) + ``from_date``/``to_date``
+        (filtro por período, `YYYY-MM-DD`; `to_date` é inclusivo)."""
         cols = ("id, target_id, url, score, semaphore, pass_count, fail_count, "
                 "inconclusive_count, source, scanned_at")
 
@@ -1454,18 +1559,26 @@ class TargetStore:
             if source:
                 where.append("source = %s")
                 params.append(source)
+            if from_date:
+                where.append("scanned_at >= %s::date")
+                params.append(from_date)
+            if to_date:  # inclusivo: cobre o dia inteiro de to_date
+                where.append("scanned_at < (%s::date + INTERVAL '1 day')")
+                params.append(to_date)
             clause = ("WHERE " + " AND ".join(where)) if where else ""
-            params.append(limit)
+            params.extend([limit, offset])
             if distinct_url:
                 # DISTINCT ON (url) pega o último por URL; reordena por data e limita.
                 cur.execute(
                     f"SELECT * FROM (SELECT DISTINCT ON (url) {cols} FROM scans {clause} "
-                    f"ORDER BY url, scanned_at DESC) t ORDER BY scanned_at DESC LIMIT %s",
+                    f"ORDER BY url, scanned_at DESC) t ORDER BY scanned_at DESC "
+                    f"LIMIT %s OFFSET %s",
                     params,
                 )
             else:
                 cur.execute(
-                    f"SELECT {cols} FROM scans {clause} ORDER BY scanned_at DESC LIMIT %s",
+                    f"SELECT {cols} FROM scans {clause} ORDER BY scanned_at DESC "
+                    f"LIMIT %s OFFSET %s",
                     params,
                 )
             return self._rows_to_dicts(cur)
@@ -2114,6 +2227,95 @@ class TargetStore:
                 (limit,),
             )
             return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- inbox scan@klarim.net (KL-56) ------------------------------------- #
+
+    _INBOX_COLS = ("id, message_id, from_address, from_name, to_address, subject, "
+                   "body_preview, received_at, is_read, is_starred, is_archived, "
+                   "created_at")
+
+    async def insert_inbox_message(self, msg: Dict[str, Any]) -> bool:
+        """Grava uma mensagem recebida (webhook Hostinger). Dedup por `message_id`
+        (ON CONFLICT DO NOTHING). Retorna True se inseriu, False se já existia."""
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO inbox_messages (message_id, from_address, from_name, "
+                "  to_address, subject, body_preview, body_html, received_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+                "ON CONFLICT (message_id) DO NOTHING RETURNING id",
+                (msg.get("message_id"), msg.get("from_address") or "(desconhecido)",
+                 msg.get("from_name"), msg.get("to_address") or "scan@klarim.net",
+                 msg.get("subject"), msg.get("body_preview"), msg.get("body_html"),
+                 msg.get("received_at")),
+            )
+            return cur.fetchone() is not None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def list_inbox_messages(
+        self, box: str = "all", limit: int = 25, offset: int = 0
+    ) -> List[Dict[str, Any]]:
+        """Lista mensagens (sem o corpo HTML). `box`: all|unread|starred|archived.
+        `all`/`unread`/`starred` escondem arquivadas; `archived` mostra só elas."""
+        def _fn(cur):
+            where = []
+            if box == "unread":
+                where.append("is_read = FALSE AND is_archived = FALSE")
+            elif box == "starred":
+                where.append("is_starred = TRUE AND is_archived = FALSE")
+            elif box == "archived":
+                where.append("is_archived = TRUE")
+            else:  # all -> caixa de entrada (não-arquivadas)
+                where.append("is_archived = FALSE")
+            clause = "WHERE " + " AND ".join(where)
+            cur.execute(
+                f"SELECT {self._INBOX_COLS} FROM inbox_messages {clause} "
+                f"ORDER BY received_at DESC NULLS LAST, created_at DESC "
+                f"LIMIT %s OFFSET %s", (limit, offset))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_inbox_message(self, msg_id: int) -> Optional[Dict[str, Any]]:
+        """Detalhe completo (com body_html) de uma mensagem."""
+        def _fn(cur):
+            cur.execute("SELECT * FROM inbox_messages WHERE id = %s", (msg_id,))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def set_inbox_read(self, msg_id: int, read: bool = True) -> Optional[Dict[str, Any]]:
+        return await self._inbox_update(msg_id, "is_read = %s", (read,))
+
+    async def toggle_inbox_star(self, msg_id: int) -> Optional[Dict[str, Any]]:
+        return await self._inbox_update(msg_id, "is_starred = NOT is_starred", ())
+
+    async def set_inbox_archived(
+        self, msg_id: int, archived: bool = True
+    ) -> Optional[Dict[str, Any]]:
+        return await self._inbox_update(msg_id, "is_archived = %s", (archived,))
+
+    async def _inbox_update(
+        self, msg_id: int, set_sql: str, params: tuple
+    ) -> Optional[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute(
+                f"UPDATE inbox_messages SET {set_sql} WHERE id = %s "
+                f"RETURNING {self._INBOX_COLS}", (*params, msg_id))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def inbox_unread_count(self) -> int:
+        """Não-lidas e não-arquivadas (badge do menu)."""
+        def _fn(cur):
+            cur.execute("SELECT COUNT(*) FROM inbox_messages "
+                        "WHERE is_read = FALSE AND is_archived = FALSE")
+            return int(cur.fetchone()[0])
 
         return await asyncio.to_thread(self._run, _fn)
 

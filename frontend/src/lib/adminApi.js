@@ -30,6 +30,8 @@ const post = (path, body) =>
   req(path, { method: 'POST', body: body ? JSON.stringify(body) : undefined })
 const patch = (path, body) =>
   req(path, { method: 'PATCH', body: body ? JSON.stringify(body) : undefined })
+const put = (path, body) =>
+  req(path, { method: 'PUT', body: body ? JSON.stringify(body) : undefined })
 
 // Baixa um arquivo protegido (envia o Bearer token e dispara o download).
 export async function adminDownload(path, fallbackName) {
@@ -104,9 +106,22 @@ export const admin = {
   updateStatus: (id, status) => patch(`/targets/${id}/status`, { status }),
   updateEmail: (id, email) => patch(`/targets/${id}/email`, { contact_email: email }),
 
+  // landing pública / perfil (KL-56)
+  updateProfile: (id, fields) => put(`/targets/${id}/profile`, fields),
+  setProfileVisibility: (id, visible) =>
+    patch(`/targets/${id}/profile/visibility`, { visible }),
+
   // scans
   scans: (params) => get(`/scans${qs(params)}`),
   scan: (id) => get(`/scans/${id}`),
+
+  // inbox scan@klarim.net (KL-56)
+  inbox: (params) => get(`/admin/inbox${qs(params)}`),
+  inboxMessage: (id) => get(`/admin/inbox/${id}`),
+  inboxUnread: () => get('/admin/inbox/unread-count'),
+  inboxRead: (id, read = true) => post(`/admin/inbox/${id}/read?read=${read}`),
+  inboxStar: (id) => post(`/admin/inbox/${id}/star`),
+  inboxArchive: (id, archived = true) => post(`/admin/inbox/${id}/archive?archived=${archived}`),
 
   // alertas / re-scans / pagamentos
   alerts: (params) => get(`/alerts${qs(params)}`),

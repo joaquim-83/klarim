@@ -8,6 +8,7 @@ import {
 } from '../../components/admin/ui'
 import { SectorEditor, SECTOR_OPTIONS } from '../../components/admin/SectorEditor'
 import { StatusEditor, EmailEditor } from '../../components/admin/TargetEditors'
+import { ProfileEditModal } from '../../components/admin/ProfileEditor'
 
 const STATUS_OPTS = ['discovered', 'scanned', 'alerted', 'sem_contato', 'unsubscribed', 'descartado']
 const PLATFORM_OPTS = ['duda', 'wordpress', 'cra', 'wix', 'shopify', 'squarespace', 'unknown']
@@ -40,6 +41,7 @@ export default function Alvos() {
   const [msg, setMsg] = useState('')
   const [busyId, setBusyId] = useState(null)
   const [showAdd, setShowAdd] = useState(false)
+  const [profileTarget, setProfileTarget] = useState(null)  // landing modal (KL-56)
   const [reclassifying, setReclassifying] = useState(false)
   const [selected, setSelected] = useState(() => new Set())
   const [bulkSector, setBulkSector] = useState('hotel')
@@ -231,9 +233,17 @@ export default function Alvos() {
                     </td>
                     <td className="py-2 pr-3 text-xs text-klarim-muted">{t.last_scan_at ? relativeTime(t.last_scan_at) : '—'}</td>
                     <td className="py-2">
-                      <div className="flex gap-1">
+                      <div className="flex flex-wrap gap-1">
                         <Button disabled={busyId === t.id} onClick={() => act(t.id, admin.scanTarget, 'Scan enfileirado')}>Escanear</Button>
                         <Button disabled={busyId === t.id || !t.contact_email} onClick={() => act(t.id, admin.alertTarget, 'Alerta enviado')}>Alertar</Button>
+                        {t.has_profile && ['scanned', 'alerted'].includes(t.status) && (
+                          <Button
+                            onClick={() => setProfileTarget(t)}
+                            title="Ver / editar / (des)ativar a landing pública"
+                          >
+                            {t.public_visible === false ? 'Landing 🔒' : 'Landing'}
+                          </Button>
+                        )}
                         <Link to={`/painel/alvos/${t.id}`}><Button>Detalhes</Button></Link>
                       </div>
                     </td>
@@ -250,6 +260,13 @@ export default function Alvos() {
       </Card>
 
       {showAdd && <AddTargetModal onClose={() => setShowAdd(false)} onAdded={() => { setShowAdd(false); reload() }} />}
+      {profileTarget && (
+        <ProfileEditModal
+          target={profileTarget}
+          onClose={() => setProfileTarget(null)}
+          onSaved={(note) => { setMsg(note); reload() }}
+        />
+      )}
     </div>
   )
 }

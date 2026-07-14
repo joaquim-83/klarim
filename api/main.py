@@ -21,7 +21,8 @@ import secrets
 import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from email.utils import parseaddr
+from typing import Any, Optional
 from urllib.parse import urlparse, quote
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
@@ -153,7 +154,14 @@ def _verify_token(token: str) -> dict:
     return payload
 
 
+# Exceções públicas dentro de um prefixo protegido: o webhook da Hostinger (KL-56)
+# cai sob `/email` (admin) mas tem auth PRÓPRIA (token da Hostinger), então é público.
+_PUBLIC_UNDER_PROTECTED = ("/email/webhook",)
+
+
 def _is_protected(path: str) -> bool:
+    if path in _PUBLIC_UNDER_PROTECTED:
+        return False
     return any(path == p or path.startswith(p + "/") for p in _PROTECTED_PREFIXES)
 
 
@@ -800,6 +808,9 @@ async def public_profile(domain: str) -> dict:
 
     tid = target["id"]
     profile = (await store.get_site_profile(tid)) or {}
+    # KL-56: landing desligada pelo operador → some (mesmo comportamento de descartado).
+    if profile.get("public_visible") is False:
+        return {"status": "not_found", "domain": domain}
     classifications = await store.get_target_classifications(tid)
     # semáforo real do último scan (KL-12); fallback por score p/ scans antigos.
     semaphore = _semaphore_from_score(score)
@@ -1849,6 +1860,179 @@ class EmailReportBody(BaseModel):
     charge_id: str
 
 
+# --------------------------------------------------------------------------- #
+# Inbox scan@klarim.net (KL-56) — webhook Hostinger Agentic Mail + gestão admin.
+# --------------------------------------------------------------------------- #
+
+def _hostinger_token_ok(request: Request) -> bool:
+    """Valida o token do webhook (constant-time). Fail-closed: sem
+    `HOSTINGER_WEBHOOK_TOKEN` configurado, nada passa. Aceita o token em vários
+    lugares (o formato exato do header da Hostinger é confirmado em runtime):
+    `Authorization: Bearer`, headers custom comuns, ou `?token=`."""
+    expected = os.environ.get("HOSTINGER_WEBHOOK_TOKEN", "")
+    if not expected:
+        return False
+    auth = request.headers.get("authorization", "")
+    bearer = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
+    candidates = [
+        bearer,
+        request.headers.get("x-webhook-token", ""),
+        request.headers.get("x-hostinger-webhook-token", ""),
+        request.headers.get("x-hostinger-token", ""),
+        request.headers.get("x-webhook-signature", ""),
+        request.headers.get("x-api-key", ""),
+        request.query_params.get("token", ""),
+    ]
+    return any(c and hmac.compare_digest(c, expected) for c in candidates)
+
+
+def _inbox_dt(val) -> Optional[datetime]:
+    """ISO 8601 (com 'Z') → datetime; None se não parsear (received_at é nullable)."""
+    if not val or not isinstance(val, str):
+        return None
+    try:
+        return datetime.fromisoformat(val.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def parse_inbox_payload(payload: dict) -> Optional[dict]:
+    """Extrai uma mensagem do payload do webhook (KL-56). Suporta o formato da
+    AgentMail/Hostinger (`event_type=message.received` + objeto `message`) e formas
+    "achatadas" (`from`/`to`/`subject`/`text`/`html`). Retorna o dict pronto para o
+    banco, ou None se não for uma mensagem reconhecível (para logar o raw)."""
+    if not isinstance(payload, dict):
+        return None
+    evt = payload.get("event_type") or payload.get("type") or ""
+    # eventos que não são recebimento de mensagem (send/delivery/bounce) → ignora
+    if evt and "received" not in evt and "message" not in payload and "from" not in payload:
+        return None
+    msg = payload.get("message") if isinstance(payload.get("message"), dict) else payload
+    raw_from = (msg.get("from") or msg.get("from_address") or msg.get("sender") or "")
+    from_name, from_address = parseaddr(raw_from) if raw_from else ("", "")
+    from_address = (from_address or raw_from or "").strip()
+    to_raw = msg.get("to") or msg.get("to_address") or "scan@klarim.net"
+    if isinstance(to_raw, list):
+        to_raw = to_raw[0] if to_raw else "scan@klarim.net"
+    _, to_addr = parseaddr(str(to_raw))
+    text = msg.get("text") or ""
+    preview = (msg.get("preview") or msg.get("body_preview") or text or "").strip()[:280]
+    body_html = msg.get("html") or msg.get("body_html")
+    mid = (msg.get("message_id") or msg.get("id") or payload.get("event_id"))
+    if not mid:  # sem id estável → sintetiza p/ o dedup (UNIQUE) funcionar
+        seed = f"{from_address}|{msg.get('subject','')}|{msg.get('timestamp','')}"
+        mid = "klarim-" + hashlib.sha256(seed.encode("utf-8", "replace")).hexdigest()[:32]
+    received = (msg.get("timestamp") or msg.get("date") or msg.get("received_at")
+                or msg.get("created_at"))
+    if not from_address and not msg.get("subject") and not text and not body_html:
+        return None  # nada reconhecível → o chamador loga o raw
+    return {
+        "message_id": str(mid),
+        "from_address": from_address or "(desconhecido)",
+        "from_name": (from_name or None),
+        "to_address": (to_addr or "scan@klarim.net"),
+        "subject": msg.get("subject"),
+        "body_preview": preview or None,
+        "body_html": body_html,
+        "received_at": _inbox_dt(received),
+    }
+
+
+@app.post("/email/webhook")
+async def email_webhook(request: Request) -> dict:
+    """Recebe e-mails de `scan@klarim.net` (Hostinger Agentic Mail). Auth por token
+    próprio (não JWT admin — rota no `_PUBLIC_UNDER_PROTECTED`). Grava em
+    `inbox_messages` (dedup por `message_id`)."""
+    if not _hostinger_token_ok(request):
+        return JSONResponse({"detail": "Não autorizado."}, status_code=401)
+    try:
+        payload = await request.json()
+    except Exception:  # noqa: BLE001 - corpo inválido; loga o raw e não falha
+        raw = (await request.body())[:2000]
+        print(f"[inbox] corpo não-JSON: {raw!r}", flush=True)
+        return {"ok": True, "parsed": False}
+
+    msg = parse_inbox_payload(payload)
+    if not msg:
+        # Formato não reconhecido: loga o raw (truncado) p/ adaptar o parser.
+        print(f"[inbox] payload não reconhecido: "
+              f"{json.dumps(payload, ensure_ascii=False)[:1500]}", flush=True)
+        return {"ok": True, "parsed": False}
+
+    try:
+        inserted = await get_target_store().insert_inbox_message(msg)
+    except Exception as exc:  # noqa: BLE001 - nunca derruba o webhook (Hostinger re-tentaria)
+        print(f"[inbox] erro ao gravar ({exc!r})", flush=True)
+        return {"ok": True, "stored": False}
+    print(f"[inbox] {'nova' if inserted else 'duplicada'} de {msg['from_address']} "
+          f"— {msg.get('subject') or '(sem assunto)'}", flush=True)
+    return {"ok": True, "stored": bool(inserted)}
+
+
+_INBOX_BOXES = ("all", "unread", "starred", "archived")
+
+
+@app.get("/admin/inbox/unread-count")
+async def api_inbox_unread_count() -> dict:
+    """Contagem de não-lidas (badge do menu). Declarado ANTES de /{msg_id}."""
+    try:
+        n = await get_target_store().inbox_unread_count()
+    except Exception:  # noqa: BLE001
+        n = 0
+    return {"unread": n}
+
+
+@app.get("/admin/inbox")
+async def api_inbox_list(
+    box: str = Query(default="all"),
+    limit: int = Query(default=25, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict:
+    """Lista mensagens (paginada). `box`: all|unread|starred|archived."""
+    if box not in _INBOX_BOXES:
+        box = "all"
+    rows = await get_target_store().list_inbox_messages(box, limit, offset)
+    return {"count": len(rows), "box": box, "messages": rows}
+
+
+@app.get("/admin/inbox/{msg_id}")
+async def api_inbox_get(msg_id: int) -> dict:
+    """Detalhe (corpo completo). Marca como lida ao abrir."""
+    store = get_target_store()
+    msg = await store.get_inbox_message(msg_id)
+    if msg is None:
+        raise HTTPException(status_code=404, detail="Mensagem não encontrada.")
+    if not msg.get("is_read"):
+        updated = await store.set_inbox_read(msg_id, True)
+        if updated:
+            msg["is_read"] = True
+    return msg
+
+
+@app.post("/admin/inbox/{msg_id}/read")
+async def api_inbox_read(msg_id: int, read: bool = Query(default=True)) -> dict:
+    updated = await get_target_store().set_inbox_read(msg_id, read)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Mensagem não encontrada.")
+    return updated
+
+
+@app.post("/admin/inbox/{msg_id}/star")
+async def api_inbox_star(msg_id: int) -> dict:
+    updated = await get_target_store().toggle_inbox_star(msg_id)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Mensagem não encontrada.")
+    return updated
+
+
+@app.post("/admin/inbox/{msg_id}/archive")
+async def api_inbox_archive(msg_id: int, archived: bool = Query(default=True)) -> dict:
+    updated = await get_target_store().set_inbox_archived(msg_id, archived)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Mensagem não encontrada.")
+    return updated
+
+
 @app.post("/email/test")
 async def email_test(body: EmailTestBody) -> dict:
     """Envia um e-mail de teste (validação da configuração)."""
@@ -2160,11 +2344,15 @@ async def api_list_scans(
     score_max: Optional[int] = Query(default=None),
     source: Optional[str] = Query(default=None),
     limit: int = Query(default=50, le=500),
+    offset: int = Query(default=0, ge=0),  # KL-56: paginação real da página Scans
+    from_date: Optional[str] = Query(default=None, description="YYYY-MM-DD (inclusive)"),
+    to_date: Optional[str] = Query(default=None, description="YYYY-MM-DD (inclusive)"),
     distinct_url: bool = Query(default=False,
         description="Só o scan mais recente de cada URL (atividade recente)."),
 ) -> dict:
     rows = await get_target_store().list_scans(
-        target_id, score_min, score_max, source, limit, distinct_url=distinct_url)
+        target_id, score_min, score_max, source, limit, distinct_url=distinct_url,
+        offset=offset, from_date=from_date, to_date=to_date)
     return {"count": len(rows), "scans": rows}
 
 
@@ -3035,6 +3223,42 @@ async def api_target_update_email(target_id: int, body: EmailBody) -> dict:
     if updated is None:
         raise HTTPException(status_code=404, detail="Alvo não encontrado.")
     return updated
+
+
+# --- Gestão da landing pública pelo operador (KL-56) ----------------------- #
+
+class ProfileEditBody(BaseModel):
+    description: Optional[str] = None
+    business_type: Optional[str] = None
+    company_name: Optional[str] = None
+    tags: Optional[Any] = None  # lista OU string "a, b, c" (o store normaliza)
+
+
+class VisibilityBody(BaseModel):
+    visible: bool
+
+
+@app.put("/targets/{target_id}/profile")
+async def api_update_profile(target_id: int, body: ProfileEditBody) -> dict:
+    """Edição manual do perfil da landing (description/business_type/tags/company_name).
+    Marca `edited_by_admin=TRUE` — o enrich automático passa a preservar esses campos."""
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    if not fields:
+        raise HTTPException(status_code=422, detail="Nenhum campo para atualizar.")
+    updated = await get_target_store().update_site_profile_fields(target_id, fields)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Perfil não encontrado para o alvo.")
+    return updated
+
+
+@app.patch("/targets/{target_id}/profile/visibility")
+async def api_profile_visibility(target_id: int, body: VisibilityBody) -> dict:
+    """Liga/desliga a landing pública (`/site/{dominio}`). Desligada: some do site e
+    do sitemap (mesmo comportamento de descartado)."""
+    updated = await get_target_store().set_profile_visibility(target_id, body.visible)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Perfil não encontrado para o alvo.")
+    return {"target_id": target_id, "public_visible": bool(body.visible)}
 
 
 def _payment_row(charge, target_id: Optional[int] = None) -> dict:

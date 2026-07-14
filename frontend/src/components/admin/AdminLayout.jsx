@@ -1,7 +1,8 @@
-import { useState, Suspense } from 'react'
+import { useState, useEffect, Suspense } from 'react'
 import { NavLink, Outlet, useNavigate } from 'react-router-dom'
 import { Beacon } from '../Logo'
 import { clearToken } from '../../lib/auth'
+import { admin } from '../../lib/adminApi'
 import { Loading } from './ui'
 
 const I = (paths) => (
@@ -23,6 +24,7 @@ const ICONS = {
   system: I(<><rect x="2" y="3" width="20" height="14" rx="2" /><line x1="8" y1="21" x2="16" y2="21" /><line x1="12" y1="17" x2="12" y2="21" /></>),
   analytics: I(<><line x1="18" y1="20" x2="18" y2="10" /><line x1="12" y1="20" x2="12" y2="4" /><line x1="6" y1="20" x2="6" y2="14" /></>),
   monitored: I(<><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" /><path d="M9 12l2 2 4-4" /></>),
+  inbox: I(<><path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z" /><polyline points="22,6 12,13 2,6" /></>),
   logout: I(<><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></>),
 }
 
@@ -32,6 +34,7 @@ const NAV = [
   { to: '/painel/scans', label: 'Scans', icon: 'scans' },
   { to: '/painel/alertas', label: 'Alertas', icon: 'alerts' },
   { to: '/painel/pagamentos', label: 'Pagamentos', icon: 'payments' },
+  { to: '/painel/inbox', label: 'Inbox', icon: 'inbox' },
   { to: '/painel/rescans', label: 'Re-scans', icon: 'rescans' },
   { to: '/painel/analytics', label: 'Analytics', icon: 'analytics' },
   { to: '/painel/clientes', label: 'Gestão de Clientes', icon: 'monitored' },
@@ -41,7 +44,19 @@ const NAV = [
 
 export default function AdminLayout() {
   const [open, setOpen] = useState(false)
+  const [unread, setUnread] = useState(0)  // badge do Inbox (KL-56)
   const navigate = useNavigate()
+
+  // Contagem de não-lidas do inbox: no mount + a cada 60s (badge do menu).
+  useEffect(() => {
+    let alive = true
+    const load = () => admin.inboxUnread()
+      .then((r) => alive && setUnread(r?.unread || 0))
+      .catch(() => {})
+    load()
+    const id = setInterval(load, 60000)
+    return () => { alive = false; clearInterval(id) }
+  }, [])
 
   function logout() {
     clearToken()
@@ -50,7 +65,9 @@ export default function AdminLayout() {
 
   const nav = (
     <nav className="flex flex-1 flex-col gap-1">
-      {NAV.map((item) => (
+      {NAV.map((item) => {
+        const badge = item.to === '/painel/inbox' ? unread : 0
+        return (
         <NavLink
           key={item.to}
           to={item.to}
@@ -66,8 +83,14 @@ export default function AdminLayout() {
         >
           {ICONS[item.icon]}
           {item.label}
+          {badge > 0 && (
+            <span className="ml-auto rounded-full bg-klarim-alert px-2 py-0.5 text-[11px] font-bold text-black">
+              {badge}
+            </span>
+          )}
         </NavLink>
-      ))}
+        )
+      })}
       <button
         onClick={logout}
         className="mt-2 flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-klarim-muted transition hover:bg-klarim-fail/10 hover:text-klarim-fail"

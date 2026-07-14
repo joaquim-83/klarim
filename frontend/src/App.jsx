@@ -25,6 +25,7 @@ const Scans = lazy(() => import('./pages/admin/Scans'))
 const ScanDetalhe = lazy(() => import('./pages/admin/ScanDetalhe'))
 const Alertas = lazy(() => import('./pages/admin/Alertas'))
 const Pagamentos = lazy(() => import('./pages/admin/Pagamentos'))
+const Inbox = lazy(() => import('./pages/admin/Inbox'))
 const Rescans = lazy(() => import('./pages/admin/Rescans'))
 const Analytics = lazy(() => import('./pages/admin/Analytics'))
 const Clientes = lazy(() => import('./pages/admin/Clientes'))
@@ -92,6 +93,7 @@ export default function App() {
         <Route path="scans/:id" element={<ScanDetalhe />} />
         <Route path="alertas" element={<Alertas />} />
         <Route path="pagamentos" element={<Pagamentos />} />
+        <Route path="inbox" element={<Inbox />} />
         <Route path="rescans" element={<Rescans />} />
         <Route path="analytics" element={<Analytics />} />
         <Route path="clientes" element={<Clientes />} />
