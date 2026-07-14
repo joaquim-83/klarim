@@ -1716,13 +1716,52 @@ class TargetStore:
     # --- dashboard admin (KL-14) ------------------------------------------- #
 
     async def scan_stats(self) -> Dict[str, Any]:
-        """Média de score e distribuição por semáforo (todos os scans)."""
+        """Total, média, semáforo, **manual vs automatizado**, hoje/7d e score 100
+        (fix MCP: espelha `dashboard_summary().scans` p/ MCP e painel baterem)."""
         def _fn(cur):
-            cur.execute("SELECT COUNT(*), COALESCE(ROUND(AVG(score)), 0) FROM scans")
-            total, avg = cur.fetchone()
+            cur.execute(
+                "SELECT COUNT(*), COALESCE(ROUND(AVG(score)), 0), "
+                "  COUNT(*) FILTER (WHERE scanned_by_email IS NOT NULL), "
+                "  COUNT(*) FILTER (WHERE scanned_by_email IS NULL), "
+                "  COUNT(*) FILTER (WHERE scanned_at >= date_trunc('day', NOW())), "
+                "  COUNT(*) FILTER (WHERE scanned_at > NOW() - INTERVAL '7 days'), "
+                "  COUNT(*) FILTER (WHERE score = 100) "
+                "FROM scans")
+            total, avg, manual, auto, today, d7, s100 = cur.fetchone()
             cur.execute("SELECT semaphore, COUNT(*) FROM scans GROUP BY semaphore")
             by_semaphore = {r[0]: int(r[1]) for r in cur.fetchall()}
-            return {"total": int(total), "avg_score": int(avg), "by_semaphore": by_semaphore}
+            return {"total": int(total), "avg_score": int(avg), "by_semaphore": by_semaphore,
+                    "manual": int(manual), "automated": int(auto), "today": int(today),
+                    "last_7_days": int(d7), "score_100_count": int(s100)}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def last_scan_at(self) -> Optional[str]:
+        """Timestamp (ISO) do scan mais recente na tabela `scans` — a MESMA fonte que a
+        página Scans do painel (`list_scans`). Usado no `get_system_status` para MCP e
+        painel mostrarem o mesmo dado (fix da divergência: o heartbeat do worker avança
+        além do banco — scans que não persistem, enrich pós-scan)."""
+        def _fn(cur):
+            cur.execute("SELECT MAX(scanned_at) FROM scans")
+            v = cur.fetchone()[0]
+            return v.isoformat() if v else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def profile_counts(self) -> Dict[str, int]:
+        """Contagem de perfis (`site_profile`): total, com descrição (IA rodou), com
+        CNAE (`target_classifications`) e visíveis (`public_visible`) — fix MCP."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT COUNT(*), "
+                "  COUNT(*) FILTER (WHERE description IS NOT NULL AND description <> ''), "
+                "  COUNT(*) FILTER (WHERE COALESCE(public_visible, TRUE)) "
+                "FROM site_profile")
+            total, with_desc, public = cur.fetchone()
+            cur.execute("SELECT COUNT(DISTINCT target_id) FROM target_classifications")
+            with_cnae = int(cur.fetchone()[0])
+            return {"total": int(total), "with_description": int(with_desc),
+                    "with_cnae": with_cnae, "public_visible": int(public)}
 
         return await asyncio.to_thread(self._run, _fn)
 
@@ -2456,10 +2495,11 @@ class TargetStore:
 
     async def list_inbox_messages(
         self, box: str = "all", limit: int = 25, offset: int = 0,
-        source: Optional[str] = None,
+        source: Optional[str] = None, search: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Lista mensagens (sem o corpo HTML). `box`: all|unread|starred|archived.
-        `source` (KL-60): filtra por origem (`webhook`|`contact_form`); None = todas."""
+        `source` (KL-60): `webhook`|`contact_form`. `search` (fix MCP): texto no
+        assunto/remetente/preview (ILIKE)."""
         def _fn(cur):
             where = []
             params: list = []
@@ -2474,6 +2514,11 @@ class TargetStore:
             if source in ("webhook", "contact_form"):
                 where.append("COALESCE(source, 'webhook') = %s")
                 params.append(source)
+            if search:
+                like = f"%{search.strip()}%"
+                where.append("(subject ILIKE %s OR from_address ILIKE %s "
+                             "OR from_name ILIKE %s OR body_preview ILIKE %s)")
+                params.extend([like, like, like, like])
             clause = "WHERE " + " AND ".join(where)
             params.extend([limit, offset])
             cur.execute(

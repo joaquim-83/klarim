@@ -2380,14 +2380,17 @@ async def api_inbox_list(
     offset: int = Query(default=0, ge=0),
     source: Optional[str] = Query(default=None,
         description="Filtra por origem: webhook (e-mails) | contact_form (formulário)."),
+    search: Optional[str] = Query(default=None,
+        description="Busca por texto no assunto/remetente/preview."),
 ) -> dict:
     """Lista mensagens (paginada). `box`: all|unread|starred|archived. `source` (KL-60):
-    webhook|contact_form (None = todas)."""
+    webhook|contact_form (None = todas). `search`: texto (ILIKE)."""
     if box not in _INBOX_BOXES:
         box = "all"
     src = source if source in _INBOX_SOURCES else None
-    rows = await get_target_store().list_inbox_messages(box, limit, offset, source=src)
-    return {"count": len(rows), "box": box, "source": src, "messages": rows}
+    q = (search or "").strip() or None
+    rows = await get_target_store().list_inbox_messages(box, limit, offset, source=src, search=q)
+    return {"count": len(rows), "box": box, "source": src, "search": q, "messages": rows}
 
 
 @app.get("/admin/inbox/{msg_id}")
@@ -2915,6 +2918,14 @@ async def api_system_status() -> dict:
     a_stats = await store.alert_stats()
     r_stats = await store.rescan_stats()
     scan_today = await store.scan_today_stats()
+    # Fix de divergência: o `last_scan_at` vem do BANCO (MAX(scans.scanned_at)) — a mesma
+    # fonte da página Scans do painel —, não do heartbeat do worker (que avança além do
+    # banco: scans que não persistem, tempo do enrich pós-scan). Assim MCP == painel.
+    db_last_scan = None
+    try:
+        db_last_scan = await store.last_scan_at()
+    except Exception:  # noqa: BLE001 - best-effort
+        db_last_scan = None
     eligible = await store.count_rescan_eligible()
     discovered_today = await store.count_discovered_today()
     email = await store.email_metrics()
@@ -2977,7 +2988,10 @@ async def api_system_status() -> dict:
                 "queue_size": queue_size,
                 "completed_today": scan_today["count"],
                 "avg_score_today": scan_today["avg_score"],
-                "last_scan_at": (scan_hb or {}).get("last_scan_at"),
+                # `last_scan_at` do BANCO (bate com o painel); a hora do heartbeat do
+                # worker fica como `worker_last_activity` (liveness) para transparência.
+                "last_scan_at": db_last_scan,
+                "worker_last_activity": (scan_hb or {}).get("last_scan_at"),
             },
         },
         "dependencies": deps,

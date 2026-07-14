@@ -15,6 +15,8 @@ from mcp_server.auth import MCPAuthMiddleware
 import mcp_server.server as srv
 import mcp_server.tools.targets as targets_tools
 import mcp_server.tools.system as system_tools
+import mcp_server.tools.scans as scans_tools
+import mcp_server.tools.inbox as inbox_tools
 
 
 # --- registro das 25 tools ------------------------------------------------- #
@@ -24,6 +26,8 @@ READ_TOOLS = [
     "list_targets", "get_target", "get_target_stats", "search_targets",
     "list_scans", "get_scan", "get_scan_stats", "list_alerts", "get_alert_stats",
     "list_payments", "get_payment_stats", "get_funnel", "get_rescan_stats",
+    # fix MCP: novas tools de dados
+    "get_dashboard_stats", "get_enrichment_status", "get_user_accounts", "search_inbox",
 ]
 WRITE_TOOLS = [
     "scan_url", "add_target", "update_target_email", "update_target_status",
@@ -171,6 +175,40 @@ class FakeStore:
     async def stats(self):
         return {"by_status": {"sem_contato": 1900}}
 
+    # --- fix MCP: novas tools de dados ---
+    async def profile_counts(self):
+        return {"total": 3476, "with_description": 3332, "with_cnae": 1027,
+                "public_visible": 3474}
+
+    async def scan_stats(self):
+        return {"total": 4832, "avg_score": 73, "by_semaphore": {"amarelo": 4000},
+                "manual": 52, "automated": 4780, "today": 45, "last_7_days": 312,
+                "score_100_count": 86}
+
+    async def dashboard_summary(self):
+        return {"targets": {"total": 20432, "by_status": {}, "score_100": 86},
+                "scans": {"total": 4832, "manual": 52, "automated": 4780},
+                "profiles": {"total": 3476, "with_ai": 3332, "with_cnae": 1027},
+                "accounts": {"total": 6, "active": 6, "sites_monitored": 5},
+                "alerts": {"total": 1747, "today": 0}}
+
+    async def inbox_unread_count(self):
+        return 2
+
+    async def count_enrichment_groups(self, mode="all"):
+        return {"group1": 10, "group2": 20, "group3": 30, "group4": 40, "total": 100}
+
+    async def count_unscanned_targets(self, status="sem_contato"):
+        return 7400
+
+    async def list_users_with_sites(self):
+        return [{"id": 1, "email": "a@x.com.br", "is_active": True,
+                 "sites": [{"target_id": 9}]}]
+
+    async def list_inbox_messages(self, box="all", limit=25, offset=0, source=None, search=None):
+        self.kw = {"box": box, "source": source, "search": search}
+        return [{"id": 1, "subject": "oi", "source": source or "webhook"}]
+
 
 @pytest.fixture
 def fake_store(monkeypatch):
@@ -203,7 +241,42 @@ def test_get_target_tool_not_found(fake_store):
 
 
 def test_get_target_stats_tool(fake_store):
-    assert asyncio.run(targets_tools.get_target_stats())["by_status"]["sem_contato"] == 1900
+    res = asyncio.run(targets_tools.get_target_stats())
+    assert res["by_status"]["sem_contato"] == 1900
+    # fix MCP: agora inclui contagem de perfis
+    assert res["profiles"]["total"] == 3476 and res["profiles"]["with_cnae"] == 1027
+
+
+def test_get_scan_stats_tool_manual_vs_auto(fake_store):
+    res = asyncio.run(scans_tools.get_scan_stats())
+    assert res["manual"] == 52 and res["automated"] == 4780
+    assert res["today"] == 45 and res["score_100_count"] == 86
+
+
+def test_get_dashboard_stats_tool(fake_store):
+    res = asyncio.run(system_tools.get_dashboard_stats())
+    for key in ("targets", "scans", "profiles", "accounts", "alerts", "inbox"):
+        assert key in res
+    assert res["inbox"]["unread"] == 2 and res["scans"]["manual"] == 52
+
+
+def test_get_enrichment_status_tool(fake_store):
+    res = asyncio.run(system_tools.get_enrichment_status())
+    assert res["backlog"]["g1_no_profile"] == 10 and res["backlog"]["total"] == 100
+    assert res["unscanned_sem_contato"] == 7400
+
+
+def test_get_user_accounts_tool(fake_store):
+    res = asyncio.run(system_tools.get_user_accounts())
+    assert res["total"] == 1 and res["active"] == 1 and res["total_sites"] == 1
+
+
+def test_search_inbox_tool(fake_store):
+    res = asyncio.run(inbox_tools.search_inbox(query="oi", source="contact_form",
+                                               unread_only=True))
+    assert res["count"] == 1 and res["unread_total"] == 2
+    assert fake_store.kw["search"] == "oi" and fake_store.kw["source"] == "contact_form"
+    assert fake_store.kw["box"] == "unread"
 
 
 def test_update_target_status_tool_invalid(fake_store, monkeypatch):

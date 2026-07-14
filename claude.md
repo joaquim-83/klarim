@@ -2148,3 +2148,36 @@ nunca e-mail/CNPJ/WhatsApp) e respeitam a visibilidade (`public_visible`/descart
 `/score` de site oculto devolve `score: null`. O widget é **leve, async, CSS inline** e não
 pode impactar a performance do site externo. O card é **best-effort/fail-open** (render falho
 → favicon). O Klarim avalia a segurança do **SITE**, não do negócio.
+
+## 44. Cobertura MCP + fix da divergência de `last_scan_at`
+
+Alinha o MCP (interface do operador via Claude) com o painel admin e conserta uma divergência
+real de dados.
+
+**Fix da divergência (`scan.last_scan_at`).** O `get_system_status`/`GET /system/status` lia o
+`last_scan_at` do **heartbeat do worker** (Redis `worker:scan:status`), que é `datetime.now()`
+setado no loop **depois** do `enrich_profile` e **mesmo quando um scan não persiste** (score
+None, exceção no save) — então avançava além do banco (até ~29 min). O painel (página Scans)
+lê o **banco** via `list_scans`. **Fix:** `scan.last_scan_at` agora vem de `store.last_scan_at()`
+(`MAX(scans.scanned_at)`) — a mesma fonte do painel → MCP == painel. O valor do heartbeat vira
+`scan.worker_last_activity` (liveness, transparência).
+
+**Tools novas (4 → 42 no total):** `get_dashboard_stats` (os mesmos totalizadores da home do
+painel via `dashboard_summary` + inbox unread), `get_enrichment_status` (backlog G1-G4 via
+`count_enrichment_groups` + `sem_contato` sem scan do KL-60), `get_user_accounts` (contas +
+sites, reusa `admin_clients`/`list_users_with_sites`), `search_inbox` (busca no inbox por
+texto/source/unread — `list_inbox_messages` ganhou `search` ILIKE). Em `mcp_server/tools/`:
+`get_dashboard_stats`/`get_enrichment_status`/`get_user_accounts` em `system.py`, `search_inbox`
+no novo `inbox.py` (registrado no `__init__`).
+
+**Tools existentes enriquecidas (consistência MCP↔painel):** `get_target_stats` passou a
+incluir `profiles` (total, com_description/IA, com_cnae, public_visible — via `profile_counts`);
+`get_scan_stats` passou a incluir `manual`/`automated` (`scanned_by_email`), `today`,
+`last_7_days`, `score_100_count` (o `scan_stats` do store agora espelha `dashboard_summary`,
+então `/scans/stats` do painel também ganha os campos). **Crons + disco** no `get_system_status`
+foram **pulados** de propósito (o container `api` não lê o crontab nem o disco do host).
+
+**Regra inviolável:** o MCP e o painel devem mostrar os **mesmos dados** — datas/contagens vêm
+sempre do **banco** (nunca de heartbeat em memória, que diverge). Toda tool nova é **leitura**,
+passa pelo `_guard` (nunca derruba a sessão) e reusa métodos/endpoints existentes (sem lógica
+duplicada). As MCP tools são o wrapper fino sobre a API/store (KL-18).

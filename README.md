@@ -669,12 +669,14 @@ Histórico em `rescan_log`. Gestão via API: `GET /api/rescans`, `/api/rescans/s
 
 O módulo [`mcp_server/`](./mcp_server/) expõe um **servidor MCP** montado no mesmo
 FastAPI (endpoint SSE em **`https://klarim.net/mcp/sse`**), permitindo operar o
-Klarim por linguagem natural no Claude: **36 tools** (leitura — sistema, alvos,
-perfil, classificações CNAE, scans, alertas, pagamentos, analytics, saúde de e-mail;
-escrita — scan, adicionar alvo, editar e-mail/status/setor, disparar alerta, enviar
-relatório, classificar em lote, controlar workers, ofertar monitoramento). Cada tool
-é um wrapper fino sobre a API/`store`
-existente. Transporte **SSE** em `/mcp/sse` (modelo Traka), com autenticação por
+Klarim por linguagem natural no Claude: **42 tools** (leitura — sistema, **totalizadores
+do painel** (`get_dashboard_stats`), **enriquecimento** (`get_enrichment_status`), **contas**
+(`get_user_accounts`), alvos, perfil, classificações CNAE, scans, alertas, pagamentos,
+analytics, saúde de e-mail, **busca no inbox** (`search_inbox`); escrita — scan, adicionar
+alvo, editar e-mail/status/setor, disparar alerta, enviar relatório, classificar em lote,
+controlar workers, ofertar monitoramento). O MCP e o painel mostram os **mesmos dados** (ex.:
+`last_scan_at` vem do banco, não do heartbeat — fix de divergência). Cada tool é um wrapper
+fino sobre a API/`store` existente. Transporte **SSE** em `/mcp/sse` (modelo Traka), com autenticação por
 `MCPAuthMiddleware` (`MCP_API_KEY`, fail-closed, constant-time, `Authorization:
 Bearer` ou `?token=`). O endpoint SSE **propaga o token** para os POSTs de mensagens,
 o que faz a conexão funcionar no Claude.ai web.

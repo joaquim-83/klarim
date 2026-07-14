@@ -98,8 +98,8 @@ class _IStore:
         self.inbox.append(msg)
         return True
 
-    async def list_inbox_messages(self, box="all", limit=25, offset=0, source=None):
-        self.list_calls.append({"box": box, "source": source})
+    async def list_inbox_messages(self, box="all", limit=25, offset=0, source=None, search=None):
+        self.list_calls.append({"box": box, "source": source, "search": search})
         return [m2 for m2 in self.inbox
                 if source is None or (m2.get("source") or "webhook") == source]
 

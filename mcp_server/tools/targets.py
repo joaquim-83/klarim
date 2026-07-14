@@ -64,8 +64,15 @@ async def get_target_classifications(target_id: int) -> dict:
 
 @mcp.tool()
 async def get_target_stats() -> dict:
-    """Contagem de alvos por status, plataforma e setor."""
-    return await _guard(lambda: _store().stats())
+    """Contagem de alvos por status, plataforma e setor + **perfis** (total, com
+    descrição/IA, com CNAE, landings públicas)."""
+    async def _impl():
+        store = _store()
+        base = await store.stats()
+        base["profiles"] = await store.profile_counts()
+        return base
+
+    return await _guard(_impl)
 
 
 @mcp.tool()

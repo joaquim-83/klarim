@@ -1,16 +1,64 @@
-"""Tools MCP de sistema — status dos workers, saúde de e-mail, discovery, config."""
+"""Tools MCP de sistema — status dos workers, saúde de e-mail, discovery, config,
+totalizadores do painel, enriquecimento e contas."""
 
 from __future__ import annotations
 
-from mcp_server._base import mcp, _guard, _api
+from mcp_server._base import mcp, _guard, _api, _store
 
 
 @mcp.tool()
 async def get_system_status() -> dict:
     """Status completo do sistema: workers (alive/dead + últimos ciclos),
     dependências (postgres/redis/ct_logs/resend/abacatepay), métricas de e-mail
-    (enviados hoje/mês, cota mensal) e backlog de alertas."""
+    (enviados hoje/mês, cota mensal) e backlog de alertas. `scan.last_scan_at` vem do
+    banco (bate com a página Scans do painel); `worker_last_activity` é o heartbeat."""
     return await _guard(lambda: _api().api_system_status())
+
+
+@mcp.tool()
+async def get_dashboard_stats() -> dict:
+    """Resumo completo da plataforma (os MESMOS totalizadores da home do painel):
+    alvos (por status, score 100), scans (total, manuais vs automáticos, hoje, 7 dias,
+    média, semáforo), perfis/landings (total, públicas, com IA, com CNAE), contas
+    (total, ativas, sites monitorados), alertas e e-mails não lidos no inbox."""
+    async def _impl():
+        store = _store()
+        summary = await store.dashboard_summary()
+        try:
+            summary["inbox"] = {"unread": await store.inbox_unread_count()}
+        except Exception:  # noqa: BLE001
+            summary["inbox"] = {"unread": 0}
+        return summary
+
+    return await _guard(_impl)
+
+
+@mcp.tool()
+async def get_enrichment_status() -> dict:
+    """Status do enriquecimento de perfis: backlog por grupo (G1 sem perfil, G2 sem IA,
+    G3 sem descrição, G4 sem CNAE) + o backlog `sem_contato` sem scan (KL-60)."""
+    async def _impl():
+        store = _store()
+        groups = await store.count_enrichment_groups("all")
+        return {
+            "backlog": {
+                "g1_no_profile": groups.get("group1", 0),
+                "g2_no_ai": groups.get("group2", 0),
+                "g3_no_description": groups.get("group3", 0),
+                "g4_no_cnae": groups.get("group4", 0),
+                "total": groups.get("total", 0),
+            },
+            "unscanned_sem_contato": await store.count_unscanned_targets("sem_contato"),
+        }
+
+    return await _guard(_impl)
+
+
+@mcp.tool()
+async def get_user_accounts() -> dict:
+    """Contas de usuário + sites monitorados de cada uma (e-mail, plano, sites com
+    score, criação, último login, ativo). Reusa a Gestão de Clientes do painel."""
+    return await _guard(lambda: _api().admin_clients())
 
 
 @mcp.tool()
