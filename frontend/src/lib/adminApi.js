@@ -157,7 +157,8 @@ export const admin = {
   analyticsAbandoned: (period = '7d') => get(`/analytics/abandoned?period=${period}`),
   analyticsCampaigns: (period = '7d') => get(`/analytics/campaigns?period=${period}`),
   analyticsPages: (period = '7d') => get(`/analytics/pages?period=${period}`),
-  analyticsEvents: (limit = 50) => get(`/analytics/events?limit=${limit}`),
+  analyticsEvents: (limit = 50, eventType) =>
+    get(`/analytics/events?limit=${limit}${eventType ? `&event_type=${eventType}` : ''}`),
   publicScans: () => get('/analytics/public-scans'),  // KL-25
 
   // reclassificação de setor (refino KL-11)

@@ -352,6 +352,31 @@ def _print_summary(stats: Dict[str, int], groups: Dict[str, int],
         log.info("  (dry-run — nada foi gravado)")
 
 
+async def _force_enrich(store, targets, dry_run: bool) -> dict:
+    """Re-enriquece FORÇADO (--force/--domain): roda o `enrich_profile` compartilhado
+    (crawl multi-page + profiler + IA + CNAE) em cada alvo, ignorando os grupos. É o
+    mesmo caminho que o scan usa — sempre roda, mesmo com perfil existente."""
+    from scanner.enrichment import enrich_profile
+    stats = {"processed": 0, "ok": 0, "erros": 0}
+    for i, t in enumerate(targets, 1):
+        if dry_run:
+            log.info("[dry-run] %d/%d re-enriqueceria %s (id %s)", i, len(targets), t["url"], t["id"])
+            stats["processed"] += 1
+            continue
+        try:
+            await enrich_profile(store, t["id"], t["url"], t.get("last_scan_score"))
+            stats["ok"] += 1
+            log.info("%d/%d re-enriquecido %s (id %s)", i, len(targets), t["url"], t["id"])
+        except Exception as exc:  # noqa: BLE001
+            stats["erros"] += 1
+            log.warning("%d/%d ERRO %s: %r", i, len(targets), t["url"], exc)
+        stats["processed"] += 1
+        await asyncio.sleep(1)  # gentil com o site + rate limit da IA
+    log.info("=== force enrich: %d processados, %d ok, %d erros ===",
+             stats["processed"], stats["ok"], stats["erros"])
+    return stats
+
+
 async def main(args) -> None:
     store = get_target_store()
     try:
@@ -360,6 +385,21 @@ async def main(args) -> None:
         log.warning("ensure_schema: %r", exc)
 
     redis = None if args.dry_run else await _make_redis()
+
+    # Caminho FORÇADO (KL-fix): re-enriquece um domínio específico (--domain) ou os
+    # primeiros --limit alvos (--force), via enrich_profile — ignora os grupos.
+    if args.domain or args.force:
+        limit = 100000 if args.no_limit else args.limit
+        targets = await store.list_targets_matching(args.domain or "", limit=limit)
+        log.info("=== enrich_all FORCE (domain=%s, %d alvos) ===",
+                 args.domain or "(todos)", len(targets))
+        await _force_enrich(store, targets, args.dry_run)
+        if redis is not None:
+            try:
+                await redis.aclose()
+            except Exception:  # noqa: BLE001
+                pass
+        return
 
     mode = ("sem_contato" if args.only_sem_contato
             else "only_ai" if args.only_ai else "all")
@@ -438,6 +478,12 @@ def _parse_args(argv=None):
                     help="restringe a alvos sem_contato (comportamento do enrich_batch).")
     ap.add_argument("--only-ai", action="store_true",
                     help="só IA (pula o crawl multi-page; assume perfil existente).")
+    ap.add_argument("--domain", default=None,
+                    help="re-enriquece FORÇADO os alvos cujo domínio/url casa este texto "
+                         "(ignora os grupos; roda o enrich_profile compartilhado).")
+    ap.add_argument("--force", action="store_true",
+                    help="re-enriquece FORÇADO (via enrich_profile) mesmo alvos que já têm "
+                         "perfil; sem --domain, pega os primeiros --limit não-descartados.")
     ap.add_argument("--dry-run", action="store_true",
                     help="mostra o que faria, sem crawl/IA/gravação.")
     ap.add_argument("--ai-delay", type=float, default=1.0,

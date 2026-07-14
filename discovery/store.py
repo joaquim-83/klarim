@@ -516,6 +516,21 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    async def list_targets_matching(self, pattern: str = "", limit: int = 500
+                                    ) -> List[Dict[str, Any]]:
+        """Alvos (não descartados) cujo `domain` ou `url` casa `%pattern%` (case-insensitive).
+        Para o re-enrich forçado (`enrich_all --domain/--force`). `pattern` vazio = todos."""
+        like = f"%{pattern}%"
+
+        def _fn(cur):
+            cur.execute(
+                "SELECT id, url, domain, last_scan_score FROM targets "
+                "WHERE status <> 'descartado' AND (domain ILIKE %s OR url ILIKE %s) "
+                "ORDER BY id LIMIT %s", (like, like, limit))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
     async def map_urls_to_target_ids(self, urls: List[str]) -> Dict[str, int]:
         """{url: target_id} para as URLs dadas (KL-17: vincular pagamentos a alvos)."""
         if not urls:
@@ -2395,13 +2410,21 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
-    async def analytics_events(self, limit: int = 50) -> List[Dict[str, Any]]:
+    async def analytics_events(self, limit: int = 50, event_type: Optional[str] = None
+                               ) -> List[Dict[str, Any]]:
+        """Últimos eventos do funil. `event_type` (opcional) filtra por tipo — usado
+        pela aba 'Consultas de perfil' (profile_view) da página Alertas."""
         def _fn(cur):
-            cur.execute(
-                "SELECT event_type, session_id, target_url, page_url, utm_campaign, "
-                "metadata, created_at FROM site_events ORDER BY created_at DESC LIMIT %s",
-                (limit,),
-            )
+            if event_type:
+                cur.execute(
+                    "SELECT event_type, session_id, target_url, page_url, utm_campaign, "
+                    "metadata, created_at FROM site_events WHERE event_type = %s "
+                    "ORDER BY created_at DESC LIMIT %s", (event_type, limit))
+            else:
+                cur.execute(
+                    "SELECT event_type, session_id, target_url, page_url, utm_campaign, "
+                    "metadata, created_at FROM site_events ORDER BY created_at DESC LIMIT %s",
+                    (limit,))
             return self._rows_to_dicts(cur)
 
         return await asyncio.to_thread(self._run, _fn)

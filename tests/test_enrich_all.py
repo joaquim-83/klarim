@@ -18,7 +18,8 @@ def _run(coro):
 
 def _args(**kw):
     base = dict(limit=500, no_limit=False, only_sem_contato=False,
-                only_ai=False, dry_run=False, ai_delay=0.0)
+                only_ai=False, dry_run=False, ai_delay=0.0,
+                domain=None, force=False)  # KL-fix: novos flags de re-enrich forçado
     base.update(kw)
     return argparse.Namespace(**base)
 

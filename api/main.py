@@ -3244,8 +3244,10 @@ async def api_analytics_pages(period: str = Query(default="7d")) -> dict:
 
 
 @app.get("/analytics/events")
-async def api_analytics_events(limit: int = Query(default=50, le=500)) -> dict:
-    rows = await get_target_store().analytics_events(limit)
+async def api_analytics_events(limit: int = Query(default=50, le=500),
+                               event_type: Optional[str] = Query(default=None,
+                                   description="Filtra por tipo (ex.: profile_view).")) -> dict:
+    rows = await get_target_store().analytics_events(limit, event_type=event_type)
     return {"count": len(rows), "events": rows}
 
 

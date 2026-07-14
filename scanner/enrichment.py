@@ -23,13 +23,20 @@ async def enrich_profile(store, target_id: int, url: str, security_score=None) -
         from scanner.checks import dns_util
         from scanner.checks.base import fetch, base_url, registrable_domain, domain_of
 
-        headers, homepage_html = {}, None
+        headers, homepage_html, hp_status = {}, None, None
         try:
             hp = await fetch(base_url(url) + "/", method="GET", follow_redirects=True)
             headers = dict(hp.headers)
+            hp_status = hp.status_code
             homepage_html = hp.text if hp.status_code == 200 else None
-        except Exception:  # noqa: BLE001
-            pass
+            # Loga o bloqueio explicitamente: um WAF/anti-bot que devolve 403/401/429 ao
+            # User-Agent honesto do Klarim (§4.3 — não nos passamos por navegador) faz o
+            # crawl vir vazio → perfil esparso. Sem este log, a falha era silenciosa.
+            if hp.status_code != 200:
+                print(f"[profile] {url}: homepage HTTP {hp.status_code} "
+                      f"(anti-bot/WAF bloqueia o UA honesto?) — perfil ficará esparso", flush=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[profile] {url}: falha ao buscar homepage ({exc!r}) — perfil esparso", flush=True)
         dom = registrable_domain(domain_of(url))
         mx = await asyncio.to_thread(dns_util.resolve_mx, dom)
         ns = await asyncio.to_thread(dns_util.resolve_ns, dom)
@@ -43,7 +50,9 @@ async def enrich_profile(store, target_id: int, url: str, security_score=None) -
         await store.upsert_site_profile(target_id, profile)
         found = [k for k in ("commercial_email", "phone", "whatsapp", "cnpj", "instagram")
                  if profile.get(k)]
+        n_pages = len(profile.get("extraction_sources") or [])
         print(f"[profile] {url} -> maturity {profile.get('maturity_score')} "
+              f"páginas={n_pages} homepage={hp_status} "
               f"({', '.join(found) or 'sem sinais'})", flush=True)
     except Exception as exc:  # noqa: BLE001 - enriquecimento nunca derruba nada
         print(f"[profile] falha em {url}: {exc!r}", flush=True)

@@ -1900,6 +1900,21 @@ do `/scan/summary` (background) — nunca atrasa a resposta do scan nem estoura 
 perfil comercial **não altera o score de segurança** (KL-50). CNAE da IA nunca sobrescreve a
 Receita (KL-55); a classificação de setor preserva `manual`/`ai` (KL-54).
 
+**Perfis esparsos + logging (fix pós-KL-60).** Sintoma: alguns sites (ex.: `igoove.com`)
+geram landing esparsa (maturidade 1, plataforma `unknown`, sem descrição/tags/CNAE). **Causa
+diagnosticada:** o site devolve **HTTP 403 ao User-Agent honesto do Klarim** (WAF/anti-bot).
+Como o §4.3 proíbe **nos passarmos por navegador**, um site que bloqueia o UA **não pode ser
+crawleado** — o perfil fica esparso e a notificação é pulada (`contact_email=None`). Isso é
+**limitação**, não bug. O `enrich_profile` agora **loga o bloqueio** (`homepage HTTP 403 …`,
+nº de páginas crawleadas) — antes a falha era silenciosa (`except: pass`). **Re-enrich
+forçado:** `scripts/enrich_all.py --domain <texto>` (ou `--force`) roda o `enrich_profile`
+compartilhado em cada alvo casado, **ignorando os grupos** (reprocessa mesmo com perfil
+existente) — via `store.list_targets_matching`. Útil para perfis incompletos de sites que
+**não** bloqueiam (o crawl volta com conteúdo). **Consultas de perfil no painel:** a página
+**Alertas** ganhou a aba **"Consultas de perfil"** (eventos `profile_view` do `site_events`,
+KL-51 f4) via `GET /analytics/events?event_type=profile_view` — domínio + data (o `site_events`
+não guarda IP).
+
 ## 40. Classificação CNAE multi-setor + descrição natural + tags (KL-55)
 
 A taxonomia fixa de 48 setores (KL-54) é insuficiente: ~54% dos sites caem em `outro`
