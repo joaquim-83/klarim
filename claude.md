@@ -1134,8 +1134,21 @@ re-verificação (`full`) ou JWT admin revela o status real dos 14.
 
 **E-mail sem preço/alarme.** Assunto `dominio — resultado da avaliação de segurança`
 (evolução: `… — atualização da avaliação de segurança`); corpo só com score +
-semáforo + contagem + CTA **"Veja o relatório"**. `alert.html`/`evolution_*.html`,
+semáforo + contagem + CTA. `alert.html`/`evolution_*.html`,
 `email_client`, `alert_worker`/`rescan_worker` não computam/renderizam risco/preço.
+
+> **Template freemium do alerta (fix pós-pivot).** O `alert.html` e o
+> `alert_score100.html` foram migrados para a linguagem do modelo freemium (mesma do
+> `profile_view.html`, que já converte contas orgânicas): o CTA agora é **"Criar conta e
+> monitorar →"** apontando para `https://klarim.net/cadastrar` (não mais "Veja o
+> relatório"/"Fazer análise completa gratuita"), o corpo menciona que a **verificação é
+> gratuita** e o footer traz o disclaimer **"O Klarim avalia a segurança do site, não do
+> negócio"** + unsubscribe. **Nenhuma menção a preço/pagamento/relatório pago.** Foi só o
+> **template HTML** — a lógica do alert worker, o assunto do e-mail e o crédito de score
+> 100 (`grant_full_scan_credit`) ficaram inalterados; o `_alert_params` ainda computa
+> `result_link`/`bonus_token` (agora não usados pelo template). Motivo: o alert worker
+> estava **pausado desde 10/07** por usar a linguagem antiga (R$ 19/relatório) — este fix
+> desbloqueia a reativação (feita manualmente via MCP após o deploy).
 
 **Preço único R$ 19.** `PRICE_AMOUNT=1900`/`PRICE_DISPLAY` em `payments/models.py`;
 `/payment/create` cobra 1900. `PRICING`/`PRICE_TIERS` só para analytics.

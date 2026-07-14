@@ -37,20 +37,28 @@
             </td>
           </tr>
 
-          <!-- Resumo (sem detalhes, sem preço) -->
+          <!-- Resumo (modelo freemium, sem cobrança) -->
           <tr>
             <td style="padding:16px 28px 8px 28px; color:#E6EDF3; font-size:15px; line-height:1.6;">
-              Realizamos uma avaliação de segurança no seu site
+              Verificamos a segurança do site
               <a href="{{ target_url }}" style="color:#FF6B35; text-decoration:none;">{{ site_name }}</a>
-              e encontramos <strong>{{ fail_count }}</strong> ponto(s) que precisam de atenção.
+              e encontramos <strong>{{ fail_count }}</strong> ponto(s) de atenção.
+            </td>
+          </tr>
+
+          <!-- Verificação gratuita + convite a monitorar -->
+          <tr>
+            <td style="padding:8px 28px 4px 28px; color:#E6EDF3; font-size:14px; line-height:1.7;">
+              A verificação é <strong>gratuita</strong>. Crie uma conta para acompanhar o
+              score do seu site, receber um alerta quando algo mudar e ver como melhorar.
             </td>
           </tr>
 
           <!-- CTA -->
           <tr>
             <td align="center" style="padding:16px 28px 28px 28px;">
-              <a href="{{ result_link }}" style="display:inline-block; background-color:#FF6B35; color:#0D1117; font-size:16px; font-weight:bold; text-decoration:none; padding:14px 32px; border-radius:8px;">
-                Veja o relatório
+              <a href="https://klarim.net/cadastrar?utm_source=klarim&utm_medium=email&utm_campaign=alerta" style="display:inline-block; background-color:#FF6B35; color:#0D1117; font-size:16px; font-weight:bold; text-decoration:none; padding:14px 32px; border-radius:8px;">
+                Criar conta e monitorar &#8594;
               </a>
             </td>
           </tr>
@@ -58,7 +66,8 @@
           <!-- Footer -->
           <tr>
             <td style="padding:16px 28px; border-top:1px solid #30363D; color:#8B949E; font-size:11px; line-height:1.6;">
-              Esta é uma análise automatizada e 100% passiva. Nenhum dado do seu site foi acessado.
+              O Klarim avalia a segurança do <strong>site</strong>, não do negócio. Análise
+              automatizada e 100% passiva — nenhum dado do seu site foi acessado.
               <br>Klarim Scanner — <a href="https://klarim.net" style="color:#8B949E;">klarim.net</a>
               &nbsp;·&nbsp;
               {% if unsubscribe_link %}

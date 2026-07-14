@@ -14,21 +14,24 @@ from discovery.alert_worker import bonus_scan_token, _is_score100
 # --- e-mail condicional ---------------------------------------------------- #
 
 def test_alert_score100_template(monkeypatch):
+    # Freemium (fix): score 100 → assunto de parabéns (inalterado) + CTA de conta.
     monkeypatch.setenv("JWT_SECRET", "x" * 40)
     mailer = KlarimMailer("re_fake")
     p = mailer._alert_params("d@e.com", "https://empresa.com.br", 100, "verde", 0, {},
                              bonus_token="tok.sig")
     assert "parabéns" in p["subject"] and "nota máxima" in p["subject"]
-    assert "análise completa gratuita" in p["html"]
-    assert "bonus=full" in p["html"] and "t=tok.sig" in p["html"]
+    assert "Criar conta e monitorar" in p["html"] and "/cadastrar" in p["html"]
+    assert "nota máxima" in p["html"].lower()
     assert "R$" not in p["html"]  # nunca menciona preço no fluxo de score 100
 
 
-def test_alert_normal_template_unchanged():
+def test_alert_normal_template_cta_freemium():
+    # Freemium (fix): alerta normal → CTA "Criar conta e monitorar" → /cadastrar.
     mailer = KlarimMailer("re_fake")
     p = mailer._alert_params("d@e.com", "https://x.com.br", 72, "amarelo", 3, {})
-    assert "resultado da avaliação" in p["subject"]
-    assert "Veja o relatório" in p["html"] and "bonus=full" not in p["html"]
+    assert "resultado da avaliação" in p["subject"]  # assunto inalterado
+    assert "Criar conta e monitorar" in p["html"] and "/cadastrar" in p["html"]
+    assert "R$" not in p["html"]
 
 
 def test_is_score100():

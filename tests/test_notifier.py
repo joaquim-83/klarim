@@ -31,7 +31,8 @@ def test_templates_render():
         fail_count=2, sev={"critica": 0, "alta": 2, "media": 0, "baixa": 0},
         result_link="https://klarim.net/result?url=x", lgpd="LGPD…", **ctx,
     )
-    assert "Veja o relatório" in alert and "VERDE" in alert
+    # Freemium: CTA de conta (/cadastrar), sem preço/relatório pago.
+    assert "Criar conta e monitorar" in alert and "/cadastrar" in alert and "VERDE" in alert
     assert "R$" not in alert  # KL-27: alerta sem preço
     report = _env.get_template("report_delivery.html").render(**ctx)
     assert "Executivo" in report and "Técnico" in report
@@ -135,7 +136,7 @@ def test_send_alert_batch_counts_and_ids(monkeypatch):
     # renderizou 1 payload por alerta, com subject e html
     assert len(captured["payloads"]) == 3
     assert "site1.com.br" in captured["payloads"][0]["subject"]
-    assert "Veja o relatório" in captured["payloads"][0]["html"]
+    assert "Criar conta e monitorar" in captured["payloads"][0]["html"]  # CTA freemium
     assert captured["key"].startswith("batch_")
 
 
