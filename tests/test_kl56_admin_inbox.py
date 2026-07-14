@@ -87,7 +87,7 @@ class FakeStore:
                               "is_archived": False, **msg}
         return True
 
-    async def list_inbox_messages(self, box="all", limit=25, offset=0):
+    async def list_inbox_messages(self, box="all", limit=25, offset=0, source=None):
         # espelha o store real: all/unread/starred escondem arquivadas.
         rows = list(self.inbox.values())
         if box == "unread":
@@ -98,6 +98,8 @@ class FakeStore:
             rows = [r for r in rows if r["is_archived"]]
         else:  # all -> caixa de entrada (não-arquivadas)
             rows = [r for r in rows if not r["is_archived"]]
+        if source in ("webhook", "contact_form"):  # KL-60
+            rows = [r for r in rows if (r.get("source") or "webhook") == source]
         return rows[offset:offset + limit]
 
     async def get_inbox_message(self, msg_id):

@@ -279,6 +279,9 @@ CREATE TABLE IF NOT EXISTS inbox_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_inbox_received ON inbox_messages(received_at DESC);
 CREATE INDEX IF NOT EXISTS idx_inbox_read ON inbox_messages(is_read);
+-- KL-60: origem da mensagem — 'webhook' (e-mails da Hostinger) | 'contact_form'
+-- (formulário do site, gravado direto no inbox mesmo se o e-mail via Resend falhar).
+ALTER TABLE inbox_messages ADD COLUMN IF NOT EXISTS source TEXT DEFAULT 'webhook';
 """
 
 # --------------------------------------------------------------------------- #
@@ -663,6 +666,29 @@ class TargetStore:
                 (limit,),
             )
             return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def list_unscanned_targets(self, limit: int = 500,
+                                     status: str = "sem_contato") -> List[Dict[str, Any]]:
+        """Alvos de um `status` que **nunca** foram escaneados (`last_scan_id IS NULL`).
+        KL-60: reprocessar o backlog de `sem_contato` (agora desacoplado do e-mail).
+        Retorna `id`+`url`, ordenado por id (batches estáveis)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT id, url FROM targets WHERE status = %s AND last_scan_id IS NULL "
+                "ORDER BY id LIMIT %s", (status, limit))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def count_unscanned_targets(self, status: str = "sem_contato") -> int:
+        """Total de alvos de um `status` sem scan (KL-60) — panorama do backlog."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT COUNT(*) FROM targets WHERE status = %s AND last_scan_id IS NULL",
+                (status,))
+            return int(cur.fetchone()[0])
 
         return await asyncio.to_thread(self._run, _fn)
 
@@ -2384,33 +2410,36 @@ class TargetStore:
 
     _INBOX_COLS = ("id, message_id, from_address, from_name, to_address, subject, "
                    "body_preview, received_at, is_read, is_starred, is_archived, "
-                   "created_at")
+                   "source, created_at")
 
     async def insert_inbox_message(self, msg: Dict[str, Any]) -> bool:
-        """Grava uma mensagem recebida (webhook Hostinger). Dedup por `message_id`
-        (ON CONFLICT DO NOTHING). Retorna True se inseriu, False se já existia."""
+        """Grava uma mensagem no inbox — webhook Hostinger ou formulário de contato
+        (KL-60, `source`). Dedup por `message_id` (ON CONFLICT DO NOTHING). Retorna
+        True se inseriu, False se já existia."""
         def _fn(cur):
             cur.execute(
                 "INSERT INTO inbox_messages (message_id, from_address, from_name, "
-                "  to_address, subject, body_preview, body_html, received_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s) "
+                "  to_address, subject, body_preview, body_html, received_at, source) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) "
                 "ON CONFLICT (message_id) DO NOTHING RETURNING id",
                 (msg.get("message_id"), msg.get("from_address") or "(desconhecido)",
                  msg.get("from_name"), msg.get("to_address") or "scan@klarim.net",
                  msg.get("subject"), msg.get("body_preview"), msg.get("body_html"),
-                 msg.get("received_at")),
+                 msg.get("received_at"), msg.get("source") or "webhook"),
             )
             return cur.fetchone() is not None
 
         return await asyncio.to_thread(self._run, _fn)
 
     async def list_inbox_messages(
-        self, box: str = "all", limit: int = 25, offset: int = 0
+        self, box: str = "all", limit: int = 25, offset: int = 0,
+        source: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Lista mensagens (sem o corpo HTML). `box`: all|unread|starred|archived.
-        `all`/`unread`/`starred` escondem arquivadas; `archived` mostra só elas."""
+        `source` (KL-60): filtra por origem (`webhook`|`contact_form`); None = todas."""
         def _fn(cur):
             where = []
+            params: list = []
             if box == "unread":
                 where.append("is_read = FALSE AND is_archived = FALSE")
             elif box == "starred":
@@ -2419,11 +2448,15 @@ class TargetStore:
                 where.append("is_archived = TRUE")
             else:  # all -> caixa de entrada (não-arquivadas)
                 where.append("is_archived = FALSE")
+            if source in ("webhook", "contact_form"):
+                where.append("COALESCE(source, 'webhook') = %s")
+                params.append(source)
             clause = "WHERE " + " AND ".join(where)
+            params.extend([limit, offset])
             cur.execute(
                 f"SELECT {self._INBOX_COLS} FROM inbox_messages {clause} "
                 f"ORDER BY received_at DESC NULLS LAST, created_at DESC "
-                f"LIMIT %s OFFSET %s", (limit, offset))
+                f"LIMIT %s OFFSET %s", tuple(params))
             return self._rows_to_dicts(cur)
 
         return await asyncio.to_thread(self._run, _fn)

@@ -10,17 +10,24 @@ const BOXES = [
   { key: 'starred', label: 'Com estrela' },
   { key: 'archived', label: 'Arquivadas' },
 ]
+// Filtro por origem (KL-60): '' = todas · webhook = e-mails · contact_form = formulário.
+const SOURCES = [
+  { key: '', label: 'Todos' },
+  { key: 'webhook', label: 'Emails' },
+  { key: 'contact_form', label: 'Contato' },
+]
 
 export default function Inbox() {
   const [box, setBox] = useState('all')
+  const [source, setSource] = useState('')
   const [page, setPage] = useState(0)
   const [open, setOpen] = useState(null)   // mensagem aberta (corpo completo)
   const [msg, setMsg] = useState('')
   const [tick, setTick] = useState(0)      // força reload após uma ação
 
   const { data, loading, error } = useAsync(
-    () => admin.inbox({ box, limit: PAGE_SIZE, offset: page * PAGE_SIZE }),
-    [box, page, tick],
+    () => admin.inbox({ box, source: source || undefined, limit: PAGE_SIZE, offset: page * PAGE_SIZE }),
+    [box, source, page, tick],
   )
   const rows = data?.messages || []
   const reload = () => setTick((t) => t + 1)
@@ -47,7 +54,21 @@ export default function Inbox() {
         </h1>
       </div>
 
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center gap-2">
+        {SOURCES.map((s) => (
+          <button
+            key={s.key}
+            onClick={() => { setSource(s.key); setPage(0) }}
+            className={`rounded-lg border px-3 py-1.5 text-sm ${
+              source === s.key
+                ? 'border-klarim-alert bg-klarim-alert/15 text-klarim-text'
+                : 'border-klarim-border bg-klarim-surface text-klarim-muted hover:text-klarim-text'
+            }`}
+          >
+            {s.label}
+          </button>
+        ))}
+        <span className="mx-1 text-klarim-border">|</span>
         {BOXES.map((b) => (
           <button
             key={b.key}
@@ -84,6 +105,11 @@ export default function Inbox() {
                     <span className={`truncate ${m.is_read ? 'text-klarim-muted' : 'font-bold text-klarim-text'}`}>
                       {m.from_name || m.from_address}
                     </span>
+                    {m.source === 'contact_form' && (
+                      <span className="shrink-0 rounded-full bg-klarim-alert/15 px-2 py-0.5 text-[10px] font-medium text-klarim-alert">
+                        Contato
+                      </span>
+                    )}
                     <span className="ml-auto shrink-0 text-xs text-klarim-muted">
                       {formatDate(m.received_at || m.created_at)}
                     </span>

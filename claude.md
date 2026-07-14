@@ -716,8 +716,18 @@ presença de e-mail de contato, registra como alvo e enfileira para scan.
 **`GET /discovery/status`** (KL-15: estado do poller — connected/total_seen/
 total_matched/buffer_size + ciclos + alvos descobertos hoje; via Redis, JWT).
 
-**Regra de negócio inviolável:** só escanear sites com e-mail de contato. Sem
-e-mail = sem conversão = não vale o custo do scan.
+**Regra de negócio (KL-60 — scan DESACOPLADO do e-mail):** ⚠️ a regra antiga ("só
+escanear sites com e-mail") foi **revogada**. No modelo freemium, o scan gera
+perfil/landing/ranking/dados **mesmo sem e-mail** — então o discovery enfileira **TODO
+site acessível**, tenha e-mail ou não (`_process_domain` sempre chama `_enqueue` quando
+`html != None`). O `status` ainda reflete o e-mail (`sem_contato` = não achamos e-mail),
+mas o `update_scan_result` promove o alvo a `scanned` quando o scan completa (o e-mail,
+se houver, fica salvo p/ notificações). Só o site **inacessível** vira `descartado` (sem
+enqueue). **Backlog:** os ~7,8k `sem_contato` sem scan (`last_scan_id IS NULL`) são
+drenados por `scripts/enqueue_unscanned.py --limit 500` (batches, `store.list_unscanned_
+targets`/`count_unscanned_targets`) — **nunca** enfileirar tudo de uma vez. Rate:
+`WORKER_MAX_SCANS_PER_HOUR` (env, default 50; subir p/ 100 na VM se aguentar; a vazão real
+é limitada pela duração do scan, worker único).
 
 ## 16. Alert Worker + calibração do semáforo (KL-12) — `discovery/alert_worker.py`
 
@@ -1984,7 +1994,12 @@ pickers. Só a página Scans usa datas por default; os outros chamadores de `lis
 em `inbox_messages`; o painel lê/gere.
 - **Tabela `inbox_messages`** (independente, sem FK): `message_id` UNIQUE (dedup),
   `from_address/from_name/to_address/subject/body_preview/body_html/received_at`,
-  `is_read/is_starred/is_archived` + índices.
+  `is_read/is_starred/is_archived`, **`source`** (KL-60: `webhook`|`contact_form`) + índices.
+- **Formulário de contato → inbox (KL-60).** `POST /contact` grava a mensagem direto no
+  `inbox_messages` (`source='contact_form'`, `message_id=contact-<uuid>`) **antes** de tentar
+  o e-mail — a mensagem **nunca se perde** mesmo se o Resend falhar/entrar em loop (mesmo
+  domínio sender/dest). O e-mail via Resend virou **best-effort** (try/except, só loga). No
+  painel, o inbox tem tabs de origem **[Todos] [Emails] [Contato]** (`?source=`).
 - **`POST /email/webhook` (público, auth PRÓPRIA).** `/email` é prefixo admin, então o webhook
   está no **`_PUBLIC_UNDER_PROTECTED`** (`_is_protected` retorna False) — não passa pelo JWT
   admin, tem **token próprio**. `_hostinger_token_ok` valida `HOSTINGER_WEBHOOK_TOKEN`
@@ -1996,7 +2011,8 @@ em `inbox_messages`; o painel lê/gere.
   adaptar) e responde 200 (Hostinger não re-tenta). Grava via `insert_inbox_message`
   (ON CONFLICT DO NOTHING → dedup). ⚠️ A AgentMail nativa usa **Svix**, mas a Hostinger hPanel
   usa o token plano configurado — por isso a validação é por token + log do raw na 1ª recepção.
-- **API admin (JWT):** `GET /admin/inbox` (filtros `box=all|unread|starred|archived`, paginado),
+- **API admin (JWT):** `GET /admin/inbox` (filtros `box=all|unread|starred|archived` +
+  **`source=webhook|contact_form`** KL-60, paginado),
   `GET /admin/inbox/unread-count` (**declarado ANTES de `/{msg_id}`** senão vira id inválido),
   `GET /admin/inbox/{id}` (corpo completo, marca lida ao abrir), `POST …/{id}/read|star|archive`.
 - **Frontend:** `pages/admin/Inbox.jsx` (rota `/painel/inbox`, `lazy` no `App.jsx`) — lista com

@@ -2370,17 +2370,24 @@ async def api_inbox_unread_count() -> dict:
     return {"unread": n}
 
 
+_INBOX_SOURCES = ("webhook", "contact_form")
+
+
 @app.get("/admin/inbox")
 async def api_inbox_list(
     box: str = Query(default="all"),
     limit: int = Query(default=25, le=200),
     offset: int = Query(default=0, ge=0),
+    source: Optional[str] = Query(default=None,
+        description="Filtra por origem: webhook (e-mails) | contact_form (formulário)."),
 ) -> dict:
-    """Lista mensagens (paginada). `box`: all|unread|starred|archived."""
+    """Lista mensagens (paginada). `box`: all|unread|starred|archived. `source` (KL-60):
+    webhook|contact_form (None = todas)."""
     if box not in _INBOX_BOXES:
         box = "all"
-    rows = await get_target_store().list_inbox_messages(box, limit, offset)
-    return {"count": len(rows), "box": box, "messages": rows}
+    src = source if source in _INBOX_SOURCES else None
+    rows = await get_target_store().list_inbox_messages(box, limit, offset, source=src)
+    return {"count": len(rows), "box": box, "source": src, "messages": rows}
 
 
 @app.get("/admin/inbox/{msg_id}")
@@ -2519,8 +2526,31 @@ async def api_contact(body: ContactBody, request: Request) -> dict:
         for k in [k for k, ts in _contact_attempts.items() if not ts or ts[-1] < cutoff]:
             _contact_attempts.pop(k, None)
 
-    _require_email()
-    await _safe_email(_mailer().send_contact(name, email, message))
+    # KL-60: grava direto no inbox (fonte de verdade) — a mensagem NUNCA se perde,
+    # mesmo se o e-mail via Resend falhar/entrar em loop (mesmo domínio sender/dest).
+    from uuid import uuid4
+    from html import escape as _html_escape
+    try:
+        await get_target_store().insert_inbox_message({
+            "message_id": f"contact-{uuid4().hex}",
+            "from_address": email,
+            "from_name": name or None,
+            "to_address": "scan@klarim.net",
+            "subject": f"Contato via site: {name or email}",
+            "body_preview": message[:500],
+            "body_html": f"<p>{_html_escape(message).replace(chr(10), '<br>')}</p>",
+            "source": "contact_form",
+            "received_at": datetime.now(timezone.utc),
+        })
+    except Exception as exc:  # noqa: BLE001 - se o inbox falhar, ainda tenta o e-mail
+        print(f"[contact] falha ao gravar inbox: {exc!r}", flush=True)
+
+    # E-mail via Resend é best-effort (a mensagem já está no inbox do painel).
+    if _email_enabled():
+        try:
+            await _mailer().send_contact(name, email, message)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[contact] envio de e-mail falhou (msg já no inbox): {exc!r}", flush=True)
     return {"ok": True}
 
 

@@ -4,8 +4,9 @@ Modelo contínuo (KL-15): um **poller de CT logs** (lê os CT logs públicos dir
 em tempo real) filtra domínios `.com.br` e os acumula num buffer; a cada
 `DISCOVERY_INTERVAL_MINUTES` (padrão 30) o worker drena o buffer, deduplica
 contra o banco e, para cada domínio novo: fetch → fingerprint → extrai e-mail →
-classifica setor → registra e enfileira para scan. Sem e-mail extraível: registra
-como 'sem_contato' e NÃO enfileira (sem contato = sem conversão).
+classifica setor → registra e **enfileira para scan (KL-60: TODO site acessível,
+tenha e-mail ou não)**. O scan gera perfil/landing/ranking mesmo sem contato; o
+e-mail (se houver) fica salvo p/ notificações. Só o site inacessível vira 'descartado'.
 
 Se o poller não coletou nada no ciclo (rede/logs fora?), o worker faz **uma
 tentativa de fallback no crt.sh** (KL-11). Redundância — a descoberta nunca para.
@@ -163,18 +164,23 @@ class DiscoveryWorker:
         email = await extract_email(html, url)
         sector, tier, confidence = classify_sector(html, url)
 
-        if not email:
-            await self.store.register_target(
-                url, domain, platform, sector, tier, None, status="sem_contato",
-                confidence=confidence)
-            stats["no_contact"] += 1
-        else:
-            tid = await self.store.register_target(
-                url, domain, platform, sector, tier, email, status="discovered",
-                confidence=confidence)
+        # KL-60: o scan é DESACOPLADO do e-mail. Todo site ACESSÍVEL (html != None
+        # acima) é enfileirado para scan, tenha e-mail ou não — o scan gera perfil,
+        # landing e ranking mesmo sem contato. O status ainda reflete o e-mail
+        # (`sem_contato` guarda que não achamos e-mail; o `update_scan_result` o
+        # promove a `scanned` quando o scan completa). O e-mail, se houver, fica
+        # salvo para notificações futuras.
+        if email:
+            status = "discovered"
             stats["registered"] += 1
-            await self._enqueue(tid, url)
-            stats["enqueued"] += 1
+        else:
+            status = "sem_contato"
+            stats["no_contact"] += 1
+        tid = await self.store.register_target(
+            url, domain, platform, sector, tier, email, status=status,
+            confidence=confidence)
+        await self._enqueue(tid, url)
+        stats["enqueued"] += 1
 
     async def run_cycle(self) -> dict:
         stats = {

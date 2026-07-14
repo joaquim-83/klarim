@@ -510,8 +510,12 @@ O [`discovery/`](./discovery/) é o motor de aquisição. Um **poller de CT logs
 `get-entries` e extrai os domínios do SAN com `cryptography`), acumula os
 `.com.br` num buffer e, a cada 30 min, processa: detecta a plataforma (Duda,
 WordPress, Wix…), extrai o **e-mail de contato**, classifica o setor/preço,
-registra em `targets` e enfileira para scan. **Regra de negócio:** site sem
-e-mail extraível é marcado `sem_contato` e **não** é escaneado. Gestão via API:
+registra em `targets` e enfileira para scan. **Scan desacoplado do e-mail (KL-60):**
+**todo** site acessível é enfileirado para scan — com ou sem e-mail — porque o scan
+gera perfil/landing/ranking/dados no modelo freemium; site sem e-mail vira `sem_contato`
+(sem notificações), mas é escaneado igual (vira `scanned` ao completar). Só o site
+**inacessível** vira `descartado`. O backlog histórico de `sem_contato` sem scan é drenado
+por `scripts/enqueue_unscanned.py --limit 500` (batches). Gestão via API:
 `GET /api/targets`, `/api/targets/stats`, `POST /api/targets/add`, `/api/scans`,
 e **`GET /api/discovery/status`** (estado do poller em tempo real).
 
