@@ -3,6 +3,8 @@ totalizadores do painel, enriquecimento e contas."""
 
 from __future__ import annotations
 
+from typing import Optional
+
 from mcp_server._base import mcp, _guard, _api, _store
 
 
@@ -65,8 +67,26 @@ async def get_user_accounts() -> dict:
 async def get_email_health() -> dict:
     """Saúde de e-mail: bounce rate, bounces permanentes, complaints, tamanho da
     blocklist e status de risco (ok/warning/critical). Vital para não estourar a
-    reputação do domínio no Resend/Gmail."""
+    reputação do domínio no Resend/Gmail. Cobre TODOS os caminhos (email_log, KL-62)."""
     return await _guard(lambda: _api().api_system_email_health())
+
+
+@mcp.tool()
+async def get_email_log(email_type: Optional[str] = None, status: Optional[str] = None,
+                        to_email: Optional[str] = None, source: Optional[str] = None,
+                        limit: int = 20) -> dict:
+    """Log unificado de e-mails enviados (KL-62) — auditoria dos 20 caminhos. Filtros:
+    `email_type` (alert, profile_view, verification_code, report_delivery, …), `status`
+    (sent/bounced/failed/blocked), `to_email` (busca parcial), `source`. Retorna as
+    entradas + total + contagem por status."""
+    async def _impl():
+        et = email_type or None
+        st = status if status in ("sent", "bounced", "failed", "blocked", "complained") else None
+        return await _store().list_email_log(
+            email_type=et, status=st, to_email=(to_email or None),
+            source=(source or None), limit=min(max(limit, 1), 100), offset=0)
+
+    return await _guard(_impl)
 
 
 @mcp.tool()

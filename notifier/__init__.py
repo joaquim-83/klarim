@@ -5,6 +5,7 @@ from __future__ import annotations
 from .email_client import (
     KlarimMailer,
     KlarimMailerError,
+    EMAIL_TYPES,
     semaphore_from_score,
     site_name,
     unsubscribe_token,
@@ -16,6 +17,7 @@ from .email_client import (
 __all__ = [
     "KlarimMailer",
     "KlarimMailerError",
+    "EMAIL_TYPES",
     "semaphore_from_score",
     "site_name",
     "unsubscribe_token",

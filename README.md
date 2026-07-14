@@ -481,6 +481,22 @@ permanentes como `descartado` + blocklist e complaints como `unsubscribed`; (4)
 **Sistema** mostra o bounce rate com semáforo de risco. Variáveis: `RESEND_WEBHOOK_SECRET`,
 `ALERT_VALIDATE_MX`, `ALERT_MAX_BOUNCE_RATE`.
 
+**Rastreabilidade unificada de e-mails (KL-62).** Um diagnóstico mapeou **20 caminhos**
+de envio via Resend, mas só 4 eram rastreados (`alert_log`+`rescan_log`) — os outros
+(notificação de perfil, código de verificação, cron de monitoramento, relatórios,
+recuperação, reset de senha) saíam sem registro, sem checagem de blocklist e sem
+contabilidade de bounce. Como **todo** e-mail passa por `KlarimMailer._send`/`_send_batch`,
+a solução centraliza log + blocklist **nesse único ponto**: a tabela **`email_log`**
+registra cada envio (`email_id`, `to_email`, `email_type`, `status`
+sent/bounced/failed/blocked, `source`, `batch_id`); a blocklist é honrada em todo e-mail
+**proativo** (alerta, perfil, evolução, oferta) e ignorada — mas registrada — nos
+**transacionais** (verificação, reset, relatório pago, recuperação, que o usuário pediu).
+As métricas do painel (`email_metrics`/`email_health`) e o backfill de bounce passam a ler
+do `email_log` (cobrem os 20 caminhos), a **atividade recente** discrimina os e-mails por
+tipo/destino/status, e o webhook marca bounce no `email_log`+`alert_log`. Auditoria via
+`GET /api/email/log` (JWT) e MCP `get_email_log`. Migração do histórico:
+`scripts/backfill_email_log.py` (idempotente).
+
 Na compra, a tela `/pay` pede o e-mail; após o pagamento confirmado (webhook ou
 polling), o relatório é **enviado automaticamente** em background (idempotente;
 se falhar, o cliente ainda baixa no site). A tela `/report` mostra o status do
@@ -687,10 +703,10 @@ FastAPI (endpoint SSE em **`https://klarim.net/mcp/sse`**), permitindo operar o
 Klarim por linguagem natural no Claude: **45 tools** (leitura — sistema, **totalizadores
 do painel** (`get_dashboard_stats`), **enriquecimento** (`get_enrichment_status`), **contas**
 (`get_user_accounts`), alvos, perfil, classificações CNAE, scans, alertas, pagamentos,
-analytics, saúde de e-mail, **busca no inbox** (`search_inbox`), **leads** (`list_leads`/
-`get_lead_stats`/`get_lead_funnel`, KL-61); escrita — scan, adicionar alvo, editar
-e-mail/status/setor, disparar alerta, enviar relatório, classificar em lote, controlar
-workers, ofertar monitoramento). O MCP e o painel mostram os **mesmos dados** (ex.:
+analytics, saúde de e-mail, **log unificado de e-mails** (`get_email_log`, KL-62), **busca
+no inbox** (`search_inbox`), **leads** (`list_leads`/`get_lead_stats`/`get_lead_funnel`,
+KL-61); escrita — scan, adicionar alvo, editar e-mail/status/setor, disparar alerta, enviar
+relatório, classificar em lote, controlar workers, ofertar monitoramento). O MCP e o painel mostram os **mesmos dados** (ex.:
 `last_scan_at` vem do banco, não do heartbeat — fix de divergência). Cada tool é um wrapper
 fino sobre a API/`store` existente. Transporte **SSE** em `/mcp/sse` (modelo Traka), com autenticação por
 `MCPAuthMiddleware` (`MCP_API_KEY`, fail-closed, constant-time, `Authorization:

@@ -131,6 +131,11 @@ class FakeStore:
         self.marked.append((email_id, status))
         return 1
 
+    # KL-62: o webhook agora marca também no email_log unificado.
+    async def mark_email_status_by_email_id(self, email_id, status):
+        self.marked.append((email_id, status))
+        return 1
+
 
 def _client(monkeypatch, store):
     monkeypatch.setattr(m, "get_target_store", lambda: store)

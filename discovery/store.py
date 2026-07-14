@@ -321,6 +321,30 @@ CREATE INDEX IF NOT EXISTS idx_scan_leads_lead_score ON scan_leads(lead_score DE
 CREATE INDEX IF NOT EXISTS idx_scan_leads_last_activity ON scan_leads(last_activity_at DESC);
 CREATE INDEX IF NOT EXISTS idx_scan_leads_sector ON scan_leads(sector);
 CREATE INDEX IF NOT EXISTS idx_scan_leads_has_account ON scan_leads(has_account);
+
+-- KL-62: log unificado de TODO e-mail enviado pelo Resend (centralizado no
+-- KlarimMailer). Cobre os 20 caminhos de envio por construção. Não substitui
+-- alert_log/rescan_log (que continuam), mas unifica a contabilidade/blocklist.
+CREATE TABLE IF NOT EXISTS email_log (
+    id SERIAL PRIMARY KEY,
+    email_id TEXT,
+    to_email TEXT NOT NULL,
+    email_type TEXT NOT NULL,
+    subject TEXT,
+    target_id INTEGER,
+    domain TEXT,
+    status TEXT DEFAULT 'sent',
+    blocked_reason TEXT,
+    error TEXT,
+    sent_at TIMESTAMPTZ DEFAULT NOW(),
+    source TEXT,
+    batch_id TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_email_log_sent_at ON email_log(sent_at DESC);
+CREATE INDEX IF NOT EXISTS idx_email_log_to_email ON email_log(to_email);
+CREATE INDEX IF NOT EXISTS idx_email_log_type ON email_log(email_type);
+CREATE INDEX IF NOT EXISTS idx_email_log_status ON email_log(status);
+CREATE INDEX IF NOT EXISTS idx_email_log_email_id ON email_log(email_id);
 """
 
 # --------------------------------------------------------------------------- #
@@ -2273,20 +2297,158 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
-    async def email_metrics(self) -> Dict[str, int]:
-        """E-mails proativos (alertas + evolução) enviados hoje/semana/mês."""
+    async def email_metrics(self) -> Dict[str, Any]:
+        """Métricas de e-mail do `email_log` unificado (KL-62) — TODOS os caminhos.
+
+        Conta `status='sent'` (excluindo `email_type='test'`, que é diagnóstico) por
+        janela, mais bloqueios/falhas de hoje e o volume por tipo (top). Mantém as
+        chaves `sent_today/sent_week/sent_month` (consumidas pela página Sistema)."""
         def _fn(cur):
-            out: Dict[str, int] = {}
+            out: Dict[str, Any] = {}
             for key, interval in (("sent_today", "1 day"), ("sent_week", "7 days"),
                                   ("sent_month", "30 days")):
                 cur.execute(
-                    f"SELECT (SELECT COUNT(*) FROM alert_log WHERE status='sent' "
-                    f"  AND sent_at > NOW() - INTERVAL '{interval}') + "
-                    f"(SELECT COUNT(*) FROM rescan_log WHERE email_id IS NOT NULL "
-                    f"  AND rescanned_at > NOW() - INTERVAL '{interval}')"
+                    f"SELECT COUNT(*) FROM email_log WHERE status='sent' "
+                    f"  AND email_type <> 'test' AND sent_at > NOW() - INTERVAL '{interval}'"
                 )
                 out[key] = int(cur.fetchone()[0])
+            cur.execute("SELECT COUNT(*) FROM email_log WHERE status='blocked' "
+                        "  AND sent_at > NOW() - INTERVAL '1 day'")
+            out["blocked_today"] = int(cur.fetchone()[0])
+            cur.execute("SELECT COUNT(*) FROM email_log WHERE status='failed' "
+                        "  AND sent_at > NOW() - INTERVAL '1 day'")
+            out["failed_today"] = int(cur.fetchone()[0])
+            cur.execute("SELECT email_type, COUNT(*) FROM email_log "
+                        "  WHERE status='sent' AND sent_at > NOW() - INTERVAL '1 day' "
+                        "  GROUP BY email_type ORDER BY COUNT(*) DESC LIMIT 5")
+            out["by_type"] = [{"email_type": r[0], "count": int(r[1])} for r in cur.fetchall()]
             return out
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- KL-62: log unificado de e-mails (centralizado no KlarimMailer) --------- #
+
+    async def log_email(self, *, email_id: Optional[str], to_email: str, email_type: str,
+                        subject: Optional[str] = None, target_id: Optional[int] = None,
+                        domain: Optional[str] = None, status: str = "sent",
+                        blocked_reason: Optional[str] = None, error: Optional[str] = None,
+                        source: Optional[str] = None, batch_id: Optional[str] = None) -> None:
+        """Grava uma entrada no `email_log` (KL-62). Chamado pelo KlarimMailer em TODO
+        envio. Best-effort — quem chama já envolve em try/except (nunca derruba o envio)."""
+        to_email = (to_email or "").strip().lower()
+        if not to_email:
+            return
+
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO email_log (email_id, to_email, email_type, subject, target_id, "
+                "  domain, status, blocked_reason, error, source, batch_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (email_id, to_email, email_type, (subject or None), target_id,
+                 (domain or None), status, blocked_reason, (error[:2000] if error else None),
+                 source, batch_id))
+
+        await asyncio.to_thread(self._run, _fn)
+
+    async def list_email_log(self, email_type: Optional[str] = None,
+                             status: Optional[str] = None, to_email: Optional[str] = None,
+                             source: Optional[str] = None, limit: int = 20,
+                             offset: int = 0) -> Dict[str, Any]:
+        """Lista paginada do `email_log` + total + contagem por status (KL-62)."""
+        def _fn(cur):
+            where, params = [], []
+            if email_type:
+                where.append("email_type = %s")
+                params.append(email_type)
+            if status:
+                where.append("status = %s")
+                params.append(status)
+            if to_email:
+                where.append("LOWER(to_email) LIKE %s")
+                params.append(f"%{to_email.lower().strip()}%")
+            if source:
+                where.append("source = %s")
+                params.append(source)
+            clause = ("WHERE " + " AND ".join(where)) if where else ""
+            cur.execute(f"SELECT status, COUNT(*) FROM email_log {clause} GROUP BY status", params)
+            by_status = {r[0]: int(r[1]) for r in cur.fetchall()}
+            cur.execute(f"SELECT COUNT(*) FROM email_log {clause}", params)
+            total = int(cur.fetchone()[0])
+            cur.execute(f"SELECT * FROM email_log {clause} ORDER BY sent_at DESC "
+                        f"LIMIT %s OFFSET %s", params + [limit, offset])
+            return {"emails": self._rows_to_dicts(cur), "total": total,
+                    "by_status": by_status}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def mark_email_status_by_email_id(self, email_id: str, status: str) -> int:
+        """Atualiza o status no `email_log` por email_id (webhook/backfill de bounce, KL-62)."""
+        if not email_id:
+            return 0
+
+        def _fn(cur):
+            cur.execute("UPDATE email_log SET status = %s WHERE email_id = %s",
+                        (status, email_id))
+            return cur.rowcount
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_sent_emails_for_bounce_check(self, limit: int = 1000) -> List[Dict[str, Any]]:
+        """email_id + to_email dos envios recentes (7d) do `email_log` p/ checar bounce
+        no Resend (KL-62). Superset do antigo `get_sent_alerts_for_bounce_check`."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT DISTINCT ON (email_id) email_id, to_email AS contact_email "
+                "FROM email_log WHERE email_id IS NOT NULL AND status = 'sent' "
+                "  AND sent_at > NOW() - INTERVAL '7 days' "
+                "ORDER BY email_id, sent_at DESC LIMIT %s",
+                (limit,))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def list_email_activity(self, limit: int = 50) -> List[Dict[str, Any]]:
+        """Últimas entradas do `email_log` para a timeline de atividade (KL-62)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT email_type, to_email, status, domain, blocked_reason, sent_at "
+                "FROM email_log ORDER BY sent_at DESC LIMIT %s", (limit,))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def migrate_email_log(self) -> Dict[str, int]:
+        """Popula o `email_log` com o histórico de `alert_log` + `rescan_log` (KL-62).
+
+        Idempotente: deduplica por (source, to_email, sent_at, email_id) via NOT EXISTS
+        (IS NOT DISTINCT FROM trata email_id NULL). Rodar 2× não duplica."""
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO email_log (email_id, to_email, email_type, target_id, "
+                "  status, sent_at, source) "
+                "SELECT al.email_id, al.contact_email, "
+                "  CASE WHEN al.score = 100 THEN 'alert_score100' ELSE 'alert' END, "
+                "  al.target_id, "
+                "  CASE WHEN al.status = 'bounced' THEN 'bounced' "
+                "       WHEN al.status = 'complained' THEN 'complained' ELSE 'sent' END, "
+                "  al.sent_at, 'alert_worker' "
+                "FROM alert_log al "
+                "WHERE NOT EXISTS (SELECT 1 FROM email_log el WHERE el.source = 'alert_worker' "
+                "  AND el.to_email = LOWER(al.contact_email) AND el.sent_at = al.sent_at "
+                "  AND el.email_id IS NOT DISTINCT FROM al.email_id)")
+            n_alert = cur.rowcount
+            cur.execute(
+                "INSERT INTO email_log (email_id, to_email, email_type, target_id, "
+                "  status, sent_at, source) "
+                "SELECT rl.email_id, t.contact_email, 'evolution', rl.target_id, "
+                "  'sent', rl.rescanned_at, 'rescan_worker' "
+                "FROM rescan_log rl JOIN targets t ON t.id = rl.target_id "
+                "WHERE rl.email_id IS NOT NULL AND t.contact_email IS NOT NULL "
+                "  AND NOT EXISTS (SELECT 1 FROM email_log el WHERE el.source = 'rescan_worker' "
+                "    AND el.email_id IS NOT DISTINCT FROM rl.email_id "
+                "    AND el.sent_at = rl.rescanned_at)")
+            n_rescan = cur.rowcount
+            return {"alert_log": n_alert, "rescan_log": n_rescan}
 
         return await asyncio.to_thread(self._run, _fn)
 
@@ -2496,18 +2658,18 @@ class TargetStore:
         return await asyncio.to_thread(self._run, _fn)
 
     async def email_health(self) -> Dict[str, Any]:
-        """Métricas de bounce (KL-24) a partir do `alert_log` + tamanho da blocklist.
+        """Métricas de bounce (KL-24/62) a partir do `email_log` unificado + blocklist.
 
-        `bounced`/`complained` refletem o que o webhook/backfill do Resend marcou.
-        `total` = tentativas (sent + bounced + complained).
-        """
+        Agora cobre TODOS os caminhos de envio (não só `alert_log`). `bounced`/
+        `complained` refletem o que o webhook/backfill do Resend marcou. `total` =
+        tentativas rastreáveis (sent + bounced + complained; exclui `test`)."""
         def _fn(cur):
             cur.execute(
                 "SELECT "
                 "COUNT(*) FILTER (WHERE status IN ('sent','bounced','complained')), "
                 "COUNT(*) FILTER (WHERE status = 'bounced'), "
                 "COUNT(*) FILTER (WHERE status = 'complained') "
-                "FROM alert_log"
+                "FROM email_log WHERE email_type <> 'test'"
             )
             total, bounced, complained = cur.fetchone()
             cur.execute("SELECT COUNT(*) FROM email_blocklist")

@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote, urlparse
+from uuid import uuid4
 
 from jinja2 import Environment, FileSystemLoader, select_autoescape
 
@@ -42,6 +43,37 @@ LGPD_SHORT = (
 
 class KlarimMailerError(RuntimeError):
     """Erro ao enviar e-mail via Resend (chave inválida, domínio não verificado…)."""
+
+
+# KL-62: tipos de e-mail (os 20 caminhos do diagnóstico). Usado no `email_log` para
+# discriminar volume/reputação por canal. `alert_score100` é derivado do alerta.
+EMAIL_TYPES = {
+    "alert": "Alerta de segurança",
+    "alert_score100": "Alerta score 100",
+    "evolution": "Email de evolução (rescan)",
+    "verification_code": "Código de verificação",
+    "profile_view": "Notificação perfil consultado",
+    "report_delivery": "Entrega de relatório",
+    "report_send": "Envio de PDF por email",
+    "password_reset": "Redefinição de senha",
+    "account_deleted": "Conta excluída",
+    "account_evolution": "Evolução de monitoramento",
+    "monitor_offer": "Oferta de monitoramento",
+    "monitor_alert": "Alerta de site monitorado",
+    "monitor_restored": "Site monitorado restaurado",
+    "recovery": "Recuperação de relatório",
+    "contact": "Formulário de contato",
+    "test": "Email de teste",
+    "admin_alert": "Alerta admin (scan-and-report)",
+    "admin_report": "Relatório admin",
+}
+
+
+def _first_recipient(to: Any) -> str:
+    """Normaliza o destinatário (o Resend aceita str ou lista) → primeiro e-mail."""
+    if isinstance(to, (list, tuple)):
+        return str(to[0]) if to else ""
+    return str(to or "")
 
 
 def semaphore_from_score(score: int) -> str:
@@ -142,16 +174,77 @@ def batch_idempotency_key(items: List[Dict[str, Any]]) -> str:
 
 
 class KlarimMailer:
-    def __init__(self, api_key: str, from_address: Optional[str] = None) -> None:
+    def __init__(self, api_key: str, from_address: Optional[str] = None,
+                 store: Any = None) -> None:
         if not api_key:
             raise ValueError("RESEND_API_KEY não configurada")
         self.api_key = api_key
         self.from_address = from_address or os.environ.get("RESEND_FROM") or DEFAULT_FROM
+        # KL-62: acesso ao store para log unificado + blocklist. Se não for injetado
+        # (produção), usa o singleton lazy — sem import no topo (evita ciclo).
+        self._store = store
+
+    # ----- log unificado + blocklist (KL-62) ------------------------------- #
+
+    def _get_store(self) -> Any:
+        if self._store is not None:
+            return self._store
+        try:
+            from discovery.store import get_target_store
+            return get_target_store()
+        except Exception:  # noqa: BLE001 - sem store, o mailer ainda envia (fail-open)
+            return None
+
+    async def _is_blocked(self, email: str) -> bool:
+        """True se o e-mail está na blocklist (KL-24). Fail-open: erro → False (envia)."""
+        if not email:
+            return False
+        store = self._get_store()
+        if store is None:
+            return False
+        try:
+            return bool(await store.is_email_blocked(email))
+        except Exception:  # noqa: BLE001 - nunca bloquear um envio por falha de infra
+            return False
+
+    async def _log_email(self, **kw: Any) -> None:
+        """Grava no email_log (KL-62). Fire-and-forget: nunca derruba o envio."""
+        store = self._get_store()
+        if store is None:
+            return
+        try:
+            await store.log_email(**kw)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[email_log] falha ao gravar: {exc!r}", flush=True)
 
     # ----- envio (thread) -------------------------------------------------- #
 
-    async def _send(self, params: Dict[str, Any]) -> Dict[str, Any]:
-        return await asyncio.to_thread(self._send_sync, params)
+    async def _send(self, params: Dict[str, Any], *, email_type: str = "unknown",
+                    target_id: Optional[int] = None, domain: Optional[str] = None,
+                    source: Optional[str] = None, skip_blocklist: bool = False) -> Dict[str, Any]:
+        """Envia um e-mail individual e o registra no `email_log` (KL-62).
+
+        Checa a blocklist antes (exceto transacionais, `skip_blocklist=True`). Loga
+        `blocked`/`sent`/`failed`. Um e-mail bloqueado retorna `email_id=None`."""
+        to = _first_recipient(params.get("to"))
+        subject = params.get("subject")
+        if not skip_blocklist and await self._is_blocked(to):
+            await self._log_email(email_id=None, to_email=to, email_type=email_type,
+                                  subject=subject, target_id=target_id, domain=domain,
+                                  status="blocked", blocked_reason="blocklist", source=source)
+            print(f"[email] BLOQUEADO (blocklist) {email_type} → {to}", flush=True)
+            return {"email_id": None, "raw": None, "blocked": True}
+        try:
+            result = await asyncio.to_thread(self._send_sync, params)
+        except Exception as exc:  # noqa: BLE001 - loga a falha e propaga
+            await self._log_email(email_id=None, to_email=to, email_type=email_type,
+                                  subject=subject, target_id=target_id, domain=domain,
+                                  status="failed", error=str(exc), source=source)
+            raise
+        await self._log_email(email_id=result.get("email_id"), to_email=to,
+                              email_type=email_type, subject=subject, target_id=target_id,
+                              domain=domain, status="sent", source=source)
+        return result
 
     def _send_sync(self, params: Dict[str, Any]) -> Dict[str, Any]:
         import resend  # import tardio: só necessário no envio real
@@ -167,19 +260,62 @@ class KlarimMailer:
     # ----- batch (KL-23) --------------------------------------------------- #
 
     async def _send_batch(
-        self, payloads: List[Dict[str, Any]], items: List[Dict[str, Any]]
+        self, payloads: List[Dict[str, Any]], items: List[Dict[str, Any]],
+        *, email_type: str = "unknown", source: Optional[str] = None,
+        skip_blocklist: bool = False, types: Optional[List[str]] = None
     ) -> Dict[str, Any]:
-        """Envia os payloads via Batch API (com idempotency key) e conta o resultado.
+        """Envia os payloads via Batch API (com idempotency key) e loga cada e-mail no
+        `email_log` (KL-62). ``items`` são os dicts originais (com ``to_email``,
+        ``target_id``, ``target_url``). ``types`` (opcional) dá o email_type por item.
 
-        ``items`` são os dicts originais (com ``to_email``) usados para derivar a
-        chave idempotente. Os IDs voltam na mesma ordem do input.
-        """
-        key = batch_idempotency_key(items)
-        body = await self._send_batch_raw(payloads, key)
-        data = body.get("data") if isinstance(body, dict) else None
-        ids = [d.get("id") for d in (data or []) if isinstance(d, dict)]
+        A blocklist é honrada **preservando o alinhamento** do retorno: um e-mail
+        bloqueado vira ``None`` na sua posição em ``ids`` (o `AlertWorker` mapeia
+        `ids[i]` → `alerts[i]` posicionalmente). Retorna ``{sent, failed, ids}`` com
+        ``ids`` 1:1 com o input."""
+        n = len(payloads)
+        to_list = [_first_recipient(p.get("to")) for p in payloads]
+        blocked = [False] * n
+        if not skip_blocklist:
+            for i, to in enumerate(to_list):
+                if to and await self._is_blocked(to):
+                    blocked[i] = True
+        send_idx = [i for i in range(n) if not blocked[i]]
+        send_payloads = [payloads[i] for i in send_idx]
+        send_items = [items[i] for i in send_idx]
+
+        sent_ids: List[Optional[str]] = []
+        if send_payloads:
+            key = batch_idempotency_key(send_items)
+            body = await self._send_batch_raw(send_payloads, key)
+            data = body.get("data") if isinstance(body, dict) else None
+            sent_ids = [d.get("id") for d in (data or []) if isinstance(d, dict)]
+
+        # Reconstrói os ids 1:1 com o input (None nas posições bloqueadas/sem id) e loga.
+        batch_id = uuid4().hex
+        sent_iter = iter(sent_ids)
+        ids: List[Optional[str]] = []
+        for i in range(n):
+            etype = types[i] if types and i < len(types) else email_type
+            it = items[i] if i < len(items) else {}
+            target_id = it.get("target_id")
+            turl = it.get("target_url")
+            dom = site_name(turl) if turl else None
+            subject = payloads[i].get("subject")
+            if blocked[i]:
+                ids.append(None)
+                await self._log_email(email_id=None, to_email=to_list[i], email_type=etype,
+                                      subject=subject, target_id=target_id, domain=dom,
+                                      status="blocked", blocked_reason="blocklist",
+                                      source=source, batch_id=batch_id)
+            else:
+                eid = next(sent_iter, None)
+                ids.append(eid)
+                await self._log_email(email_id=eid, to_email=to_list[i], email_type=etype,
+                                      subject=subject, target_id=target_id, domain=dom,
+                                      status=("sent" if eid else "failed"),
+                                      source=source, batch_id=batch_id)
         sent = len([i for i in ids if i])
-        return {"sent": sent, "failed": len(payloads) - sent, "ids": ids}
+        return {"sent": sent, "failed": n - sent, "ids": ids}
 
     async def _send_batch_raw(
         self, payloads: List[Dict[str, Any]], idempotency_key: str
@@ -295,12 +431,18 @@ class KlarimMailer:
         risk_messages: Optional[list] = None,
         target_id=None,
         bonus_token: Optional[str] = None,
+        email_type: Optional[str] = None,
+        source: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Alerta gratuito (semáforo) — o anzol do funil."""
+        """Alerta gratuito (semáforo) — o anzol do funil. KL-62: registra em email_log,
+        respeita a blocklist (proativo). `email_type` opcional sobrescreve (ex.: admin)."""
+        is_100 = score == 100 and (semaphore or "").lower() == "verde"
+        etype = email_type or ("alert_score100" if is_100 else "alert")
         return await self._send(self._alert_params(
             to_email, target_url, score, semaphore, fail_count, severity_counts,
             unsubscribe_link=unsubscribe_link, risk_messages=risk_messages,
-            target_id=target_id, bonus_token=bonus_token))
+            target_id=target_id, bonus_token=bonus_token),
+            email_type=etype, target_id=target_id, domain=site_name(target_url), source=source)
 
     async def send_alert_batch(self, alerts: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Envia até 100 alertas em 1 request via Resend Batch API (KL-23).
@@ -323,7 +465,11 @@ class KlarimMailer:
                 bonus_token=a.get("bonus_token"))
             for a in batch
         ]
-        return await self._send_batch(payloads, batch)
+        # KL-62: email_type por item (score 100 verde → alert_score100).
+        types = ["alert_score100" if (a.get("score") == 100 and str(a.get("semaphore", "")).lower() == "verde")
+                 else "alert" for a in batch]
+        return await self._send_batch(payloads, batch, email_type="alert",
+                                      source="alert_worker", types=types)
 
     def _evolution_params(
         self,
@@ -384,11 +530,14 @@ class KlarimMailer:
         risk_messages: Optional[list] = None,
         target_id=None,
     ) -> Dict[str, Any]:
-        """E-mail de evolução do score (KL-13). Escolhe o template pelo tipo."""
+        """E-mail de evolução do score (KL-13). Escolhe o template pelo tipo. KL-62:
+        registra em email_log, respeita a blocklist (proativo)."""
         return await self._send(self._evolution_params(
             to_email, target_url, old_score, new_score, evolution, semaphore,
             fail_count, severity_counts, price_display, unsubscribe_link=unsubscribe_link,
-            risk_messages=risk_messages, target_id=target_id))
+            risk_messages=risk_messages, target_id=target_id),
+            email_type="evolution", target_id=target_id, domain=site_name(target_url),
+            source="rescan_worker")
 
     async def send_evolution_batch(self, evolutions: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Envia até 100 e-mails de evolução em 1 request via Resend Batch API (KL-23).
@@ -412,7 +561,8 @@ class KlarimMailer:
                 risk_messages=e.get("risk_messages"), target_id=e.get("target_id"))
             for e in batch
         ]
-        return await self._send_batch(payloads, batch)
+        return await self._send_batch(payloads, batch, email_type="evolution",
+                                      source="rescan_worker")
 
     async def send_report(
         self,
@@ -421,8 +571,12 @@ class KlarimMailer:
         score: int,
         executive_pdf: bytes,
         technical_pdf: bytes,
+        email_type: str = "report_delivery",
+        source: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Entrega do relatório pago, com os dois PDFs anexados."""
+        """Entrega do relatório (PDFs anexados). Transacional → **ignora a blocklist**
+        (o usuário tem direito de receber). `email_type`: report_delivery / report_send /
+        admin_report (KL-62)."""
         site = site_name(target_url)
         semaphore = semaphore_from_score(score)
         html = _env.get_template("report_delivery.html").render(
@@ -440,17 +594,19 @@ class KlarimMailer:
         return await self._send({
             "from": self.from_address, "to": [to_email], "subject": subject,
             "html": html, "attachments": attachments,
-        })
+        }, email_type=email_type, domain=site, source=source, skip_blocklist=True)
 
     async def send_verification_code(self, to_email: str, code: str, domain: str) -> Dict[str, Any]:
-        """Envia o código de 6 dígitos para verificar o e-mail antes do scan (KL-25)."""
+        """Envia o código de 6 dígitos para verificar o e-mail antes do scan (KL-25).
+        Transacional (o usuário pediu) → ignora a blocklist, mas é registrado (KL-62)."""
         html = _env.get_template("verification_code.html").render(code=code, domain=domain)
         return await self._send({
             "from": self.from_address,
             "to": [to_email],
             "subject": f"🔐 Seu código Klarim: {code}",
             "html": html,
-        })
+        }, email_type="verification_code", domain=domain, source="scan_public",
+            skip_blocklist=True)
 
     async def send_password_reset_code(self, to_email: str, code: str) -> Dict[str, Any]:
         """Envia o código de 6 dígitos para redefinir a senha da conta (KL-51 f3)."""
@@ -460,7 +616,7 @@ class KlarimMailer:
             "to": [to_email],
             "subject": f"🔑 Redefinição de senha Klarim: {code}",
             "html": html,
-        })
+        }, email_type="password_reset", source="account", skip_blocklist=True)
 
     async def send_account_deleted(self, to_email: str) -> Dict[str, Any]:
         """Confirma ao usuário que a conta foi excluída (KL-57)."""
@@ -470,12 +626,14 @@ class KlarimMailer:
             "to": [to_email],
             "subject": "Sua conta Klarim foi excluída",
             "html": html,
-        })
+        }, email_type="account_deleted", source="account", skip_blocklist=True)
 
     async def send_profile_view(self, to_email: str, domain: str, score: int,
                                 semaphore: str, cta_url: str,
-                                unsubscribe_link: Optional[str] = None) -> Dict[str, Any]:
-        """Avisa o dono que alguém consultou o perfil público do site (KL-51 f4)."""
+                                unsubscribe_link: Optional[str] = None,
+                                target_id: Optional[int] = None) -> Dict[str, Any]:
+        """Avisa o dono que alguém consultou o perfil público do site (KL-51 f4).
+        Proativo → **respeita a blocklist** + registra (KL-62; era o vazamento nº 1)."""
         if unsubscribe_link is None:
             secret = os.environ.get("UNSUBSCRIBE_SECRET") or os.environ.get("JWT_SECRET") or ""
             if secret:
@@ -489,7 +647,8 @@ class KlarimMailer:
             "to": [to_email],
             "subject": f"Alguém verificou a segurança do site {domain}",
             "html": html,
-        })
+        }, email_type="profile_view", target_id=target_id, domain=domain,
+            source="profile_view")
 
     async def send_account_evolution(self, to_email: str, domain: str, prev_score: int,
                                      new_score: int, fixed: int, remaining: int,
@@ -503,7 +662,7 @@ class KlarimMailer:
             "to": [to_email],
             "subject": f"{domain} — seu score de segurança mudou",
             "html": html,
-        })
+        }, email_type="account_evolution", domain=domain, source="cron")
 
     async def send_monitor_offer(self, to_email: str, domain: str,
                                  approve_url: str) -> Dict[str, Any]:
@@ -513,7 +672,7 @@ class KlarimMailer:
         return await self._send({
             "from": self.from_address, "to": [to_email],
             "subject": f"{domain} — monitoramento de segurança gratuito",
-            "html": html})
+            "html": html}, email_type="monitor_offer", domain=domain, source="rescan_worker")
 
     async def send_monitor_alert(self, to_email: str, domain: str, score: int,
                                  result_url: str, remove_url: str) -> Dict[str, Any]:
@@ -524,7 +683,7 @@ class KlarimMailer:
         return await self._send({
             "from": self.from_address, "to": [to_email],
             "subject": f"{domain} — o score de segurança caiu para {score}/100",
-            "html": html})
+            "html": html}, email_type="monitor_alert", domain=domain, source="rescan_worker")
 
     async def send_monitor_restored(self, to_email: str, domain: str,
                                     result_url: str, remove_url: str) -> Dict[str, Any]:
@@ -534,10 +693,11 @@ class KlarimMailer:
         return await self._send({
             "from": self.from_address, "to": [to_email],
             "subject": f"{domain} — voltou a 100/100 e ao selo Klarim",
-            "html": html})
+            "html": html}, email_type="monitor_restored", domain=domain, source="rescan_worker")
 
     async def send_recovery_link(self, to_email: str, recovery_url: str) -> Dict[str, Any]:
-        """Envia o link temporário de recuperação de relatórios."""
+        """Envia o link temporário de recuperação de relatórios. Transacional → ignora
+        a blocklist (o usuário pediu), mas é registrado (KL-62)."""
         sep = "&" if "?" in recovery_url else "?"
         recovery_url = f"{recovery_url}{sep}utm_source=klarim&utm_medium=email&utm_campaign=recuperacao"
         html = _env.get_template("recovery.html").render(recovery_url=recovery_url)
@@ -546,7 +706,7 @@ class KlarimMailer:
             "to": [to_email],
             "subject": "🔑 Acesso aos seus relatórios Klarim",
             "html": html,
-        })
+        }, email_type="recovery", source="recovery", skip_blocklist=True)
 
     async def send_test(self, to_email: str) -> Dict[str, Any]:
         """E-mail de teste para validar a configuração do Resend."""
@@ -558,7 +718,8 @@ class KlarimMailer:
             "<p style=\"color:#8B949E;font-size:12px\">klarim.net</p></div>"
         )
         return await self._send(
-            {"from": self.from_address, "to": [to_email], "subject": "Teste — Klarim", "html": html}
+            {"from": self.from_address, "to": [to_email], "subject": "Teste — Klarim", "html": html},
+            email_type="test", source="diagnostic", skip_blocklist=True,
         )
 
     async def send_contact(
@@ -592,7 +753,9 @@ class KlarimMailer:
         }
         if email:
             params["reply_to"] = email
-        return await self._send(params)
+        # Destinatário interno (scan@klarim.net) → ignora blocklist, mas registra (KL-62).
+        return await self._send(params, email_type="contact", source="contact_form",
+                                skip_blocklist=True)
 
     # ----- helpers --------------------------------------------------------- #
 

@@ -20,7 +20,7 @@ const DEP_LABEL = {
   resend: 'Resend', abacatepay: 'AbacatePay',
 }
 
-const ACT_COLOR = { discovery: '#2DD4BF', alert: '#FF6B35', scan: '#3B82F6', rescan: '#A855F7', payment: '#00D26A' }
+const ACT_COLOR = { discovery: '#2DD4BF', alert: '#FF6B35', scan: '#3B82F6', rescan: '#A855F7', payment: '#00D26A', email: '#58A6FF', email_blocked: '#F85149' }
 
 function Row({ label, value }) {
   return (

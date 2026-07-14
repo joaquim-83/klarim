@@ -2237,3 +2237,58 @@ editados à mão); a captura é **fire-and-forget** e roda **após** o scan (nun
 nem o derruba); e-mails normalizados com `LOWER()`; `scanned_by_email` pode ser NULL
 (filtrado). O lead não dispara e-mail automático — é só registro/pontuação. Ao mudar as
 regras de score, rode `POST /leads/recalculate` (ou o backfill).
+
+## 46. Rastreabilidade unificada de e-mails — email_log + blocklist central (KL-62)
+
+Um diagnóstico (`claude/reports/KL-62_diagnostico_email.md`) mapeou **20 caminhos** de
+envio via Resend, mas só **4** eram rastreados (`alert_log`+`rescan_log`). Os outros 16
+— notificação de perfil, código de verificação, cron de monitoramento, relatórios,
+recuperação, reset de senha — saíam **sem registro, sem checagem de blocklist e sem
+contabilidade de bounce**. A página Sistema mostrava "0 e-mails hoje" com envios saindo.
+O fix é **1 ponto** que cobre os 20 por construção: **TODO** e-mail passa por
+`KlarimMailer._send`/`_send_batch`.
+
+- **Tabela `email_log`** (`discovery/store.py`, via `ensure_schema`): `email_id` (correlação
+  com o webhook), `to_email`, `email_type`, `subject`, `target_id`, `domain`, `status`
+  (`sent`/`bounced`/`failed`/`blocked`/`complained`), `blocked_reason`, `error`, `sent_at`,
+  `source`, `batch_id` + 5 índices. **Não substitui** `alert_log`/`rescan_log` (que
+  continuam) — é a camada de contabilidade acima.
+- **Centralização no `KlarimMailer` (`notifier/email_client.py`) — o cerne.** O construtor
+  aceita `store` (injetável nos testes; em produção usa o singleton lazy `get_target_store`,
+  import tardio → sem ciclo). `_send(params, *, email_type, target_id, domain, source,
+  skip_blocklist)`: **(1)** checa a blocklist (exceto transacionais) → loga `blocked` e
+  **não envia**; **(2)** envia; **(3)** loga `sent` (com o `email_id`) ou `failed` (+ erro,
+  e re-levanta). `_send_batch` faz o mesmo por item, com `batch_id`, e **preserva o
+  alinhamento** do retorno `ids` (bloqueado → `None` na posição — o `AlertWorker` mapeia
+  `ids[i]`→`alerts[i]` posicionalmente). `_is_blocked` é **fail-open** (erro → envia);
+  `_log_email` é **fire-and-forget** (nunca derruba o envio). `EMAIL_TYPES` (18 tipos)
+  discrimina o canal.
+- **`email_type` + `skip_blocklist` por método** (regra: **transacional** = o usuário pediu
+  → `skip_blocklist=True` mas **registra**; **proativo** → respeita a blocklist). Transacionais:
+  `verification_code`, `report_delivery`/`report_send`/`admin_report`, `password_reset`,
+  `account_deleted`, `recovery`, `test`, `contact`. Proativos: `alert`/`alert_score100`,
+  `evolution`, `profile_view`, `account_evolution`, `monitor_offer/alert/restored`. O
+  `send_alert`/`send_report` aceitam override de `email_type` (admin → `admin_alert`/
+  `admin_report`).
+- **Métricas do painel** (`store.email_metrics`) passam a ler do `email_log` (não mais
+  `alert_log`+`rescan_log`): `sent_today/week/month` (exclui `test`), `blocked_today`,
+  `failed_today`, `by_type`. `email_health` (bounce rate) idem — agora cobre **todos** os
+  caminhos. A **atividade recente** (`/system/activity`) intercala e-mails (`type=email`/
+  `email_blocked`, com tipo+destino+status) com os scans.
+- **Bounce ponta a ponta:** o webhook `/webhooks/resend` marca **`email_log` + `alert_log`**
+  por `email_id` (`mark_email_status_by_email_id`); o backfill `/admin/process-bounces` lê
+  do `email_log` (`get_sent_emails_for_bounce_check`, superset dos 7 dias) e marca ambos.
+- **API + MCP:** `GET /email/log` (JWT admin — sob o prefixo protegido `/email/`; filtros
+  `email_type`/`status`/`to_email`/`source` + legenda `types`). MCP `get_email_log` (**45
+  tools** no total). Frontend: Sistema ganha as cores de `email`/`email_blocked` na timeline.
+- **Migração** (`scripts/backfill_email_log.py` → `store.migrate_email_log`): copia o
+  histórico de `alert_log`+`rescan_log` para o `email_log`, **idempotente** (dedup por
+  `source`+`to_email`+`sent_at`+`email_id` via `NOT EXISTS`/`IS NOT DISTINCT FROM`). Rodar
+  1× na VM após o deploy para as métricas não zerarem.
+
+**Regra inviolável:** todo e-mail é registrado por construção no `KlarimMailer` (nenhum
+chamador precisa lembrar de logar); o log é **fire-and-forget** (nunca derruba o envio) e
+a blocklist é **fail-open** (erro de infra nunca bloqueia um envio); e-mail **proativo**
+respeita a blocklist (fecha a lacuna do KL-24 em todos os caminhos), **transacional**
+pode ignorá-la mas **sempre** é registrado; `alert_log`/`rescan_log` **não** são removidos;
+o retorno `ids` do batch mantém o alinhamento 1:1 (não quebrar o `AlertWorker`).

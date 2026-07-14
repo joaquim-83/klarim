@@ -31,6 +31,8 @@ READ_TOOLS = [
     "get_dashboard_stats", "get_enrichment_status", "get_user_accounts", "search_inbox",
     # KL-61: leads
     "list_leads", "get_lead_stats", "get_lead_funnel",
+    # KL-62: log unificado de e-mails
+    "get_email_log",
 ]
 WRITE_TOOLS = [
     "scan_url", "add_target", "update_target_email", "update_target_status",

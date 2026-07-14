@@ -53,7 +53,8 @@ from payments import (
     get_store,
     init_store,
 )
-from notifier import KlarimMailer, KlarimMailerError, unsubscribe_token, verify_resend_signature
+from notifier import (KlarimMailer, KlarimMailerError, EMAIL_TYPES, unsubscribe_token,
+                      verify_resend_signature)
 from discovery.alert_worker import send_alert_for_target
 from discovery.rescan_worker import rescan_target
 from discovery import worker_control
@@ -1318,7 +1319,8 @@ async def notify_profile_view(body: ProfileViewBody) -> dict:
             score = target.get("last_scan_score") or 0
             semaphore = _semaphore_from_score(score)
             cta = f"{os.environ.get('SITE_BASE', 'https://klarim.net')}/cadastrar"
-            await _mailer().send_profile_view(email, domain, int(score), semaphore, cta)
+            await _mailer().send_profile_view(email, domain, int(score), semaphore, cta,
+                                              target_id=target.get("id"))  # KL-62
             print(f"[notify] perfil {domain} consultado → aviso enviado a {email}", flush=True)
         except Exception as exc:  # noqa: BLE001 - nunca derruba nada
             print(f"[notify] profile-view erro {domain}: {exc!r}", flush=True)
@@ -2014,6 +2016,7 @@ async def webhook_resend(request: Request) -> dict:
         if not transient:
             if email_id:
                 await store.mark_alert_status_by_email_id(email_id, "bounced")
+                await store.mark_email_status_by_email_id(email_id, "bounced")  # KL-62
             for addr in recipients:
                 await _handle_bounce(store, addr, message)
         else:
@@ -2021,6 +2024,7 @@ async def webhook_resend(request: Request) -> dict:
     elif evt_type == "email.complained":
         if email_id:
             await store.mark_alert_status_by_email_id(email_id, "complained")
+            await store.mark_email_status_by_email_id(email_id, "complained")  # KL-62
         for addr in recipients:
             await _handle_complaint(store, addr)
     else:
@@ -2117,7 +2121,8 @@ async def _send_report_email_task(charge_id: str, target_url: str, to_email: str
         executive = await generate_executive_pdf(report, target_url)
         technical = await generate_technical_pdf(report, target_url)
         score = report.score.score if report.score else 0
-        res = await _mailer().send_report(to_email, target_url, score, executive, technical)
+        res = await _mailer().send_report(to_email, target_url, score, executive, technical,
+                                          email_type="report_delivery", source="payment")  # KL-62
         await get_store().set_email_status(charge_id, "sent")
         print(f"[email] relatório de {charge_id} enviado para {to_email} (id={res.get('email_id')})", flush=True)
     except Exception as exc:  # noqa: BLE001 - falha não deve derrubar nada; há fallback de download
@@ -2195,7 +2200,8 @@ async def scan_send_report(body: SendReportBody, request: Request) -> dict:
             executive = await generate_executive_pdf(report, url)
             technical = await generate_technical_pdf(report, url)
             score = report.score.score if report.score else 0
-            res = await _mailer().send_report(email, url, score, executive, technical)
+            res = await _mailer().send_report(email, url, score, executive, technical,
+                                              email_type="report_send", source="scan_result")  # KL-62
             print(f"[email] PDFs de {url} enviados para {email} (id={res.get('email_id')})", flush=True)
         except Exception as exc:  # noqa: BLE001 - background; nunca derruba nada
             print(f"[email] falha ao enviar PDFs de {url} para {email}: {exc!r}", flush=True)
@@ -3155,6 +3161,21 @@ async def api_system_activity(limit: int = Query(default=50, le=200)) -> dict:
         events.append({"type": "scan", "at": str(s.get("scanned_at")),
                        "message": f"scan {s.get('url')} → {s.get('score')}/100 {s.get('semaphore')} "
                                   f"[{s.get('source')}]"})
+    # KL-62: e-mails do email_log (discrimina tipo + destino + status/bloqueio).
+    try:
+        for e in await store.list_email_activity(limit=per):
+            st = e.get("status")
+            label = EMAIL_TYPES.get(e.get("email_type"), e.get("email_type") or "email")
+            if st == "blocked":
+                events.append({"type": "email_blocked", "at": str(e.get("sent_at")),
+                               "message": f"{label} → {e.get('to_email')} "
+                                          f"(bloqueado: {e.get('blocked_reason') or 'blocklist'})"})
+            else:
+                extra = "" if st == "sent" else f" ({st})"
+                events.append({"type": "email", "at": str(e.get("sent_at")),
+                               "message": f"{label} → {e.get('to_email')}{extra}"})
+    except Exception:  # noqa: BLE001 - best-effort; não derruba a timeline
+        pass
     try:
         for c in await get_store().list_charges(limit=per):
             if c.status in PaymentStatus.PAID_STATES:
@@ -3199,6 +3220,28 @@ async def api_system_email_health() -> dict:
         "bounce_status": _bounce_status(rate),
         "blocklist_size": h["blocklist"],
     }
+
+
+@app.get("/email/log")
+async def api_email_log(
+    email_type: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None),
+    to_email: Optional[str] = Query(default=None),
+    source: Optional[str] = Query(default=None),
+    limit: int = Query(default=25, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict:
+    """Log unificado de e-mails (KL-62, JWT admin) — auditoria de TODOS os envios.
+
+    Filtros: email_type (alert/profile_view/verification_code/…), status
+    (sent/bounced/failed/blocked), to_email (parcial), source. Retorna também a
+    legenda `types` (email_type → rótulo) para a UI."""
+    et = email_type if email_type in EMAIL_TYPES else None
+    st = status if status in ("sent", "bounced", "failed", "blocked", "complained") else None
+    data = await get_target_store().list_email_log(
+        email_type=et, status=st, to_email=(to_email or None),
+        source=(source or None), limit=limit, offset=offset)
+    return {**data, "types": EMAIL_TYPES}
 
 
 # --------------------------------------------------------------------------- #
@@ -3429,7 +3472,8 @@ async def _send_alert_to(url: str, report: ScanReport, to_email: str,
     res = await _mailer().send_alert(
         to_email, url, s.score if s else 0, s.semaphore if s else "vermelho",
         s.failed if s else 0, _severity_counts(report),
-        risk_messages=get_risk_messages(report), target_id=target_id)
+        risk_messages=get_risk_messages(report), target_id=target_id,
+        email_type="admin_alert", source="admin")  # KL-62: tag do canal admin
     return res.get("email_id")
 
 
@@ -3437,7 +3481,8 @@ async def _send_report_to(url: str, report: ScanReport, to_email: str) -> Option
     executive = await _safe_pdf(generate_executive_pdf, report, url)
     technical = await _safe_pdf(generate_technical_pdf, report, url)
     score = report.score.score if report.score else 0
-    res = await _mailer().send_report(to_email, url, score, executive, technical)
+    res = await _mailer().send_report(to_email, url, score, executive, technical,
+                                      email_type="admin_report", source="admin")  # KL-62
     return res.get("email_id")
 
 
@@ -3582,7 +3627,9 @@ async def api_admin_process_bounces(limit: int = Query(default=1000, le=5000)) -
     _require_email()
     store = get_target_store()
     mailer = _mailer()
-    alerts = await store.get_sent_alerts_for_bounce_check(limit=limit)
+    # KL-62: lê do email_log unificado (superset — cobre verificação/perfil/relatório/…),
+    # não só o alert_log. Marca ambos (alert_log + email_log) por email_id.
+    alerts = await store.get_sent_emails_for_bounce_check(limit=limit)
 
     sem = asyncio.Semaphore(8)
     result = {"processed": 0, "bounced": 0, "delivered": 0, "unknown": 0}
@@ -3593,10 +3640,12 @@ async def api_admin_process_bounces(limit: int = Query(default=1000, le=5000)) -
         result["processed"] += 1
         if event in ("bounced", "bounce"):
             await store.mark_alert_status_by_email_id(alert["email_id"], "bounced")
+            await store.mark_email_status_by_email_id(alert["email_id"], "bounced")
             await _handle_bounce(store, alert.get("contact_email", ""), "backfill")
             result["bounced"] += 1
         elif event in ("complained", "complaint"):
             await store.mark_alert_status_by_email_id(alert["email_id"], "complained")
+            await store.mark_email_status_by_email_id(alert["email_id"], "complained")
             await _handle_complaint(store, alert.get("contact_email", ""))
         elif event is None:
             result["unknown"] += 1
