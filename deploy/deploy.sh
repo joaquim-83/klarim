@@ -36,12 +36,17 @@ if [[ ! -f "$APP_DIR/.env" ]]; then
   exit 1
 fi
 
-# 3) Rebuild and restart the stack.
-echo "==> docker compose down"
-docker compose down --remove-orphans
+# 3) Zero-downtime-ish rebuild. Antes o `docker compose down` derrubava TUDO antes do
+#    build, então o site ficava fora por todo o build (~2-5 min). Agora: (a) `build`
+#    gera as imagens novas com os containers antigos AINDA NO AR; (b) `up -d` recria só
+#    os containers cuja imagem/config mudou. Postgres/Redis (sem build) nem são tocados
+#    (zero downtime na camada de dados). Downtime cai para ~10-30s (só o recreate).
+#    `--remove-orphans` no `up` preserva a limpeza que o antigo `down --remove-orphans` fazia.
+echo "==> docker compose build (site continua no ar durante o build)"
+docker compose build
 
-echo "==> docker compose up -d --build"
-docker compose up -d --build
+echo "==> docker compose up -d (recria só os containers que mudaram)"
+docker compose up -d --remove-orphans
 
 # 3b) Limpeza de disco — CRÍTICO. Cada `--build` acumula build cache (GBs) e deixa
 #     a imagem anterior como dangling; sem podar, o disco da VM (9.7G) enche e QUEBRA

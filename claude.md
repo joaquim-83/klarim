@@ -320,8 +320,13 @@ sudo bash /opt/klarim/deploy/deploy.sh
 ```
 
 `deploy/deploy.sh` marca `/opt/klarim` como `safe.directory`, faz `git pull` →
-`docker compose down` → `up -d --build` → `docker compose ps` → health check em
-`http://localhost:8000/health`.
+`docker compose build` (site **no ar** durante o build) → `docker compose up -d
+--remove-orphans` (recria só os containers que mudaram) → prune → `docker compose ps` →
+health check em `http://localhost:8000/health` + `:4321/` (Astro). **⚠️ Downtime (fix):**
+o antigo `docker compose down` derrubava tudo antes do build (site fora ~2-5 min); trocado
+por `build` + `up -d` → downtime ~10-30s (só o recreate); Postgres/Redis (sem build) nem
+são tocados. **Nota:** o script se auto-atualiza no `git pull` — como o bash já leu o
+arquivo inteiro no início, a mudança só vale **no deploy seguinte** ao que a instalou.
 
 ### CI/CD automático
 
