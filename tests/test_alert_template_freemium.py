@@ -59,9 +59,9 @@ def test_alert_has_disclaimer_and_unsubscribe():
 
 
 def test_alert_preserves_variables():
-    html = _render("alert.html", site_name="minhaloja.com.br", fail_count=7)
-    assert "minhaloja.com.br" in html
-    assert "<strong>7</strong>" in html  # fail_count renderizado
+    # alert.html = cópia do profile_view.html (não renderiza fail_count/semaphore_label).
+    html = _render("alert.html", site_name="minhaloja.com.br")
+    assert "minhaloja.com.br" in html     # site_name (o domínio) renderizado
     assert "65" in html                   # score renderizado (do _CTX)
     assert "{{" not in html and "{%" not in html  # nenhuma variável não resolvida
 

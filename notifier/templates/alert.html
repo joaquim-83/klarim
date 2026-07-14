@@ -3,78 +3,57 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Avaliação de Segurança — Klarim</title>
+<title>Klarim — Alguém consultou o seu site</title>
 </head>
 <body style="margin:0; padding:0; background-color:#0D1117;">
   <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#0D1117;">
     <tr>
       <td align="center" style="padding:24px 12px;">
-        <table role="presentation" width="600" cellpadding="0" cellspacing="0" style="width:600px; max-width:100%; background-color:#161B22; border:1px solid #30363D; border-radius:12px; overflow:hidden; font-family:Arial,Helvetica,sans-serif;">
+        <table role="presentation" width="520" cellpadding="0" cellspacing="0" style="width:520px; max-width:100%; background-color:#161B22; border:1px solid #30363D; border-radius:12px; overflow:hidden; font-family:Arial,Helvetica,sans-serif;">
 
-          <!-- Header -->
           <tr>
-            <td style="padding:20px 24px; border-bottom:2px solid #30363D;">
-              <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
-                <tr>
-                  <td style="font-size:22px; font-weight:bold; letter-spacing:2px; color:#E6EDF3;">
-                    KLA<span style="color:#FF6B35;">R</span>IM
-                  </td>
-                  <td align="right" style="font-size:13px; color:#8B949E;">Avaliação de Segurança</td>
-                </tr>
+            <td style="padding:24px 28px 8px 28px;">
+              <span style="font-size:22px; font-weight:bold; letter-spacing:2px; color:#E6EDF3;">KLA<span style="color:#FF6B35;">R</span>IM</span>
+              <div style="color:#8B949E; font-size:13px; margin-top:2px;">Perfil público consultado</div>
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:8px 28px; color:#E6EDF3; font-size:15px; line-height:1.6;">
+              Olá,<br><br>
+              Alguém consultou o perfil de segurança do site <strong>{{ site_name }}</strong> no Klarim.
+            </td>
+          </tr>
+
+          <tr>
+            <td style="padding:12px 28px;">
+              <table role="presentation" cellpadding="0" cellspacing="0" style="background-color:#0D1117; border:1px solid #30363D; border-radius:8px;">
+                <tr><td style="padding:16px 22px; color:#E6EDF3; font-size:15px;">
+                  Score de segurança do site: <strong style="color:#FF6B35; font-size:22px;">{{ score }}/100</strong> {{ semaphore_emoji }}
+                </td></tr>
               </table>
             </td>
           </tr>
 
-          <!-- Score / semáforo -->
-          <tr>
-            <td align="center" style="padding:28px 24px 8px 24px;">
-              <div style="display:inline-block; padding:14px 28px; border:3px solid {{ score_color }}; border-radius:9999px;">
-                <span style="font-size:40px; font-weight:bold; color:{{ score_color }};">{{ score }}</span><span style="font-size:16px; color:#8B949E;">/100</span>
-              </div>
-              <div style="margin-top:12px; font-size:20px; font-weight:bold; color:{{ score_color }};">
-                {{ semaphore_emoji }} {{ semaphore_label }}
-              </div>
-            </td>
-          </tr>
-
-          <!-- Resumo (modelo freemium, sem cobrança) -->
-          <tr>
-            <td style="padding:16px 28px 8px 28px; color:#E6EDF3; font-size:15px; line-height:1.6;">
-              Verificamos a segurança do site
-              <a href="{{ target_url }}" style="color:#FF6B35; text-decoration:none;">{{ site_name }}</a>
-              e encontramos <strong>{{ fail_count }}</strong> ponto(s) de atenção.
-            </td>
-          </tr>
-
-          <!-- Verificação gratuita + convite a monitorar -->
           <tr>
             <td style="padding:8px 28px 4px 28px; color:#E6EDF3; font-size:14px; line-height:1.7;">
-              A verificação é <strong>gratuita</strong>. Crie uma conta para acompanhar o
-              score do seu site, receber um alerta quando algo mudar e ver como melhorar.
+              Quer acompanhar a segurança do seu site gratuitamente? Monitore o score, receba
+              alertas quando algo mudar e veja como melhorar.
             </td>
           </tr>
 
-          <!-- CTA -->
           <tr>
-            <td align="center" style="padding:16px 28px 28px 28px;">
-              <a href="https://klarim.net/cadastrar?utm_source=klarim&utm_medium=email&utm_campaign=alerta" style="display:inline-block; background-color:#FF6B35; color:#0D1117; font-size:16px; font-weight:bold; text-decoration:none; padding:14px 32px; border-radius:8px;">
-                Criar conta e monitorar &#8594;
-              </a>
+            <td style="padding:12px 28px 20px 28px;">
+              <a href="https://klarim.net/cadastrar?utm_source=klarim&utm_medium=email&utm_campaign=alerta" style="display:inline-block; background-color:#FF6B35; color:#0D1117; font-weight:bold; font-size:15px; text-decoration:none; padding:12px 24px; border-radius:8px;">Criar conta e monitorar &#8594;</a>
             </td>
           </tr>
 
-          <!-- Footer -->
           <tr>
-            <td style="padding:16px 28px; border-top:1px solid #30363D; color:#8B949E; font-size:11px; line-height:1.6;">
-              O Klarim avalia a segurança do <strong>site</strong>, não do negócio. Análise
-              automatizada e 100% passiva — nenhum dado do seu site foi acessado.
+            <td style="padding:16px 28px; border-top:1px solid #30363D; color:#484F58; font-size:11px; line-height:1.6;">
+              O Klarim avalia a segurança do <strong>site</strong>, não do negócio. Este é um aviso
+              único (no máximo 1 por dia).
+              {% if unsubscribe_link %}<br><a href="{{ unsubscribe_link }}" style="color:#8B949E;">Não receber mais avisos</a>{% endif %}
               <br>Klarim Scanner — <a href="https://klarim.net" style="color:#8B949E;">klarim.net</a>
-              &nbsp;·&nbsp;
-              {% if unsubscribe_link %}
-              <a href="{{ unsubscribe_link }}" style="color:#8B949E;">Não quer mais receber? Clique aqui para se descadastrar</a>
-              {% else %}
-              <a href="mailto:scan@klarim.net?subject=REMOVER" style="color:#8B949E;">Não receber mais alertas</a>
-              {% endif %}
             </td>
           </tr>
 

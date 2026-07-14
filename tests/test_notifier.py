@@ -31,8 +31,8 @@ def test_templates_render():
         fail_count=2, sev={"critica": 0, "alta": 2, "media": 0, "baixa": 0},
         result_link="https://klarim.net/result?url=x", lgpd="LGPD…", **ctx,
     )
-    # Freemium: CTA de conta (/cadastrar), sem preço/relatório pago.
-    assert "Criar conta e monitorar" in alert and "/cadastrar" in alert and "VERDE" in alert
+    # Freemium: alert.html = cópia do profile_view (CTA de conta, score+emoji, sem label).
+    assert "Criar conta e monitorar" in alert and "/cadastrar" in alert and "86/100" in alert
     assert "R$" not in alert  # KL-27: alerta sem preço
     report = _env.get_template("report_delivery.html").render(**ctx)
     assert "Executivo" in report and "Técnico" in report
