@@ -1672,10 +1672,14 @@ Astro (ver o doc de arquitetura).
   (não há `/resultado/{scan_id}` — o backend faz scan bloqueante sem id pollável; página
   SSR de resultado com SEO fica para a fase de perfis públicos).
 - **Correções f1:** logo real (`Logo.astro` = beacon laranja + `KLA`**`R`**`IM`, réplica
-  do `Logo.jsx`) + favicon beacon; **contato** vira página `/contato` (Astro SSR,
-  `prerender=false`, honeypot + IP real via `X-Real-IP`) que **reusa** o endpoint
-  existente `POST /contact` — o footer aponta pra `/contato` (sem `mailto`). A API interna
-  para os fetches SSR do Astro é `KLARIM_API_URL` (`http://api:8000`, no serviço `astro`).
+  do `Logo.jsx`) + favicon beacon; **contato** é a página `/contato` (Astro) que **reusa** o
+  endpoint existente `POST /contact` — o footer aponta pra `/contato` (sem `mailto`). A API
+  interna para os fetches SSR do Astro é `KLARIM_API_URL` (`http://api:8000`, no serviço `astro`).
+  **⚠️ KL-58:** o form virou **ilha React** (`ContactForm.jsx`) que faz **POST client-side
+  para `/api/contact`** — o `<form method=POST>` SSR batia na proteção CSRF do Astro
+  (`checkOrigin`) atrás do Cloudflare ("Cross-site POST form submissions are forbidden", no
+  mobile). O `/api/contact` (FastAPI) não tem CSRF do Astro; o rate limit segue por
+  `X-Real-IP` do Nginx. Nenhuma outra página Astro processa POST (não mexemos no `checkOrigin`).
 - **Nginx:** `/scan` e `/contato` entram na regex das rotas Astro (`~ ^/(termos|
   privacidade|sobre|contato|scan|…)`). `/api/scan/*` **não** conflita (casa o prefixo
   `/api/`, não a âncora `^/scan`). O fluxo Vite de scan (`/scan` antigo) fica sombreado.
@@ -1998,8 +2002,14 @@ em `inbox_messages`; o painel lê/gere.
   `mailto:`/webmail (envio via API Hostinger fica para fase opcional, `HOSTINGER_API_TOKEN`).
 
 **Config (nunca no git):** `HOSTINGER_WEBHOOK_TOKEN` + `HOSTINGER_API_TOKEN` vivem **só** no
-`/opt/klarim/.env` da VM (os serviços usam `env_file: .env`). Webhook já configurado na
-Hostinger para `https://klarim.net/api/email/webhook` (cai no `location /api/` existente).
+`/opt/klarim/.env` da VM (os serviços usam `env_file: .env`). O webhook precisa ser configurado
+no hPanel da Hostinger para `https://klarim.net/api/email/webhook` (POST, header `Authorization:
+Bearer <HOSTINGER_WEBHOOK_TOKEN>` **ou** `?token=<TOKEN>`; cai no `location /api/`). **⚠️ KL-58:**
+diagnóstico em produção provou o pipeline ponta a ponta (POST público → 200 → `stored:true`,
+inbox 0→1); se as mensagens não chegam, é porque a **Hostinger não está enviando** — conferir a
+config do webhook no hPanel. `_hostinger_token_ok` aceita o token em vários headers/queries e
+loga os **nomes** dos headers (nunca valores) num 401 para diagnosticar; `parse_inbox_payload`
+desembrulha wrappers `data`/`payload`/`body`/`email` e aceita lista.
 
 **Regra inviolável:** o webhook é **fail-closed** (sem `HOSTINGER_WEBHOOK_TOKEN`, tudo 401) e
 tem auth própria (não JWT admin); o corpo de e-mail externo **nunca** é injetado no DOM do

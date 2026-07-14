@@ -2242,12 +2242,17 @@ def _hostinger_token_ok(request: Request) -> bool:
     bearer = auth[7:].strip() if auth[:7].lower() == "bearer " else ""
     candidates = [
         bearer,
+        auth.strip(),  # `Authorization: <token>` sem o prefixo Bearer
         request.headers.get("x-webhook-token", ""),
+        request.headers.get("x-webhook-secret", ""),
+        request.headers.get("webhook-secret", ""),
         request.headers.get("x-hostinger-webhook-token", ""),
         request.headers.get("x-hostinger-token", ""),
         request.headers.get("x-webhook-signature", ""),
         request.headers.get("x-api-key", ""),
         request.query_params.get("token", ""),
+        request.query_params.get("secret", ""),
+        request.query_params.get("webhookSecret", ""),
     ]
     return any(c and hmac.compare_digest(c, expected) for c in candidates)
 
@@ -2267,8 +2272,18 @@ def parse_inbox_payload(payload: dict) -> Optional[dict]:
     AgentMail/Hostinger (`event_type=message.received` + objeto `message`) e formas
     "achatadas" (`from`/`to`/`subject`/`text`/`html`). Retorna o dict pronto para o
     banco, ou None se não for uma mensagem reconhecível (para logar o raw)."""
+    if isinstance(payload, list):  # alguns webhooks mandam uma lista de eventos
+        payload = payload[0] if payload else {}
     if not isinstance(payload, dict):
         return None
+    # Desembrulha wrappers comuns (data/payload/body/email) quando o topo não tem
+    # nenhum sinal de mensagem — o formato exato da Hostinger é confirmado em runtime.
+    _MSG_KEYS = ("message", "from", "from_address", "sender", "text", "html", "subject")
+    if not any(k in payload for k in _MSG_KEYS):
+        for wrap in ("data", "payload", "body", "email"):
+            if isinstance(payload.get(wrap), dict):
+                payload = payload[wrap]
+                break
     evt = payload.get("event_type") or payload.get("type") or ""
     # eventos que não são recebimento de mensagem (send/delivery/bounce) → ignora
     if evt and "received" not in evt and "message" not in payload and "from" not in payload:
@@ -2310,6 +2325,13 @@ async def email_webhook(request: Request) -> dict:
     próprio (não JWT admin — rota no `_PUBLIC_UNDER_PROTECTED`). Grava em
     `inbox_messages` (dedup por `message_id`)."""
     if not _hostinger_token_ok(request):
+        # Diagnóstico (KL-58): loga os NOMES dos headers + chaves de query (nunca os
+        # valores/segredos) para descobrir como a Hostinger manda o token — sem isso o
+        # 401 é cego. `token_set` confirma se a env está configurada.
+        print(f"[inbox] webhook 401 — token_set="
+              f"{bool(os.environ.get('HOSTINGER_WEBHOOK_TOKEN'))} "
+              f"headers={sorted(request.headers.keys())} "
+              f"query={list(request.query_params.keys())}", flush=True)
         return JSONResponse({"detail": "Não autorizado."}, status_code=401)
     try:
         payload = await request.json()

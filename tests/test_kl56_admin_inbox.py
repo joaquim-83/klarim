@@ -273,6 +273,18 @@ def test_parse_inbox_payload_ignores_non_message_event():
     assert m.parse_inbox_payload({"event_type": "message.delivered", "send": {}}) is None
 
 
+def test_parse_inbox_payload_unwraps_data_wrapper():
+    # KL-58: alguns webhooks embrulham a mensagem em data/payload/body/email.
+    msg = m.parse_inbox_payload({"data": {"from": "x@y.com.br", "subject": "Wrap", "text": "c"}})
+    assert msg and msg["from_address"] == "x@y.com.br" and msg["subject"] == "Wrap"
+
+
+def test_parse_inbox_payload_accepts_list():
+    # KL-58: webhook que manda uma lista de eventos → usa o primeiro.
+    msg = m.parse_inbox_payload([{"from": "a@b.com.br", "subject": "Lista", "text": "c"}])
+    assert msg and msg["subject"] == "Lista"
+
+
 def test_09_webhook_valid_token_stores(client):
     r = client.post("/email/webhook", json=_AGENTMAIL,
                     headers={"Authorization": "Bearer tok-abc-123"})
