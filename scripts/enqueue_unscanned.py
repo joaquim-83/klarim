@@ -54,12 +54,33 @@ async def _make_redis():
         return None
 
 
-async def run(limit: int, status: str, dry_run: bool) -> None:
+async def run(limit: int, status: str, dry_run: bool, max_queue: int = 0) -> None:
     store = get_target_store()
     try:
         await store.ensure_schema()
     except Exception as exc:  # noqa: BLE001
         log.warning("ensure_schema: %r (seguindo)", exc)
+
+    redis = None if dry_run else await _make_redis()
+    if not dry_run and redis is None:
+        log.error("sem Redis — abortando (nada enfileirado).")
+        return
+
+    # Guarda de fila (para cron seguro): só enfileira se a fila estiver abaixo do teto —
+    # assim um cron frequente reabastece sem inflar o queue depth (o worker drena ~100/h).
+    if max_queue and redis is not None:
+        try:
+            depth = await redis.llen(SCAN_QUEUE)
+        except Exception as exc:  # noqa: BLE001
+            depth = 0
+            log.warning("llen falhou (%r) — seguindo sem guarda", exc)
+        if depth >= max_queue:
+            log.info("fila já tem %d itens (>= max-queue %d) — pulando este ciclo", depth, max_queue)
+            try:
+                await redis.aclose()
+            except Exception:  # noqa: BLE001
+                pass
+            return
 
     remaining = await store.count_unscanned_targets(status)
     targets = await store.list_unscanned_targets(limit=limit, status=status)
@@ -67,11 +88,11 @@ async def run(limit: int, status: str, dry_run: bool) -> None:
              status, remaining, len(targets), " (dry-run)" if dry_run else "")
     if not targets:
         log.info("nada a enfileirar.")
-        return
-
-    redis = None if dry_run else await _make_redis()
-    if not dry_run and redis is None:
-        log.error("sem Redis — abortando (nada enfileirado).")
+        if redis is not None:
+            try:
+                await redis.aclose()
+            except Exception:  # noqa: BLE001
+                pass
         return
 
     enqueued = 0
@@ -108,6 +129,8 @@ def _parse_args(argv=None):
                     help="máx. de alvos por execução (padrão 500 — não encha a fila de uma vez).")
     ap.add_argument("--status", default="sem_contato",
                     help="status alvo (padrão sem_contato).")
+    ap.add_argument("--max-queue", type=int, default=0,
+                    help="se a fila já tem >= N itens, pula (cron seguro; 0 = sem guarda).")
     ap.add_argument("--dry-run", action="store_true",
                     help="mostra o que faria, sem enfileirar nada.")
     return ap.parse_args(argv)
@@ -115,7 +138,7 @@ def _parse_args(argv=None):
 
 def main() -> None:
     args = _parse_args()
-    asyncio.run(run(args.limit, args.status, args.dry_run))
+    asyncio.run(run(args.limit, args.status, args.dry_run, args.max_queue))
 
 
 if __name__ == "__main__":
