@@ -1,0 +1,79 @@
+---
+export const prerender = false; // SSR: lista os setores com ranking + SEO
+
+import Base from '../../layouts/Base.astro';
+import Header from '../../components/Header.astro';
+import Footer from '../../components/Footer.astro';
+
+const SITE = 'https://klarim.net';
+const API = process.env.KLARIM_API_URL || 'http://api:8000';
+
+let sectors = [];
+try {
+  const res = await fetch(`${API}/ranking`, { signal: AbortSignal.timeout(6000) });
+  if (res.ok) sectors = (await res.json()).sectors || [];
+} catch { /* backend fora → página ainda renderiza (vazia) */ }
+
+const title = 'Rankings de segurança por setor';
+const desc = 'Ranking dos sites brasileiros com melhor score de segurança, organizado por setor. Descubra como o seu site se compara.';
+const jsonLd = {
+  '@context': 'https://schema.org', '@type': 'CollectionPage',
+  name: title, description: desc, url: `${SITE}/ranking`,
+};
+const card = 'rounded-2xl border border-slate-800 bg-slate-900/60 p-6';
+---
+
+<Base title={title} description={desc} path="/ranking" jsonLd={jsonLd}>
+  <Header />
+  <main class="mx-auto max-w-3xl px-5 pt-28 pb-20 sm:pt-32">
+    <h1 class="text-2xl font-bold tracking-tight text-white sm:text-3xl">Rankings de segurança por setor</h1>
+    <p class="mt-2 text-slate-400">Os sites brasileiros com melhor score de segurança em cada setor.</p>
+
+    {sectors.length === 0 ? (
+      <div class={`${card} mt-8`}>
+        <p class="text-slate-300">Os rankings estão sendo montados. Volte em breve.</p>
+      </div>
+    ) : (
+      <div class={`${card} mt-8 overflow-x-auto`}>
+        <table class="w-full text-sm">
+          <thead>
+            <tr class="text-left text-xs uppercase tracking-wide text-slate-500">
+              <th class="pb-3 pr-4">Setor</th>
+              <th class="pb-3 pr-4 text-right">Sites</th>
+              <th class="pb-3 pr-4 text-right">Score médio</th>
+              <th class="pb-3">Top site</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sectors.map((s) => (
+              <tr class="border-t border-slate-800">
+                <td class="py-3 pr-4">
+                  <a href={`/ranking/${s.sector}`} class="font-medium text-brand-400 hover:text-brand-300">{s.label}</a>
+                </td>
+                <td class="py-3 pr-4 text-right text-slate-300">{s.count}</td>
+                <td class="py-3 pr-4 text-right font-semibold text-white">{s.avg_score}</td>
+                <td class="py-3 text-slate-400">
+                  {s.top_domain ? <a href={`/site/${s.top_domain}`} class="hover:text-white">{s.top_domain}</a> : '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )}
+
+    <div class={`${card} mt-8 border-brand-500/30 bg-brand-500/5 text-center`}>
+      <h2 class="text-lg font-bold text-white">Onde seu site fica no ranking?</h2>
+      <p class="mt-1 text-sm text-slate-300">Verifique grátis em 30 segundos e descubra sua posição.</p>
+      <a href="/scan" class="mt-4 inline-flex rounded-xl bg-brand-500 px-6 py-3 text-sm font-semibold text-slate-950 hover:bg-brand-400">
+        Verificar meu site →
+      </a>
+    </div>
+
+    <p class="mt-8 border-t border-slate-800 pt-6 text-xs leading-relaxed text-slate-600">
+      Os scores são baseados em análise passiva automatizada e não constituem auditoria de segurança.
+      O Klarim avalia a segurança do <strong>site</strong>, não do negócio.
+    </p>
+  </main>
+  <Footer />
+</Base>

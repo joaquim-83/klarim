@@ -1,0 +1,111 @@
+---
+export const prerender = false; // SSR: top sites do setor + SEO por setor
+
+import Base from '../../layouts/Base.astro';
+import Header from '../../components/Header.astro';
+import Footer from '../../components/Footer.astro';
+import { badgeFor } from '../../lib/badge.js';
+
+const SITE = 'https://klarim.net';
+const API = process.env.KLARIM_API_URL || 'http://api:8000';
+const sector = (Astro.params.sector || '').toLowerCase();
+
+let data = null;
+try {
+  const res = await fetch(`${API}/ranking/${encodeURIComponent(sector)}?limit=20`, {
+    signal: AbortSignal.timeout(6000),
+  });
+  if (res.ok) data = await res.json();
+} catch { /* backend fora → trata como vazio */ }
+
+const label = data?.label || sector;
+const sites = data?.sites || [];
+const avg = data?.avg_score ?? null;
+const count = data?.count ?? 0;
+// SEO: só indexa setores com conteúdo útil (≥ 5 sites, regra KL-42).
+const indexable = sites.length > 0 && count >= 5;
+
+const title = `Sites de ${label} mais seguros do Brasil`;
+const desc = `Ranking dos ${sites.length} sites de ${label} com melhor score de segurança no Brasil`
+  + (avg != null ? `. Média do setor: ${avg}/100.` : '.');
+const jsonLd = indexable ? {
+  '@context': 'https://schema.org', '@type': 'ItemList',
+  name: title,
+  itemListElement: sites.map((s) => ({
+    '@type': 'ListItem', position: s.position, name: s.domain, url: `${SITE}/site/${s.domain}`,
+  })),
+} : undefined;
+
+const updated = new Date().toLocaleDateString('pt-BR');
+const card = 'rounded-2xl border border-slate-800 bg-slate-900/60 p-6';
+---
+
+<Base
+  title={title}
+  fullTitleOverride={`${title} | Klarim`}
+  description={desc}
+  path={`/ranking/${sector}`}
+  jsonLd={jsonLd}
+  noindex={!indexable}
+>
+  <Header />
+  <main class="mx-auto max-w-3xl px-5 pt-28 pb-20 sm:pt-32">
+    <a href="/ranking" class="text-sm text-brand-400 hover:text-brand-300">← Todos os setores</a>
+    <h1 class="mt-3 text-2xl font-bold tracking-tight text-white sm:text-3xl">
+      Sites de {label} com melhor score de segurança
+    </h1>
+
+    {sites.length === 0 ? (
+      <div class={`${card} mt-8`}>
+        <p class="text-slate-300">Ainda não há sites suficientes neste setor para montar um ranking.</p>
+        <a href="/scan" class="mt-4 inline-flex text-brand-400 hover:text-brand-300">Verificar meu site →</a>
+      </div>
+    ) : (
+      <>
+        <div class={`${card} mt-6 overflow-x-auto`}>
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="text-left text-xs uppercase tracking-wide text-slate-500">
+                <th class="pb-3 pr-3">#</th>
+                <th class="pb-3 pr-4">Site</th>
+                <th class="pb-3 pr-4 text-right">Score</th>
+                <th class="pb-3">Selo</th>
+              </tr>
+            </thead>
+            <tbody>
+              {sites.map((s) => (
+                <tr class="border-t border-slate-800">
+                  <td class="py-3 pr-3 text-slate-500">{s.position}</td>
+                  <td class="py-3 pr-4">
+                    <a href={`/site/${s.domain}`} class="text-brand-400 hover:text-brand-300">{s.domain}</a>
+                  </td>
+                  <td class="py-3 pr-4 text-right font-semibold text-white">{s.score}</td>
+                  <td class="py-3 text-slate-300">{badgeFor(s.score) ? `${badgeFor(s.score).icon} ${badgeFor(s.score).short}` : ''}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <p class="mt-3 text-sm text-slate-400">
+          Mostrando top {sites.length}. Média do setor: <span class="font-semibold text-white">{avg}/100</span> ·
+          Sites analisados: {count} · Atualizado em {updated}.
+        </p>
+      </>
+    )}
+
+    <div class={`${card} mt-8 border-brand-500/30 bg-brand-500/5 text-center`}>
+      <h2 class="text-lg font-bold text-white">Onde seu site fica neste ranking?</h2>
+      <p class="mt-1 text-sm text-slate-300">Verifique grátis e descubra sua posição.</p>
+      <a href="/scan" class="mt-4 inline-flex rounded-xl bg-brand-500 px-6 py-3 text-sm font-semibold text-slate-950 hover:bg-brand-400">
+        Verificar meu site →
+      </a>
+    </div>
+
+    <p class="mt-8 border-t border-slate-800 pt-6 text-xs leading-relaxed text-slate-600">
+      Os scores são baseados em análise passiva automatizada e não constituem auditoria de segurança.
+      O Klarim avalia a segurança do <strong>site</strong>, não do negócio.
+    </p>
+  </main>
+  <Footer />
+</Base>

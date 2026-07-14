@@ -2045,3 +2045,60 @@ best-effort). `adminApi.dashboardStats()`.
 (dados do sistema — o perfil público permanece); os totalizadores são queries agregadas
 (sem N+1, sem full scan caro); o resultado gratuito **continua** sem detalhe dos checks
 pagos (KL-27) — `has_profile` é só o sinal do link, não vaza dado do perfil.
+
+## 43. Score social: widget + card + ranking + selo (KL-42)
+
+Cinco mecânicas de viralidade (fase 8 da arquitetura) que transformam cada usuário num
+canal de aquisição. Tudo **público** (não está sob prefixo protegido) e derivado do score
+que o site já tem — sem campo novo no banco.
+
+**Selo/badge (`_score_badge`, `web/src/lib/badge.js`):** ≥90 **Klarim Verified** ⭐, ≥80
+**Klarim Approved** ✅, <80 sem selo. Derivado do score — o backend e o front espelham a
+mesma regra. Aparece no widget, no card, no perfil, no ranking e no dashboard.
+
+**1. Widget embeddable "Verificado por Klarim".** `GET /widget/{dominio}.js`
+(`application/javascript`, cache 1h) devolve um JS leve, self-contained, CSS inline, com o
+domínio embutido; o estilo (`inline`/`card`/`minimal`) é lido em runtime do `?style=` do
+próprio `<script>`. O JS busca o score em **`GET /score/{dominio}`** (JSON, cache 24h, **CORS
+`*`** — é dado público sem cookie) e injeta o selo antes da própria tag. **Beacons** de
+impressão/clique via **pixel GET** `GET /widget/event?e=&d=&s=` (204, sem CORS — o widget roda
+em site externo). O link do selo aponta para `/site/{dominio}?utm_source=widget`. Página
+**`/dashboard/widget`** (`WidgetGenerator.jsx`): seleção de site + estilo + preview + snippet
+`<script async …>` + copiar. `"Powered by Klarim"` é inerente (todos free hoje).
+
+**2. Card compartilhável.** `GET /card/{dominio}.png?format=square|landscape` (reusa a infra
+do og:image: `_card_svg` → cairosvg, cache 24h, fail-open → favicon). **square** 1080×1080
+(Instagram), **landscape** 1200×630 (LinkedIn/Twitter), com o CTA "Nosso site tem score X…
+E o seu?". `ShareScore.jsx` (usado no `SiteDetail` e no resultado do `ScanFlow`): selo +
+posição no ranking + preview + download (square/landscape) + copiar link + WhatsApp/
+LinkedIn/Twitter (share URLs nativas).
+
+**3. Rankings por setor (SEO).** `GET /ranking` (setores com ≥5 sites: contagem, média, top
+site) e `GET /ranking/{setor}` (top 20 por score). Só sites com scan público (`scanned`/
+`alerted`) **e landing ligada** (`public_visible`, KL-56) entram — usa `targets.sector`
+(taxonomia 48, KL-54). Páginas Astro SSR `web/src/pages/ranking/index.astro` +
+`ranking/[sector].astro` (indexável só com ≥5 sites; JSON-LD ItemList). Adicionadas ao
+`sitemap.xml` (1 URL por setor ≥5). `track.js` dispara `ranking_viewed`.
+
+**4. Posição no ranking (dashboard).** `GET /account/sites/{id}` ganhou `badge` + `ranking`
+(`store.get_sector_position`: `ROW_NUMBER()` no setor — ranqueia entre TODOS os sites com
+score do setor, não exige perfil, pois a posição é do dono). `SiteDetail.jsx` mostra
+"#N de M sites de {setor} · acima de X%" + selo + `ShareScore`. `Dashboard.jsx` mostra o selo
+no `SiteCard` + links Compartilhar/Widget.
+
+**5. Notificação de mudança de posição:** o e-mail de evolução mensal (`monitor_rescan.py`)
+fica preparado, mas a linha de ranking no e-mail é **futuro** (a posição já aparece no
+dashboard).
+
+**Store (KL-42):** `list_sector_ranking`, `ranking_sectors_summary` (≥N, com top domínio),
+`get_sector_position`. **Nginx:** `ranking` entrou no bloco cacheável do Astro
+(`^/(site|score|ranking|sitemap\.xml)`, 300s) no `https.conf.template`; `/api/widget|score|
+card|ranking` caem no `/api/` existente; `/dashboard/widget` já cai no `dashboard` da regex
+Astro. **Eventos:** `widget_loaded`, `widget_clicked`, `widget_copied`, `card_downloaded`,
+`share_clicked`, `ranking_viewed`.
+
+**Regra inviolável:** widget/card/score/ranking são **100% dados públicos** (score + domínio,
+nunca e-mail/CNPJ/WhatsApp) e respeitam a visibilidade (`public_visible`/descartado) — o
+`/score` de site oculto devolve `score: null`. O widget é **leve, async, CSS inline** e não
+pode impactar a performance do site externo. O card é **best-effort/fail-open** (render falho
+→ favicon). O Klarim avalia a segurança do **SITE**, não do negócio.

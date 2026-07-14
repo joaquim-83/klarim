@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { apiGet } from '../../lib/api.js';
 import { card } from './ui.js';
 import { groupByCategory } from '../scan/checks.js';
+import ShareScore from './ShareScore.jsx';
 
 const SEMA = {
   verde: { dot: '🟢', ring: 'ring-green-500/50', text: 'text-green-400' },
@@ -74,7 +75,20 @@ export default function SiteDetail({ targetId }) {
           <span className="text-sm text-slate-400">/100</span>
         </div>
         <p className="mt-3 text-xl">{sema.dot}</p>
-        <p className="mt-1 text-sm text-slate-400">Último scan: {fmtDate(t.last_scan_at)}</p>
+        {data.badge && (
+          <p className="mt-2 inline-flex items-center gap-1.5 rounded-full border border-brand-500/40 bg-brand-500/10 px-3 py-1 text-sm font-semibold text-brand-300">
+            {data.badge.icon} {data.badge.label}
+          </p>
+        )}
+        {data.ranking && data.ranking.total > 1 && (
+          <p className="mt-3 text-sm text-slate-300">
+            Posição: <span className="font-semibold text-white">#{data.ranking.position}</span> de {data.ranking.total} sites de {data.ranking.sector_label}
+            <br />
+            <span className="text-slate-400">Acima de {data.ranking.percentile}% do setor</span>{' '}
+            <a href={`/ranking/${data.ranking.sector}`} className="text-brand-400 hover:text-brand-300">· ver ranking →</a>
+          </p>
+        )}
+        <p className="mt-3 text-sm text-slate-400">Último scan: {fmtDate(t.last_scan_at)}</p>
       </div>
 
       {/* Evolução */}
@@ -106,7 +120,14 @@ export default function SiteDetail({ targetId }) {
           className="rounded-xl bg-brand-500 px-5 py-3 text-sm font-semibold text-slate-950 hover:bg-brand-400">📄 PDF Executivo</a>
         <a href={`/api/report/technical?url=${encoded}`}
           className="rounded-xl border border-slate-700 px-5 py-3 text-sm text-slate-200 hover:bg-slate-800">📑 PDF Técnico</a>
+        <a href="/dashboard/widget"
+          className="rounded-xl border border-slate-700 px-5 py-3 text-sm text-slate-200 hover:bg-slate-800">&lt;/&gt; Widget para seu site</a>
       </div>
+
+      {/* Compartilhar score (KL-42) */}
+      {data.score != null && t.domain && (
+        <ShareScore domain={t.domain} score={data.score} badge={data.badge} ranking={data.ranking} />
+      )}
 
       {/* Checks */}
       <div>

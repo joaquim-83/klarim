@@ -654,6 +654,20 @@ async def account_site_detail(target_id: int, request: Request) -> dict:
         fail_count = scans[0].get("fail_count") or 0
     profile = await store.get_site_profile(target_id)
     classifications = await store.get_target_classifications(target_id)
+    # Selo + posição no ranking do setor (KL-42) — best-effort.
+    sector = target.get("sector")
+    badge = _score_badge(score)
+    ranking = None
+    if sector and sector != "outro" and score is not None:
+        try:
+            pos = await store.get_sector_position(sector, target_id)
+            if pos and pos.get("total", 0) > 0:
+                pct = min(99, round(100 * (pos["total"] - pos["position"]) / pos["total"]))
+                ranking = {"sector": sector, "sector_label": _sector_label(sector),
+                           "position": pos["position"], "total": pos["total"],
+                           "percentile": pct}
+        except Exception:  # noqa: BLE001 - ranking é complementar
+            ranking = None
     return {
         "target": {
             "id": target_id, "url": target.get("url"), "domain": target.get("domain"),
@@ -663,6 +677,7 @@ async def account_site_detail(target_id: int, request: Request) -> dict:
         },
         "is_owner": bool(link.get("is_owner")),
         "score": score, "semaphore": semaphore, "fail_count": fail_count,
+        "badge": badge, "ranking": ranking,
         "history": history, "checks": checks,
         "profile": profile, "classifications": classifications,
     }
@@ -1000,6 +1015,262 @@ async def og_image(domain: str) -> Response:
                 _OG_CACHE.pop(k, None)
     return Response(content=png, media_type="image/png",
                     headers={"Cache-Control": "public, max-age=86400"})
+
+
+# --------------------------------------------------------------------------- #
+# Score social (KL-42): widget embeddable + card compartilhável + selo + ranking.
+# Tudo público (não está sob prefixo protegido). O widget roda em sites EXTERNOS,
+# então /score/ manda Access-Control-Allow-Origin:* (dado público, GET, sem cookie).
+# --------------------------------------------------------------------------- #
+
+def _site_base() -> str:
+    return os.environ.get("SITE_BASE", "https://klarim.net")
+
+
+def _sector_label(sector: str) -> str:
+    """Rótulo humano do setor (taxonomia KL-54). Fallback: o próprio slug."""
+    try:
+        from discovery.sector_taxonomy import get_label
+        return get_label(sector)
+    except Exception:  # noqa: BLE001
+        return sector or "outro"
+
+
+def _score_badge(score: Optional[int]) -> Optional[dict]:
+    """Selo derivado do score (KL-42) — sem campo novo no banco. ≥90 Verified,
+    ≥80 Approved, <80 sem selo."""
+    if score is None:
+        return None
+    if score >= 90:
+        return {"level": "verified", "label": "Klarim Verified", "icon": "⭐"}
+    if score >= 80:
+        return {"level": "approved", "label": "Klarim Approved", "icon": "✅"}
+    return None
+
+
+async def _public_score_data(domain: str) -> Optional[dict]:
+    """Resolve o score público de um domínio (widget/card/score). ``None`` se o site
+    não tem score público: inexistente, descartado, landing desligada (KL-56) ou sem
+    scan. Mesmo critério de visibilidade de `/public/profile/{domain}`."""
+    store = get_target_store()
+    target = await store.get_target_by_domain(domain)
+    if not target or target.get("status") == "descartado":
+        return None
+    score = target.get("last_scan_score")
+    if score is None:
+        return None
+    profile = (await store.get_site_profile(target["id"])) or {}
+    if profile.get("public_visible") is False:
+        return None
+    semaphore = _semaphore_from_score(score)
+    try:
+        recent = await store.list_scans(target_id=target["id"], limit=1)
+        if recent and recent[0].get("semaphore"):
+            semaphore = recent[0]["semaphore"]
+    except Exception:  # noqa: BLE001
+        pass
+    last_at = target.get("last_scan_at")
+    return {
+        "domain": domain, "score": int(score), "semaphore": semaphore,
+        "badge": _score_badge(int(score)),
+        "last_scan": last_at.date().isoformat() if hasattr(last_at, "date") else None,
+        "profile_url": f"{_site_base()}/site/{domain}",
+    }
+
+
+@app.get("/score/{domain}")
+async def public_score(domain: str) -> JSONResponse:
+    """Score público de um site (JSON) — consumido pelo widget embeddable (KL-42).
+    CORS liberado (dado público, sem cookie); cache 24h."""
+    data = await _public_score_data(_norm_domain(domain))
+    headers = {"Cache-Control": "public, max-age=86400",
+               "Access-Control-Allow-Origin": "*"}
+    if data is None:
+        return JSONResponse({"domain": _norm_domain(domain), "score": None,
+                             "semaphore": None, "badge": None}, headers=headers)
+    return JSONResponse(data, headers=headers)
+
+
+# JS do widget "Verificado por Klarim" — leve, sem dependência, CSS inline. Gerado
+# por domínio (o domínio é embutido); o estilo (inline/card/minimal) é lido em runtime
+# do `?style=` do próprio <script src>. O score vem de /api/score (CORS). Beacons de
+# impressão/clique via pixel GET (sem CORS).
+_WIDGET_JS = r"""(function(){
+var D="__DOMAIN__",B="__BASE__",me=document.currentScript;
+var style="inline";try{style=(new URL(me.src).searchParams.get("style")||"inline");}catch(e){}
+if(["inline","card","minimal"].indexOf(style)<0)style="inline";
+var sid="w"+Math.random().toString(36).slice(2,10)+Date.now().toString(36);
+function px(ev){try{(new Image()).src=B+"/api/widget/event?e="+ev+"&d="+encodeURIComponent(D)+"&s="+sid+"&t="+Date.now();}catch(e){}}
+function col(s){return s==="verde"?"#00D26A":s==="vermelho"?"#F85149":"#F0C000";}
+function el(t,css,txt){var e=document.createElement(t);e.style.cssText=css;if(txt!=null)e.textContent=txt;return e;}
+function render(d){
+var c=col(d.semaphore);
+var a=el("a","display:inline-flex;align-items:center;gap:8px;box-sizing:border-box;text-decoration:none;font-family:Arial,Helvetica,sans-serif;background:#0D1117;border:1px solid #30363D;border-radius:10px;color:#E6EDF3;line-height:1.2;");
+a.href=d.profile_url+(d.profile_url.indexOf("?")<0?"?":"&")+"utm_source=widget&utm_medium=embed&utm_campaign="+style;
+a.target="_blank";a.rel="noopener";
+var dot=el("span","width:10px;height:10px;border-radius:50%;flex:0 0 auto;background:"+c+";");
+var shield=el("span","font-size:14px;flex:0 0 auto;","🛡️");
+if(style==="minimal"){a.style.padding="6px 10px";a.style.fontSize="12px";
+a.appendChild(shield);a.appendChild(el("span","font-weight:bold;color:"+c+";",d.score));a.appendChild(el("span","color:#8B949E;","/100"));
+}else if(style==="card"){a.style.flexDirection="column";a.style.alignItems="flex-start";a.style.padding="12px 14px";a.style.width="180px";
+var top=el("span","display:flex;align-items:center;gap:6px;font-size:12px;color:#8B949E;");top.appendChild(shield);top.appendChild(el("span",null,"Verificado por Klarim"));a.appendChild(top);
+var mid=el("span","display:flex;align-items:baseline;gap:5px;margin-top:6px;");mid.appendChild(el("span","font-size:30px;font-weight:bold;color:"+c+";",d.score));mid.appendChild(el("span","color:#8B949E;font-size:13px;","/100"));mid.appendChild(dot);a.appendChild(mid);
+a.appendChild(el("span","font-size:11px;color:#8B949E;margin-top:4px;","klarim.net"));
+}else{a.style.padding="8px 12px";a.style.fontSize="13px";
+a.appendChild(shield);a.appendChild(el("span","color:#E6EDF3;","Verificado por Klarim"));a.appendChild(el("span","font-weight:bold;color:"+c+";","· "+d.score+"/100"));a.appendChild(dot);}
+a.addEventListener("click",function(){px("widget_clicked");});
+me.parentNode.insertBefore(a,me);px("widget_loaded");}
+fetch(B+"/api/score/"+encodeURIComponent(D)).then(function(r){return r.json();}).then(function(d){if(d&&d.score!=null)render(d);}).catch(function(){});
+})();"""
+
+
+@app.get("/widget/event")
+async def widget_event(e: str = Query(...), d: str = Query(...),
+                       s: str = Query(...)) -> Response:
+    """Beacon do widget embeddable (cross-origin via pixel GET → sem CORS). Loga
+    impressão (`widget_loaded`) / clique (`widget_clicked`) no funil (KL-21/57)."""
+    if e in ("widget_loaded", "widget_clicked") and s and _event_rate_ok(s):
+        dom = _norm_domain(d)
+
+        async def _bg():
+            try:
+                store = get_target_store()
+                t = await store.get_target_by_domain(dom)
+                await store.log_event(e, s, target_url=dom, target_id=(t or {}).get("id"),
+                                      utm_source="widget", utm_medium="embed",
+                                      metadata={"domain": dom})
+            except Exception as exc:  # noqa: BLE001 - tracking nunca derruba nada
+                print(f"[widget] beacon falhou {dom}: {exc!r}", flush=True)
+
+        _spawn(_bg())
+    return Response(status_code=204, headers={"Cache-Control": "no-store",
+                                              "Access-Control-Allow-Origin": "*"})
+
+
+@app.get("/widget/{domain}.js")
+async def widget_js(domain: str) -> Response:
+    """Widget embeddable "Verificado por Klarim" (KL-42). JS leve, CSS inline, o
+    domínio é embutido; o estilo vem do `?style=` do próprio <script>. Cache 1h."""
+    dom = _norm_domain(domain)
+    js = _WIDGET_JS.replace("__DOMAIN__", dom).replace("__BASE__", _site_base())
+    return Response(content=js, media_type="application/javascript",
+                    headers={"Cache-Control": "public, max-age=3600",
+                             "Access-Control-Allow-Origin": "*"})
+
+
+# --- card compartilhável (SVG → PNG via cairosvg; reusa a infra do og:image) --- #
+_CARD_CACHE: dict = {}  # (domain, fmt) -> (png_bytes, expiry_monotonic)
+
+
+def _card_svg(domain: str, score: int, semaphore: str, fmt: str = "landscape") -> str:
+    """Card social com score + semáforo + CTA. `fmt`: square (1080x1080, Instagram) ou
+    landscape (1200x630, LinkedIn/Twitter)."""
+    from html import escape
+    color = _SEMA_COLOR.get(semaphore, "#F0C000")
+    dom = domain if len(domain) <= 30 else domain[:29] + "…"
+    dom = escape(dom)
+    if fmt == "square":
+        return f"""<svg width="1080" height="1080" viewBox="0 0 1080 1080" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1080" height="1080" fill="#0D1117"/>
+  <rect x="0" y="0" width="1080" height="16" fill="#FF6B35"/>
+  <circle cx="92" cy="150" r="18" fill="#FF6B35"/>
+  <text x="126" y="164" font-family="sans-serif" font-size="44" font-weight="bold" fill="#E6EDF3" letter-spacing="4">KLA<tspan fill="#FF6B35">R</tspan>IM</text>
+  <text x="540" y="360" text-anchor="middle" font-family="sans-serif" font-size="54" font-weight="bold" fill="#E6EDF3">{dom}</text>
+  <text x="540" y="640" text-anchor="middle" font-family="sans-serif" font-size="240" font-weight="bold" fill="{color}">{score}</text>
+  <text x="540" y="720" text-anchor="middle" font-family="sans-serif" font-size="48" fill="#8B949E">/100</text>
+  <circle cx="540" cy="792" r="26" fill="{color}"/>
+  <text x="540" y="900" text-anchor="middle" font-family="sans-serif" font-size="36" fill="#C9D1D9">Nosso site tem score {score} de segurança.</text>
+  <text x="540" y="952" text-anchor="middle" font-family="sans-serif" font-size="36" font-weight="bold" fill="#E6EDF3">E o seu?</text>
+  <text x="540" y="1024" text-anchor="middle" font-family="sans-serif" font-size="30" fill="#8B949E">Verifique grátis em klarim.net</text>
+</svg>"""
+    return f"""<svg width="1200" height="630" viewBox="0 0 1200 630" xmlns="http://www.w3.org/2000/svg">
+  <rect width="1200" height="630" fill="#0D1117"/>
+  <rect x="0" y="0" width="1200" height="12" fill="#FF6B35"/>
+  <circle cx="76" cy="80" r="15" fill="#FF6B35"/>
+  <text x="104" y="92" font-family="sans-serif" font-size="34" font-weight="bold" fill="#E6EDF3" letter-spacing="3">KLA<tspan fill="#FF6B35">R</tspan>IM</text>
+  <text x="600" y="220" text-anchor="middle" font-family="sans-serif" font-size="48" font-weight="bold" fill="#E6EDF3">{dom}</text>
+  <text x="600" y="410" text-anchor="middle" font-family="sans-serif" font-size="170" font-weight="bold" fill="{color}">{score}</text>
+  <text x="600" y="470" text-anchor="middle" font-family="sans-serif" font-size="40" fill="#8B949E">/100</text>
+  <text x="600" y="540" text-anchor="middle" font-family="sans-serif" font-size="30" fill="#C9D1D9">Nosso site tem score {score} de segurança. E o seu?</text>
+  <text x="600" y="592" text-anchor="middle" font-family="sans-serif" font-size="26" fill="#8B949E">Verifique grátis em klarim.net</text>
+</svg>"""
+
+
+@app.get("/card/{domain}.png")
+async def card_image(domain: str,
+                     format: str = Query("landscape", pattern="^(square|landscape)$")
+                     ) -> Response:
+    """Card compartilhável (PNG) com o score do site (KL-42). `format`: square
+    (1080x1080) ou landscape (1200x630, default). Cache 24h. Fail-open → favicon."""
+    dom = _norm_domain(domain)
+    fmt = format if format in ("square", "landscape") else "landscape"
+    now = time.monotonic()
+    key = (dom, fmt)
+    cached = _CARD_CACHE.get(key)
+    if cached and cached[1] > now:
+        return Response(content=cached[0], media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=86400"})
+    data = await _public_score_data(dom)
+    if data is None:
+        return RedirectResponse(url="/favicon.svg", status_code=302)
+    svg = _card_svg(dom, int(data["score"]), data["semaphore"], fmt)
+    w, h = (1080, 1080) if fmt == "square" else (1200, 630)
+    try:
+        import cairosvg  # lazy: precisa do libcairo (presente na imagem; ausente no CI)
+        png = cairosvg.svg2png(bytestring=svg.encode("utf-8"),
+                               output_width=w, output_height=h)
+    except Exception as exc:  # noqa: BLE001 - render é best-effort
+        print(f"[card] falha ao renderizar {dom}: {exc!r}", flush=True)
+        return RedirectResponse(url="/favicon.svg", status_code=302)
+    _CARD_CACHE[key] = (png, now + _OG_TTL)
+    if len(_CARD_CACHE) > 5000:  # limpeza oportunista
+        for k, (_, exp) in list(_CARD_CACHE.items()):
+            if exp <= now:
+                _CARD_CACHE.pop(k, None)
+    return Response(content=png, media_type="image/png",
+                    headers={"Cache-Control": "public, max-age=86400"})
+
+
+# --- rankings por setor (páginas públicas SEO no Astro consomem estes) -------- #
+
+@app.get("/ranking")
+async def api_ranking_index() -> dict:
+    """Setores com ranking público (≥ 5 sites escaneados): contagem, score médio e
+    o site top de cada setor (KL-42)."""
+    try:
+        rows = await get_target_store().ranking_sectors_summary(min_count=5)
+    except Exception:  # noqa: BLE001
+        rows = []
+    sectors = [{
+        "sector": r["sector"], "label": _sector_label(r["sector"]),
+        "count": int(r["count"]), "avg_score": int(r.get("avg_score") or 0),
+        "top_domain": r.get("top_domain"),
+    } for r in rows]
+    return {"sectors": sectors, "count": len(sectors)}
+
+
+@app.get("/ranking/{sector}")
+async def api_ranking_sector(sector: str,
+                             limit: int = Query(20, ge=1, le=100)) -> dict:
+    """Top sites por score de segurança num setor (KL-42). Público."""
+    store = get_target_store()
+    sector = (sector or "").lower().strip()
+    try:
+        rows = await store.list_sector_ranking(sector, limit)
+    except Exception:  # noqa: BLE001
+        rows = []
+    try:
+        avg = await store.sector_avg_score(sector)
+    except Exception:  # noqa: BLE001
+        avg = {"avg_score": 0, "count": 0}
+    sites = []
+    for i, r in enumerate(rows, 1):
+        sc = int(r["last_scan_score"])
+        sites.append({"position": i, "domain": r["domain"], "score": sc,
+                      "semaphore": _semaphore_from_score(sc), "badge": _score_badge(sc)})
+    return {"sector": sector, "label": _sector_label(sector),
+            "avg_score": int(avg.get("avg_score") or 0),
+            "count": int(avg.get("count") or 0), "sites": sites}
 
 
 # --- notificação ao dono (perfil consultado) — rate limit 1/domínio/24h ------ #
@@ -2781,6 +3052,9 @@ _KNOWN_EVENTS = {
     "profile_view",
     # KL-57 — perfil no resultado do scan + churn de conta
     "profile_link_clicked", "password_changed", "account_deleted",
+    # KL-42 — score social: widget + card + ranking + compartilhamento
+    "widget_loaded", "widget_clicked", "widget_copied",
+    "card_downloaded", "share_clicked", "ranking_viewed",
 }
 _EVENT_RL_MAX = 100          # eventos/minuto por sessão
 _event_rl: dict = {}         # session_id -> lista de timestamps (janela de 60s)

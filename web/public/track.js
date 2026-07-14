@@ -66,5 +66,8 @@
       var dom = decodeURIComponent(m[1]);
       track('profile_view', { domain: dom }, 'https://' + dom);
     }
+    // ranking_viewed em /ranking e /ranking/{setor} — pressão competitiva (KL-42).
+    var r = path.match(/^\/ranking(?:\/([^/]+))?/);
+    if (r) track('ranking_viewed', { sector: r[1] ? decodeURIComponent(r[1]) : null });
   }
 })();

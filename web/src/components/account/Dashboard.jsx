@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { apiGet, apiPost } from '../../lib/api.js';
 import { field, card } from './ui.js';
+import { badgeFor } from '../../lib/badge.js';
 
 const SEMA = {
   verde: { dot: '🟢', ring: 'ring-green-500/50', text: 'text-green-400' },
@@ -201,7 +202,7 @@ function HistoryRow({ scan }) {
 function SiteCard({ site }) {
   const sema = SEMA[site.last_semaphore] || SEMA.amarelo;
   const nextDays = daysUntilNext(site.last_scan_at);
-  const encoded = encodeURIComponent(site.url);
+  const badge = badgeFor(site.last_scan_score);
   return (
     <div className={card}>
       <div className="flex items-start justify-between gap-4">
@@ -211,6 +212,11 @@ function SiteCard({ site }) {
             {site.sector && site.sector !== 'outro' ? site.sector : 'Setor não classificado'}
             {site.is_owner && <span className="ml-2 rounded bg-brand-500/15 px-1.5 py-0.5 text-xs text-brand-300">dono</span>}
           </p>
+          {badge && (
+            <p className="mt-2 inline-flex items-center gap-1 rounded-full border border-brand-500/40 bg-brand-500/10 px-2.5 py-0.5 text-xs font-semibold text-brand-300">
+              {badge.icon} {badge.label}
+            </p>
+          )}
         </div>
         <div className={`flex h-16 w-16 shrink-0 flex-col items-center justify-center rounded-full ring-2 ${sema.ring}`}>
           <span className={`text-xl font-bold ${sema.text}`}>{site.last_scan_score ?? '—'}</span>
@@ -225,8 +231,10 @@ function SiteCard({ site }) {
       <div className="mt-5 flex flex-wrap gap-3">
         <a href={`/dashboard/site/${site.target_id}`}
           className="rounded-lg bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700">Ver detalhes</a>
-        <a href={`/api/report/executive?url=${encoded}`}
-          className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">📄 Baixar PDF</a>
+        <a href={`/dashboard/site/${site.target_id}`}
+          className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">📤 Compartilhar</a>
+        <a href="/dashboard/widget"
+          className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">&lt;/&gt; Widget</a>
       </div>
     </div>
   );

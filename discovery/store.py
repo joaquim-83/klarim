@@ -1709,6 +1709,69 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    # --- rankings por setor (KL-42) ---------------------------------------- #
+
+    async def list_sector_ranking(self, sector: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """Top sites de um setor por score (KL-42) — só sites com scan público e
+        landing ligada (`public_visible`, KL-56). Ordena por score DESC, domínio."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT t.domain, t.last_scan_score, t.last_scan_at "
+                "FROM targets t JOIN site_profile sp ON sp.target_id = t.id "
+                "WHERE t.sector = %s AND t.status IN ('scanned', 'alerted') "
+                "  AND t.last_scan_score IS NOT NULL "
+                "  AND t.domain IS NOT NULL AND t.domain <> '' "
+                "  AND COALESCE(sp.public_visible, TRUE) = TRUE "
+                "ORDER BY t.last_scan_score DESC, t.domain ASC LIMIT %s", (sector, limit))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def ranking_sectors_summary(self, min_count: int = 5) -> List[Dict[str, Any]]:
+        """Setores com ranking público (≥ `min_count` sites com scan público): contagem,
+        score médio e o domínio top de cada um (KL-42). Exclui `outro`."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT t.sector, COUNT(*) AS count, "
+                "       COALESCE(ROUND(AVG(t.last_scan_score)), 0) AS avg_score "
+                "FROM targets t JOIN site_profile sp ON sp.target_id = t.id "
+                "WHERE t.status IN ('scanned', 'alerted') AND t.last_scan_score IS NOT NULL "
+                "  AND t.sector IS NOT NULL AND t.sector <> '' AND t.sector <> 'outro' "
+                "  AND COALESCE(sp.public_visible, TRUE) = TRUE "
+                "GROUP BY t.sector HAVING COUNT(*) >= %s "
+                "ORDER BY COUNT(*) DESC", (min_count,))
+            rows = self._rows_to_dicts(cur)
+            for r in rows:  # top site por setor (poucos setores → N+1 aceitável, 1 conexão)
+                cur.execute(
+                    "SELECT t.domain FROM targets t JOIN site_profile sp ON sp.target_id = t.id "
+                    "WHERE t.sector = %s AND t.status IN ('scanned', 'alerted') "
+                    "  AND t.last_scan_score IS NOT NULL "
+                    "  AND COALESCE(sp.public_visible, TRUE) = TRUE "
+                    "ORDER BY t.last_scan_score DESC, t.domain ASC LIMIT 1", (r["sector"],))
+                row = cur.fetchone()
+                r["top_domain"] = row[0] if row else None
+            return rows
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_sector_position(self, sector: str, target_id: int
+                                  ) -> Optional[Dict[str, int]]:
+        """Posição de um alvo no ranking do setor (KL-42) + total. Ranqueia entre TODOS
+        os sites com score no setor (não exige perfil/landing) — a posição é do dono."""
+        def _fn(cur):
+            cur.execute(
+                "WITH ranked AS ("
+                "  SELECT id, "
+                "         ROW_NUMBER() OVER (ORDER BY last_scan_score DESC, domain ASC) AS pos, "
+                "         COUNT(*) OVER () AS total "
+                "  FROM targets WHERE sector = %s AND status IN ('scanned', 'alerted') "
+                "    AND last_scan_score IS NOT NULL) "
+                "SELECT pos, total FROM ranked WHERE id = %s", (sector, target_id))
+            row = cur.fetchone()
+            return {"position": int(row[0]), "total": int(row[1])} if row else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
     # --- métricas operacionais (KL-16) ------------------------------------- #
 
     async def scan_today_stats(self) -> Dict[str, Any]:

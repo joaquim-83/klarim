@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { CATEGORIES, groupByCategory } from './checks.js';
+import ShareScore from '../account/ShareScore.jsx';
 
 const TIPS = [
   '62% dos ataques cibernéticos no Brasil miram PMEs.',
@@ -367,7 +368,7 @@ function ResultView({ data, domain, email = '', url = '', user = null }) {
       </div>
 
       {/* Compartilhar / perfil público (KL-57) */}
-      <ShareSection url={url} hasProfile={hasProfile} profileDomain={profileDomain} />
+      <ShareSection url={url} hasProfile={hasProfile} profileDomain={profileDomain} score={data.score} />
 
       {/* CTA de conta — posição 2 (reforço no fim do relatório) */}
       <AccountCTA user={user} url={url} email={email} variant="bottom" />
@@ -441,20 +442,9 @@ function AccountCTA({ user, url, email, variant }) {
   );
 }
 
-// Seção de compartilhamento do perfil público (KL-57). Link natural, sem modal/pop-up.
+// Seção de compartilhamento (KL-57 + card social KL-42). Link natural, sem modal.
 // Enquanto o perfil é gerado em background (KL-51 f5), mostra o aviso discreto.
-function ShareSection({ url, hasProfile, profileDomain }) {
-  const [copied, setCopied] = useState(false);
-  const shareUrl = `https://klarim.net/site/${profileDomain}`;
-
-  async function copy() {
-    try {
-      await navigator.clipboard.writeText(shareUrl);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch { /* clipboard indisponível: o link fica visível para copiar à mão */ }
-  }
-
+function ShareSection({ url, hasProfile, profileDomain, score }) {
   if (!hasProfile) {
     return (
       <div className={`${card} text-center`}>
@@ -467,22 +457,13 @@ function ShareSection({ url, hasProfile, profileDomain }) {
   }
 
   return (
-    <div className={card}>
-      <p className="text-sm font-medium uppercase tracking-wide text-brand-400/80">Compartilhar</p>
-      <p className="mt-2 text-slate-300">O perfil público deste site está disponível em:</p>
-      <p className="mt-1 break-all font-mono text-sm text-white">klarim.net/site/{profileDomain}</p>
-      <p className="mt-2 text-sm text-slate-400">
-        Compartilhe nas redes sociais — o card com o score é gerado automaticamente.
-      </p>
-      <div className="mt-4 flex flex-col gap-3 sm:flex-row">
-        <button type="button" onClick={copy}
-          className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-700 px-6 py-3.5 text-base font-semibold text-slate-200 transition-colors hover:bg-slate-800">
-          {copied ? 'Link copiado ✓' : 'Copiar link'}
-        </button>
+    <div className="space-y-3">
+      <ShareScore domain={profileDomain} score={score} />
+      <div className="text-center">
         <a href={`/site/${profileDomain}`} target="_blank" rel="noopener"
           onClick={() => window.klarimTrack?.('profile_link_clicked', { domain: profileDomain }, url)}
-          className={`${btn} sm:w-auto`}>
-          Abrir perfil →
+          className="text-sm text-brand-400 hover:text-brand-300">
+          Abrir perfil público →
         </a>
       </div>
     </div>

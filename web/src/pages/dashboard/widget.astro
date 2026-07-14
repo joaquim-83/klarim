@@ -1,0 +1,16 @@
+---
+export const prerender = false; // SSR + protegido pelo middleware (JWT no cookie)
+
+import Base from '../../layouts/Base.astro';
+import Header from '../../components/Header.astro';
+import Footer from '../../components/Footer.astro';
+import WidgetGenerator from '../../components/account/WidgetGenerator.jsx';
+---
+
+<Base title="Widget para seu site" description="Gere o selo Verificado por Klarim para o seu site." path="/dashboard/widget" noindex={true}>
+  <Header />
+  <main class="mx-auto max-w-2xl px-5 pt-28 pb-20 sm:pt-32">
+    <WidgetGenerator client:load />
+  </main>
+  <Footer />
+</Base>

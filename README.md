@@ -382,6 +382,17 @@ dinâmico (só sites com scan + perfil); **notificação ao dono** quando o perf
 (`POST /notify/profile-view`, 1/domínio/24h, pula quem já tem conta). `/score/{dominio}` →
 301 para `/site/`. O Klarim avalia a segurança do **site**, não do negócio.
 
+**Score social — widget + card + ranking + selo (KL-42):** cada usuário vira canal de
+aquisição. **Widget embeddable** "Verificado por Klarim" (`GET /api/widget/{dominio}.js`, JS
+leve, CSS inline, 3 estilos, cache 1h) que o dono cola no site — busca o score em
+`GET /api/score/{dominio}` (JSON público, **CORS**, cache 24h) e linka ao perfil; página
+**`/dashboard/widget`** gera o snippet. **Card compartilhável** (`GET /api/card/{dominio}.png
+?format=square|landscape`, SVG→PNG cairosvg) para Instagram/LinkedIn/Twitter, com download +
+share nativo (`ShareScore`). **Rankings por setor** (`/ranking`, `/ranking/{setor}`, Astro SSR
++ SEO + sitemap) — top sites por score. **Selo** derivado do score (≥90 Verified ⭐, ≥80
+Approved ✅). **Posição no ranking** no dashboard (`#N de M do setor`). Só dados públicos
+(score + domínio), respeitando `public_visible`.
+
 O restante do frontend (fluxo de scan + painel) segue em **React + Vite + Tailwind v4**
 em [`frontend/`](./frontend/), servido como build estático pelo **Nginx** (que também faz
 proxy de `/api` → API). Telas:
