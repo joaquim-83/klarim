@@ -14,24 +14,26 @@ from discovery.alert_worker import bonus_scan_token, _is_score100
 # --- e-mail condicional ---------------------------------------------------- #
 
 def test_alert_score100_template(monkeypatch):
-    # Freemium (fix): score 100 → assunto de parabéns (inalterado) + CTA de conta.
+    # Freemium (fix): score 100 → assunto de parabéns (inalterado) + CTA p/ perfil (KL-44).
     monkeypatch.setenv("JWT_SECRET", "x" * 40)
     mailer = KlarimMailer("re_fake")
     p = mailer._alert_params("d@e.com", "https://empresa.com.br", 100, "verde", 0, {},
                              bonus_token="tok.sig")
     assert "parabéns" in p["subject"] and "nota máxima" in p["subject"]
-    assert "Criar conta e monitorar" in p["html"] and "/cadastrar" in p["html"]
+    assert "Ver score do site" in p["html"] and "/site/empresa.com.br" in p["html"]
+    assert "/cadastrar" not in p["html"]
     assert "nota máxima" in p["html"].lower()
     assert "R$" not in p["html"]  # nunca menciona preço no fluxo de score 100
 
 
 def test_alert_normal_template_cta_freemium():
-    # Freemium (fix): alerta normal → CTA "Criar conta e monitorar" → /cadastrar.
+    # Freemium (fix): alerta normal → CTA "Ver score do site" → perfil público (KL-44).
     mailer = KlarimMailer("re_fake")
     p = mailer._alert_params("d@e.com", "https://x.com.br", 72, "amarelo", 3, {})
     # Subject idêntico ao do profile_view (indistinguível), com o domínio (site_name).
     assert p["subject"] == "Alguém verificou a segurança do site x.com.br"
-    assert "Criar conta e monitorar" in p["html"] and "/cadastrar" in p["html"]
+    assert "Ver score do site" in p["html"] and "/site/x.com.br" in p["html"]
+    assert "/cadastrar" not in p["html"]
     assert "R$" not in p["html"]
 
 

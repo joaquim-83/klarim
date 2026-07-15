@@ -2,8 +2,8 @@
 
 Fix: o alert worker estava pausado porque o template usava linguagem do modelo antigo
 (R$19/relatório). Estes testes renderizam os templates via Jinja e validam a linguagem
-freemium: sem preço/pagamento/relatório pago, CTA de conta (/cadastrar) e disclaimer.
-Offline (não envia nada; só renderiza o HTML).
+freemium: sem preço/pagamento/relatório pago, CTA para o perfil público (/site/{domain},
+KL-44) e disclaimer. Offline (não envia nada; só renderiza o HTML).
 """
 
 from __future__ import annotations
@@ -42,10 +42,13 @@ def test_alert_no_payment_language():
         assert bad.lower() not in low, f"linguagem proibida em alert.html: {bad}"
 
 
-def test_alert_cta_points_to_cadastrar():
+def test_alert_cta_points_to_public_profile():
+    # KL-44: o CTA leva ao perfil público /site/{site_name} (não mais /cadastrar).
     html = _render("alert.html")
-    assert "/cadastrar" in html
-    assert "criar conta e monitorar" in html.lower()
+    assert "/site/exemplo.com.br" in html
+    assert "/cadastrar" not in html
+    assert "ver score do site" in html.lower()
+    assert "utm_campaign=alerta" in html
 
 
 def test_alert_mentions_free():
@@ -76,9 +79,12 @@ def test_score100_no_payment_language():
     assert "29 verificações" not in low and "15 verificações" not in low
 
 
-def test_score100_cta_points_to_cadastrar():
+def test_score100_cta_points_to_public_profile():
+    # KL-44: o CTA do score 100 também leva ao perfil público (campanha alerta_score100).
     html = _s100()
-    assert "/cadastrar" in html and "criar conta e monitorar" in html.lower()
+    assert "/site/exemplo.com.br" in html and "/cadastrar" not in html
+    assert "ver score do site" in html.lower()
+    assert "utm_campaign=alerta_score100" in html
 
 
 def test_score100_celebratory_and_disclaimer():

@@ -31,8 +31,9 @@ def test_templates_render():
         fail_count=2, sev={"critica": 0, "alta": 2, "media": 0, "baixa": 0},
         result_link="https://klarim.net/result?url=x", lgpd="LGPD…", **ctx,
     )
-    # Freemium: alert.html = cópia do profile_view (CTA de conta, score+emoji, sem label).
-    assert "Criar conta e monitorar" in alert and "/cadastrar" in alert and "86/100" in alert
+    # Freemium: alert.html = cópia do profile_view; o CTA leva ao perfil público (KL-44).
+    assert "Ver score do site" in alert and "/site/x.com" in alert and "86/100" in alert
+    assert "/cadastrar" not in alert
     assert "R$" not in alert  # KL-27: alerta sem preço
     report = _env.get_template("report_delivery.html").render(**ctx)
     assert "Executivo" in report and "Técnico" in report
@@ -136,7 +137,7 @@ def test_send_alert_batch_counts_and_ids(monkeypatch):
     # renderizou 1 payload por alerta, com subject e html
     assert len(captured["payloads"]) == 3
     assert "site1.com.br" in captured["payloads"][0]["subject"]
-    assert "Criar conta e monitorar" in captured["payloads"][0]["html"]  # CTA freemium
+    assert "Ver score do site" in captured["payloads"][0]["html"]  # CTA p/ perfil (KL-44)
     assert captured["key"].startswith("batch_")
 
 

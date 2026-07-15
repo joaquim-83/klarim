@@ -144,6 +144,51 @@ def test_notify_profile_view_ok(client, store):
     assert client.post("/notify/profile-view", json={"domain": "hotelparaiso.com.br"}).json()["ok"] is True
 
 
+# --- KL-44: anti-loop — visita do próprio dono vinda do e-mail de alerta ------ #
+
+def _capture_spawn(monkeypatch):
+    """Substitui _spawn para registrar se a notificação foi agendada — sem rodá-la."""
+    spawned = []
+
+    def _fake(coro):
+        spawned.append(coro)
+        coro.close()  # evita o warning 'coroutine was never awaited'
+
+    monkeypatch.setattr(m, "_spawn", _fake)
+    return spawned
+
+
+def test_notify_skips_alert_utm(client, store, monkeypatch):
+    # Dono clicando no link do e-mail de alerta (utm_campaign=alerta) → NÃO notifica.
+    store.targets["hotelparaiso.com.br"] = _target()
+    spawned = _capture_spawn(monkeypatch)
+    body = client.post(
+        "/notify/profile-view",
+        json={"domain": "hotelparaiso.com.br", "utm_campaign": "alerta"},
+    ).json()
+    assert body == {"ok": True, "notified": False}
+    assert spawned == []  # nenhuma notificação agendada (anti-loop)
+
+
+def test_notify_skips_alert_score100_utm(client, store, monkeypatch):
+    # A campanha do score 100 (alerta_score100) também é ignorada (prefixo 'alerta').
+    store.targets["hotelparaiso.com.br"] = _target()
+    spawned = _capture_spawn(monkeypatch)
+    body = client.post(
+        "/notify/profile-view",
+        json={"domain": "hotelparaiso.com.br", "utm_campaign": "alerta_score100"},
+    ).json()
+    assert body["notified"] is False and spawned == []
+
+
+def test_notify_organic_still_notifies(client, store, monkeypatch):
+    # Visita orgânica (sem utm de alerta) continua agendando a notificação ao dono.
+    store.targets["hotelparaiso.com.br"] = _target()
+    spawned = _capture_spawn(monkeypatch)
+    r = client.post("/notify/profile-view", json={"domain": "hotelparaiso.com.br"}).json()
+    assert r["ok"] is True and len(spawned) == 1
+
+
 def test_og_image_fallback_when_missing(client, store):
     # alvo inexistente → 302 para o favicon (fail-open, antes do cairosvg)
     r = client.get("/og/inexistente.com.br.png", follow_redirects=False)

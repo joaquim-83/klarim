@@ -21,12 +21,15 @@ const status = data?.status || 'not_found';
 
 // Notifica o dono (best-effort) que o perfil foi consultado. /notify responde na hora
 // (envio em background no backend) — await rápido com timeout curto.
+// KL-44: encaminha o utm_campaign para o backend ignorar visitas do próprio dono vindas
+// do e-mail de alerta (utm_campaign=alerta*) e evitar loop de notificação.
+const utmCampaign = Astro.url.searchParams.get('utm_campaign') || '';
 if (status === 'ok') {
   try {
     await fetch(`${API}/notify/profile-view`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ domain }),
+      body: JSON.stringify({ domain, utm_campaign: utmCampaign }),
       signal: AbortSignal.timeout(2500),
     });
   } catch { /* nunca bloqueia o perfil */ }

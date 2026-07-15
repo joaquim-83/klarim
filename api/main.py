@@ -1282,15 +1282,23 @@ async def api_ranking_sector(sector: str,
 # --- notificação ao dono (perfil consultado) — rate limit 1/domínio/24h ------ #
 class ProfileViewBody(BaseModel):
     domain: str
+    utm_campaign: str = ""  # KL-44: origem da visita (anti-loop do e-mail de alerta)
 
 
 @app.post("/notify/profile-view")
 async def notify_profile_view(body: ProfileViewBody) -> dict:
     """Avisa o dono que alguém consultou o perfil público (KL-51 f4). Fire-and-forget:
     responde na hora e envia em background. Rate limit 1/domínio/24h (Redis). Pula alvos
-    sem e-mail, descartados, unsubscribed, ou cujo e-mail já é de usuário registrado."""
+    sem e-mail, descartados, unsubscribed, ou cujo e-mail já é de usuário registrado.
+
+    KL-44: o próprio dono clicando no link do e-mail de alerta (`utm_campaign=alerta*`)
+    NÃO gera outra notificação de "perfil consultado" — senão viraria um loop de e-mail
+    (alerta → clique → aviso → clique → …)."""
     domain = _norm_domain(body.domain)
     if not domain:
+        return {"ok": True, "notified": False}
+    # KL-44: visita vinda do e-mail de alerta (o próprio dono) não notifica — anti-loop.
+    if (body.utm_campaign or "").startswith("alerta"):
         return {"ok": True, "notified": False}
 
     async def _do():
