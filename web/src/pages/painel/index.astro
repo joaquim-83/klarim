@@ -1,0 +1,9 @@
+---
+export const prerender = false; // painel dinâmico (dados via API client-side)
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import OverviewPage from '../../components/admin/OverviewPage.jsx';
+---
+
+<AdminLayout>
+  <OverviewPage client:only="react" />
+</AdminLayout>

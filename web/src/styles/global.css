@@ -16,6 +16,19 @@
   --color-brand-400: #ff8a5c;
   --color-brand-500: #ff6b35;
   --color-brand-600: #e8541f;
+
+  /* Painel admin (KL-51) — paleta dark do Klarim (portada de frontend/src/index.css).
+     Gera utilitários bg-/text-/border-klarim-*. Só as rotas /painel usam; o site
+     público mantém slate/brand (Tailwind só emite utilitário para classe realmente usada). */
+  --color-klarim-bg: #0d1117;
+  --color-klarim-surface: #161b22;
+  --color-klarim-border: #30363d;
+  --color-klarim-text: #e6edf3;
+  --color-klarim-muted: #8b949e;
+  --color-klarim-alert: #ff6b35;
+  --color-klarim-ok: #00d26a;
+  --color-klarim-warn: #f0c000;
+  --color-klarim-fail: #f85149;
 }
 
 html {
@@ -68,4 +81,17 @@ body {
 .prose-klarim strong {
   color: #f1f5f9;
   font-weight: 600;
+}
+
+/* Spinner do painel admin (KL-51) — portado de frontend/src/index.css. */
+@keyframes klarim-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+.klarim-spinner {
+  border-radius: 9999px;
+  border: 4px solid rgba(255, 107, 53, 0.2);
+  border-top-color: #ff6b35;
+  animation: klarim-spin 0.9s linear infinite;
 }

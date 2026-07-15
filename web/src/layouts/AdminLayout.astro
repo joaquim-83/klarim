@@ -1,0 +1,24 @@
+---
+// Documento base do painel admin (KL-51 fase 1). Sem SSR auth check (localStorage não
+// é acessível no server) — a proteção é client-side no AdminShell/adminApi (401 → login).
+// NÃO inclui Header/Footer públicos nem o track.js (o painel não é rastreado, igual ao
+// comportamento do Vite que ignora /painel). O shell (sidebar) é montado pelos componentes
+// de página via <AdminShell> (React), não aqui — evita ilha-dentro-de-ilha por slot.
+import '../styles/global.css';
+---
+
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="robots" content="noindex, nofollow" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#0D1117" />
+    <title>Klarim — Painel</title>
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+  </head>
+  <body class="min-h-screen bg-klarim-bg text-klarim-text antialiased">
+    <slot />
+  </body>
+</html>

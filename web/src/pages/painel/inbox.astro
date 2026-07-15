@@ -1,0 +1,9 @@
+---
+export const prerender = false;
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import InboxPage from '../../components/admin/InboxPage.jsx';
+---
+
+<AdminLayout>
+  <InboxPage client:only="react" />
+</AdminLayout>

@@ -131,6 +131,24 @@ server {
         include /etc/nginx/klarim_security_headers.conf;
         add_header Cache-Control "public, max-age=300" always;
     }
+    # KL-51 fase 1 — painel admin migrado para o Astro. SÓ as rotas já migradas vão ao
+    # `astro`; as demais /painel/* continuam na SPA Vite (location / abaixo) — coexistência
+    # sem regressão. O painel usa React islands, como o /dashboard público (que já roda sob
+    # esta CSP estrita) → runtime de island coberto pelos hashes existentes; as páginas admin
+    # não têm script inline próprio. add_header próprio (Cache-Control) quebra a herança →
+    # reincluir os headers de segurança (mantém o 100/100 do self-scan).
+    location ~ ^/painel(/(login|config|clientes|rescans|pagamentos|inbox|monitorados))?/?$ {
+        resolver 127.0.0.11 valid=10s ipv6=off;
+        set $klarim_astro astro:4321;
+        proxy_pass http://$klarim_astro;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        include /etc/nginx/klarim_security_headers.conf;
+        add_header Cache-Control "no-store" always;
+    }
     location ^~ /_astro/ {
         resolver 127.0.0.11 valid=10s ipv6=off;
         set $klarim_astro astro:4321;
@@ -241,6 +259,46 @@ server {
     # A raiz do subdomínio vai direto ao login do painel.
     location = / {
         return 302 /painel/login;
+    }
+
+    # KL-51 fase 1 — assets das ilhas React do painel (Astro) no subdomínio. Sem esta
+    # regra os /_astro/*.js cairiam no `location /` (index.html do Vite) e o painel não
+    # hidrataria. add_header próprio → repetir os headers de segurança do server block.
+    location ^~ /_astro/ {
+        resolver 127.0.0.11 valid=10s ipv6=off;
+        set $klarim_astro astro:4321;
+        proxy_pass http://$klarim_astro;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        expires 1y;
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'" always;
+        add_header Cache-Control "public, immutable";
+    }
+
+    # KL-51 fase 1 — painel admin migrado para o Astro (rotas já migradas). As demais
+    # /painel/* continuam na SPA Vite (location / abaixo). CSP do subdomínio permite
+    # 'unsafe-inline' no script-src → as ilhas rodam sem depender de hash. add_header
+    # próprio → repetir os headers de segurança.
+    location ~ ^/painel(/(login|config|clientes|rescans|pagamentos|inbox|monitorados))?/?$ {
+        resolver 127.0.0.11 valid=10s ipv6=off;
+        set $klarim_astro astro:4321;
+        proxy_pass http://$klarim_astro;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'" always;
+        add_header Cache-Control "no-store" always;
     }
 
     location /assets/ {

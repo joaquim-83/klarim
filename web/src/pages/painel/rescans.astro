@@ -1,0 +1,9 @@
+---
+export const prerender = false;
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import RescansPage from '../../components/admin/RescansPage.jsx';
+---
+
+<AdminLayout>
+  <RescansPage client:only="react" />
+</AdminLayout>

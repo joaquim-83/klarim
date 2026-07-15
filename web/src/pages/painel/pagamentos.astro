@@ -1,0 +1,9 @@
+---
+export const prerender = false;
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import PagamentosPage from '../../components/admin/PagamentosPage.jsx';
+---
+
+<AdminLayout>
+  <PagamentosPage client:only="react" />
+</AdminLayout>

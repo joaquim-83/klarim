@@ -1,0 +1,9 @@
+---
+export const prerender = false;
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import LoginIsland from '../../components/admin/LoginIsland.jsx';
+---
+
+<AdminLayout>
+  <LoginIsland client:only="react" />
+</AdminLayout>
