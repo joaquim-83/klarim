@@ -22,7 +22,7 @@ export interface Props {
 
 const {
   title, description, path = '/', noindex = false,
-  ogImage, ogType = 'website', twitterCard = 'summary',
+  ogImage, ogType = 'website', twitterCard = 'summary_large_image',
   fullTitleOverride, jsonLd,
 } = Astro.props;
 const SITE = 'https://klarim.net';
@@ -30,7 +30,42 @@ const canonical = new URL(path, SITE).href;
 const fullTitle = fullTitleOverride
   ? fullTitleOverride
   : title === 'Klarim' ? 'Klarim — Segurança web para o Brasil' : `${title} · Klarim`;
-const ogImageUrl = ogImage || `${SITE}/favicon.svg`;
+const ogImageUrl = ogImage || `${SITE}/og-image.png`;
+
+// KL-65 — sinais de autoridade p/ o Google (JSON-LD sempre presente nas páginas
+// públicas; o admin usa AdminLayout, sem isto). Organization + WebSite reforçam que
+// Klarim é uma empresa legítima de segurança web (o AI Overview confundia com "Clarim").
+const ORG_JSONLD = {
+  '@context': 'https://schema.org',
+  '@type': 'Organization',
+  name: 'Klarim',
+  url: SITE,
+  logo: `${SITE}/favicon.svg`,
+  description: 'Plataforma brasileira de segurança web. Scanner passivo que avalia e monitora a postura de segurança de sites, sem invasão.',
+  foundingDate: '2026',
+  areaServed: 'BR',
+  sameAs: [],
+  contactPoint: {
+    '@type': 'ContactPoint',
+    email: 'contato@klarim.net',
+    contactType: 'customer support',
+    availableLanguage: 'Portuguese',
+  },
+  knowsAbout: ['Web Security', 'LGPD Compliance', 'SSL/TLS', 'OWASP Top 10',
+    'Passive Security Scanning', 'Website Monitoring'],
+};
+const WEBSITE_JSONLD = {
+  '@context': 'https://schema.org',
+  '@type': 'WebSite',
+  name: 'Klarim',
+  url: SITE,
+  description: 'Verifique a segurança do seu site em segundos. Scanner passivo e gratuito para empresas brasileiras.',
+  inLanguage: 'pt-BR',
+  publisher: { '@type': 'Organization', name: 'Klarim' },
+};
+// Org + WebSite sempre; o `jsonLd` da página (objeto ou array) entra depois.
+const extraLd = jsonLd ? (Array.isArray(jsonLd) ? jsonLd : [jsonLd]) : [];
+const allJsonLd = [ORG_JSONLD, WEBSITE_JSONLD, ...extraLd];
 ---
 
 <!doctype html>
@@ -42,6 +77,7 @@ const ogImageUrl = ogImage || `${SITE}/favicon.svg`;
 
     <title>{fullTitle}</title>
     <meta name="description" content={description} />
+    <meta name="author" content="Klarim" />
     <link rel="canonical" href={canonical} />
     <meta name="theme-color" content="#020617" />
     <meta name="color-scheme" content="dark" />
@@ -62,9 +98,9 @@ const ogImageUrl = ogImage || `${SITE}/favicon.svg`;
     <meta name="twitter:description" content={description} />
     <meta name="twitter:image" content={ogImageUrl} />
 
-    {jsonLd && (
-      <script type="application/ld+json" set:html={JSON.stringify(jsonLd)} is:inline />
-    )}
+    {allJsonLd.map((ld) => (
+      <script type="application/ld+json" set:html={JSON.stringify(ld)} is:inline />
+    ))}
 
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   </head>

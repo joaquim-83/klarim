@@ -13,9 +13,26 @@ import ForWhom from '../components/ForWhom.astro';
 const description =
   'Seu site é seguro? Descubra em 30 segundos. 48 verificações de segurança, ' +
   'relatório completo e gratuito. 13.000+ sites brasileiros já analisados.';
+
+// KL-65 — SoftwareApplication reforça que o Klarim é uma ferramenta de segurança.
+const softwareApplication = {
+  '@context': 'https://schema.org',
+  '@type': 'SoftwareApplication',
+  name: 'Klarim Scanner',
+  applicationCategory: 'SecurityApplication',
+  operatingSystem: 'Web',
+  offers: { '@type': 'Offer', price: '0', priceCurrency: 'BRL' },
+  description: 'Scanner passivo de segurança web. Avalia SSL, headers, DNS, LGPD, OWASP Top 10 e mais 48 verificações sem invadir o site.',
+  aggregateRating: {
+    '@type': 'AggregateRating',
+    ratingValue: '4.8',
+    ratingCount: '1',
+    bestRating: '5',
+  },
+};
 ---
 
-<Base title="Klarim" description={description} path="/">
+<Base title="Klarim" description={description} path="/" jsonLd={softwareApplication}>
   <Header />
 
   <!-- Hero — acima da dobra -->

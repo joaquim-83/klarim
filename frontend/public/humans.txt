@@ -1,0 +1,13 @@
+/* EQUIPE */
+Desenvolvedor: Cidinei Silva
+Contato: contato@klarim.net
+Localização: Curitiba, PR, Brasil
+
+/* SITE */
+Última atualização: 2026-07-15
+Linguagem: Português (Brasil)
+Plataforma: Astro + FastAPI + PostgreSQL
+
+/* SOBRE */
+Klarim é uma plataforma brasileira de segurança web. Scanner passivo que avalia
+e monitora a postura de segurança de sites — sem invasão, sem acesso autenticado.

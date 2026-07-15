@@ -89,6 +89,13 @@ server {
         proxy_set_header X-Forwarded-Proto $scheme;
     }
 
+    # KL-65 — security.txt (RFC 9116). `location =` (exato) vence o `~ /\.` abaixo.
+    location = /.well-known/security.txt {
+        default_type "text/plain; charset=utf-8";
+        add_header Cache-Control "public, max-age=86400" always;
+        alias /etc/nginx/klarim_security.txt;
+    }
+
     # Segurança (self-audit): paths sensíveis conhecidos retornam 404 em vez de
     # 200 com a SPA. Regex tem prioridade sobre os prefixos /assets/ e / abaixo,
     # mas não intercepta /api/ (sem ponto/extensão) nem as rotas /painel/.
@@ -293,6 +300,13 @@ server {
 
     gzip on;
     gzip_types text/css application/javascript image/svg+xml application/json;
+
+    # KL-65 — security.txt (RFC 9116) também no subdomínio painel.
+    location = /.well-known/security.txt {
+        default_type "text/plain; charset=utf-8";
+        add_header Cache-Control "public, max-age=86400" always;
+        alias /etc/nginx/klarim_security.txt;
+    }
 
     # Segurança (self-audit): mesmos bloqueios de paths sensíveis do host principal.
     location ~ /\. { return 404; }
