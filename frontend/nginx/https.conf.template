@@ -133,10 +133,13 @@ server {
     }
     # KL-51 fase 1 — painel admin migrado para o Astro. SÓ as rotas já migradas vão ao
     # `astro`; as demais /painel/* continuam na SPA Vite (location / abaixo) — coexistência
-    # sem regressão. O painel usa React islands, como o /dashboard público (que já roda sob
-    # esta CSP estrita) → runtime de island coberto pelos hashes existentes; as páginas admin
-    # não têm script inline próprio. add_header próprio (Cache-Control) quebra a herança →
-    # reincluir os headers de segurança (mantém o 100/100 do self-scan).
+    # sem regressão.
+    # ⚠️ CSP: a CSP ESTRITA do site (script-src só 'self' + hashes) BLOQUEIA o bootstrap de
+    # island do Astro (erro "Astro is not defined" → tela branca — verificado em produção).
+    # /painel é operador-only, NOINDEX e não-linkado → NÃO é página pública pontuada pelo
+    # self-scan (a home mantém a CSP estrita e o 100/100). Usamos aqui a MESMA CSP relaxada
+    # do subdomínio painel. (script-src 'self' 'unsafe-inline'), que roda as ilhas. add_header
+    # próprio quebra a herança → repetir os demais headers de segurança.
     location ~ ^/painel(/(login|config|clientes|rescans|pagamentos|inbox|monitorados))?/?$ {
         resolver 127.0.0.11 valid=10s ipv6=off;
         set $klarim_astro astro:4321;
@@ -146,7 +149,11 @@ server {
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        include /etc/nginx/klarim_security_headers.conf;
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'" always;
         add_header Cache-Control "no-store" always;
     }
     location ^~ /_astro/ {

@@ -75,12 +75,18 @@ O `web/` roda sob CSP **estrita** no domínio principal (`script-src 'self'` + 3
 
 - **Subdomínio `painel.klarim.net` (acesso primário do operador):** CSP permite `'unsafe-inline'`
   → as ilhas React rodam sem depender de hash. **Seguro por construção.**
-- **Domínio principal `klarim.net/painel`:** CSP estrita. **Já existe prova de que ilhas React
-  funcionam sob ela**: o `/dashboard` público (contas) é servido pelo Astro no mesmo server block
-  com o mesmo `security_headers.conf` estrito e usa ilhas React. As páginas admin **não têm
-  nenhum `<script>` inline próprio** (validado: 0) — o `AdminLayout.astro` não inclui Header nem
-  track.js — então emitem **apenas** o runtime de island que o dashboard já emite → **coberto
-  pelos 2 hashes existentes**. Nenhum hash novo é necessário.
+- **Domínio principal `klarim.net/painel`:** CSP estrita. ⚠️ **A verificação em produção provou
+  que a CSP estrita BLOQUEIA o bootstrap de island do Astro** (console: `ReferenceError: Astro is
+  not defined` → tela branca) — a suposição inicial de que os 2 hashes existentes cobririam as
+  ilhas admin estava **errada** (o bootstrap do `client:only` tem hash diferente do que está na
+  CSP). Como `klarim.net/painel` e `painel.klarim.net/painel` só diferem na CSP e o subdomínio
+  (unsafe-inline) funciona 100%, a causa é conclusivamente o `script-src`.
+  **Correção aplicada:** o `location /painel` do server principal recebeu a **mesma CSP relaxada
+  do subdomínio** (`script-src 'self' 'unsafe-inline'`), em vez do `include` estrito. Justificativa:
+  `/painel` é operador-only, **noindex** e não-linkado → **não é página pública pontuada pelo
+  self-scan**; a home e todo o resto do `klarim.net` mantêm a CSP estrita (100/100 intacto). É a
+  mesma postura que o subdomínio painel. já tinha. Robusto: independe de `client:load`/`client:only`
+  e dos hashes frágeis do Astro.
 - **`/_astro/` no subdomínio:** o server block `painel.` **não tinha** `location /_astro/` — sem
   ele os chunks das ilhas cairiam no `index.html` do Vite e o painel não hidrataria. **Adicionado.**
 - **Inbox iframe (`sandbox="" srcDoc`):** governado por `default-src 'self'` (não há `frame-src`).
@@ -123,11 +129,18 @@ componentes de página importando AdminShell ... 6
 
 ## Deploy (Parte final)
 
-_(preenchido após push + CI verde)_
-
-- Commit: `<hash>` — push para `main`.
-- CI (test + build-web + nginx-check + deploy): `<status>`.
-- Verificação no browser (`https://painel.klarim.net/painel/login`): `<resultado>`.
+- **Commit 1** `c95f166` — migração (fundação + 7 páginas + Nginx). CI **success** (test +
+  build-web + nginx-check + deploy). O `build-web` verde validou a compilação dos ~25 arquivos
+  (imports, JSX, recharts, `client:only`) — o que o build local não pôde (stall de I/O do iCloud).
+- **Verificação no browser (produção):**
+  - ✅ **`painel.klarim.net/painel`** (subdomínio, CSP relaxada): **funcionando 100%** — já logado,
+    `/painel/login` redirecionou p/ `/painel`, o Overview renderizou completo (sidebar AdminShell,
+    3 grades de KPIs vindas da API, badge do Inbox "1", card Saúde do sistema, eixos do Recharts).
+    Prova: ilhas hidratam, `client:only` ok, adminApi+Bearer+`/api` ok, Recharts ok, sem bloqueio CSP.
+  - ❌→✅ **`klarim.net/painel`** (domínio principal, CSP estrita): **tela branca** + `ReferenceError:
+    Astro is not defined` (CSP estrita bloqueou o bootstrap de island). **Corrigido** no commit 2
+    (CSP relaxada no `location /painel` do server principal — ver §CSP).
+- **Commit 2** `<hash>` — fix da CSP do `klarim.net/painel`. CI: `<status>`. Re-teste: `<resultado>`.
 
 ## Checklist de verificação PÓS-deploy (browser, contra produção)
 
