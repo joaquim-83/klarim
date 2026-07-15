@@ -1,0 +1,9 @@
+---
+export const prerender = false;
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import SistemaPage from '../../components/admin/SistemaPage.jsx';
+---
+
+<AdminLayout>
+  <SistemaPage client:only="react" />
+</AdminLayout>

@@ -1,0 +1,9 @@
+---
+export const prerender = false; // rota dinâmica /painel/scans/:id — id lido do pathname na ilha
+import AdminLayout from '../../../layouts/AdminLayout.astro';
+import ScanDetalhePage from '../../../components/admin/ScanDetalhePage.jsx';
+---
+
+<AdminLayout>
+  <ScanDetalhePage client:only="react" />
+</AdminLayout>

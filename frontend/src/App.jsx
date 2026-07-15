@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect } from 'react'
+import { useEffect } from 'react'
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
 import { trackEvent, initTracking } from './lib/tracker'
 import Landing from './pages/Landing'
@@ -12,35 +12,13 @@ import Sobre from './pages/Sobre'
 import Parceiros from './pages/Parceiros'
 import Monitorados from './pages/Monitorados'
 import MonitorarAprovar from './pages/MonitorarAprovar'
-import ProtectedRoute from './components/admin/ProtectedRoute'
 
-// Dashboard admin (KL-14) — carregado sob demanda (code-split), para o site
-// público não baixar o bundle do painel (Recharts etc.).
-const AdminLayout = lazy(() => import('./components/admin/AdminLayout'))
-const Login = lazy(() => import('./pages/admin/Login'))
-const Overview = lazy(() => import('./pages/admin/Overview'))
-const Alvos = lazy(() => import('./pages/admin/Alvos'))
-const AlvoDetalhe = lazy(() => import('./pages/admin/AlvoDetalhe'))
-const Scans = lazy(() => import('./pages/admin/Scans'))
-const ScanDetalhe = lazy(() => import('./pages/admin/ScanDetalhe'))
-const Alertas = lazy(() => import('./pages/admin/Alertas'))
-const Leads = lazy(() => import('./pages/admin/Leads'))
-const LeadDetalhe = lazy(() => import('./pages/admin/LeadDetalhe'))
-const Pagamentos = lazy(() => import('./pages/admin/Pagamentos'))
-const Inbox = lazy(() => import('./pages/admin/Inbox'))
-const Rescans = lazy(() => import('./pages/admin/Rescans'))
-const Analytics = lazy(() => import('./pages/admin/Analytics'))
-const Clientes = lazy(() => import('./pages/admin/Clientes'))
-const Sistema = lazy(() => import('./pages/admin/Sistema'))
-const Config = lazy(() => import('./pages/admin/Config'))
-
-function AdminFallback() {
-  return (
-    <div className="flex min-h-screen items-center justify-center bg-klarim-bg text-klarim-muted">
-      Carregando painel…
-    </div>
-  )
-}
+// KL-51 fase 2: o painel admin (/painel/*) foi 100% migrado para o Astro (web/). O Nginx
+// roteia TODO /painel → container `astro`, então as rotas do painel foram removidas daqui
+// (evita duplicação e não baixa o bundle do painel/Recharts no build público). O código
+// antigo continua em frontend/src/pages/admin/ e components/admin/ como referência, fora do
+// build (sem import). O Vite ainda serve o fluxo de scan legado (/result, /pay, /report) e
+// as páginas ainda não migradas.
 
 // KL-21: page_view a cada rota do site público (não trackeia o painel admin).
 function RouteTracker() {
@@ -73,38 +51,7 @@ export default function App() {
       <Route path="/monitorados" element={<Monitorados />} />
       <Route path="/monitorados/aprovar" element={<MonitorarAprovar />} />
 
-      {/* Dashboard admin */}
-      <Route
-        path="/painel/login"
-        element={<Suspense fallback={<AdminFallback />}><Login /></Suspense>}
-      />
-      <Route
-        path="/painel"
-        element={
-          <ProtectedRoute>
-            <Suspense fallback={<AdminFallback />}>
-              <AdminLayout />
-            </Suspense>
-          </ProtectedRoute>
-        }
-      >
-        <Route index element={<Overview />} />
-        <Route path="alvos" element={<Alvos />} />
-        <Route path="alvos/:id" element={<AlvoDetalhe />} />
-        <Route path="scans" element={<Scans />} />
-        <Route path="scans/:id" element={<ScanDetalhe />} />
-        <Route path="alertas" element={<Alertas />} />
-        <Route path="leads" element={<Leads />} />
-        <Route path="leads/:id" element={<LeadDetalhe />} />
-        <Route path="pagamentos" element={<Pagamentos />} />
-        <Route path="inbox" element={<Inbox />} />
-        <Route path="rescans" element={<Rescans />} />
-        <Route path="analytics" element={<Analytics />} />
-        <Route path="clientes" element={<Clientes />} />
-        <Route path="monitorados" element={<Navigate to="/painel/clientes" replace />} />
-        <Route path="sistema" element={<Sistema />} />
-        <Route path="config" element={<Config />} />
-      </Route>
+      {/* Painel admin (/painel/*) migrado para o Astro (KL-51 fase 2) — servido pelo Nginx → astro. */}
 
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

@@ -140,7 +140,8 @@ server {
     # self-scan (a home mantém a CSP estrita e o 100/100). Usamos aqui a MESMA CSP relaxada
     # do subdomínio painel. (script-src 'self' 'unsafe-inline'), que roda as ilhas. add_header
     # próprio quebra a herança → repetir os demais headers de segurança.
-    location ~ ^/painel(/(login|config|clientes|rescans|pagamentos|inbox|monitorados))?/?$ {
+    # KL-51 fase 2: TODO o /painel migrado → `^/painel(/|$)` (App.jsx do Vite sem /painel).
+    location ~ ^/painel(/|$) {
         resolver 127.0.0.11 valid=10s ipv6=off;
         set $klarim_astro astro:4321;
         proxy_pass http://$klarim_astro;
@@ -290,8 +291,8 @@ server {
     # KL-51 fase 1 — painel admin migrado para o Astro (rotas já migradas). As demais
     # /painel/* continuam na SPA Vite (location / abaixo). CSP do subdomínio permite
     # 'unsafe-inline' no script-src → as ilhas rodam sem depender de hash. add_header
-    # próprio → repetir os headers de segurança.
-    location ~ ^/painel(/(login|config|clientes|rescans|pagamentos|inbox|monitorados))?/?$ {
+    # próprio → repetir os headers de segurança. KL-51 fase 2: TODO o /painel → `^/painel(/|$)`.
+    location ~ ^/painel(/|$) {
         resolver 127.0.0.11 valid=10s ipv6=off;
         set $klarim_astro astro:4321;
         proxy_pass http://$klarim_astro;

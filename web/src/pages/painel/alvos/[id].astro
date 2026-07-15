@@ -1,0 +1,9 @@
+---
+export const prerender = false; // rota dinâmica /painel/alvos/:id — id lido do pathname na ilha
+import AdminLayout from '../../../layouts/AdminLayout.astro';
+import AlvoDetalhePage from '../../../components/admin/AlvoDetalhePage.jsx';
+---
+
+<AdminLayout>
+  <AlvoDetalhePage client:only="react" />
+</AdminLayout>

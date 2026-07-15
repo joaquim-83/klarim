@@ -1,0 +1,9 @@
+---
+export const prerender = false;
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import AlertasPage from '../../components/admin/AlertasPage.jsx';
+---
+
+<AdminLayout>
+  <AlertasPage client:only="react" />
+</AdminLayout>

@@ -1,0 +1,9 @@
+---
+export const prerender = false; // rota dinâmica /painel/leads/:id — id lido do pathname na ilha
+import AdminLayout from '../../../layouts/AdminLayout.astro';
+import LeadDetalhePage from '../../../components/admin/LeadDetalhePage.jsx';
+---
+
+<AdminLayout>
+  <LeadDetalhePage client:only="react" />
+</AdminLayout>
