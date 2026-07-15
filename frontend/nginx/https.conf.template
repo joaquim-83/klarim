@@ -218,6 +218,29 @@ server {
         proxy_send_timeout 180s;
     }
 
+    # KL-63 fix (CSP) — a página de login OAuth (/mcp/authorize) tem um <form> que POSTa
+    # em 'self' e, ao autorizar, REDIRECIONA para o callback do cliente MCP (loopback ou
+    # https). O `form-action 'self'` herdado do server bloqueava esse redirect. Location
+    # dedicada (regex, vence o prefixo /mcp/) com CSP própria: form-action liberado p/
+    # self + https + loopback. ⚠️ add_header próprio QUEBRA a herança dos headers do
+    # server → re-declara os essenciais aqui. Aplica só às 3 rotas do fluxo OAuth; o
+    # SSE (/mcp/sse, /mcp/messages/) continua no `location /mcp/` abaixo.
+    location ~ ^/mcp/(authorize|token|register)(/|$) {
+        resolver 127.0.0.11 valid=10s ipv6=off;
+        set $klarim_api api:8000;
+        proxy_pass http://$klarim_api;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self' https: http://localhost:* http://127.0.0.1:*" always;
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "no-referrer" always;
+    }
+
     # Streamable HTTP do MCP: o endpoint é /mcp/ (com barra). O /mcp "pelado" cairia
     # no location / (SPA) — redireciona para /mcp/ preservando a query (?token=).
     location = /mcp { return 308 /mcp/$is_args$args; }
@@ -360,6 +383,29 @@ server {
         proxy_connect_timeout 10s;
         proxy_read_timeout 180s;
         proxy_send_timeout 180s;
+    }
+
+    # KL-63 fix (CSP) — a página de login OAuth (/mcp/authorize) tem um <form> que POSTa
+    # em 'self' e, ao autorizar, REDIRECIONA para o callback do cliente MCP (loopback ou
+    # https). O `form-action 'self'` herdado do server bloqueava esse redirect. Location
+    # dedicada (regex, vence o prefixo /mcp/) com CSP própria: form-action liberado p/
+    # self + https + loopback. ⚠️ add_header próprio QUEBRA a herança dos headers do
+    # server → re-declara os essenciais aqui. Aplica só às 3 rotas do fluxo OAuth; o
+    # SSE (/mcp/sse, /mcp/messages/) continua no `location /mcp/` abaixo.
+    location ~ ^/mcp/(authorize|token|register)(/|$) {
+        resolver 127.0.0.11 valid=10s ipv6=off;
+        set $klarim_api api:8000;
+        proxy_pass http://$klarim_api;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self' https: http://localhost:* http://127.0.0.1:*" always;
+        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
+        add_header X-Frame-Options "DENY" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "no-referrer" always;
     }
 
     # Streamable HTTP do MCP: o endpoint é /mcp/ (com barra). O /mcp "pelado" cairia
