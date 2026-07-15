@@ -140,7 +140,23 @@ componentes de página importando AdminShell ... 6
   - ❌→✅ **`klarim.net/painel`** (domínio principal, CSP estrita): **tela branca** + `ReferenceError:
     Astro is not defined` (CSP estrita bloqueou o bootstrap de island). **Corrigido** no commit 2
     (CSP relaxada no `location /painel` do server principal — ver §CSP).
-- **Commit 2** `<hash>` — fix da CSP do `klarim.net/painel`. CI: `<status>`. Re-teste: `<resultado>`.
+- **Commit 2** `6cf123a` — fix da CSP do `klarim.net/painel`. CI **success** (4 jobs). Re-teste:
+  `klarim.net/painel` renderiza o **Overview completo** (KPIs, Saúde do sistema, Recharts), título
+  "Klarim — Painel", **console sem erros** (o `Astro is not defined` sumiu). Os dois caminhos
+  funcionam: `painel.klarim.net/painel` **e** `klarim.net/painel`.
+
+### Verificação no browser (produção) — resultados
+
+| Item | Resultado |
+|---|---|
+| `painel.klarim.net/painel/login` → redirect autenticado → `/painel` | ✅ |
+| Overview — 3 grades de KPIs (da API), Recharts, Saúde do sistema, sidebar | ✅ (subdomínio **e** klarim.net) |
+| Inbox — tabs, lista, dots não-lidas, badges de origem, modal abre/fecha | ✅ (fallback `(sem conteúdo)` p/ e-mail sem HTML) |
+| Inbox iframe `sandbox` renderizando HTML | ⚠️ não exercido em runtime (nenhuma msg armazenada tinha `body_html`); **caminho verificado em código** (`sandbox=""`+`srcDoc`, 0 `dangerouslySetInnerHTML`) |
+| AdminShell — sidebar, item ativo, badge do Inbox "1", hidratação `client:only` | ✅ |
+| Coexistência (Opção B) — "Alvos" (não migrada) → **Vite** (título vira o do Vite) | ✅ sem regressão |
+| Monitorados → 301 `/painel/clientes` | ✅ (regra Nginx + `Astro.redirect`) |
+| Console sem violação de CSP (após o fix) | ✅ nos dois domínios |
 
 ## Checklist de verificação PÓS-deploy (browser, contra produção)
 
