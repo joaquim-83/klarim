@@ -136,6 +136,23 @@ def _auth_configured() -> bool:
     return bool(os.environ.get("ADMIN_USER") and os.environ.get("ADMIN_PASSWORD") and _jwt_secret())
 
 
+_API_STARTED_AT = time.time()  # KL-44: uptime da API (info na página de config)
+
+
+async def verify_admin_password(password: str) -> bool:
+    """Verifica a senha do admin (KL-44): hash **bcrypt** no banco (`admin_settings`,
+    prioridade) → `ADMIN_PASSWORD` do `.env` (texto puro, legado/primeiro acesso).
+    Assim o admin troca a senha no painel sem redeploy. Fail-open p/ o env se o DB falhar."""
+    try:
+        stored_hash = await get_target_store().get_admin_setting("ADMIN_PASSWORD_HASH")
+    except Exception:  # noqa: BLE001 - DB fora → tenta o env
+        stored_hash = None
+    if stored_hash:
+        return auth_users.verify_password(password, stored_hash)
+    env_pw = os.environ.get("ADMIN_PASSWORD", "")
+    return bool(env_pw) and hmac.compare_digest(password, env_pw)
+
+
 def _create_token(username: str) -> str:
     import jwt
 
@@ -197,7 +214,21 @@ async def lifespan(app: FastAPI):
         await get_target_store().ensure_schema()
     except Exception as exc:  # noqa: BLE001 - targets/scans opcionais; API sobe mesmo assim
         print(f"[targets] schema indisponível ({exc!r})", flush=True)
+    await _load_runtime_overrides()  # KL-44: MCP_API_KEY rotacionado sobrevive a restart
     yield
+
+
+async def _load_runtime_overrides() -> None:
+    """Carrega no `os.environ` os overrides que são lidos direto (hot path do middleware):
+    o `MCP_API_KEY` rotacionado no painel. Assim a rotação persiste entre restarts (o
+    resto da config é resolvido por `store.get_setting`, banco-primeiro). KL-44."""
+    try:
+        val = await get_target_store().get_admin_setting("MCP_API_KEY")
+        if val:
+            os.environ["MCP_API_KEY"] = val
+            print("[settings] MCP_API_KEY carregado do banco (override do .env)", flush=True)
+    except Exception as exc:  # noqa: BLE001 - best-effort; o .env segue valendo
+        print(f"[settings] load overrides falhou ({exc!r})", flush=True)
 
 
 # Fix de segurança: em produção NÃO expõe Swagger/OpenAPI (mapeariam toda a API
@@ -267,9 +298,10 @@ async def auth_login(body: LoginBody) -> dict:
     if not _auth_configured():
         raise HTTPException(status_code=503, detail="Autenticação não configurada.")
     admin_user = os.environ.get("ADMIN_USER", "")
-    admin_pw = os.environ.get("ADMIN_PASSWORD", "")
+    # KL-44: a senha é verificada contra o hash bcrypt do banco (se houver) ou o
+    # ADMIN_PASSWORD do .env (fallback). O usuário continua vindo do .env.
     ok = (hmac.compare_digest(body.username, admin_user)
-          and hmac.compare_digest(body.password, admin_pw))
+          and await verify_admin_password(body.password))
     if not ok:
         raise HTTPException(status_code=401, detail="Credenciais inválidas.")
     return {"token": _create_token(body.username), "expires_in": JWT_TTL_SECONDS}
@@ -291,6 +323,9 @@ _forgot_attempts: dict = {}
 _reset_attempts: dict = {}
 _send_report_attempts: dict = {}
 _vigilia_rl: dict = {}   # KL-44 P2: rate limit dos endpoints de vigília do usuário
+_config_attempts: dict = {}    # KL-44: PUT/reset config
+_password_attempts: dict = {}  # KL-44: troca de senha admin
+_rotate_attempts: dict = {}    # KL-44: rotação do token MCP
 
 
 def _mask_email(email: str) -> str:
@@ -3653,6 +3688,170 @@ async def api_config() -> dict:
         "rescan_interval_hours": _i("RESCAN_INTERVAL_HOURS", "24"),
         "rescan_age_days": _i("RESCAN_AGE_DAYS", "30"),
         "worker_max_scans_per_hour": _i("WORKER_MAX_SCANS_PER_HOUR", "50"),
+    }
+
+
+# --------------------------------------------------------------------------- #
+# KL-44 — Configurações editáveis ao vivo (admin_settings > .env) + senha + token MCP
+# --------------------------------------------------------------------------- #
+
+# Whitelist dos parâmetros editáveis: só estes podem ser alterados via API (tipo int,
+# faixa validada). Chaves = nomes das env vars; a resolução é banco → .env → default.
+_CONFIG_PARAMS: Dict[str, Dict[str, Any]] = {
+    "DISCOVERY_BATCH_SIZE": {"label": "Batch de descoberta", "default": "100", "min": 10, "max": 1000, "unit": "domínios/ciclo"},
+    "DISCOVERY_INTERVAL_MINUTES": {"label": "Intervalo de descoberta", "default": "30", "min": 5, "max": 1440, "unit": "min"},
+    "ALERT_INTERVAL_MINUTES": {"label": "Intervalo de alertas", "default": "30", "min": 5, "max": 1440, "unit": "min"},
+    "ALERT_BATCH_SIZE": {"label": "Alertas por batch", "default": "50", "min": 1, "max": 100, "unit": "e-mails"},
+    "ALERT_BATCHES_PER_CYCLE": {"label": "Batches por ciclo", "default": "4", "min": 1, "max": 20, "unit": "batches"},
+    "ALERT_BATCH_PAUSE": {"label": "Pausa entre batches", "default": "10", "min": 1, "max": 60, "unit": "s"},
+    "ALERT_MONTHLY_LIMIT": {"label": "Cota mensal de e-mail", "default": "45000", "min": 1000, "max": 100000, "unit": "e-mails/mês"},
+    "RESCAN_INTERVAL_HOURS": {"label": "Intervalo de re-scan", "default": "24", "min": 1, "max": 720, "unit": "h"},
+    "RESCAN_AGE_DAYS": {"label": "Idade para re-scan", "default": "30", "min": 1, "max": 365, "unit": "dias"},
+    "WORKER_MAX_SCANS_PER_HOUR": {"label": "Máx. scans/hora", "default": "50", "min": 10, "max": 1000, "unit": "scans"},
+}
+
+
+class ConfigValueBody(BaseModel):
+    value: str
+
+
+class PasswordChangeBody(BaseModel):
+    current_password: str
+    new_password: str
+    confirm_password: str
+
+
+class RotateTokenBody(BaseModel):
+    current_password: str
+
+
+@app.get("/admin/config")
+async def api_admin_config() -> dict:
+    """Lista os parâmetros editáveis com o valor efetivo (banco > env > default), a
+    origem (`db`/`env`/`default`), tipo e faixa. Inclui o token MCP mascarado. Sem
+    segredos em texto puro (o hash de senha e o token nunca aparecem inteiros)."""
+    store = get_target_store()
+    try:
+        overrides = await store.list_admin_settings()
+    except Exception:  # noqa: BLE001
+        overrides = {}
+    params = []
+    for key, meta in _CONFIG_PARAMS.items():
+        ov = overrides.get(key)
+        env_val = os.environ.get(key)
+        if ov is not None:
+            value, source = ov["value"], "db"
+        elif env_val is not None:
+            value, source = env_val, "env"
+        else:
+            value, source = meta["default"], "default"
+        params.append({
+            "key": key, "label": meta["label"], "value": value, "source": source,
+            "type": "int", "min": meta["min"], "max": meta["max"], "unit": meta["unit"],
+            "env_value": env_val if env_val is not None else meta["default"],
+            "updated_at": ov.get("updated_at") if ov else None,
+        })
+    mcp_key = os.environ.get("MCP_API_KEY", "")
+    mcp_mask = ("••••" + mcp_key[-8:]) if len(mcp_key) >= 8 else None
+    return {"params": params, "mcp_token_masked": mcp_mask,
+            "password_source": "db" if overrides.get("ADMIN_PASSWORD_HASH") else "env"}
+
+
+@app.put("/admin/config/{key}")
+async def api_admin_config_put(key: str, body: ConfigValueBody, request: Request) -> dict:
+    allowed, _ = await _redis_allow("admin_config", _client_ip(request), 10, 60, _config_attempts)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Muitas alterações. Aguarde um momento.")
+    meta = _CONFIG_PARAMS.get(key)
+    if not meta:
+        raise HTTPException(status_code=400, detail="Parâmetro não editável.")
+    try:
+        v = int(str(body.value).strip())
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Valor inválido — precisa ser um número inteiro.")
+    if v < meta["min"] or v > meta["max"]:
+        raise HTTPException(status_code=400,
+                            detail=f"Valor fora do intervalo permitido ({meta['min']}–{meta['max']}).")
+    await get_target_store().upsert_admin_setting(key, str(v), updated_by="admin")
+    return {"ok": True, "key": key, "value": str(v), "source": "db"}
+
+
+@app.post("/admin/config/reset/{key}")
+async def api_admin_config_reset(key: str, request: Request) -> dict:
+    allowed, _ = await _redis_allow("admin_config", _client_ip(request), 10, 60, _config_attempts)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Muitas alterações. Aguarde um momento.")
+    if key not in _CONFIG_PARAMS:
+        raise HTTPException(status_code=400, detail="Parâmetro não editável.")
+    await get_target_store().delete_admin_setting(key)
+    env_val = os.environ.get(key, _CONFIG_PARAMS[key]["default"])
+    return {"ok": True, "key": key, "value": env_val, "source": "env"}
+
+
+@app.patch("/admin/password")
+async def api_admin_password(body: PasswordChangeBody, request: Request) -> dict:
+    """Troca a senha do admin (hash bcrypt no banco). Exige a senha atual. Invalida os
+    refresh tokens OAuth (força re-login). Rate limit 3/min/IP. Nunca retorna a senha."""
+    allowed, _ = await _redis_allow("admin_password", _client_ip(request), 3, 60, _password_attempts)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde um minuto.")
+    if not await verify_admin_password(body.current_password):
+        raise HTTPException(status_code=401, detail="Senha atual incorreta.")
+    np = body.new_password or ""
+    if (len(np) < 12 or not re.search(r"[A-Z]", np) or not re.search(r"[a-z]", np)
+            or not re.search(r"\d", np)):
+        raise HTTPException(status_code=400,
+                            detail="A nova senha precisa de ao menos 12 caracteres, com "
+                                   "maiúscula, minúscula e número.")
+    if np != body.confirm_password:
+        raise HTTPException(status_code=400, detail="As senhas não coincidem.")
+    await get_target_store().upsert_admin_setting(
+        "ADMIN_PASSWORD_HASH", auth_users.hash_password(np), updated_by="admin")
+    try:  # força re-login dos clientes MCP OAuth
+        from mcp_server import oauth as _oauth
+        await _oauth.invalidate_all_refresh_tokens()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[admin] invalidar refresh tokens falhou: {exc!r}", flush=True)
+    return {"ok": True, "message": "Senha alterada com sucesso."}
+
+
+@app.post("/admin/rotate-mcp-token")
+async def api_admin_rotate_mcp_token(body: RotateTokenBody, request: Request) -> dict:
+    """Gera um novo `MCP_API_KEY` (CSPRNG), salva no banco e aplica em runtime. Invalida
+    refresh tokens OAuth. Exige a senha atual. Rate limit 1/hora. O token novo é
+    mostrado UMA vez. Conexões CLI com o token antigo param; OAuth (JWT) não é afetado."""
+    allowed, _ = await _redis_allow("admin_rotate_mcp", _client_ip(request), 1, 3600, _rotate_attempts)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Rotação limitada a 1/hora. Aguarde.")
+    if not await verify_admin_password(body.current_password):
+        raise HTTPException(status_code=401, detail="Senha incorreta.")
+    new_token = secrets.token_hex(32)
+    await get_target_store().upsert_admin_setting("MCP_API_KEY", new_token, updated_by="admin")
+    os.environ["MCP_API_KEY"] = new_token  # o middleware (mesmo processo) pega na hora
+    try:
+        from mcp_server import oauth as _oauth
+        await _oauth.invalidate_all_refresh_tokens()
+    except Exception as exc:  # noqa: BLE001
+        print(f"[admin] invalidar refresh tokens (rotação) falhou: {exc!r}", flush=True)
+    return {"message": "Token rotacionado. Reconecte os clientes MCP (CLI/token estático).",
+            "new_token": new_token}
+
+
+@app.get("/admin/system-info")
+async def api_admin_system_info() -> dict:
+    """Versão, uptime da API e status do Redis (seção Informações da página de config)."""
+    redis_ok = False
+    try:
+        if _cache is not None and _cache.redis is not None:
+            await _cache.redis.ping()
+            redis_ok = True
+    except Exception:  # noqa: BLE001
+        redis_ok = False
+    return {
+        "version": os.environ.get("GIT_COMMIT") or os.environ.get("APP_VERSION") or "n/d",
+        "started_at": datetime.fromtimestamp(_API_STARTED_AT, tz=timezone.utc).isoformat(),
+        "uptime_seconds": int(time.time() - _API_STARTED_AT),
+        "redis_connected": redis_ok,
     }
 
 

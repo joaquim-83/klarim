@@ -468,6 +468,16 @@ CREATE TABLE IF NOT EXISTS vigilia_alerts (
 );
 CREATE INDEX IF NOT EXISTS idx_vigilia_alerts_user ON vigilia_alerts(user_id);
 CREATE INDEX IF NOT EXISTS idx_vigilia_alerts_vigilia ON vigilia_alerts(vigilia_id);
+
+-- Overrides de configuração ao vivo (admin) — o banco tem prioridade sobre o .env.
+-- Guarda também ADMIN_PASSWORD_HASH (bcrypt) e MCP_API_KEY (rotação). Sem segredos em
+-- texto puro no .env quando há hash no banco.
+CREATE TABLE IF NOT EXISTS admin_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_by TEXT NOT NULL DEFAULT 'admin',
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
 """
 
 # --------------------------------------------------------------------------- #
@@ -1862,6 +1872,59 @@ class TargetStore:
             return self._rows_to_dicts(cur)
 
         return await asyncio.to_thread(self._run, _fn)
+
+    # --- KL-44: admin_settings (config ao vivo + senha/token) --------------- #
+
+    async def get_admin_setting(self, key: str) -> Optional[str]:
+        """Valor do override no banco, ou None se não houver."""
+        def _fn(cur):
+            cur.execute("SELECT value FROM admin_settings WHERE key = %s", (key,))
+            row = cur.fetchone()
+            return row[0] if row else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def upsert_admin_setting(self, key: str, value: str,
+                                   updated_by: str = "admin") -> None:
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO admin_settings (key, value, updated_by, updated_at) "
+                "VALUES (%s, %s, %s, NOW()) "
+                "ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, "
+                "  updated_by = EXCLUDED.updated_by, updated_at = NOW()",
+                (key, value, updated_by))
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def delete_admin_setting(self, key: str) -> bool:
+        def _fn(cur):
+            cur.execute("DELETE FROM admin_settings WHERE key = %s", (key,))
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def list_admin_settings(self) -> Dict[str, Dict[str, Any]]:
+        """Todos os overrides do banco, indexados por key (com metadados de auditoria)."""
+        def _fn(cur):
+            cur.execute("SELECT key, value, updated_by, updated_at FROM admin_settings")
+            return {r[0]: {"value": r[1], "updated_by": r[2],
+                           "updated_at": r[3].isoformat() if r[3] else None}
+                    for r in cur.fetchall()}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_setting(self, key: str, default: Any = None) -> Any:
+        """Resolução com prioridade: banco (`admin_settings`) → `.env` (os.environ) →
+        `default`. **Fail-open**: qualquer erro no banco cai para o env (nunca derruba um
+        worker por config). Usado pela API e pelos workers (que releem por ciclo)."""
+        try:
+            row = await self.get_admin_setting(key)
+        except Exception as exc:  # noqa: BLE001 - DB fora → usa o env
+            print(f"[settings] get_setting({key}) via env (db erro: {exc!r})", flush=True)
+            row = None
+        if row is not None:
+            return row
+        return os.environ.get(key, default)
 
     # --- recuperação de senha (código 6 dígitos) --------------------------- #
 

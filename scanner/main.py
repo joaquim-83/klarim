@@ -118,8 +118,14 @@ async def _worker_loop() -> None:
             await _beat()
             await asyncio.sleep(30)
             continue
-        # Throttle dinâmico (KL-32): max_per_hour do controle, senão o do env.
-        mph = int(worker_control.worker_config("scan").get("max_per_hour") or max_per_hour)
+        # Throttle dinâmico (KL-32 + KL-44): worker_control > admin_settings > env.
+        mph = worker_control.worker_config("scan").get("max_per_hour")
+        if not mph and store is not None:
+            try:
+                mph = int(await store.get_setting("WORKER_MAX_SCANS_PER_HOUR", max_per_hour))
+            except Exception:  # noqa: BLE001 - config ao vivo é best-effort
+                mph = None
+        mph = int(mph or max_per_hour)
         min_interval = 3600.0 / mph if mph > 0 else 0.0
         # timeout 30s: acorda pra bater o heartbeat mesmo com a fila vazia (KL-16).
         item = await client.blpop(SCAN_QUEUE, timeout=30)

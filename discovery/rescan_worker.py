@@ -285,6 +285,18 @@ class RescanWorker:
             print("[rescan] worker pausado (worker_control); pulando ciclo", flush=True)
             stats["disabled"] = True
             return stats
+        # KL-44: config ao vivo (admin_settings > .env) — relê por ciclo.
+        try:
+            g = self.store.get_setting
+            self.interval_hours = int(await g("RESCAN_INTERVAL_HOURS", self.interval_hours))
+            self.age_days = int(await g("RESCAN_AGE_DAYS", self.age_days))
+            self.monthly_limit = int(await g("ALERT_MONTHLY_LIMIT", self.monthly_limit))
+            self.email_batch_size = int(await g("ALERT_BATCH_SIZE", self.email_batch_size))
+            mx = int(await g("WORKER_MAX_SCANS_PER_HOUR", 0))
+            if mx > 0:
+                self.pause_s = 3600.0 / mx
+        except Exception as exc:  # noqa: BLE001
+            print(f"[rescan] reload settings falhou (mantém atual): {exc!r}", flush=True)
         mailer = self._mailer()
         cache = await self._cache()
 

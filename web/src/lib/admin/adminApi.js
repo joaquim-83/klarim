@@ -141,8 +141,16 @@ export const admin = {
   // gestão de clientes — contas de usuário + sites (KL-51 f3 fix)
   clients: () => get('/admin/clients'),
 
-  // configurações operacionais (read-only)
+  // configurações operacionais (read-only, legado)
   config: () => get('/config'),
+
+  // configurações editáveis + segurança (KL-44)
+  configList: () => get('/admin/config'),
+  configPut: (key, value) => put(`/admin/config/${key}`, { value: String(value) }),
+  configReset: (key) => post(`/admin/config/reset/${key}`, {}),
+  changePassword: (body) => patch('/admin/password', body),
+  rotateMcpToken: (currentPassword) => post('/admin/rotate-mcp-token', { current_password: currentPassword }),
+  systemInfo: () => get('/admin/system-info'),
 
   // status do Discovery Worker — KL-15
   discoveryStatus: () => get('/discovery/status'),

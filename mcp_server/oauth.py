@@ -278,9 +278,9 @@ async def authorize(request: Request) -> Response:
     if not allowed:
         return _login_page(p, client_name,
                            error="Muitas tentativas. Aguarde um minuto.", status=429)
-    admin_pw = os.environ.get("ADMIN_PASSWORD", "")
     password = form.get("password", "")
-    if not admin_pw or not hmac.compare_digest(password, admin_pw):
+    # KL-44: senha via hash bcrypt no banco (prioridade) ou ADMIN_PASSWORD do .env.
+    if not await _m.verify_admin_password(password):
         return _login_page(p, client_name, error="Senha incorreta.", status=401)
 
     # OK → gera authorization code (one-time, 60s).
@@ -377,6 +377,23 @@ async def _issue_refresh(client_id: str) -> str:
             "client_id": client_id, "scope": SCOPE, "created_at": int(time.time())}),
             ex=REFRESH_TTL)
     return tok
+
+
+async def invalidate_all_refresh_tokens() -> int:
+    """Apaga TODOS os refresh tokens OAuth (`mcp:refresh:*`) — força os clientes a
+    re-logar. Chamado ao trocar a senha do admin ou rotacionar o token MCP (KL-44).
+    Best-effort — retorna quantos foram apagados."""
+    r = _redis()
+    if r is None:
+        return 0
+    n = 0
+    try:
+        async for key in r.scan_iter(match="mcp:refresh:*"):
+            await r.delete(key)
+            n += 1
+    except Exception as exc:  # noqa: BLE001 - best-effort
+        print(f"[oauth] invalidar refresh tokens falhou: {exc!r}", flush=True)
+    return n
 
 
 # --- páginas HTML ---------------------------------------------------------- #

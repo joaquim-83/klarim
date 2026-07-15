@@ -194,6 +194,13 @@ class DiscoveryWorker:
             stats["disabled"] = True
             self._last_cycle_stats = stats
             return stats
+        # KL-44: config ao vivo (admin_settings > .env) — relê por ciclo.
+        try:
+            self.batch_size = int(await self.store.get_setting("DISCOVERY_BATCH_SIZE", self.batch_size))
+            self.interval_minutes = int(
+                await self.store.get_setting("DISCOVERY_INTERVAL_MINUTES", self.interval_minutes))
+        except Exception as exc:  # noqa: BLE001
+            print(f"[discovery] reload settings falhou (mantém atual): {exc!r}", flush=True)
         # Override de tamanho do ciclo (KL-32).
         batch = int(worker_control.worker_config("discovery").get("max_targets_per_cycle")
                     or self.batch_size)

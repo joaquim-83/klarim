@@ -23,6 +23,9 @@ def _reset_api_rate_limits():
         m._send_report_attempts.clear()   # KL-51 f3 fix UX
         m._pending_signups.clear()   # KL-44 F-03b
         m._vigilia_rl.clear()        # KL-44 P2
+        m._config_attempts.clear()   # KL-44 config
+        m._password_attempts.clear()
+        m._rotate_attempts.clear()
     except Exception:  # noqa: BLE001 - testes que não tocam a API seguem normais
         pass
     yield

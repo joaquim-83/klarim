@@ -183,6 +183,21 @@ class AlertWorker:
         self._next_cycle_at = None
         self._last_cycle_stats: dict = {}
 
+    async def _reload_settings(self) -> None:
+        """Relê os parâmetros editáveis (admin_settings > .env) a cada ciclo (KL-44) —
+        permite ajustar no painel sem redeploy. Fail-open: erro mantém os atuais."""
+        try:
+            g = self.store.get_setting
+            self.batch_size = int(await g("ALERT_BATCH_SIZE", self.batch_size))
+            self.batches_per_cycle = int(await g("ALERT_BATCHES_PER_CYCLE", self.batches_per_cycle))
+            self.batch_pause = float(await g("ALERT_BATCH_PAUSE", self.batch_pause))
+            self.monthly_limit = int(await g("ALERT_MONTHLY_LIMIT", self.monthly_limit))
+            im = int(await g("ALERT_INTERVAL_MINUTES", 0))
+            if im:
+                self.interval_minutes = im
+        except Exception as exc:  # noqa: BLE001
+            print(f"[alert] reload settings falhou (mantém atual): {exc!r}", flush=True)
+
     def _hb_payload(self) -> dict:
         return {
             "last_cycle_at": self._last_cycle_at.isoformat() if self._last_cycle_at else None,
@@ -278,6 +293,7 @@ class AlertWorker:
     async def run_cycle(self) -> dict:
         stats = {"eligible": 0, "batches": 0, "sent": 0, "failed": 0,
                  "errors": 0, "skipped": 0, "invalid": 0}
+        await self._reload_settings()  # KL-44: config ao vivo (admin_settings > .env)
         mailer = self._mailer()
         if mailer is None:
             print("[alert] RESEND_API_KEY não configurada; ciclo pulado", flush=True)
