@@ -199,6 +199,12 @@ export const admin = {
     patch(`/admin/subscriptions/${accountId}/status`, { status, reason }),
   subBulk: (body) => post('/admin/subscriptions/bulk', body),
 
+  // vigílias (KL-44 P2)
+  vigiliaStats: () => get('/admin/vigilias/stats'),
+  vigilias: (params) => get(`/admin/vigilias${qs(params)}`),
+  vigilia: (id) => get(`/admin/vigilias/${id}`),
+  vigiliaAlerts: (params) => get(`/admin/vigilia-alerts${qs(params)}`),
+
   // fluxo integrado (KL-17)
   scanAndReport: (body) => post('/admin/scan-and-report', body),
   resendAlert: (targetId) => post('/admin/resend-alert', { target_id: targetId }),

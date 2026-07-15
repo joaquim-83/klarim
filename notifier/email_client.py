@@ -66,6 +66,12 @@ EMAIL_TYPES = {
     "test": "Email de teste",
     "admin_alert": "Alerta admin (scan-and-report)",
     "admin_report": "Relatório admin",
+    "signup_verification": "Código de cadastro (conta)",
+    "vigilia_ssl": "Vigília — certificado SSL",
+    "vigilia_domain": "Vigília — registro do domínio",
+    "vigilia_score": "Vigília — score de segurança",
+    "vigilia_email": "Vigília — proteção de e-mail",
+    "vigilia_reputation": "Vigília — reputação",
 }
 
 
@@ -710,6 +716,35 @@ class KlarimMailer:
             "from": self.from_address, "to": [to_email],
             "subject": f"{domain} — voltou a 100/100 e ao selo Klarim",
             "html": html}, email_type="monitor_restored", domain=domain, source="rescan_worker")
+
+    # ----- vigílias (KL-44 P2) --------------------------------------------- #
+
+    _VIGILIA_TAG = {"ssl": "Certificado SSL", "domain": "Registro do domínio",
+                    "score": "Score de segurança", "email": "Proteção de e-mail",
+                    "reputation": "Reputação"}
+    _SEV_STYLE = {"critical": ("#F85149", "🔴"), "warning": ("#F0C000", "⚠️"),
+                  "info": ("#58A6FF", "ℹ️")}
+
+    async def send_vigilia_alert(self, *, to_email: str, tipo: str, domain: str,
+                                 subject: str, title: str, message: str,
+                                 action_text: Optional[str] = None,
+                                 severity: str = "warning",
+                                 data: Optional[dict] = None) -> Dict[str, Any]:
+        """Alerta de uma vigília (KL-44 P2). Um template por `tipo`
+        (`vigilia_<tipo>.html`). **Proativo** → respeita a blocklist (KL-24/62).
+        Registrado no `email_log` com `email_type=vigilia_<tipo>`."""
+        sev_color, sev_icon = self._SEV_STYLE.get(severity, self._SEV_STYLE["warning"])
+        # `email` usa o template `vigilia_email_security.html` (o resto casa `vigilia_<tipo>`).
+        template = "vigilia_email_security.html" if tipo == "email" else f"vigilia_{tipo}.html"
+        html = _env.get_template(template).render(
+            domain=domain, title=title, message=message, action_text=action_text,
+            severity=severity, sev_color=sev_color, sev_icon=sev_icon,
+            tag_label=self._VIGILIA_TAG.get(tipo, "Vigília"), data=data or {},
+            result_url=f"{SITE_BASE}/site/{domain}",
+            dashboard_url=f"{SITE_BASE}/dashboard", site_base=SITE_BASE)
+        return await self._send({
+            "from": self.from_address, "to": [to_email], "subject": subject, "html": html,
+        }, email_type=f"vigilia_{tipo}", domain=domain, source="vigilia_worker")
 
     async def send_recovery_link(self, to_email: str, recovery_url: str) -> Dict[str, Any]:
         """Envia o link temporário de recuperação de relatórios. Transacional → ignora

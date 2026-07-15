@@ -290,6 +290,7 @@ _signup_attempts: dict = {}
 _forgot_attempts: dict = {}
 _reset_attempts: dict = {}
 _send_report_attempts: dict = {}
+_vigilia_rl: dict = {}   # KL-44 P2: rate limit dos endpoints de vigília do usuário
 
 
 def _mask_email(email: str) -> str:
@@ -846,6 +847,54 @@ async def _effective_plan_limits(user: dict) -> dict:
                 "plan_name": user.get("plan", "free"), "plan_id": user.get("plan", "free")}
 
 
+async def _vigilia_allowed_types(user_id: int) -> list:
+    """KL-44 P2: tipos de vigília que o plano da conta habilita (com a expiração lazy
+    do trial via `plans.get_subscription`). Erro → lista vazia (nada é criado/tocado)."""
+    from api.vigilias import VIGILIA_TYPES
+    try:
+        sub = await plans.get_subscription(user_id)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[vigilia] plano indisponível user={user_id}: {exc!r}", flush=True)
+        return []
+    plan = sub.get("plan") or {}
+    return [t for t in VIGILIA_TYPES if plan.get(f"vigilia_{t}")]
+
+
+async def _create_site_vigilias(user_id: int, site_domain: str) -> None:
+    """KL-44 P2: cria (idempotente) as vigílias que o plano permite para um site novo.
+    `next_check_at=now` → verificado no próximo ciclo do worker. Best-effort (nunca
+    derruba o add_site)."""
+    if not site_domain:
+        return
+    store = get_target_store()
+    try:
+        allowed = await _vigilia_allowed_types(user_id)
+        now = datetime.now(timezone.utc)
+        for tipo in allowed:
+            await store.upsert_vigilia(user_id, site_domain, tipo, next_check_at=now)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[vigilia] criar p/ user={user_id} dom={site_domain}: {exc!r}", flush=True)
+
+
+async def _sync_user_vigilias(user_id: int) -> None:
+    """KL-44 P2: sincroniza as vigílias da conta com o plano após mudança de plano.
+    Upgrade → cria as novas em todos os sites monitorados; downgrade → desativa (não
+    deleta) as que o plano não permite mais. Best-effort."""
+    store = get_target_store()
+    try:
+        allowed = await _vigilia_allowed_types(user_id)
+        now = datetime.now(timezone.utc)
+        for s in await store.list_user_sites(user_id):
+            dom = (s.get("domain") or "").strip()
+            if not dom:
+                continue
+            for tipo in allowed:
+                await store.upsert_vigilia(user_id, dom, tipo, next_check_at=now)
+        await store.disable_user_vigilias_except(user_id, allowed)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[vigilia] sync user={user_id}: {exc!r}", flush=True)
+
+
 @app.post("/account/sites")
 async def account_add_site(body: SiteBody, request: Request) -> dict:
     user = await auth_users.require_user(request)
@@ -864,6 +913,9 @@ async def account_add_site(body: SiteBody, request: Request) -> dict:
     await store.link_user_site(user["id"], tid, is_owner=owner)
     # KL-61: marca o lead como tendo monitoramento (fire-and-forget).
     _spawn(_safe_lead(store.set_lead_monitoring(user["email"])))
+    # KL-44 P2: cria as vigílias do plano para o novo site (fire-and-forget).
+    target = await store.get_target(tid)
+    _spawn(_create_site_vigilias(user["id"], (target or {}).get("domain") or ""))
     return {"ok": True, "target_id": tid, "is_owner": owner}
 
 
@@ -4413,6 +4465,7 @@ async def api_admin_sub_bulk(body: SubBulkBody) -> dict:
         try:
             if body.action == "change_plan" and body.plan_id:
                 await plans.change_plan(aid, body.plan_id, changed_by="admin", reason=body.reason)
+                _spawn(_sync_user_vigilias(aid))  # KL-44 P2
             elif body.action == "extend_trial" and body.days:
                 await plans.extend_trial(aid, int(body.days), changed_by="admin")
             elif body.action == "change_status" and body.status:
@@ -4440,6 +4493,7 @@ async def api_admin_sub_change_plan(account_id: int, body: SubPlanBody) -> dict:
     if not await plans.get_plan(body.plan_id):
         raise HTTPException(status_code=400, detail="Plano inválido.")
     await plans.change_plan(account_id, body.plan_id, changed_by="admin", reason=body.reason)
+    _spawn(_sync_user_vigilias(account_id))  # KL-44 P2: ajusta vigílias ao novo plano
     return await plans.get_subscription(account_id)
 
 
@@ -4460,6 +4514,69 @@ async def account_subscription(request: Request) -> dict:
     """Assinatura da conta logada (dashboard do usuário — usado no P6)."""
     user = await auth_users.require_user(request)
     return await plans.get_subscription(user["id"])
+
+
+# --------------------------------------------------------------------------- #
+# KL-44 P2 — Vigílias: endpoints admin (Bearer) + usuário (cookie JWT)
+# --------------------------------------------------------------------------- #
+
+@app.get("/admin/vigilias/stats")
+async def api_admin_vigilia_stats() -> dict:
+    """Contagem de vigílias por tipo/status + alertas hoje/7d/30d (admin)."""
+    return await get_target_store().vigilia_stats()
+
+
+@app.get("/admin/vigilias")
+async def api_admin_vigilias(tipo: Optional[str] = None, status: Optional[str] = None,
+                             user_id: Optional[int] = None, domain: Optional[str] = None,
+                             limit: int = 50, offset: int = 0) -> dict:
+    """Lista vigílias (admin) com filtros combináveis."""
+    limit = max(1, min(int(limit), 200))
+    offset = max(0, int(offset))
+    rows = await get_target_store().list_vigilias(
+        tipo=tipo, status=status, user_id=user_id, domain=domain, limit=limit, offset=offset)
+    return {"vigilias": rows}
+
+
+@app.get("/admin/vigilias/{vigilia_id}")
+async def api_admin_vigilia(vigilia_id: int) -> dict:
+    """Detalhe de uma vigília + histórico de alertas (admin)."""
+    vig = await get_target_store().get_vigilia(vigilia_id)
+    if not vig:
+        raise HTTPException(status_code=404, detail="Vigília não encontrada.")
+    return vig
+
+
+@app.get("/admin/vigilia-alerts")
+async def api_admin_vigilia_alerts(tipo: Optional[str] = None, severity: Optional[str] = None,
+                                   user_id: Optional[int] = None, limit: int = 50,
+                                   offset: int = 0) -> dict:
+    """Lista alertas de vigília (admin) com filtros."""
+    limit = max(1, min(int(limit), 200))
+    offset = max(0, int(offset))
+    rows = await get_target_store().list_vigilia_alerts(
+        tipo=tipo, severity=severity, user_id=user_id, limit=limit, offset=offset)
+    return {"alerts": rows}
+
+
+@app.get("/account/vigilias")
+async def account_vigilias(request: Request) -> dict:
+    """Vigílias ativas do próprio usuário (nunca expõe dados de outra conta)."""
+    user = await auth_users.require_user(request)
+    allowed, _ = await _redis_allow("vigilia_user", str(user["id"]), 10, 60, _vigilia_rl)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Muitas requisições. Aguarde um instante.")
+    return {"vigilias": await get_target_store().get_user_vigilias(user["id"])}
+
+
+@app.get("/account/vigilia-alerts")
+async def account_vigilia_alerts(request: Request) -> dict:
+    """Alertas de vigília do próprio usuário (filtrado por user_id da sessão — IDOR-safe)."""
+    user = await auth_users.require_user(request)
+    allowed, _ = await _redis_allow("vigilia_user", str(user["id"]), 10, 60, _vigilia_rl)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Muitas requisições. Aguarde um instante.")
+    return {"alerts": await get_target_store().get_user_vigilia_alerts(user["id"], limit=50)}
 
 
 @app.get("/admin/clients")

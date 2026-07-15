@@ -1,0 +1,9 @@
+---
+export const prerender = false;
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import VigiliaPage from '../../components/admin/VigiliaPage.jsx';
+---
+
+<AdminLayout>
+  <VigiliaPage client:only="react" />
+</AdminLayout>

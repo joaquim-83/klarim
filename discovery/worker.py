@@ -281,13 +281,15 @@ class DiscoveryWorker:
 async def _run_all() -> None:
     from .alert_worker import AlertWorker
     from .rescan_worker import RescanWorker
+    from .vigilia_worker import VigiliaWorker
 
-    # Um único container roda os três loops: descoberta (Certstream, ~30min),
-    # alertas (1h) e re-scan de evolução (24h).
+    # Um único container roda os loops: descoberta (Certstream, ~30min), alertas (1h),
+    # re-scan de evolução (24h) e vigílias (6h, KL-44 P2 — começa pausado via seed).
     await asyncio.gather(
         DiscoveryWorker().start(),
         AlertWorker().start(),
         RescanWorker().start(),
+        VigiliaWorker().start(),
     )
 
 

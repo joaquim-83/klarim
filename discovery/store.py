@@ -428,6 +428,46 @@ CREATE TABLE IF NOT EXISTS subscription_history (
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_subhist_account ON subscription_history(account_id);
+
+-- ===== KL-44 P2 (Vigílias core): monitoramento silencioso contínuo ===== --
+-- Uma vigília por (usuário, domínio, tipo). O worker roda os checks e cria alertas.
+CREATE TABLE IF NOT EXISTS vigilias (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    site_domain TEXT NOT NULL,
+    tipo TEXT NOT NULL,                           -- 'ssl','domain','score','email','reputation'
+    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+    last_check_at TIMESTAMPTZ,
+    next_check_at TIMESTAMPTZ,
+    last_status TEXT DEFAULT 'ok',                -- 'ok','warning','critical','error'
+    last_data JSONB DEFAULT '{}',
+    alert_count INTEGER NOT NULL DEFAULT 0,
+    last_alert_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(user_id, site_domain, tipo)
+);
+CREATE INDEX IF NOT EXISTS idx_vigilias_next_check ON vigilias(next_check_at) WHERE enabled = TRUE;
+CREATE INDEX IF NOT EXISTS idx_vigilias_user ON vigilias(user_id);
+
+CREATE TABLE IF NOT EXISTS vigilia_alerts (
+    id SERIAL PRIMARY KEY,
+    vigilia_id INTEGER NOT NULL REFERENCES vigilias(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL,
+    site_domain TEXT NOT NULL,
+    tipo TEXT NOT NULL,
+    severity TEXT NOT NULL DEFAULT 'warning',     -- 'info','warning','critical'
+    title TEXT NOT NULL,
+    message TEXT NOT NULL,
+    action_text TEXT,
+    data JSONB DEFAULT '{}',
+    email_sent BOOLEAN NOT NULL DEFAULT FALSE,
+    email_id TEXT,
+    read_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_vigilia_alerts_user ON vigilia_alerts(user_id);
+CREATE INDEX IF NOT EXISTS idx_vigilia_alerts_vigilia ON vigilia_alerts(vigilia_id);
 """
 
 # --------------------------------------------------------------------------- #
@@ -1580,6 +1620,246 @@ class TargetStore:
                         "ORDER BY scanned_at DESC LIMIT 1", (target_id,))
             row = cur.fetchone()
             return {"score": row[0], "fail_count": row[1]} if row else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- KL-44 P2: vigílias (monitoramento contínuo) ----------------------- #
+
+    async def get_recent_scans_with_checks(self, target_id: int, limit: int = 2
+                                           ) -> List[Dict[str, Any]]:
+        """Os N scans mais recentes de um alvo COM `checks_json` (mais recente 1º) —
+        as vigílias de score/email/reputação comparam os 2 últimos scans."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT id, score, semaphore, checks_json, scanned_at FROM scans "
+                "WHERE target_id = %s AND checks_json IS NOT NULL "
+                "ORDER BY scanned_at DESC LIMIT %s", (target_id, limit))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def upsert_vigilia(self, user_id: int, site_domain: str, tipo: str,
+                             next_check_at: Any = None) -> int:
+        """Cria (ou re-habilita) uma vigília. Idempotente por (user, domínio, tipo).
+        Re-habilitar (upgrade) reagenda o próximo check; uma vigília já ativa mantém o
+        agendamento existente. Retorna o id."""
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO vigilias (user_id, site_domain, tipo, next_check_at) "
+                "VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (user_id, site_domain, tipo) DO UPDATE SET "
+                "  enabled = TRUE, updated_at = NOW(), "
+                "  next_check_at = CASE WHEN vigilias.enabled THEN vigilias.next_check_at "
+                "                       ELSE EXCLUDED.next_check_at END "
+                "RETURNING id",
+                (user_id, site_domain.lower().strip(), tipo, next_check_at))
+            return int(cur.fetchone()[0])
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def disable_user_vigilias_except(self, user_id: int, keep_types: List[str]) -> int:
+        """Desabilita (não deleta) as vigílias do usuário cujo tipo NÃO está em
+        `keep_types` — usado no downgrade de plano. Retorna quantas foram desabilitadas."""
+        def _fn(cur):
+            if keep_types:
+                cur.execute(
+                    "UPDATE vigilias SET enabled = FALSE, updated_at = NOW() "
+                    "WHERE user_id = %s AND enabled = TRUE AND tipo <> ALL(%s)",
+                    (user_id, list(keep_types)))
+            else:
+                cur.execute(
+                    "UPDATE vigilias SET enabled = FALSE, updated_at = NOW() "
+                    "WHERE user_id = %s AND enabled = TRUE", (user_id,))
+            return cur.rowcount
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_due_vigilias(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Vigílias habilitadas com `next_check_at` vencido (ou nulo), da mais atrasada
+        para a menos, com o e-mail do dono. O worker faz o enforcement de plano."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT vg.id, vg.user_id, vg.site_domain, vg.tipo, vg.last_status, "
+                "       vg.last_data, vg.alert_count, u.email AS user_email "
+                "FROM vigilias vg "
+                "JOIN users u ON u.id = vg.user_id AND u.is_active = TRUE "
+                "WHERE vg.enabled = TRUE "
+                "  AND (vg.next_check_at IS NULL OR vg.next_check_at <= NOW()) "
+                "ORDER BY vg.next_check_at ASC NULLS FIRST LIMIT %s", (limit,))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def update_vigilia_after_check(self, vigilia_id: int, last_status: str,
+                                         last_data: dict, next_check_at: Any,
+                                         alerted: bool = False) -> None:
+        """Grava o resultado de um check: status, dados, próximo agendamento; se gerou
+        alerta, incrementa `alert_count` e marca `last_alert_at`."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE vigilias SET last_check_at = NOW(), last_status = %s, "
+                "  last_data = %s, next_check_at = %s, updated_at = NOW(), "
+                "  alert_count = alert_count + %s, "
+                "  last_alert_at = CASE WHEN %s THEN NOW() ELSE last_alert_at END "
+                "WHERE id = %s",
+                (last_status, json.dumps(last_data or {}), next_check_at,
+                 1 if alerted else 0, alerted, vigilia_id))
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def create_vigilia_alert(self, vigilia_id: int, user_id: int, site_domain: str,
+                                   tipo: str, severity: str, title: str, message: str,
+                                   action_text: Optional[str] = None,
+                                   data: Optional[dict] = None) -> int:
+        """Registra um alerta de vigília. Retorna o id."""
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO vigilia_alerts (vigilia_id, user_id, site_domain, tipo, "
+                "  severity, title, message, action_text, data) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                (vigilia_id, user_id, site_domain.lower().strip(), tipo, severity, title,
+                 message, action_text, json.dumps(data or {})))
+            return int(cur.fetchone()[0])
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def mark_vigilia_alert_sent(self, alert_id: int, email_id: Optional[str]) -> None:
+        def _fn(cur):
+            cur.execute("UPDATE vigilia_alerts SET email_sent = TRUE, email_id = %s "
+                        "WHERE id = %s", (email_id, alert_id))
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def list_vigilias(self, tipo: Optional[str] = None, status: Optional[str] = None,
+                            user_id: Optional[int] = None, domain: Optional[str] = None,
+                            limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
+        """Lista vigílias (admin) com o e-mail do dono. Filtros combináveis."""
+        def _fn(cur):
+            where, params = [], []
+            if tipo:
+                where.append("vg.tipo = %s"); params.append(tipo)
+            if status:
+                where.append("vg.last_status = %s"); params.append(status)
+            if user_id is not None:
+                where.append("vg.user_id = %s"); params.append(user_id)
+            if domain:
+                where.append("vg.site_domain ILIKE %s"); params.append(f"%{domain.lower().strip()}%")
+            clause = ("WHERE " + " AND ".join(where)) if where else ""
+            params.extend([limit, offset])
+            cur.execute(
+                "SELECT vg.id, vg.user_id, vg.site_domain, vg.tipo, vg.enabled, "
+                "  vg.last_check_at, vg.next_check_at, vg.last_status, vg.last_data, "
+                "  vg.alert_count, vg.last_alert_at, u.email AS user_email "
+                f"FROM vigilias vg JOIN users u ON u.id = vg.user_id {clause} "
+                "ORDER BY vg.last_check_at DESC NULLS LAST, vg.id DESC LIMIT %s OFFSET %s",
+                params)
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_vigilia(self, vigilia_id: int) -> Optional[Dict[str, Any]]:
+        """Detalhe de uma vigília + histórico de alertas (mais recente 1º)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT vg.*, u.email AS user_email FROM vigilias vg "
+                "JOIN users u ON u.id = vg.user_id WHERE vg.id = %s", (vigilia_id,))
+            rows = self._rows_to_dicts(cur)
+            if not rows:
+                return None
+            vig = rows[0]
+            cur.execute(
+                "SELECT id, severity, title, message, action_text, data, email_sent, "
+                "  read_at, created_at FROM vigilia_alerts WHERE vigilia_id = %s "
+                "ORDER BY created_at DESC LIMIT 50", (vigilia_id,))
+            vig["alerts"] = self._rows_to_dicts(cur)
+            return vig
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def list_vigilia_alerts(self, tipo: Optional[str] = None,
+                                  severity: Optional[str] = None,
+                                  user_id: Optional[int] = None, limit: int = 50,
+                                  offset: int = 0) -> List[Dict[str, Any]]:
+        """Lista alertas de vigília (admin) com o e-mail do dono."""
+        def _fn(cur):
+            where, params = [], []
+            if tipo:
+                where.append("va.tipo = %s"); params.append(tipo)
+            if severity:
+                where.append("va.severity = %s"); params.append(severity)
+            if user_id is not None:
+                where.append("va.user_id = %s"); params.append(user_id)
+            clause = ("WHERE " + " AND ".join(where)) if where else ""
+            params.extend([limit, offset])
+            cur.execute(
+                "SELECT va.id, va.vigilia_id, va.user_id, va.site_domain, va.tipo, "
+                "  va.severity, va.title, va.message, va.action_text, va.email_sent, "
+                "  va.read_at, va.created_at, u.email AS user_email "
+                f"FROM vigilia_alerts va JOIN users u ON u.id = va.user_id {clause} "
+                "ORDER BY va.created_at DESC LIMIT %s OFFSET %s", params)
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def vigilia_stats(self) -> Dict[str, Any]:
+        """Contagem por tipo, por status e alertas hoje/7d/30d."""
+        def _fn(cur):
+            cur.execute("SELECT tipo, COUNT(*) FROM vigilias WHERE enabled = TRUE GROUP BY tipo")
+            by_type = {r[0]: int(r[1]) for r in cur.fetchall()}
+            cur.execute("SELECT last_status, COUNT(*) FROM vigilias WHERE enabled = TRUE "
+                        "GROUP BY last_status")
+            by_status = {(r[0] or "ok"): int(r[1]) for r in cur.fetchall()}
+            cur.execute("SELECT COUNT(*) FROM vigilias WHERE enabled = TRUE")
+            total = int(cur.fetchone()[0])
+            cur.execute(
+                "SELECT "
+                "  COUNT(*) FILTER (WHERE created_at >= date_trunc('day', NOW())), "
+                "  COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '7 days'), "
+                "  COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '30 days') "
+                "FROM vigilia_alerts")
+            a_today, a_7d, a_30d = cur.fetchone()
+            return {"total_vigilias": total, "by_type": by_type, "by_status": by_status,
+                    "alerts_today": int(a_today), "alerts_7d": int(a_7d),
+                    "alerts_30d": int(a_30d)}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_user_vigilias(self, user_id: int) -> List[Dict[str, Any]]:
+        """Vigílias ativas do próprio usuário (dashboard de conta)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT id, site_domain, tipo, enabled, last_check_at, next_check_at, "
+                "  last_status, last_data, alert_count, last_alert_at "
+                "FROM vigilias WHERE user_id = %s AND enabled = TRUE "
+                "ORDER BY site_domain, tipo", (user_id,))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_user_vigilia_alerts(self, user_id: int, limit: int = 50
+                                      ) -> List[Dict[str, Any]]:
+        """Alertas de vigília do próprio usuário (mais recente 1º)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT id, vigilia_id, site_domain, tipo, severity, title, message, "
+                "  action_text, read_at, created_at FROM vigilia_alerts "
+                "WHERE user_id = %s ORDER BY created_at DESC LIMIT %s", (user_id, limit))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_all_monitored_sites(self) -> List[Dict[str, Any]]:
+        """(user_id, site_domain) distintos de contas ativas com sites monitorados —
+        para o seed de vigílias. Uma linha por (usuário, domínio)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT DISTINCT us.user_id, t.domain AS site_domain "
+                "FROM user_sites us "
+                "JOIN users u ON u.id = us.user_id AND u.is_active = TRUE "
+                "JOIN targets t ON t.id = us.target_id "
+                "WHERE t.domain IS NOT NULL AND t.domain <> '' "
+                "ORDER BY us.user_id")
+            return self._rows_to_dicts(cur)
 
         return await asyncio.to_thread(self._run, _fn)
 

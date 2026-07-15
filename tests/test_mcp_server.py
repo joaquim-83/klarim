@@ -35,6 +35,8 @@ READ_TOOLS = [
     "get_email_log",
     # KL-44: planos & assinaturas
     "get_subscription_stats", "list_subscribers",
+    # KL-44 P2: vigílias
+    "get_vigilia_stats", "list_vigilia_alerts",
 ]
 WRITE_TOOLS = [
     "scan_url", "add_target", "update_target_email", "update_target_status",

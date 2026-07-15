@@ -14,13 +14,14 @@ _HB_KEYS = {
     "alert": "worker:alert:status",
     "rescan": "worker:rescan:status",
     "scan": "worker:scan:status",
+    "vigilia": "worker:vigilia:status",  # KL-44 P2
 }
 
 
 @mcp.tool()
 async def pause_worker(worker: str) -> dict:
-    """Pausa um worker proativo: 'discovery', 'alert', 'rescan', 'scan' ou 'all'.
-    O worker lê o estado no início de cada ciclo e pula o ciclo enquanto pausado.
+    """Pausa um worker proativo: 'discovery', 'alert', 'rescan', 'scan', 'vigilia' ou
+    'all'. O worker lê o estado no início de cada ciclo e pula o ciclo enquanto pausado.
     Aditivo ao STOP_ALERTS. Persiste entre restarts."""
     async def _impl():
         try:
@@ -34,7 +35,7 @@ async def pause_worker(worker: str) -> dict:
 
 @mcp.tool()
 async def resume_worker(worker: str) -> dict:
-    """Retoma um worker: 'discovery', 'alert', 'rescan', 'scan' ou 'all'."""
+    """Retoma um worker: 'discovery', 'alert', 'rescan', 'scan', 'vigilia' ou 'all'."""
     async def _impl():
         try:
             data = worker_control.resume(worker)
