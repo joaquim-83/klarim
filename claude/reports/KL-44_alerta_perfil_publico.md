@@ -145,11 +145,16 @@ api/main.py           → if (body.utm_campaign or "").startswith("alerta")  ✔
 
 ## Parte 6 — Deploy e teste em produção
 
-_(preenchido após push + CI verde — ver abaixo.)_
+- **Commit:** `814ad5c` — `fix(KL-44): alerta direciona para perfil público /site/{domain} + anti-loop`, push para `main` (`2317a43..814ad5c`). Foram commitados **apenas os 9 arquivos do KL-44** (não `git add -A`), para não arrastar trabalho de outras sessões em andamento.
+- **GitHub Actions** (run `29394123867`): **success** — Test ✓, Build web (Astro) ✓, Nginx check ✓, Deploy to GCP VM ✓ (4m46s). Template novo **no ar**.
+- **Alerta de teste** → target 8172 (`igoove.com`, score 81/amarelo → `alert.html`) → `jscidinei@gmail.com`:
+  - **`email_id = 6bda3120-4968-4032-ac87-59ed8ccb43be`**, `sent: true`.
+  - Disparado via MCP `send_alert_to_target` (envio manual, ignora cota) — **sem** pausar/reativar o worker.
+- **Link confirmado** (render real do template com `site_name=igoove.com`):
+  `https://klarim.net/site/igoove.com?utm_source=klarim&utm_medium=email&utm_campaign=alerta`
+  · botão "Ver score do site →" presente · a URL do perfil responde **HTTP 200** em produção.
+- **Anti-loop na prática:** ao clicar nesse link, o SSR de `/site/igoove.com` chama
+  `/notify/profile-view` com `utm_campaign=alerta` → o backend **não** dispara o e-mail de
+  "perfil consultado" (sem loop).
 
-- Commit: `<hash>` — push para `main`.
-- GitHub Actions (test + deploy): `<status>`.
-- Alerta de teste → target 8172 (igoove.com → jscidinei@gmail.com): `email_id=<id>`.
-- Link confirmado no e-mail: `https://klarim.net/site/igoove.com?utm_source=klarim&utm_medium=email&utm_campaign=alerta`.
-
-**Nota:** o alert worker **não** foi pausado nem reativado — o template é atualizado pelo deploy.
+**Nota:** o alert worker **não** foi pausado nem reativado — o template foi atualizado pelo deploy.
