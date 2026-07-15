@@ -83,11 +83,22 @@ App.jsx importando admin ..................... 0 (só um comentário de referên
 
 ## Deploy
 
-_(preenchido após push + CI verde)_
-
-- Commit: `<hash>` — push para `main`.
-- CI (test + build-web + nginx-check + deploy): `<status>`.
-- Verificação no browser (`painel.klarim.net`): `<resultado>`.
+- **Commit** `2f07ff1` — push para `main`. **CI success** (Build web (Astro) + Test + Nginx
+  config check + Deploy to GCP VM). O `build-web` validou a compilação das 9 novas páginas +
+  ilhas; o `nginx-check` validou a regex simplificada.
+- **Verificação no browser (produção, `painel.klarim.net`) — as 3 páginas mais
+  representativas/arriscadas, todas ✅ sem erro no console:**
+  - **Alvos** (a mais complexa): título vira "Klarim — Painel" (Astro, era Vite na fase 1) —
+    filtros, tabela, editores inline (Setor/Status/E-mail ✏️), badges de confiança,
+    seleção múltipla, ações. **Confirma que /painel/alvos agora é servido pelo Astro.**
+  - **AlvoDetalhe** (`id` via pathname — o padrão novo mais arriscado): `/painel/alvos/22506`
+    carregou o alvo **correto** (cedlabnd.com.br — o que foi clicado), com editores inline,
+    5 ações e os 4 blocos de histórico. **id-via-pathname funciona.**
+  - **Sistema** (auto-refresh): "atualiza a cada 30s", 4 worker cards (todos 🟢 com stats
+    ao vivo), 5 deps de health, métricas de e-mail e bounce.
+  - As demais (Scans/ScanDetalhe/Alertas/Leads/LeadDetalhe/Analytics) seguem o mesmo padrão
+    já validado (build-web verde + deploy). As páginas da Fase 1 continuam OK (Overview, Inbox
+    — badge do inbox agora "2").
 
 ## Checklist de verificação PÓS-deploy (browser, produção)
 
