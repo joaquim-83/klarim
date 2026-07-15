@@ -345,6 +345,89 @@ CREATE INDEX IF NOT EXISTS idx_email_log_to_email ON email_log(to_email);
 CREATE INDEX IF NOT EXISTS idx_email_log_type ON email_log(email_type);
 CREATE INDEX IF NOT EXISTS idx_email_log_status ON email_log(status);
 CREATE INDEX IF NOT EXISTS idx_email_log_email_id ON email_log(email_id);
+
+-- ===== KL-44 (Guardião Digital): planos, assinaturas e trial reverse de 30 dias ===== --
+-- ⚠️ Não existe tabela `accounts` neste schema: a "conta" é o `users`. Portanto
+-- `account_id` (nome do card e da API) referencia users(id).
+CREATE TABLE IF NOT EXISTS plans (
+    id TEXT PRIMARY KEY,                       -- 'free', 'pro', 'agency'
+    name TEXT NOT NULL,
+    price_monthly INTEGER NOT NULL DEFAULT 0,  -- centavos
+    price_yearly INTEGER NOT NULL DEFAULT 0,   -- centavos
+    max_sites INTEGER NOT NULL DEFAULT 1,
+    scan_frequency TEXT NOT NULL DEFAULT 'monthly',  -- daily|weekly|biweekly|monthly
+    vigilia_ssl BOOLEAN NOT NULL DEFAULT FALSE,
+    vigilia_domain BOOLEAN NOT NULL DEFAULT FALSE,
+    vigilia_score BOOLEAN NOT NULL DEFAULT FALSE,
+    vigilia_email BOOLEAN NOT NULL DEFAULT FALSE,
+    vigilia_reputation BOOLEAN NOT NULL DEFAULT FALSE,
+    vigilia_changes BOOLEAN NOT NULL DEFAULT FALSE,
+    vigilia_phishing BOOLEAN NOT NULL DEFAULT FALSE,
+    vigilia_uptime BOOLEAN NOT NULL DEFAULT FALSE,
+    uptime_interval_minutes INTEGER DEFAULT NULL,
+    bulletin_frequency TEXT DEFAULT 'none',           -- none|monthly|weekly|daily
+    action_plan_limit INTEGER NOT NULL DEFAULT 1,     -- 0 = ilimitado
+    history_months INTEGER NOT NULL DEFAULT 3,        -- 0 = ilimitado
+    competitor_slots INTEGER NOT NULL DEFAULT 0,
+    lgpd_full BOOLEAN NOT NULL DEFAULT FALSE,
+    widget_type TEXT NOT NULL DEFAULT 'badge',        -- badge|interactive|whitelabel
+    pdf_report_frequency TEXT DEFAULT 'none',         -- none|monthly|weekly
+    export_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    api_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+-- Seed dos 3 planos (idempotente).
+INSERT INTO plans (id, name, price_monthly, price_yearly, max_sites, scan_frequency,
+    vigilia_ssl, vigilia_domain, vigilia_score, vigilia_email, vigilia_reputation,
+    vigilia_changes, vigilia_phishing, vigilia_uptime, uptime_interval_minutes,
+    bulletin_frequency, action_plan_limit, history_months, competitor_slots,
+    lgpd_full, widget_type, pdf_report_frequency, export_enabled, api_enabled)
+VALUES
+    ('free', 'Free', 0, 0, 1, 'monthly',
+     FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, FALSE, NULL,
+     'monthly', 1, 3, 0, FALSE, 'badge', 'none', FALSE, FALSE),
+    ('pro', 'Pro', 1900, 9900, 5, 'weekly',
+     TRUE, TRUE, TRUE, TRUE, TRUE, FALSE, FALSE, TRUE, 30,
+     'weekly', 3, 12, 3, TRUE, 'interactive', 'monthly', FALSE, FALSE),
+    ('agency', 'Agency', 4900, 0, 15, 'daily',
+     TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, 5,
+     'daily', 0, 0, 10, TRUE, 'whitelabel', 'weekly', TRUE, TRUE)
+ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS subscriptions (
+    id SERIAL PRIMARY KEY,
+    account_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    plan_id TEXT NOT NULL REFERENCES plans(id),
+    status TEXT NOT NULL DEFAULT 'trial',   -- trial|active|free|expired|cancelled
+    trial_ends_at TIMESTAMPTZ,
+    started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    expires_at TIMESTAMPTZ,
+    billing_cycle TEXT DEFAULT 'monthly',   -- monthly|yearly
+    last_payment_at TIMESTAMPTZ,
+    cancelled_at TIMESTAMPTZ,
+    notes TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(account_id)
+);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_account ON subscriptions(account_id);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_status ON subscriptions(status);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_plan ON subscriptions(plan_id);
+
+CREATE TABLE IF NOT EXISTS subscription_history (
+    id SERIAL PRIMARY KEY,
+    account_id INTEGER NOT NULL,
+    old_plan_id TEXT,
+    new_plan_id TEXT NOT NULL,
+    old_status TEXT,
+    new_status TEXT NOT NULL,
+    changed_by TEXT NOT NULL DEFAULT 'system',  -- system|admin|user|payment
+    reason TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_subhist_account ON subscription_history(account_id);
 """
 
 # --------------------------------------------------------------------------- #
@@ -2182,6 +2265,225 @@ class TargetStore:
                     "platform": r["platform"], "is_corp": is_corp})
                 n += 1
             return n
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def backfill_leads_from_accounts(self) -> int:
+        """Cria scan_leads para contas (users) SEM lead ainda (KL-44 P1 fix). O
+        `backfill_leads` (KL-61) só cobre e-mails com `scanned_by_email`; contas que
+        entraram via alerta→signup sem scan público ficavam de fora. Varremos `users`
+        e criamos o lead com `has_account=True` (+ `has_monitoring` via user_sites).
+        Idempotente (ON CONFLICT DO NOTHING — não sobrescreve leads já existentes)."""
+        from api.lead_scoring import is_corporate_email, calculate_lead_score
+        _SEL = """
+            SELECT u.id AS account_id, LOWER(u.email) AS email, u.created_at,
+                COALESCE(EXISTS (SELECT 1 FROM user_sites us WHERE us.user_id = u.id), FALSE)
+                    AS has_monitoring
+            FROM users u
+            LEFT JOIN scan_leads sl ON sl.email = LOWER(u.email)
+            WHERE sl.id IS NULL AND u.email IS NOT NULL AND u.email <> ''
+        """
+        _INS = """
+            INSERT INTO scan_leads (email, first_scan_at, last_activity_at, total_scans,
+                has_account, account_id, has_monitoring, lead_score, classification,
+                is_corporate_email, source, updated_at)
+            VALUES (%(email)s, %(created)s, %(created)s, 0, TRUE, %(account_id)s,
+                %(has_monitoring)s, %(score)s, %(classification)s, %(is_corp)s, 'account', NOW())
+            ON CONFLICT (email) DO NOTHING
+        """
+
+        def _fn(cur):
+            cur.execute(_SEL)
+            rows = self._rows_to_dicts(cur)
+            n = 0
+            for r in rows:
+                email = (r["email"] or "").lower().strip()
+                if not email or "@" not in email:
+                    continue
+                is_corp = is_corporate_email(email)
+                score, classification = calculate_lead_score({
+                    "total_scans": 0, "distinct_urls": 0, "worst_score": None,
+                    "has_account": True, "has_monitoring": r["has_monitoring"],
+                    "is_corporate_email": is_corp, "last_activity_at": r["created_at"]})
+                cur.execute(_INS, {
+                    "email": email, "created": r["created_at"], "account_id": r["account_id"],
+                    "has_monitoring": r["has_monitoring"], "score": score,
+                    "classification": classification, "is_corp": is_corp})
+                n += cur.rowcount or 0
+            return n
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # ===== KL-44: planos & assinaturas ===================================== #
+
+    async def list_plans(self, active_only: bool = True) -> List[Dict[str, Any]]:
+        """Todos os planos (por padrão só os ativos), ordenados por preço."""
+        def _fn(cur):
+            cur.execute("SELECT * FROM plans" + (" WHERE is_active = TRUE" if active_only else "")
+                        + " ORDER BY price_monthly")
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_plan(self, plan_id: str) -> Optional[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute("SELECT * FROM plans WHERE id = %s", (plan_id,))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # Colunas do plano editáveis pelo admin (tudo menos id/created_at).
+    _PLAN_EDITABLE = (
+        "name", "price_monthly", "price_yearly", "max_sites", "scan_frequency",
+        "vigilia_ssl", "vigilia_domain", "vigilia_score", "vigilia_email",
+        "vigilia_reputation", "vigilia_changes", "vigilia_phishing", "vigilia_uptime",
+        "uptime_interval_minutes", "bulletin_frequency", "action_plan_limit",
+        "history_months", "competitor_slots", "lgpd_full", "widget_type",
+        "pdf_report_frequency", "export_enabled", "api_enabled", "is_active")
+
+    async def update_plan(self, plan_id: str, fields: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Atualiza os limites de um plano (só as colunas na whitelist). Retorna o plano."""
+        cols = [(k, v) for k, v in (fields or {}).items() if k in self._PLAN_EDITABLE]
+
+        def _fn(cur):
+            if cols:
+                sets = ", ".join(f"{k} = %s" for k, _ in cols) + ", updated_at = NOW()"
+                cur.execute(f"UPDATE plans SET {sets} WHERE id = %s",
+                            [v for _, v in cols] + [plan_id])
+            cur.execute("SELECT * FROM plans WHERE id = %s", (plan_id,))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_subscription_row(self, account_id: int) -> Optional[Dict[str, Any]]:
+        """Assinatura crua de uma conta (users.id), ou None."""
+        def _fn(cur):
+            cur.execute("SELECT * FROM subscriptions WHERE account_id = %s", (account_id,))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def upsert_subscription(
+        self, account_id: int, plan_id: str, status: str,
+        trial_ends_at: Any = None, expires_at: Any = None,
+        billing_cycle: str = "monthly",
+    ) -> Dict[str, Any]:
+        """Cria/atualiza a assinatura de uma conta (UNIQUE por account_id)."""
+        def _fn(cur):
+            cur.execute(
+                """INSERT INTO subscriptions
+                       (account_id, plan_id, status, trial_ends_at, expires_at, billing_cycle)
+                   VALUES (%s, %s, %s, %s, %s, %s)
+                   ON CONFLICT (account_id) DO UPDATE SET
+                       plan_id = EXCLUDED.plan_id, status = EXCLUDED.status,
+                       trial_ends_at = EXCLUDED.trial_ends_at, expires_at = EXCLUDED.expires_at,
+                       billing_cycle = EXCLUDED.billing_cycle, updated_at = NOW()
+                   RETURNING *""",
+                (account_id, plan_id, status, trial_ends_at, expires_at, billing_cycle))
+            return self._rows_to_dicts(cur)[0]
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def update_subscription(self, account_id: int, **fields) -> Optional[Dict[str, Any]]:
+        """Atualiza campos da assinatura (plan_id/status/trial_ends_at/expires_at/…)."""
+        allowed = ("plan_id", "status", "trial_ends_at", "expires_at", "billing_cycle",
+                   "last_payment_at", "cancelled_at", "notes")
+        cols = [(k, v) for k, v in fields.items() if k in allowed]
+
+        def _fn(cur):
+            if cols:
+                sets = ", ".join(f"{k} = %s" for k, _ in cols) + ", updated_at = NOW()"
+                cur.execute(f"UPDATE subscriptions SET {sets} WHERE account_id = %s",
+                            [v for _, v in cols] + [account_id])
+            cur.execute("SELECT * FROM subscriptions WHERE account_id = %s", (account_id,))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def log_subscription_change(
+        self, account_id: int, old_plan_id: Optional[str], new_plan_id: str,
+        old_status: Optional[str], new_status: str, changed_by: str = "system",
+        reason: Optional[str] = None,
+    ) -> None:
+        await asyncio.to_thread(self._run, lambda cur: cur.execute(
+            """INSERT INTO subscription_history
+                   (account_id, old_plan_id, new_plan_id, old_status, new_status, changed_by, reason)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+            (account_id, old_plan_id, new_plan_id, old_status, new_status, changed_by, reason)))
+
+    async def list_subscription_history(self, account_id: int) -> List[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute("SELECT * FROM subscription_history WHERE account_id = %s "
+                        "ORDER BY created_at DESC", (account_id,))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def subscription_group_counts(self) -> List[Dict[str, Any]]:
+        """[{plan_id, status, n}] por conta — LEFT JOIN de users (conta sem assinatura
+        conta como free/free)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT COALESCE(s.plan_id, 'free') AS plan_id, "
+                "COALESCE(s.status, 'free') AS status, COUNT(*) AS n "
+                "FROM users u LEFT JOIN subscriptions s ON s.account_id = u.id "
+                "GROUP BY COALESCE(s.plan_id, 'free'), COALESCE(s.status, 'free')")
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def count_trials_expiring(self, days: int = 7) -> int:
+        def _fn(cur):
+            cur.execute(
+                "SELECT COUNT(*) FROM subscriptions WHERE status = 'trial' "
+                "AND trial_ends_at IS NOT NULL "
+                "AND trial_ends_at BETWEEN NOW() AND NOW() + (%s || ' days')::interval",
+                (str(days),))
+            return int(cur.fetchone()[0])
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def list_subscribers(
+        self, plan_id: Optional[str] = None, status: Optional[str] = None,
+        search: Optional[str] = None, limit: int = 25, offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Contas + assinatura + nº de sites monitorados (para a página Assinantes)."""
+        like = f"%{search.strip()}%" if search else None
+
+        def _fn(cur):
+            cur.execute(
+                """SELECT u.id AS account_id, u.email, u.name, u.created_at, u.last_login_at,
+                          u.is_active,
+                          COALESCE(s.plan_id, 'free') AS plan_id,
+                          COALESCE(s.status, 'free') AS status,
+                          s.trial_ends_at, s.started_at, s.expires_at, s.billing_cycle,
+                          p.name AS plan_name, p.max_sites AS plan_max_sites,
+                          (SELECT COUNT(*) FROM user_sites us WHERE us.user_id = u.id) AS sites
+                   FROM users u
+                   LEFT JOIN subscriptions s ON s.account_id = u.id
+                   LEFT JOIN plans p ON p.id = COALESCE(s.plan_id, 'free')
+                   WHERE (%(plan)s IS NULL OR COALESCE(s.plan_id, 'free') = %(plan)s)
+                     AND (%(status)s IS NULL OR COALESCE(s.status, 'free') = %(status)s)
+                     AND (%(like)s IS NULL OR u.email ILIKE %(like)s)
+                   ORDER BY u.created_at DESC
+                   LIMIT %(limit)s OFFSET %(offset)s""",
+                {"plan": plan_id or None, "status": status or None, "like": like,
+                 "limit": limit, "offset": offset})
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def users_without_subscription(self) -> List[Dict[str, Any]]:
+        """Contas (users) que ainda não têm assinatura — para o seed do KL-44."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT u.id, u.email, u.created_at FROM users u "
+                "LEFT JOIN subscriptions s ON s.account_id = u.id WHERE s.id IS NULL")
+            return self._rows_to_dicts(cur)
 
         return await asyncio.to_thread(self._run, _fn)
 

@@ -137,6 +137,27 @@ class FakeStore:
     async def list_users_with_sites(self):
         return self.users_with_sites
 
+    # KL-44: stubs de plano/assinatura NÃO-persistentes — o hook de trial no signup e o
+    # enforcement de sites caem no fallback (users.max_sites), mantendo estes testes
+    # determinísticos. A lógica de trial/limite por plano é testada em test_subscriptions.py.
+    async def get_subscription_row(self, account_id):
+        return None
+
+    async def get_plan(self, plan_id):
+        ms = {"free": 1, "pro": 5, "agency": 15}.get(plan_id, 1)
+        return {"id": plan_id, "name": plan_id.capitalize(), "max_sites": ms}
+
+    async def upsert_subscription(self, account_id, plan_id, status, trial_ends_at=None,
+                                  expires_at=None, billing_cycle="monthly"):
+        return {"account_id": account_id, "plan_id": plan_id, "status": status,
+                "trial_ends_at": trial_ends_at}
+
+    async def update_subscription(self, account_id, **fields):
+        return {"account_id": account_id, **fields}
+
+    async def log_subscription_change(self, *a, **k):
+        return None
+
 
 @pytest.fixture
 def store(monkeypatch):

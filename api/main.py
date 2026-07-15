@@ -62,6 +62,7 @@ from discovery.ingest import ingest_scan, _fetch_html
 from discovery.classifier import classify_sector, classify_by_domain, PRICE_TIERS
 from api import health_checks
 from api import auth_users
+from api import plans
 
 
 # --------------------------------------------------------------------------- #
@@ -441,6 +442,9 @@ async def account_signup(body: SignupBody, request: Request) -> JSONResponse:
     await store.touch_user_login(user["id"])
     # KL-61: liga o lead à conta (fire-and-forget; nunca bloqueia o signup).
     _spawn(_safe_lead(store.set_lead_account(email, user["id"])))
+    # KL-44: toda conta nova começa com Pro trial de 30 dias (reverse trial). Transparente
+    # para o usuário nesta fase. Fire-and-forget — nunca bloqueia nem derruba o signup.
+    _spawn(_safe_lead(plans.create_subscription(user["id"], "pro", is_trial=True)))
     token = auth_users.create_user_token(user)
     resp = JSONResponse({"user": _user_public(user)})
     _set_session_cookie(resp, token)
@@ -687,16 +691,32 @@ async def account_site_detail(target_id: int, request: Request) -> dict:
     }
 
 
+async def _effective_plan_limits(user: dict) -> dict:
+    """Limites efetivos do plano da conta (KL-44). Usa a assinatura (subscriptions →
+    plans) e faz **fallback** para `users.max_sites` se a assinatura não existir ou o
+    lookup falhar — preserva o comportamento antigo para contas sem assinatura."""
+    try:
+        sub = await plans.get_subscription(user["id"])
+        return {"max_sites": int(sub["max_sites"]),
+                "plan_name": sub.get("plan_name") or sub.get("plan_id"),
+                "plan_id": sub.get("plan_id")}
+    except Exception as exc:  # noqa: BLE001 - fallback resiliente (nunca bloqueia por erro)
+        print(f"[plans] limite efetivo via fallback ({exc!r})", flush=True)
+        return {"max_sites": int(user.get("max_sites", 1)),
+                "plan_name": user.get("plan", "free"), "plan_id": user.get("plan", "free")}
+
+
 @app.post("/account/sites")
 async def account_add_site(body: SiteBody, request: Request) -> dict:
     user = await auth_users.require_user(request)
     store = get_target_store()
     used = await store.count_user_sites(user["id"])
-    if used >= int(user.get("max_sites", 1)):
+    limits = await _effective_plan_limits(user)
+    if used >= limits["max_sites"]:
         raise HTTPException(
             status_code=403,
-            detail=f"Seu plano permite {user.get('max_sites', 1)} site(s). "
-                   "Faça upgrade para monitorar mais.")
+            detail=f"Seu plano ({limits['plan_name']}) permite {limits['max_sites']} "
+                   "site(s). Faça upgrade para monitorar mais.")
     tid = await _resolve_or_create_target(body.url, source="dashboard")
     if not tid:
         raise HTTPException(status_code=400, detail="Não foi possível analisar esta URL.")
@@ -4147,6 +4167,157 @@ async def monitoring_admin_set_status(site_id: int, body: MonitorAdminStatusBody
     if site is None:
         raise HTTPException(status_code=404, detail="Site monitorado não encontrado.")
     return site
+
+
+# --------------------------------------------------------------------------- #
+# KL-44 — Planos, assinaturas e trial (admin) + assinatura do usuário (público)
+# --------------------------------------------------------------------------- #
+
+class PlanEditBody(BaseModel):
+    name: Optional[str] = None
+    price_monthly: Optional[int] = None
+    price_yearly: Optional[int] = None
+    max_sites: Optional[int] = None
+    scan_frequency: Optional[str] = None
+    vigilia_ssl: Optional[bool] = None
+    vigilia_domain: Optional[bool] = None
+    vigilia_score: Optional[bool] = None
+    vigilia_email: Optional[bool] = None
+    vigilia_reputation: Optional[bool] = None
+    vigilia_changes: Optional[bool] = None
+    vigilia_phishing: Optional[bool] = None
+    vigilia_uptime: Optional[bool] = None
+    uptime_interval_minutes: Optional[int] = None
+    bulletin_frequency: Optional[str] = None
+    action_plan_limit: Optional[int] = None
+    history_months: Optional[int] = None
+    competitor_slots: Optional[int] = None
+    lgpd_full: Optional[bool] = None
+    widget_type: Optional[str] = None
+    pdf_report_frequency: Optional[str] = None
+    export_enabled: Optional[bool] = None
+    api_enabled: Optional[bool] = None
+    is_active: Optional[bool] = None
+
+
+class SubPlanBody(BaseModel):
+    plan_id: str
+    reason: Optional[str] = None
+
+
+class SubTrialBody(BaseModel):
+    days: int
+
+
+class SubStatusBody(BaseModel):
+    status: str
+    reason: Optional[str] = None
+
+
+class SubBulkBody(BaseModel):
+    account_ids: list[int]
+    action: str  # 'change_plan' | 'extend_trial' | 'change_status'
+    plan_id: Optional[str] = None
+    days: Optional[int] = None
+    status: Optional[str] = None
+    reason: Optional[str] = None
+
+
+@app.get("/admin/plans")
+async def api_admin_plans() -> dict:
+    return {"plans": await plans.get_plans()}
+
+
+@app.get("/admin/plans/{plan_id}")
+async def api_admin_plan(plan_id: str) -> dict:
+    p = await plans.get_plan(plan_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Plano não encontrado.")
+    return p
+
+
+@app.put("/admin/plans/{plan_id}")
+async def api_admin_plan_update(plan_id: str, body: PlanEditBody) -> dict:
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    p = await get_target_store().update_plan(plan_id, fields)
+    if not p:
+        raise HTTPException(status_code=404, detail="Plano não encontrado.")
+    return p
+
+
+# ⚠️ /stats e /bulk são declarados ANTES de /{account_id} (senão "stats" viraria id).
+@app.get("/admin/subscriptions/stats")
+async def api_admin_sub_stats() -> dict:
+    return await plans.get_subscription_stats()
+
+
+@app.get("/admin/subscriptions")
+async def api_admin_subscriptions(
+    plan_id: Optional[str] = Query(default=None),
+    status: Optional[str] = Query(default=None),
+    search: Optional[str] = Query(default=None),
+    limit: int = Query(default=25, le=200),
+    offset: int = Query(default=0, ge=0),
+) -> dict:
+    rows = await plans.list_subscribers(plan_id=plan_id, status=status, search=search,
+                                        limit=limit, offset=offset)
+    return {"subscribers": rows}
+
+
+@app.post("/admin/subscriptions/bulk")
+async def api_admin_sub_bulk(body: SubBulkBody) -> dict:
+    results = []
+    for aid in body.account_ids:
+        try:
+            if body.action == "change_plan" and body.plan_id:
+                await plans.change_plan(aid, body.plan_id, changed_by="admin", reason=body.reason)
+            elif body.action == "extend_trial" and body.days:
+                await plans.extend_trial(aid, int(body.days), changed_by="admin")
+            elif body.action == "change_status" and body.status:
+                await plans.set_status(aid, body.status, changed_by="admin", reason=body.reason)
+            else:
+                raise ValueError("ação inválida ou parâmetros faltando")
+            results.append({"account_id": aid, "ok": True})
+        except Exception as exc:  # noqa: BLE001 - um alvo ruim não derruba o lote
+            results.append({"account_id": aid, "ok": False, "error": str(exc)})
+    return {"results": results, "applied": len([r for r in results if r["ok"]])}
+
+
+@app.get("/admin/subscriptions/{account_id}")
+async def api_admin_subscription(account_id: int) -> dict:
+    return await plans.get_subscription(account_id)
+
+
+@app.get("/admin/subscriptions/{account_id}/history")
+async def api_admin_sub_history(account_id: int) -> dict:
+    return {"history": await get_target_store().list_subscription_history(account_id)}
+
+
+@app.patch("/admin/subscriptions/{account_id}/plan")
+async def api_admin_sub_change_plan(account_id: int, body: SubPlanBody) -> dict:
+    if not await plans.get_plan(body.plan_id):
+        raise HTTPException(status_code=400, detail="Plano inválido.")
+    await plans.change_plan(account_id, body.plan_id, changed_by="admin", reason=body.reason)
+    return await plans.get_subscription(account_id)
+
+
+@app.patch("/admin/subscriptions/{account_id}/trial")
+async def api_admin_sub_extend_trial(account_id: int, body: SubTrialBody) -> dict:
+    await plans.extend_trial(account_id, int(body.days), changed_by="admin")
+    return await plans.get_subscription(account_id)
+
+
+@app.patch("/admin/subscriptions/{account_id}/status")
+async def api_admin_sub_status(account_id: int, body: SubStatusBody) -> dict:
+    await plans.set_status(account_id, body.status, changed_by="admin", reason=body.reason)
+    return await plans.get_subscription(account_id)
+
+
+@app.get("/account/subscription")
+async def account_subscription(request: Request) -> dict:
+    """Assinatura da conta logada (dashboard do usuário — usado no P6)."""
+    user = await auth_users.require_user(request)
+    return await plans.get_subscription(user["id"])
 
 
 @app.get("/admin/clients")

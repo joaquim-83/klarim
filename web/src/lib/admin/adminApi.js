@@ -183,6 +183,22 @@ export const admin = {
   updateLead: (id, fields) => patch(`/leads/${id}`, fields),
   recalcLeads: () => post('/leads/recalculate'),
 
+  // planos & assinaturas — KL-44 (Guardião Digital)
+  plans: () => get('/admin/plans'),
+  plan: (id) => get(`/admin/plans/${id}`),
+  updatePlan: (id, fields) => put(`/admin/plans/${id}`, fields),
+  subStats: () => get('/admin/subscriptions/stats'),
+  subscribers: (params) => get(`/admin/subscriptions${qs(params)}`),
+  subscription: (accountId) => get(`/admin/subscriptions/${accountId}`),
+  subHistory: (accountId) => get(`/admin/subscriptions/${accountId}/history`),
+  subChangePlan: (accountId, planId, reason) =>
+    patch(`/admin/subscriptions/${accountId}/plan`, { plan_id: planId, reason }),
+  subExtendTrial: (accountId, days) =>
+    patch(`/admin/subscriptions/${accountId}/trial`, { days }),
+  subSetStatus: (accountId, status, reason) =>
+    patch(`/admin/subscriptions/${accountId}/status`, { status, reason }),
+  subBulk: (body) => post('/admin/subscriptions/bulk', body),
+
   // fluxo integrado (KL-17)
   scanAndReport: (body) => post('/admin/scan-and-report', body),
   resendAlert: (targetId) => post('/admin/resend-alert', { target_id: targetId }),

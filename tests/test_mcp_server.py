@@ -33,6 +33,8 @@ READ_TOOLS = [
     "list_leads", "get_lead_stats", "get_lead_funnel",
     # KL-62: log unificado de e-mails
     "get_email_log",
+    # KL-44: planos & assinaturas
+    "get_subscription_stats", "list_subscribers",
 ]
 WRITE_TOOLS = [
     "scan_url", "add_target", "update_target_email", "update_target_status",
