@@ -76,6 +76,45 @@ const jsonLd = status === 'ok' ? {
 } : undefined;
 
 const card = 'rounded-2xl border border-slate-800 bg-slate-900/60 p-6';
+
+// KL-66 — seção de contato com destaque. Só campos PÚBLICOS que o próprio site publica
+// (o backend já filtra: whatsapp/cnpj/contact_email NUNCA vêm no perfil público, §39).
+// Ícones SVG inline (strings estáticas → set:html seguro; label/href do perfil são
+// escapados pela interpolação do Astro).
+const svg = (inner) =>
+  `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${inner}</svg>`;
+const IC = {
+  phone: svg('<path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.5 19.5 0 0 1-6-6 19.79 19.79 0 0 1-3.07-8.67A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91a16 16 0 0 0 6 6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7A2 2 0 0 1 22 16.92z"/>'),
+  map: svg('<path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0 1 18 0z"/><circle cx="12" cy="10" r="3"/>'),
+  globe: svg('<circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>'),
+  instagram: svg('<rect x="2" y="2" width="20" height="20" rx="5" ry="5"/><path d="M16 11.37A4 4 0 1 1 12.63 8 4 4 0 0 1 16 11.37z"/><line x1="17.5" y1="6.5" x2="17.51" y2="6.5"/>'),
+  facebook: svg('<path d="M18 2h-3a5 5 0 0 0-5 5v3H7v4h3v8h4v-8h3l1-4h-4V7a1 1 0 0 1 1-1h3z"/>'),
+  linkedin: svg('<path d="M16 8a6 6 0 0 1 6 6v7h-4v-7a2 2 0 0 0-2-2 2 2 0 0 0-2 2v7h-4v-7a6 6 0 0 1 6-6z"/><rect x="2" y="9" width="4" height="12"/><circle cx="4" cy="4" r="2"/>'),
+  youtube: svg('<path d="M22.54 6.42a2.78 2.78 0 0 0-1.94-2C18.88 4 12 4 12 4s-6.88 0-8.6.46a2.78 2.78 0 0 0-1.94 2A29 29 0 0 0 1 11.75a29 29 0 0 0 .46 5.33A2.78 2.78 0 0 0 3.4 19c1.72.46 8.6.46 8.6.46s6.88 0 8.6-.46a2.78 2.78 0 0 0 1.94-2 29 29 0 0 0 .46-5.25 29 29 0 0 0-.46-5.33z"/><polygon points="9.75 15.02 15.5 11.75 9.75 8.48 9.75 15.02"/>'),
+  tiktok: svg('<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>'),
+};
+const isSafeUrl = (u) => typeof u === 'string' && /^https?:\/\//i.test(u);
+const phoneDigits = p.phone ? String(p.phone).replace(/[^\d+]/g, '') : '';
+// Guard anti-lixo: alguns endereços vieram com classes CSS raspadas por engano — só
+// exibe se parecer endereço (tem dígito ou vírgula). O fix do profiler é card futuro.
+const addressOk = p.address && (/\d/.test(p.address) || p.address.includes(','));
+const ytLabel = (h) => '@' + String(h).replace(/^(c|channel|user)\//, '').replace(/^@/, '');
+const siteUrl = isSafeUrl(t.url) ? t.url : `https://${domain}`;
+const monogram = ((p.company_name || domain).trim().charAt(0) || '?').toUpperCase();
+
+const hasContact = !!(phoneDigits.length >= 8 || addressOk || p.instagram || p.facebook
+  || p.linkedin || p.youtube || p.tiktok);
+const contacts = [];
+if (hasContact) {
+  if (phoneDigits.length >= 8) contacts.push({ icon: IC.phone, label: p.phone, href: `tel:${phoneDigits}` });
+  if (addressOk) contacts.push({ icon: IC.map, label: p.address, href: isSafeUrl(p.google_maps_url) ? p.google_maps_url : null, ext: true });
+  if (p.instagram) contacts.push({ icon: IC.instagram, label: `@${p.instagram}`, href: `https://instagram.com/${p.instagram}`, ext: true });
+  if (p.facebook) contacts.push({ icon: IC.facebook, label: p.facebook, href: `https://facebook.com/${p.facebook}`, ext: true });
+  if (p.linkedin) contacts.push({ icon: IC.linkedin, label: p.linkedin, href: `https://linkedin.com/company/${p.linkedin}`, ext: true });
+  if (p.youtube) contacts.push({ icon: IC.youtube, label: ytLabel(p.youtube), href: `https://youtube.com/${p.youtube}`, ext: true });
+  if (p.tiktok) contacts.push({ icon: IC.tiktok, label: `@${p.tiktok}`, href: `https://tiktok.com/@${p.tiktok}`, ext: true });
+  contacts.push({ icon: IC.globe, label: domain, href: siteUrl, ext: true });
+}
 ---
 
 <Base
@@ -112,9 +151,12 @@ const card = 'rounded-2xl border border-slate-800 bg-slate-900/60 p-6';
 
     {status === 'ok' && (
       <div class="space-y-6">
-        <div>
-          <h1 class="text-2xl font-bold tracking-tight text-white sm:text-3xl">{domain}</h1>
-          <p class="mt-1 text-sm text-slate-500">Análise passiva de segurança do site</p>
+        <div class="flex items-center gap-4">
+          <div class="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-brand-500/15 text-2xl font-bold text-brand-400 ring-1 ring-brand-500/30">{monogram}</div>
+          <div class="min-w-0">
+            <h1 class="truncate text-2xl font-bold tracking-tight text-white sm:text-3xl">{domain}</h1>
+            <p class="mt-1 truncate text-sm text-slate-500">{p.company_name || 'Análise passiva de segurança do site'}</p>
+          </div>
         </div>
 
         <div class={`${card} flex items-center gap-6`}>
@@ -128,6 +170,23 @@ const card = 'rounded-2xl border border-slate-800 bg-slate-900/60 p-6';
             <p class="text-sm text-slate-500">Última análise: {lastScan}</p>
           </div>
         </div>
+
+        {hasContact && (
+          <div class={card}>
+            <h2 class="text-lg font-bold text-white">Contato</h2>
+            <p class="mt-1 text-sm text-slate-400">Dados que o Klarim encontrou publicados no site.</p>
+            <ul class="mt-4 grid gap-3 sm:grid-cols-2">
+              {contacts.map((c) => (
+                <li class="flex items-center gap-3">
+                  <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-800 text-brand-400" set:html={c.icon} />
+                  {c.href
+                    ? <a href={c.href} target={c.ext ? '_blank' : undefined} rel={c.ext ? 'noopener noreferrer' : undefined} class="truncate text-slate-200 hover:text-brand-300">{c.label}</a>
+                    : <span class="truncate text-slate-200">{c.label}</span>}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
 
         {(p.description || p.business_type || cls.length > 0 || (p.tags && p.tags.length > 0) || p.maturity_score != null || t.platform) && (
           <div class={card}>
@@ -166,15 +225,6 @@ const card = 'rounded-2xl border border-slate-800 bg-slate-900/60 p-6';
         <div class="text-center">
           <a href="/scan" data-cta="verify-other" class="text-sm text-brand-400 hover:text-brand-300">🔍 Verificar outro site →</a>
         </div>
-
-        {(p.phone || p.address || p.instagram) && (
-          <div class="border-t border-slate-800 pt-6 text-sm text-slate-400">
-            <p class="mb-2 font-medium text-slate-500">Informações de contato</p>
-            {p.phone && <p>📞 {p.phone}</p>}
-            {p.address && <p>📍 {p.address}</p>}
-            {p.instagram && <p>📸 {p.instagram}</p>}
-          </div>
-        )}
 
         <p class="border-t border-slate-800 pt-6 text-xs leading-relaxed text-slate-600">
           Este score é baseado em análise passiva automatizada do site e não constitui auditoria de
