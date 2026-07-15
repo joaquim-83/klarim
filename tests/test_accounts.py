@@ -32,8 +32,17 @@ class FakeStore:
         self.scanned_by = {} # email -> [target_ids] (histórico KL-25)
         self.scan_history = []       # linhas de /account/scan-history
         self.users_with_sites = []   # linhas de /admin/clients
+        self.verified_scan_emails = None  # None ⇒ todo e-mail é "verificado no scan" (KL-25)
 
     # --- users ---
+    async def email_has_verified_scan(self, email):
+        # KL-44 F-03b: por padrão todo e-mail conta como já verificado no scan (fluxo
+        # scan→cadastro), então o signup cria direto. Para testar o caminho com código,
+        # os testes setam `verified_scan_emails` a um conjunto explícito.
+        if self.verified_scan_emails is None:
+            return True
+        return email.lower().strip() in self.verified_scan_emails
+
     async def create_user(self, email, password_hash, name=None):
         email = email.lower().strip()
         if email in self.users:
@@ -243,6 +252,73 @@ def test_signup_links_scanned_site(client, store):
     uid = r.json()["user"]["id"]
     assert (uid, 99) in store.sites
     assert store.sites[(uid, 99)]["is_owner"] is True   # e-mail bate → dono
+
+
+# --- signup com verificação de e-mail (KL-44 F-03b) ------------------------- #
+
+class _FakeMailer:
+    def __init__(self):
+        self.sent = []
+
+    async def send_signup_verification_code(self, to_email, code):
+        self.sent.append((to_email, code))
+        return {"ok": True}
+
+
+@pytest.fixture
+def mailer(monkeypatch):
+    fm = _FakeMailer()
+    monkeypatch.setattr(m, "_email_enabled", lambda: True)
+    monkeypatch.setattr(m, "_mailer", lambda: fm)
+    return fm
+
+
+def test_signup_unverified_requires_code(client, store, mailer):
+    store.verified_scan_emails = set()   # nenhum e-mail verificado no scan (KL-25)
+    r = client.post("/account/signup", json={"email": "novo@x.com.br", "password": "segredo123"})
+    assert r.status_code == 200 and r.json()["status"] == "verification_sent"
+    assert "novo@x.com.br" not in store.users          # conta NÃO criada ainda
+    assert mailer.sent and mailer.sent[0][0] == "novo@x.com.br"   # código enviado
+
+
+def test_signup_verify_creates_account(client, store, mailer):
+    store.verified_scan_emails = set()
+    client.post("/account/signup", json={"email": "novo@x.com.br", "password": "segredo123"})
+    code = mailer.sent[0][1]
+    r = client.post("/account/verify", json={"email": "novo@x.com.br", "code": code})
+    assert r.status_code == 200 and r.json()["user"]["email"] == "novo@x.com.br"
+    assert "novo@x.com.br" in store.users
+    assert "klarim_session" in r.cookies or "set-cookie" in {k.lower() for k in r.headers}
+
+
+def test_signup_verify_wrong_code(client, store, mailer):
+    store.verified_scan_emails = set()
+    client.post("/account/signup", json={"email": "novo@x.com.br", "password": "segredo123"})
+    r = client.post("/account/verify", json={"email": "novo@x.com.br", "code": "000000"})
+    assert r.status_code == 400
+    assert "novo@x.com.br" not in store.users          # código errado → não cria
+
+
+def test_signup_verify_no_pending(client, store, mailer):
+    r = client.post("/account/verify", json={"email": "ninguem@x.com.br", "code": "123456"})
+    assert r.status_code == 400
+
+
+def test_signup_verified_scan_skips_code(client, store, mailer):
+    # e-mail já verificado no scan → cria direto, mesmo com o mailer disponível.
+    store.verified_scan_emails = {"javerificado@x.com.br"}
+    r = client.post("/account/signup", json={"email": "javerificado@x.com.br", "password": "segredo123"})
+    assert r.status_code == 200 and "user" in r.json()
+    assert mailer.sent == []                            # nenhum código enviado
+
+
+def test_signup_unverified_no_email_service(client, store, monkeypatch):
+    # sem serviço de e-mail configurado, o caminho não-verificado degrada com 503
+    # (não cria conta silenciosamente).
+    store.verified_scan_emails = set()
+    monkeypatch.setattr(m, "_email_enabled", lambda: False)
+    r = client.post("/account/signup", json={"email": "novo@x.com.br", "password": "segredo123"})
+    assert r.status_code == 503 and "novo@x.com.br" not in store.users
 
 
 # --- login ------------------------------------------------------------------ #

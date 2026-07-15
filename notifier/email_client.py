@@ -610,6 +610,20 @@ class KlarimMailer:
         }, email_type="verification_code", domain=domain, source="scan_public",
             skip_blocklist=True)
 
+    async def send_signup_verification_code(self, to_email: str, code: str) -> Dict[str, Any]:
+        """Envia o código de 6 dígitos para verificar o e-mail no cadastro de conta
+        (KL-44 F-03b) — só quando o e-mail ainda NÃO foi verificado no scan (KL-25).
+        Transacional (o usuário pediu) → ignora a blocklist, mas é registrado (KL-62)."""
+        html = _env.get_template("verification_code.html").render(
+            code=code, expires_label="15 minutos",
+            purpose="Use-o para confirmar seu e-mail e criar sua conta Klarim.")
+        return await self._send({
+            "from": self.from_address,
+            "to": [to_email],
+            "subject": f"🔐 Seu código de cadastro Klarim: {code}",
+            "html": html,
+        }, email_type="signup_verification", source="account", skip_blocklist=True)
+
     async def send_password_reset_code(self, to_email: str, code: str) -> Dict[str, Any]:
         """Envia o código de 6 dígitos para redefinir a senha da conta (KL-51 f3)."""
         html = _env.get_template("password_reset_code.html").render(code=code)

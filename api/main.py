@@ -250,23 +250,15 @@ def _client_ip(request: Request) -> str:
 
 
 async def _login_rate_limit(request: Request) -> None:
-    ip = _client_ip(request)
-    now = time.monotonic()
-    q = _login_attempts.setdefault(ip, [])
-    cutoff = now - _LOGIN_RL_WINDOW
-    while q and q[0] < cutoff:
-        q.pop(0)
-    if len(q) >= _LOGIN_RL_MAX:
-        retry = int(_LOGIN_RL_WINDOW - (now - q[0])) + 1
+    # KL-44 auditoria F-02: rate limit distribuído (Redis) com fallback in-memory.
+    allowed, retry = await _redis_allow(
+        "admin_login", _client_ip(request), _LOGIN_RL_MAX, _LOGIN_RL_WINDOW, _login_attempts)
+    if not allowed:
         raise HTTPException(
             status_code=429,
             detail=f"Muitas tentativas. Tente novamente em {retry}s.",
             headers={"Retry-After": str(retry)},
         )
-    q.append(now)
-    if len(_login_attempts) > 5000:  # limpeza oportunista (não cresce sem limite)
-        for k in [k for k, ts in _login_attempts.items() if not ts or ts[-1] < cutoff]:
-            _login_attempts.pop(k, None)
 
 
 @app.post("/auth/login", dependencies=[Depends(_login_rate_limit)])
@@ -292,7 +284,8 @@ _ACCOUNT_EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2
 _PW_MIN = 8
 _PWRESET_TTL = 3600          # 1h
 _RESET_CODE_TTL = 3600
-# rate limits in-memory (MVP single-process; mover p/ Redis se escalar)
+# Buckets de fallback in-memory do `_redis_allow` (KL-44 auditoria F-02): o rate limit
+# é distribuído via Redis; estes dicts só entram em ação se o Redis estiver indisponível.
 _signup_attempts: dict = {}
 _forgot_attempts: dict = {}
 _reset_attempts: dict = {}
@@ -313,7 +306,9 @@ def _mask_email(email: str) -> str:
 
 
 def _ip_rate_limit(bucket: dict, key: str, max_hits: int, window: int) -> bool:
-    """True se DENTRO do limite (permite); False se excedeu. Janela deslizante."""
+    """True se DENTRO do limite (permite); False se excedeu. Janela deslizante.
+    Usado como **fallback in-memory** do `_redis_allow` (KL-44 auditoria F-02) e
+    diretamente por reset/send_report/eventos."""
     now = time.monotonic()
     q = bucket.setdefault(key, [])
     cutoff = now - window
@@ -326,6 +321,32 @@ def _ip_rate_limit(bucket: dict, key: str, max_hits: int, window: int) -> bool:
         for k in [k for k, ts in bucket.items() if not ts or ts[-1] < cutoff]:
             bucket.pop(k, None)
     return True
+
+
+async def _redis_allow(namespace: str, key: str, max_hits: int, window: int,
+                       fallback_bucket: dict) -> tuple[bool, int]:
+    """Rate limit **distribuído** via Redis (KL-44 auditoria F-02): fixed-window com
+    INCR+EXPIRE — compartilhado entre workers e sobrevive a restart/deploy. Retorna
+    ``(permitido, retry_after_segundos)``. **Fail-safe:** se o Redis estiver
+    indisponível/instável, degrada para o limitador in-memory (`_ip_rate_limit`) — nunca
+    desliga o rate limit por falha de infra. Os limites/keys são os já ajustados no
+    hardening (só muda o mecanismo de armazenamento)."""
+    ident = f"{namespace}:{key}"
+    redis = _cache.redis if _cache is not None else None
+    if redis is not None:
+        try:
+            rkey = f"rate:{ident}"
+            n = await redis.incr(rkey)
+            if n == 1:
+                await redis.expire(rkey, window)
+            if n > max_hits:
+                ttl = await redis.ttl(rkey)
+                return False, (ttl if ttl and ttl > 0 else window)
+            return True, 0
+        except Exception:  # noqa: BLE001 - Redis instável → cai no fallback in-memory
+            pass
+    allowed = _ip_rate_limit(fallback_bucket, ident, max_hits, window)
+    return allowed, (0 if allowed else window)
 
 
 def _user_public(user: dict) -> dict:
@@ -404,31 +425,65 @@ async def _resolve_or_create_target(url: str, source: str = "manual") -> Optiona
         return None
 
 
-@app.post("/account/signup")
-async def account_signup(body: SignupBody, request: Request) -> JSONResponse:
-    """Cria uma conta (o e-mail já foi verificado no fluxo de scan, KL-25). Vincula
-    automaticamente o site recém-escaneado. Rate limit 5/IP/h."""
-    if not _ip_rate_limit(_signup_attempts, _client_ip(request), 5, 3600):
-        raise HTTPException(status_code=429, detail="Muitas contas criadas. Tente mais tarde.")
-    email = (body.email or "").lower().strip()
-    if not _ACCOUNT_EMAIL_RE.match(email):
-        raise HTTPException(status_code=400, detail="E-mail inválido.")
-    if len(body.password or "") < _PW_MIN:
-        raise HTTPException(status_code=400, detail="A senha precisa ter ao menos 8 caracteres.")
-    store = get_target_store()
-    user = await store.create_user(email, auth_users.hash_password(body.password),
-                                   name=(body.name or None))
+# --- verificação de e-mail no signup direcionado (KL-44 F-03b) --------------- #
+# Pending signups (código de 6 dígitos) no Redis (TTL 15min) com fallback in-memory —
+# mesmo padrão do rate limit: Redis quando disponível, dict local se o Redis cair.
+_pending_signups: dict = {}
+_SIGNUP_PENDING_TTL = 900  # 15 min
+
+
+async def _store_pending_signup(email: str, data: dict) -> None:
+    redis = _cache.redis if _cache is not None else None
+    if redis is not None:
+        try:
+            await redis.set(f"signup:pending:{email}", json.dumps(data), ex=_SIGNUP_PENDING_TTL)
+            return
+        except Exception:  # noqa: BLE001
+            pass
+    _pending_signups[email] = (data, time.monotonic() + _SIGNUP_PENDING_TTL)
+
+
+async def _get_pending_signup(email: str) -> Optional[dict]:
+    redis = _cache.redis if _cache is not None else None
+    if redis is not None:
+        try:
+            raw = await redis.get(f"signup:pending:{email}")
+            return json.loads(raw) if raw else None
+        except Exception:  # noqa: BLE001
+            pass
+    entry = _pending_signups.get(email)
+    if not entry:
+        return None
+    data, exp = entry
+    if time.monotonic() > exp:
+        _pending_signups.pop(email, None)
+        return None
+    return data
+
+
+async def _del_pending_signup(email: str) -> None:
+    redis = _cache.redis if _cache is not None else None
+    if redis is not None:
+        try:
+            await redis.delete(f"signup:pending:{email}")
+        except Exception:  # noqa: BLE001
+            pass
+    _pending_signups.pop(email, None)
+
+
+async def _create_account_record(store, email: str, password_hash: str,
+                                 name: Optional[str], url: Optional[str]) -> Optional[dict]:
+    """Cria a conta + vincula sites + Pro trial + lead. Retorna o user (ou None se e-mail
+    duplicado). Compartilhado pelo signup (e-mail já verificado) e pelo /account/verify."""
+    user = await store.create_user(email, password_hash, name=name)
     if user is None:
-        raise HTTPException(status_code=409, detail="Já existe uma conta com este e-mail.")
+        return None
     max_sites = int(user.get("max_sites", 1))
-    # vincula o site recém-escaneado (best-effort)
-    if body.url:
-        tid = await _resolve_or_create_target(body.url, source="signup")
+    if url:
+        tid = await _resolve_or_create_target(url, source="signup")
         if tid:
-            owner = await _email_owns_target(email, tid)
-            await store.link_user_site(user["id"], tid, is_owner=owner)
-    # histórico: vincula scans anteriores do mesmo e-mail (KL-25) até o limite do plano
-    try:
+            await store.link_user_site(user["id"], tid, is_owner=await _email_owns_target(email, tid))
+    try:  # histórico: vincula scans anteriores do mesmo e-mail (KL-25) até o limite do plano
         used = await store.count_user_sites(user["id"])
         if used < max_sites:
             for tid in await store.get_targets_scanned_by_email(email, limit=max_sites):
@@ -440,22 +495,106 @@ async def account_signup(body: SignupBody, request: Request) -> JSONResponse:
     except Exception as exc:  # noqa: BLE001 - histórico é best-effort
         print(f"[account] vínculo de histórico falhou {email}: {exc!r}", flush=True)
     await store.touch_user_login(user["id"])
-    # KL-61: liga o lead à conta (fire-and-forget; nunca bloqueia o signup).
-    _spawn(_safe_lead(store.set_lead_account(email, user["id"])))
-    # KL-44: toda conta nova começa com Pro trial de 30 dias (reverse trial). Transparente
-    # para o usuário nesta fase. Fire-and-forget — nunca bloqueia nem derruba o signup.
-    _spawn(_safe_lead(plans.create_subscription(user["id"], "pro", is_trial=True)))
-    token = auth_users.create_user_token(user)
+    _spawn(_safe_lead(store.set_lead_account(email, user["id"])))          # KL-61
+    _spawn(_safe_lead(plans.create_subscription(user["id"], "pro", is_trial=True)))  # KL-44
+    return user
+
+
+def _account_session_response(user: dict) -> JSONResponse:
     resp = JSONResponse({"user": _user_public(user)})
-    _set_session_cookie(resp, token)
+    _set_session_cookie(resp, auth_users.create_user_token(user))
     return resp
+
+
+@app.post("/account/signup")
+async def account_signup(body: SignupBody, request: Request) -> JSONResponse:
+    """Cria conta. **KL-44 F-03b:** se o e-mail JÁ foi verificado no scan (KL-25), cria
+    direto (sem re-verificar — preserva o fluxo scan→cadastro). Se NÃO foi verificado
+    (signup direto via API ou claim de alerta), exige um código de 6 dígitos por e-mail —
+    fecha o gap de criar conta com e-mail de terceiro. Rate limit 5/IP/h (Redis, KL-44 F-02)."""
+    allowed, retry = await _redis_allow("signup", _client_ip(request), 5, 3600, _signup_attempts)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Muitas contas criadas. Tente mais tarde.",
+                            headers={"Retry-After": str(retry)})
+    email = (body.email or "").lower().strip()
+    if not _ACCOUNT_EMAIL_RE.match(email):
+        raise HTTPException(status_code=400, detail="E-mail inválido.")
+    if len(body.password or "") < _PW_MIN:
+        raise HTTPException(status_code=400, detail="A senha precisa ter ao menos 8 caracteres.")
+    store = get_target_store()
+    if await store.get_user_by_email(email):
+        raise HTTPException(status_code=409, detail="Já existe uma conta com este e-mail.")
+    pw_hash = auth_users.hash_password(body.password)
+    # E-mail já verificado no scan (KL-25) → cria direto.
+    try:
+        already_verified = await store.email_has_verified_scan(email)
+    except Exception:  # noqa: BLE001 - na dúvida, exige verificação
+        already_verified = False
+    if already_verified:
+        user = await _create_account_record(store, email, pw_hash, body.name or None, body.url)
+        if user is None:
+            raise HTTPException(status_code=409, detail="Já existe uma conta com este e-mail.")
+        return _account_session_response(user)
+    # E-mail NÃO verificado → exige código (não cria a conta ainda).
+    if not _email_enabled():
+        raise HTTPException(status_code=503, detail="Verificação de e-mail indisponível no momento.")
+    code = f"{secrets.randbelow(900000) + 100000:06d}"  # CSPRNG, 6 dígitos
+    await _store_pending_signup(email, {
+        "code": code, "password_hash": pw_hash, "name": body.name or None,
+        "url": body.url or None, "attempts": 0})
+    try:
+        await _mailer().send_signup_verification_code(email, code)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[signup] falha ao enviar código {email}: {exc!r}", flush=True)
+        raise HTTPException(status_code=502, detail="Falha ao enviar o código de verificação.") from exc
+    return JSONResponse({"status": "verification_sent",
+                         "message": "Código de verificação enviado para seu e-mail.",
+                         "email": _mask_email(email)})
+
+
+class VerifySignupBody(BaseModel):
+    email: str
+    code: str
+
+
+@app.post("/account/verify")
+async def account_verify(body: VerifySignupBody, request: Request) -> JSONResponse:
+    """Confirma o código de verificação do signup e cria a conta (KL-44 F-03b). Máximo 3
+    tentativas por código; expira em 15 min."""
+    allowed, _ = await _redis_allow("signup_verify", _client_ip(request), 10, 600, _reset_attempts)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde alguns minutos.")
+    email = (body.email or "").lower().strip()
+    pending = await _get_pending_signup(email)
+    if not pending:
+        raise HTTPException(status_code=400,
+                            detail="Código expirado ou inexistente. Refaça o cadastro.")
+    if int(pending.get("attempts", 0)) >= 3:
+        await _del_pending_signup(email)
+        raise HTTPException(status_code=429, detail="Muitas tentativas. Refaça o cadastro.")
+    if not hmac.compare_digest(str(body.code or "").strip(), str(pending.get("code"))):
+        pending["attempts"] = int(pending.get("attempts", 0)) + 1
+        await _store_pending_signup(email, pending)
+        raise HTTPException(status_code=400, detail="Código incorreto.")
+    store = get_target_store()
+    if await store.get_user_by_email(email):
+        await _del_pending_signup(email)
+        raise HTTPException(status_code=409, detail="Já existe uma conta com este e-mail.")
+    user = await _create_account_record(
+        store, email, pending["password_hash"], pending.get("name"), pending.get("url"))
+    await _del_pending_signup(email)
+    if user is None:
+        raise HTTPException(status_code=409, detail="Já existe uma conta com este e-mail.")
+    return _account_session_response(user)
 
 
 @app.post("/account/login")
 async def account_login(body: AccountLoginBody, request: Request) -> JSONResponse:
     """Login de conta de usuário. Rate limit 10/IP/min (anti brute-force)."""
-    if not _ip_rate_limit(_signup_attempts, "login:" + _client_ip(request), 10, 60):
-        raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde um momento.")
+    allowed, retry = await _redis_allow("user_login", _client_ip(request), 10, 60, _signup_attempts)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde um momento.",
+                            headers={"Retry-After": str(retry)})
     email = (body.email or "").lower().strip()
     store = get_target_store()
     user = await store.get_user_by_email(email, with_hash=True)
@@ -485,7 +624,8 @@ async def account_forgot(body: ForgotBody, request: Request) -> dict:
     generic = {"ok": True, "message": "Se houver uma conta com este e-mail, enviamos um código."}
     if not _ACCOUNT_EMAIL_RE.match(email):
         return generic
-    if not _ip_rate_limit(_forgot_attempts, email, 3, 3600):
+    allowed, _ = await _redis_allow("forgot", email, 3, 3600, _forgot_attempts)
+    if not allowed:
         return generic  # silencioso — não vaza que passou do limite
 
     async def _do():
@@ -949,8 +1089,10 @@ async def public_profile(domain: str) -> dict:
     return {
         "status": "ok",
         "domain": domain,
+        # KL-44 fix (auditoria F-03): NÃO expor o `target.id` (PK interna) no perfil
+        # público — o frontend usa o `domain`, não o id; expor ajudava enumeração.
         "target": {
-            "id": tid, "url": target.get("url"), "domain": domain,
+            "url": target.get("url"), "domain": domain,
             "sector": sector, "platform": target.get("platform"),
             "score": score, "semaphore": semaphore,
             "last_scan_at": last_at.isoformat() if last_at else None,

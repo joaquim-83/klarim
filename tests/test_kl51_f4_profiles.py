@@ -116,6 +116,7 @@ def test_profile_ok_and_privacy(client, store):
     assert "cnpj" not in body["profile"] and "commercial_email" not in body["profile"]
     assert "whatsapp" not in body["profile"]
     assert "contact_email" not in body["target"]
+    assert "id" not in body["target"]  # KL-44 fix (auditoria F-03): PK interna não exposta
     assert "11.222.333" not in blob and "5548999999999" not in blob
 
 

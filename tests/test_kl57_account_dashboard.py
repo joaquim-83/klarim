@@ -28,6 +28,11 @@ class FakeStore:
         self.unread = 0
 
     # --- users ---
+    async def email_has_verified_scan(self, email):
+        # KL-44 F-03b: neste conjunto o e-mail conta como já verificado no scan (KL-25),
+        # então o signup cria a conta direto (sem exigir código).
+        return True
+
     async def create_user(self, email, password_hash, name=None):
         email = email.lower().strip()
         if email in self.users:

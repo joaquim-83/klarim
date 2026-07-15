@@ -925,6 +925,17 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    async def email_has_verified_scan(self, email: str) -> bool:
+        """True se o e-mail já tem uma verificação de scan CONFIRMADA (KL-25). Usado no
+        signup direcionado (KL-44 F-03b): quem já provou o e-mail no scan não re-verifica."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT 1 FROM scan_verifications WHERE email = %s AND verified = TRUE LIMIT 1",
+                (email.lower().strip(),))
+            return cur.fetchone() is not None
+
+        return await asyncio.to_thread(self._run, _fn)
+
     async def get_scan_credit(self, email: str) -> Optional[Dict[str, Any]]:
         def _fn(cur):
             cur.execute("SELECT * FROM scan_credits WHERE email = %s", (email,))

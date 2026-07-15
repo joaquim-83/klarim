@@ -35,8 +35,8 @@
 
           <tr>
             <td style="padding:12px 28px; color:#E6EDF3; font-size:14px; line-height:1.6;">
-              Este código expira em <strong>10 minutos</strong>.<br>
-              <span style="color:#8B949E;">Use-o para escanear: <strong>{{ domain }}</strong></span>
+              Este código expira em <strong>{{ expires_label|default('10 minutos') }}</strong>.<br>
+              {% if purpose %}<span style="color:#8B949E;">{{ purpose }}</span>{% else %}<span style="color:#8B949E;">Use-o para escanear: <strong>{{ domain }}</strong></span>{% endif %}
             </td>
           </tr>
 
