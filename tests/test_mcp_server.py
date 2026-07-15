@@ -93,7 +93,8 @@ def test_mcp_sse_401_with_www_authenticate(monkeypatch):
     c = TestClient(apimain.app, raise_server_exceptions=False)
     r = c.get("/mcp/sse")
     assert r.status_code == 401
-    assert r.headers.get("www-authenticate") == 'Bearer realm="klarim-mcp"'
+    # KL-63: o WWW-Authenticate agora aponta o Protected Resource Metadata (dispara OAuth).
+    assert "resource_metadata=" in r.headers.get("www-authenticate", "")
     assert c.get("/mcp/sse", headers={"Authorization": "Bearer wrong"}).status_code == 401
     # POST /messages/ sem token também é barrado pela middleware
     assert c.post("/mcp/messages/?session_id=x").status_code == 401

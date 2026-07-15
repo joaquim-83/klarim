@@ -4765,15 +4765,38 @@ async def _safe_pdf(fn, report, url: str) -> bytes:
 
 
 # --------------------------------------------------------------------------- #
-# Servidor MCP (KL-18) — operar o Klarim via Claude. SSE em /mcp/sse, autenticado
-# pela MCPAuthMiddleware (MCP_API_KEY, fail-closed). Modelo Traka: middleware ASGI
-# envolvendo o mcp_app. Opcional: se o pacote `mcp` faltar, a API sobe sem o MCP.
+# OAuth 2.1 discovery (KL-63) — metadata pública (RFC 9728 / RFC 8414). Servida na
+# raiz (fora do mount /mcp e dos prefixos protegidos). CORS `*` (dado público, sem
+# segredo) para o cliente MCP descobrir o authorization server.
+# --------------------------------------------------------------------------- #
+_OAUTH_META_HEADERS = {"Access-Control-Allow-Origin": "*",
+                       "Cache-Control": "public, max-age=3600"}
+
+
+@app.get("/.well-known/oauth-protected-resource")
+async def oauth_protected_resource() -> JSONResponse:
+    from mcp_server import oauth
+    return JSONResponse(oauth.protected_resource_metadata(), headers=_OAUTH_META_HEADERS)
+
+
+@app.get("/.well-known/oauth-authorization-server")
+async def oauth_authorization_server() -> JSONResponse:
+    from mcp_server import oauth
+    return JSONResponse(oauth.authorization_server_metadata(), headers=_OAUTH_META_HEADERS)
+
+
+# --------------------------------------------------------------------------- #
+# Servidor MCP (KL-18 + OAuth KL-63) — operar o Klarim via Claude. SSE em /mcp/sse,
+# autenticado pela MCPAuthMiddleware (Bearer JWT OAuth OU MCP_API_KEY estático,
+# fail-closed). O fluxo OAuth (/mcp/authorize|token|register) é isento de auth.
+# Opcional: se o pacote `mcp` faltar, a API sobe sem o MCP.
 # --------------------------------------------------------------------------- #
 try:
     from mcp_server.server import mcp_app
     from mcp_server.auth import MCPAuthMiddleware
 
     app.mount("/mcp", MCPAuthMiddleware(mcp_app))
-    print("[mcp] servidor MCP montado em /mcp/sse (SSE, auth por MCP_API_KEY)", flush=True)
+    print("[mcp] servidor MCP montado em /mcp/sse (SSE; auth OAuth 2.1 JWT + MCP_API_KEY)",
+          flush=True)
 except Exception as exc:  # noqa: BLE001 - MCP é opcional; a API sobe mesmo assim
     print(f"[mcp] não montado ({exc!r})", flush=True)

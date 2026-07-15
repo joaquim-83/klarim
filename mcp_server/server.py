@@ -24,7 +24,8 @@ from starlette.responses import Response
 from starlette.routing import Mount, Route
 
 from mcp_server._base import mcp
-from mcp_server import tools  # noqa: F401 - importa e registra as 25 tools no `mcp`
+from mcp_server import tools  # noqa: F401 - importa e registra as tools no `mcp`
+from mcp_server import oauth  # KL-63: OAuth 2.1 + PKCE (authorize/token/register)
 
 # Caminho RELATIVO ao mount em /mcp — o transporte prefixa o root_path (/mcp),
 # resultando em /mcp/messages/ anunciado ao cliente.
@@ -75,8 +76,14 @@ async def _messages_asgi(scope, receive, send) -> None:
     await _transport.handle_post_message(scope, receive, send)
 
 
-# App SSE para montar em /mcp (envolvido pela MCPAuthMiddleware no api.main).
+# App SSE para montar em /mcp (envolvido pela MCPAuthMiddleware no api.main). As rotas
+# OAuth (KL-63) são ISENTAS de auth na MCPAuthMiddleware (são o próprio fluxo de login).
 mcp_app = Starlette(routes=[
+    # OAuth 2.1 + PKCE (KL-63) — /mcp/authorize, /mcp/token, /mcp/register.
+    Route("/authorize", endpoint=oauth.authorize, methods=["GET", "POST"]),
+    Route("/token", endpoint=oauth.token, methods=["POST"]),
+    Route("/register", endpoint=oauth.register, methods=["POST"]),
+    # Transporte SSE do MCP (autenticado).
     Route("/sse", endpoint=_sse_endpoint, methods=["GET"]),
     Route("/sse/", endpoint=_sse_endpoint, methods=["GET"]),
     Mount("/messages/", app=_messages_asgi),
