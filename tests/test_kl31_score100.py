@@ -14,27 +14,27 @@ from discovery.alert_worker import bonus_scan_token, _is_score100
 # --- e-mail condicional ---------------------------------------------------- #
 
 def test_alert_score100_template(monkeypatch):
-    # Freemium (fix): score 100 → assunto de parabéns (inalterado) + CTA p/ perfil (KL-44).
+    # KL-44: score 100 → plain text (sem html), assunto de parabéns + CTA p/ perfil.
     monkeypatch.setenv("JWT_SECRET", "x" * 40)
     mailer = KlarimMailer("re_fake")
     p = mailer._alert_params("d@e.com", "https://empresa.com.br", 100, "verde", 0, {},
                              bonus_token="tok.sig")
-    assert "parabéns" in p["subject"] and "nota máxima" in p["subject"]
-    assert "Ver score do site" in p["html"] and "/site/empresa.com.br" in p["html"]
-    assert "/cadastrar" not in p["html"]
-    assert "nota máxima" in p["html"].lower()
-    assert "R$" not in p["html"]  # nunca menciona preço no fluxo de score 100
+    assert "html" not in p and "text" in p                        # plain text agora
+    assert "Parabéns" in p["subject"] and "nota máxima" in p["subject"]
+    assert "/site/empresa.com.br" in p["text"] and "alerta_score100" in p["text"]
+    assert "100/100" in p["text"] and "klarimscan.com" in p["text"]
+    assert "R$" not in p["text"]  # nunca menciona preço no fluxo de score 100
 
 
 def test_alert_normal_template_cta_freemium():
-    # Freemium (fix): alerta normal → CTA "Ver score do site" → perfil público (KL-44).
+    # KL-44: alerta normal → plain text, CTA para o perfil público /site/{domain}.
     mailer = KlarimMailer("re_fake")
     p = mailer._alert_params("d@e.com", "https://x.com.br", 72, "amarelo", 3, {})
-    # Subject idêntico ao do profile_view (indistinguível), com o domínio (site_name).
+    assert "html" not in p and "text" in p
     assert p["subject"] == "Alguém verificou a segurança do site x.com.br"
-    assert "Ver score do site" in p["html"] and "/site/x.com.br" in p["html"]
-    assert "/cadastrar" not in p["html"]
-    assert "R$" not in p["html"]
+    assert "/site/x.com.br" in p["text"] and "72/100" in p["text"]
+    assert "utm_campaign=alerta" in p["text"]
+    assert "R$" not in p["text"]
 
 
 def test_is_score100():

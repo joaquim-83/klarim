@@ -134,10 +134,11 @@ def test_send_alert_batch_counts_and_ids(monkeypatch):
     res = asyncio.run(m.send_alert_batch([_alert(1), _alert(2), _alert(3)]))
     assert res["sent"] == 3 and res["failed"] == 0
     assert res["ids"] == ["em_0", "em_1", "em_2"]
-    # renderizou 1 payload por alerta, com subject e html
+    # renderizou 1 payload por alerta, com subject e text (plain text, KL-44)
     assert len(captured["payloads"]) == 3
     assert "site1.com.br" in captured["payloads"][0]["subject"]
-    assert "Ver score do site" in captured["payloads"][0]["html"]  # CTA p/ perfil (KL-44)
+    p0 = captured["payloads"][0]
+    assert "html" not in p0 and "/site/site1.com.br" in p0["text"]  # CTA p/ perfil (KL-44)
     assert captured["key"].startswith("batch_")
 
 

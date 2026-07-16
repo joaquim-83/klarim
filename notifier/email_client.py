@@ -129,6 +129,82 @@ def build_unsubscribe_link(email: str, secret: str) -> str:
     return f"{SITE_BASE}/api/unsubscribe?email={quote(email)}&token={unsubscribe_token(email, secret)}"
 
 
+# --------------------------------------------------------------------------- #
+# Corpo em TEXTO PURO dos e-mails PROATIVOS (alerta + perfil consultado) — KL-44.
+# O template HTML (alert.html / alert_score100.html / profile_view.html) foi mantido
+# como referência, mas os envios proativos saem em plain text: parecem menos "e-mail
+# marketing" (dark mode, botões, cards) e caem menos no spam. O CTA aponta para o
+# perfil público `/site/{domain}` com UTM (não mais o /result).
+# --------------------------------------------------------------------------- #
+
+def proactive_profile_link(domain: str, campaign: str) -> str:
+    """Link para o perfil público `/site/{domain}` com UTM (e-mail proativo)."""
+    return (f"{SITE_BASE}/site/{domain}"
+            f"?utm_source=klarim&utm_medium=email&utm_campaign={campaign}")
+
+
+def _unsub_line(unsubscribe_url: Optional[str], label: str) -> str:
+    """Linha de descadastro no rodapé — omitida se não houver link (evita 'None')."""
+    return f"\n\n{label} {unsubscribe_url}" if unsubscribe_url else ""
+
+
+def alert_subject(domain: str, is_score100: bool = False) -> str:
+    """Assunto do alerta proativo (KL-44). Score 100 verde → parabéns."""
+    if is_score100:
+        return f"Parabéns! O site {domain} alcançou nota máxima em segurança"
+    return f"Alguém verificou a segurança do site {domain}"
+
+
+def build_alert_text(domain: str, score: int, unsubscribe_url: Optional[str],
+                     is_score100: bool = False) -> str:
+    """Corpo em texto puro do alerta proativo (KL-44)."""
+    if is_score100:
+        body = (
+            "Olá,\n\n"
+            f"Parabéns! O site {domain} alcançou nota 100/100 em segurança\n"
+            "digital na plataforma Klarim.\n\n"
+            "Veja o resultado completo em:\n"
+            f"{proactive_profile_link(domain, 'alerta_score100')}\n\n"
+            "Seu site passou em todas as 48 verificações de segurança.\n"
+            "Isso é raro — menos de 2% dos sites analisados atingem essa nota.\n\n"
+            "Se este é o seu site, crie uma conta gratuita para monitorar\n"
+            "e manter a nota máxima.\n\n"
+            "--\nKlarim Scanner\nklarimscan.com"
+        )
+    else:
+        body = (
+            "Olá,\n\n"
+            f"O site {domain} foi verificado na plataforma Klarim e recebeu\n"
+            f"nota {score}/100 em segurança digital.\n\n"
+            "Veja o resultado completo em:\n"
+            f"{proactive_profile_link(domain, 'alerta')}\n\n"
+            "O Klarim é uma ferramenta gratuita que analisa a segurança de\n"
+            "sites brasileiros de forma passiva — sem acessar dados nem\n"
+            "instalar nada. A verificação avalia certificado SSL, headers\n"
+            "de proteção, configuração de email e mais 48 pontos.\n\n"
+            "Se este é o seu site, você pode criar uma conta gratuita para\n"
+            "monitorar o score e receber alertas quando algo mudar.\n\n"
+            "--\nKlarim Scanner\nklarimscan.com"
+        )
+    return body + _unsub_line(unsubscribe_url, "Não quer receber mais avisos?")
+
+
+def build_profile_view_text(domain: str, score: int,
+                            unsubscribe_url: Optional[str]) -> str:
+    """Corpo em texto puro da notificação 'alguém consultou seu perfil' (KL-44)."""
+    body = (
+        "Olá,\n\n"
+        f"Alguém consultou o perfil de segurança do site {domain}\n"
+        f"no Klarim. A nota atual é {score}/100.\n\n"
+        "Veja o que foi encontrado:\n"
+        f"{proactive_profile_link(domain, 'profile_view')}\n\n"
+        "O Klarim é uma plataforma gratuita de segurança web.\n"
+        "A análise é 100% passiva — nenhum dado do site foi acessado.\n\n"
+        "--\nKlarim Scanner\nklarimscan.com"
+    )
+    return body + _unsub_line(unsubscribe_url, "Não deseja receber avisos?")
+
+
 # Endpoint da Batch API do Resend (envia até 100 e-mails em 1 request — KL-23).
 RESEND_BATCH_URL = "https://api.resend.com/emails/batch"
 RESEND_EMAILS_URL = "https://api.resend.com/emails"  # GET /emails/{id} — status (KL-24)
@@ -420,11 +496,16 @@ class KlarimMailer:
         target_id=None,
         bonus_token: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Monta o payload Resend de um alerta (from/to/subject/html).
+        """Monta o payload Resend de um alerta em **texto puro** (from/to/subject/text).
 
         Compartilhado pelo envio único (`send_alert`) e pelo batch (`send_alert_batch`).
-        Score 100 verde (KL-31) → template/assunto de **parabéns** + CTA de análise
-        completa gratuita (com o ``bonus_token`` no link); senão o alerta normal (KL-27).
+        KL-44: alerta em plain text (não HTML) → menos cara de "e-mail marketing", cai
+        menos no spam; o CTA aponta para o perfil público `/site/{domain}`. Score 100
+        verde (KL-31) → assunto/corpo de **parabéns**; senão o alerta normal (KL-27).
+        Os templates HTML (`alert.html`/`alert_score100.html`) foram mantidos como
+        referência, mas não são mais usados no envio. `fail_count`, `severity_counts`,
+        `risk_messages`, `target_id` e `bonus_token` seguem na assinatura (chamadores
+        inalterados), mas o corpo em texto não os utiliza.
         """
         site = site_name(target_url)
         if unsubscribe_link is None:
@@ -433,26 +514,13 @@ class KlarimMailer:
                 unsubscribe_link = build_unsubscribe_link(to_email, secret)
 
         is_100 = score == 100 and (semaphore or "").lower() == "verde"
-        if is_100:
-            template, subject = "alert_score100.html", f"{site} — parabéns, nota máxima em segurança"
-            result_link = utm_result_link(target_url, "score100", target_id, bonus_token=bonus_token)
-        else:
-            # Subject IDÊNTICO ao do profile_view (send_profile_view) para o alerta ser
-            # indistinguível do aviso de "perfil consultado" — `site` == domínio.
-            template, subject = "alert.html", f"Alguém verificou a segurança do site {site}"
-            result_link = utm_result_link(target_url, "alerta", target_id)
-
-        # KL-27: e-mail sem preço, sem cards de risco e sem contagem por severidade.
-        html = _env.get_template(template).render(
-            **self._score_ctx(score, semaphore),
-            site_name=site,
-            target_url=target_url,
-            fail_count=fail_count,
-            result_link=result_link,
-            unsubscribe_link=unsubscribe_link,
-        )
-        # PROATIVO (cold) → remetente do domínio de warmup (klarimscan.com).
-        return {"from": self._proactive_from(), "to": [to_email], "subject": subject, "html": html}
+        # PROATIVO (cold) → remetente do domínio de warmup (klarimscan.com), plain text.
+        return {
+            "from": self._proactive_from(),
+            "to": [to_email],
+            "subject": alert_subject(site, is_100),
+            "text": build_alert_text(site, score, unsubscribe_link, is_score100=is_100),
+        }
 
     async def send_alert(
         self,
@@ -682,20 +750,19 @@ class KlarimMailer:
                                 unsubscribe_link: Optional[str] = None,
                                 target_id: Optional[int] = None) -> Dict[str, Any]:
         """Avisa o dono que alguém consultou o perfil público do site (KL-51 f4).
-        Proativo → **respeita a blocklist** + registra (KL-62; era o vazamento nº 1)."""
+        Proativo → **respeita a blocklist** + registra (KL-62; era o vazamento nº 1).
+        KL-44: enviado em **texto puro** (não HTML), como o alerta. `semaphore`/`cta_url`
+        seguem na assinatura (chamadores inalterados) mas o corpo em texto não os usa —
+        o link é montado do domínio (`/site/{domain}`)."""
         if unsubscribe_link is None:
             secret = os.environ.get("UNSUBSCRIBE_SECRET") or os.environ.get("JWT_SECRET") or ""
             if secret:
                 unsubscribe_link = build_unsubscribe_link(to_email, secret)
-        emoji = {"verde": "🟢", "amarelo": "🟡", "vermelho": "🔴"}.get(semaphore, "🟡")
-        html = _env.get_template("profile_view.html").render(
-            domain=domain, score=score, semaphore_emoji=emoji, cta_url=cta_url,
-            unsubscribe_link=unsubscribe_link)
         return await self._send({
             "from": self._proactive_from(),  # PROATIVO → domínio de warmup (klarimscan.com)
             "to": [to_email],
-            "subject": f"Alguém verificou a segurança do site {domain}",
-            "html": html,
+            "subject": f"Alguém consultou a segurança do site {domain}",
+            "text": build_profile_view_text(domain, score, unsubscribe_link),
         }, email_type="profile_view", target_id=target_id, domain=domain,
             source="profile_view")
 

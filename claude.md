@@ -103,7 +103,11 @@ standalone) + **React** (islands) + **Tailwind v4** (CSS-first, sem config) +
 - **Transacionais:** `seguranca@klarim.net`.
 - **Proativo respeita a blocklist; transacional pode ignorá-la mas SEMPRE registra**
   (todo e-mail passa por `KlarimMailer._send` → `email_log`).
-- Template de **alerta = linguagem freemium**, sem menção a preço/pagamento/relatório.
+- **E-mails proativos (alerta + "perfil consultado") = TEXTO PURO** (`text`, sem
+  `html`) — menos cara de marketing, cai menos no spam; CTA → perfil público
+  `/site/{domain}` com UTM. Builders em `notifier/email_client.py`
+  (`build_alert_text`/`build_profile_view_text`); os templates HTML ficam só como
+  referência. Linguagem freemium, sem menção a preço/pagamento/relatório.
 
 ---
 
