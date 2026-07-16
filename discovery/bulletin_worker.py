@@ -109,6 +109,11 @@ class BulletinWorker:
         if not await self._enabled():
             stats["disabled"] = True
             return stats
+        # KL-44 P4: config ao vivo (admin_settings > .env) — relê a hora por ciclo.
+        try:
+            self.hour_utc = int(await self.store.get_setting("BULLETIN_HOUR_UTC", self.hour_utc))
+        except Exception:  # noqa: BLE001 - mantém a atual
+            pass
         now = _utcnow()
         freqs = self._frequencies_due(now)
         stats["due_freqs"] = freqs

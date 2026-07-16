@@ -4113,6 +4113,11 @@ _CONFIG_PARAMS: Dict[str, Dict[str, Any]] = {
     "RESCAN_INTERVAL_HOURS": {"label": "Intervalo de re-scan", "default": "24", "min": 1, "max": 720, "unit": "h"},
     "RESCAN_AGE_DAYS": {"label": "Idade para re-scan", "default": "30", "min": 1, "max": 365, "unit": "dias"},
     "WORKER_MAX_SCANS_PER_HOUR": {"label": "Máx. scans/hora", "default": "50", "min": 10, "max": 1000, "unit": "scans"},
+    # KL-44 P3/P4 — boletim de segurança
+    "BULLETIN_ENABLED": {"label": "Boletim habilitado", "default": "true", "type": "bool",
+                         "unit": "", "description": "Liga/desliga o envio de boletins de segurança"},
+    "BULLETIN_HOUR_UTC": {"label": "Hora do boletim (UTC)", "default": "13", "min": 0, "max": 23, "unit": "h",
+                          "description": "Hora do dia (UTC) em que os boletins são enviados"},
 }
 
 
@@ -4152,7 +4157,9 @@ async def api_admin_config() -> dict:
             value, source = meta["default"], "default"
         params.append({
             "key": key, "label": meta["label"], "value": value, "source": source,
-            "type": "int", "min": meta["min"], "max": meta["max"], "unit": meta["unit"],
+            "type": meta.get("type", "int"),   # KL-44 P4: bool p/ BULLETIN_ENABLED
+            "min": meta.get("min"), "max": meta.get("max"), "unit": meta.get("unit", ""),
+            "description": meta.get("description"),
             "env_value": env_val if env_val is not None else meta["default"],
             "updated_at": ov.get("updated_at") if ov else None,
         })
@@ -4170,6 +4177,13 @@ async def api_admin_config_put(key: str, body: ConfigValueBody, request: Request
     meta = _CONFIG_PARAMS.get(key)
     if not meta:
         raise HTTPException(status_code=400, detail="Parâmetro não editável.")
+    if meta.get("type") == "bool":   # KL-44 P4: BULLETIN_ENABLED (toggle)
+        raw = str(body.value).strip().lower()
+        if raw not in ("true", "false", "1", "0", "yes", "no"):
+            raise HTTPException(status_code=400, detail="Valor inválido — use true/false.")
+        val = "true" if raw in ("true", "1", "yes") else "false"
+        await get_target_store().upsert_admin_setting(key, val, updated_by="admin")
+        return {"ok": True, "key": key, "value": val, "source": "db"}
     try:
         v = int(str(body.value).strip())
     except (ValueError, TypeError):
@@ -5171,6 +5185,15 @@ async def api_admin_vigilia_alerts(tipo: Optional[str] = None, severity: Optiona
     rows = await get_target_store().list_vigilia_alerts(
         tipo=tipo, severity=severity, user_id=user_id, limit=limit, offset=offset)
     return {"alerts": rows}
+
+
+@app.get("/admin/typosquat-alerts")
+async def api_admin_typosquat_alerts(limit: int = 100) -> dict:
+    """Domínios suspeitos (typosquat/phishing) detectados pelo discovery (KL-44 P4)."""
+    limit = max(1, min(int(limit), 500))
+    store = get_target_store()
+    return {"alerts": await store.list_typosquat_alerts(limit=limit),
+            "stats": await store.typosquat_stats()}
 
 
 @app.get("/account/vigilias")

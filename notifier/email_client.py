@@ -82,6 +82,9 @@ EMAIL_TYPES = {
     "vigilia_score": "Vigília — score de segurança",
     "vigilia_email": "Vigília — proteção de e-mail",
     "vigilia_reputation": "Vigília — reputação",
+    "vigilia_uptime": "Vigília — disponibilidade (KL-44 P4)",
+    "vigilia_changes": "Vigília — integridade do site (KL-44 P4)",
+    "vigilia_phishing": "Vigília — domínios suspeitos (KL-44 P4)",
 }
 
 
@@ -894,9 +897,12 @@ class KlarimMailer:
 
     _VIGILIA_TAG = {"ssl": "Certificado SSL", "domain": "Registro do domínio",
                     "score": "Score de segurança", "email": "Proteção de e-mail",
-                    "reputation": "Reputação"}
+                    "reputation": "Reputação", "uptime": "Disponibilidade",
+                    "changes": "Integridade do site", "phishing": "Domínios suspeitos"}
     _SEV_STYLE = {"critical": ("#F85149", "🔴"), "warning": ("#F0C000", "⚠️"),
                   "info": ("#58A6FF", "ℹ️")}
+    # KL-44 P4: uptime/changes/phishing usam um template genérico (data-driven).
+    _VIGILIA_GENERIC = {"uptime", "changes", "phishing"}
 
     async def send_vigilia_alert(self, *, to_email: str, tipo: str, domain: str,
                                  subject: str, title: str, message: str,
@@ -907,8 +913,14 @@ class KlarimMailer:
         (`vigilia_<tipo>.html`). **Proativo** → respeita a blocklist (KL-24/62).
         Registrado no `email_log` com `email_type=vigilia_<tipo>`."""
         sev_color, sev_icon = self._SEV_STYLE.get(severity, self._SEV_STYLE["warning"])
-        # `email` usa o template `vigilia_email_security.html` (o resto casa `vigilia_<tipo>`).
-        template = "vigilia_email_security.html" if tipo == "email" else f"vigilia_{tipo}.html"
+        # `email` usa o template dedicado; uptime/changes/phishing (P4) usam o genérico;
+        # o resto casa `vigilia_<tipo>.html`.
+        if tipo == "email":
+            template = "vigilia_email_security.html"
+        elif tipo in self._VIGILIA_GENERIC:
+            template = "vigilia_generic.html"
+        else:
+            template = f"vigilia_{tipo}.html"
         html = _env.get_template(template).render(
             domain=domain, title=title, message=message, action_text=action_text,
             severity=severity, sev_color=sev_color, sev_icon=sev_icon,

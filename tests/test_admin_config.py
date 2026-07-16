@@ -103,6 +103,22 @@ def test_config_reset_removes_override(client, store):
     assert "RESCAN_AGE_DAYS" not in store.settings
 
 
+def test_config_put_bool_toggle(client, store):
+    # KL-44 P4: BULLETIN_ENABLED é bool — aceita true/false, rejeita número/lixo
+    r = client.put("/admin/config/BULLETIN_ENABLED", json={"value": "false"}, headers=_auth(client))
+    assert r.status_code == 200 and r.json()["value"] == "false" and r.json()["source"] == "db"
+    assert store.settings["BULLETIN_ENABLED"]["value"] == "false"
+    r2 = client.put("/admin/config/BULLETIN_ENABLED", json={"value": "true"}, headers=_auth(client))
+    assert r2.status_code == 200 and r2.json()["value"] == "true"
+    # valor inválido → 400
+    assert client.put("/admin/config/BULLETIN_ENABLED", json={"value": "talvez"},
+                      headers=_auth(client)).status_code == 400
+    # a listagem marca o tipo bool
+    row = next(p for p in client.get("/admin/config", headers=_auth(client)).json()["params"]
+               if p["key"] == "BULLETIN_ENABLED")
+    assert row["type"] == "bool"
+
+
 def test_config_put_out_of_range(client):
     assert client.put("/admin/config/ALERT_BATCH_SIZE", json={"value": "999"},
                       headers=_auth(client)).status_code == 400

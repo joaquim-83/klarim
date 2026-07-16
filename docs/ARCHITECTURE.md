@@ -99,7 +99,7 @@ RescanWorker, VigiliaWorker)`. Cada um relê config por ciclo (`get_setting`) e 
 | Discovery | `ct_poller.py` + `worker.py` | 30 min | CT log poller → filtra `.com.br` → fingerprint + e-mail + setor → registra + enfileira **todo site acessível** (KL-60) |
 | Alert | `alert_worker.py` | 30 min | alerta proativo em batch (50, Resend Batch API), teto `ALERT_DAILY_LIMIT`/cota mensal, anti-bounce, kill-switch `STOP_ALERTS` |
 | Rescan | `rescan_worker.py` | 24 h | reescaneia alvos ≥30 dias + e-mail de evolução; monitora sites 100 |
-| Vigília | `vigilia_worker.py` | 6 h | 5 vigílias (SSL, domínio, score, e-mail, reputação) p/ contas Pro/Agency; enforcement de plano; **começa pausada** |
+| Vigília | `vigilia_worker.py` | 6 h + loop uptime 5 min | 8 vigílias: core (SSL, domínio, score, e-mail, reputação) + P4 (`changes`, `phishing`) no ciclo 6 h; **`uptime`** num loop próprio de 5 min (reagenda pelo intervalo do plano: Pro 30 / Agency 5 min). Enforcement de plano; **começa pausada** |
 | Bulletin | `bulletin_worker.py` | 1 h | KL-44 P3: boletim de segurança por frequência do plano (free=mensal/pro=semanal/agency=diário), às `BULLETIN_HOUR_UTC`; laudo técnico ao técnico vinculado |
 | Scan | `scanner/main.py --worker` | contínuo | `blpop` da fila → escaneia → cacheia → salva + enriquece inline |
 
@@ -118,7 +118,7 @@ Schema criado idempotente no `ensure_schema` (sem Alembic). Principais tabelas:
   unificada, KL-62), `email_blocklist`, `recovery_tokens`, `scan_verifications`,
   `scan_credits`, `site_events` (tracking), `scan_leads` (PQL).
 - **Contas:** `users`, `user_sites`, `password_resets`, `vigilias`, `vigilia_alerts`,
-  planos/assinaturas (KL-44).
+  `typosquat_alerts` (KL-44 P4: domínios suspeitos dos CT logs), planos/assinaturas (KL-44).
 - **Operação:** `monitored_sites`, `inbox_messages`, `admin_settings` (config ao vivo).
 
 ## 8. Integrações externas

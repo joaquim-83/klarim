@@ -177,7 +177,8 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 | GET | `/admin/system-info` · `/admin/dashboard-stats` · `/admin/clients` | dashboards |
 | GET/PUT | `/admin/plans` · `/{id}` | planos (KL-44) |
 | GET/PATCH/POST | `/admin/subscriptions*` | assinaturas (plan/status/trial/bulk/history/stats) |
-| GET | `/admin/vigilias` · `/{id}` · `/stats` · `/admin/vigilia-alerts` | vigílias (KL-44 P2) |
+| GET | `/admin/vigilias` · `/{id}` · `/stats` · `/admin/vigilia-alerts` | vigílias (KL-44 P2/P4: 8 tipos) |
+| GET | `/admin/typosquat-alerts` | KL-44 P4: domínios suspeitos (typosquat/phishing) + stats |
 | GET/POST | `/admin/workers/control` · `/pause` · `/resume` | controle de workers |
 | GET | `/monitoring/admin/list` · `/stats` · POST `/{id}/status` | sites monitorados |
 | GET | `/system/status` · `/system/activity` · `/system/email-health` | operação em tempo real |
@@ -230,4 +231,4 @@ passam por `_guard` (nunca derrubam a sessão).
 - **leads.py** — `list_leads`, `get_lead_stats`, `get_lead_funnel`
 - **inbox.py** — `search_inbox`
 - **subscriptions.py** — `list_subscribers`, `get_subscription_stats`
-- **vigilia.py** — `get_vigilia_stats`, `list_vigilia_alerts`
+- **vigilia.py** — `get_vigilia_stats`, `list_vigilia_alerts`, `get_typosquat_alerts` (KL-44 P4)

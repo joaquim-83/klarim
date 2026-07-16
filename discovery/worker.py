@@ -182,6 +182,40 @@ class DiscoveryWorker:
         await self._enqueue(tid, url)
         stats["enqueued"] += 1
 
+    async def _scan_typosquats(self, domains: list, stats: dict) -> None:
+        """KL-44 P4: compara os domínios novos dos CT logs com os domínios monitorados por
+        contas com vigília de phishing ativa (Agency). Registra os suspeitos — a vigília
+        phishing os notifica no próximo ciclo (event-driven). 100% passivo (leitura de CT
+        log público). Poucos domínios monitorados (dezenas), então o custo é baixo."""
+        try:
+            monitored = await self.store.get_typosquat_monitored_domains()
+        except Exception as exc:  # noqa: BLE001 - nunca derruba o ciclo de descoberta
+            print(f"[discovery] typosquat: lookup falhou: {exc!r}", flush=True)
+            return
+        if not monitored:
+            return
+        from .typosquat import is_typosquat
+        found = 0
+        for cand in domains:
+            for m in monitored:
+                hit = is_typosquat(m["domain"], cand)
+                if not hit:
+                    continue
+                sim_type, dist = hit
+                try:
+                    if await self.store.record_typosquat_alert(
+                            m["target_id"], m["user_id"], cand, sim_type, dist):
+                        found += 1
+                        print(f"[discovery] typosquat: {cand} ~ {m['domain']} ({sim_type})",
+                              flush=True)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[discovery] typosquat: registro falhou {cand}: {exc!r}", flush=True)
+                break  # um match por candidato basta
+        if found:
+            stats["typosquats"] = found
+            print(f"[discovery] typosquat: {found} domínio(s) suspeito(s) registrado(s)",
+                  flush=True)
+
     async def run_cycle(self) -> dict:
         stats = {
             "source": None, "buffer": 0, "processed": 0, "skipped_existing": 0,
@@ -213,6 +247,10 @@ class DiscoveryWorker:
 
         print(f"[discovery] buffer: {len(domains)} domínios .com.br → processando "
               f"até {batch} (fonte={stats['source']})", flush=True)
+
+        # KL-44 P4: detecção de typosquat sobre TODO o buffer (mesmo domínios já
+        # registrados) — o dedup abaixo só vale para o pipeline de scan.
+        await self._scan_typosquats(domains, stats)
 
         for domain in domains:
             if stats["processed"] >= batch:

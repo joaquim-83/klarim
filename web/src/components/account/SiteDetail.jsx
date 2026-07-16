@@ -77,6 +77,51 @@ function OwnershipSection({ targetId }) {
   );
 }
 
+// KL-44 P4 — status do monitoramento contínuo (vigílias) do site, com destaque para o
+// uptime (disponibilidade). Só aparece se a conta tiver vigílias ativas neste domínio.
+const VIG_LABEL = {
+  ssl: 'Certificado SSL', domain: 'Registro do domínio', score: 'Score de segurança',
+  email: 'Proteção de e-mail', reputation: 'Reputação', uptime: 'Disponibilidade',
+  changes: 'Integridade do site', phishing: 'Domínios suspeitos',
+};
+
+function MonitoringSection({ domain }) {
+  const [vigs, setVigs] = useState(null);
+  useEffect(() => {
+    if (!domain) return;
+    apiGet('/account/vigilias').then(({ ok, data }) => {
+      if (ok) setVigs((data.vigilias || []).filter((v) => v.site_domain === domain));
+    });
+  }, [domain]);
+  if (!vigs || vigs.length === 0) return null;
+  const uptime = vigs.find((v) => v.tipo === 'uptime');
+  const ud = (uptime && uptime.last_data) || null;
+  const isDown = ud && ud.down_since;
+  return (
+    <div className={card}>
+      <h2 className="text-lg font-bold text-white">Monitoramento contínuo</h2>
+      {uptime && (
+        <div className={`mt-3 rounded-lg border px-4 py-3 ${isDown ? 'border-red-500/40 bg-red-500/5' : 'border-green-500/30 bg-green-500/5'}`}>
+          <p className="text-sm font-semibold">
+            {isDown ? '🔴 Site fora do ar' : '🟢 Site no ar'}
+            {!isDown && ud && ud.last_response_time_ms != null && (
+              <span className="ml-2 font-normal text-slate-400">tempo de resposta {ud.last_response_time_ms}ms</span>
+            )}
+          </p>
+          {isDown && <p className="mt-1 text-xs text-red-300">Fora do ar desde {fmtDate(ud.down_since)}. Continuaremos monitorando.</p>}
+        </div>
+      )}
+      <ul className="mt-3 flex flex-wrap gap-2">
+        {vigs.map((v) => (
+          <li key={v.tipo} className="rounded-full border border-slate-700 bg-slate-800/60 px-3 py-1 text-xs text-slate-300">
+            {v.last_status === 'critical' ? '🔴' : v.last_status === 'warning' ? '🟡' : '🟢'} {VIG_LABEL[v.tipo] || v.tipo}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 export default function SiteDetail({ targetId }) {
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
@@ -108,6 +153,9 @@ export default function SiteDetail({ targetId }) {
 
       {/* KL-44 P3 — técnico responsável + compartilhar laudo */}
       <TechnicianSection targetId={targetId} />
+
+      {/* KL-44 P4 — monitoramento contínuo (vigílias + uptime) */}
+      <MonitoringSection domain={t.domain} />
 
       {/* Score */}
       <div className={`${card} text-center`}>

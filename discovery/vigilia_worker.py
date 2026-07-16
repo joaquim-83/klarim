@@ -37,6 +37,7 @@ class VigiliaWorker:
     def __init__(self) -> None:
         self.cycle_hours = int(os.environ.get("VIGILIA_CYCLE_HOURS", "6"))
         self.max_per_cycle = int(os.environ.get("VIGILIA_MAX_PER_CYCLE", "100"))
+        self.uptime_max_per_cycle = int(os.environ.get("VIGILIA_UPTIME_MAX_PER_CYCLE", "200"))
         self.check_timeout = int(os.environ.get("VIGILIA_CHECK_TIMEOUT", "30"))
         self.rdap_pause = float(os.environ.get("VIGILIA_RDAP_PAUSE", "1.0"))
         self.store = get_target_store()
@@ -192,6 +193,70 @@ class VigiliaWorker:
         except Exception as exc:  # noqa: BLE001 - e-mail é best-effort
             print(f"[vigilia] e-mail falhou alert={alert_id}: {exc!r}", flush=True)
 
+    # ----- ciclo de uptime (cadência própria, 5min) ------------------------ #
+
+    async def run_uptime_cycle(self) -> Dict[str, Any]:
+        """Uptime não segue o ciclo de 6h: cada vigília reagenda pelo intervalo do plano
+        (Pro 30min, Agency 5min). Este loop roda a cada `uptime_tick` (5min) e processa as
+        que venceram. Anti-spam (3 falhas p/ 1 alerta, recovery) vive no `check_uptime_vigilia`."""
+        stats = {"due": 0, "checked": 0, "alerts": 0, "emailed": 0,
+                 "skipped_plan": 0, "errors": 0}
+        if not worker_control.is_enabled("vigilia"):
+            stats["disabled"] = True
+            return stats
+        try:
+            due = await self.store.get_due_uptime_vigilias(limit=self.uptime_max_per_cycle)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[vigilia] get_due_uptime_vigilias falhou: {exc!r}", flush=True)
+            return stats
+        stats["due"] = len(due)
+        mailer = self._mailer()
+        plan_cache: Dict[int, Any] = {}
+        for vig in due:
+            interval = int(vig.get("interval_minutes") or 30)
+            next_at = _utcnow() + timedelta(minutes=interval)
+            try:
+                allowed = await self._plan_allows(vig["user_id"], "uptime", plan_cache)
+                if allowed is None:
+                    continue
+                if not allowed:
+                    await self.store.disable_user_vigilias_except(
+                        vig["user_id"], await self._allowed_types(vig["user_id"], plan_cache))
+                    stats["skipped_plan"] += 1
+                    continue
+                result = await asyncio.wait_for(
+                    _vig.check_uptime_vigilia(self.store, vig["site_domain"],
+                                              vig.get("last_data") or {}),
+                    timeout=self.check_timeout)
+                stats["checked"] += 1
+                alerted = False
+                if result.get("should_alert"):
+                    await self._emit_alert(vig, result, mailer, stats)
+                    alerted = True
+                await self.store.update_vigilia_after_check(
+                    vig["id"], result.get("status", "ok"), result.get("data") or {},
+                    next_at, alerted=alerted)
+            except asyncio.TimeoutError:
+                stats["errors"] += 1
+                await self._safe_reschedule(vig["id"], next_at)
+            except Exception as exc:  # noqa: BLE001
+                stats["errors"] += 1
+                print(f"[vigilia] erro uptime dom={vig.get('site_domain')}: {exc!r}", flush=True)
+                await self._safe_reschedule(vig["id"], next_at)
+        if stats["due"]:
+            print(f"[vigilia] ciclo uptime: {stats}", flush=True)
+        return stats
+
+    async def _uptime_loop(self) -> None:
+        await asyncio.sleep(int(os.environ.get("VIGILIA_WARMUP_SECONDS", "120")))
+        tick = int(os.environ.get("VIGILIA_UPTIME_TICK_SECONDS", "300"))
+        while True:
+            try:
+                await self.run_uptime_cycle()
+            except Exception as exc:  # noqa: BLE001
+                print(f"[vigilia] uptime loop falhou: {exc!r}", flush=True)
+            await asyncio.sleep(tick)
+
     async def start(self) -> None:
         try:
             await self.store.ensure_schema()
@@ -200,6 +265,7 @@ class VigiliaWorker:
         print(f"[vigilia] iniciado (ciclo {self.cycle_hours}h, teto {self.max_per_cycle}/ciclo). "
               "Controlado por worker_control (começa pausado via seed).", flush=True)
         asyncio.create_task(self._heartbeat_loop())
+        asyncio.create_task(self._uptime_loop())
         # Warmup: dá tempo do seed gravar a pausa antes do 1º ciclo.
         await asyncio.sleep(int(os.environ.get("VIGILIA_WARMUP_SECONDS", "120")))
         while True:

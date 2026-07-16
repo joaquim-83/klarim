@@ -119,6 +119,35 @@ function ParamRow({ p, onChanged, flash }) {
     } catch (e) { flash(errText(e), true) } finally { setBusy(false) }
   }
 
+  const isBool = p.type === 'bool'
+  const boolOn = String(p.value).toLowerCase() === 'true'
+  async function toggle() {
+    setBusy(true)
+    try {
+      await admin.configPut(p.key, boolOn ? 'false' : 'true')
+      flash(`${p.label} ${boolOn ? 'desligado' : 'ligado'}.`); onChanged()
+    } catch (e) { flash(errText(e), true) } finally { setBusy(false) }
+  }
+
+  if (isBool) {
+    return (
+      <tr className="border-t border-klarim-border">
+        <td className="py-2 pr-4">{p.label}</td>
+        <td className="py-2 pr-4"><code className="text-xs text-klarim-muted">{p.key}</code></td>
+        <td className="py-2 pr-4">
+          <button onClick={toggle} disabled={busy}
+            className="rounded-full border border-klarim-border px-3 py-1 text-xs font-semibold"
+            style={{ color: boolOn ? '#00D26A' : '#8B949E' }}>
+            {boolOn ? '● Ligado' : '○ Desligado'}
+          </button>
+          {p.source === 'db' ? <Badge color="#F0C000">db</Badge> : <Badge color="#8B949E">env</Badge>}
+          {p.description && <div className="text-[11px] text-klarim-muted">{p.description}</div>}
+        </td>
+        <td className="py-2">{p.source === 'db' && <Button size="sm" variant="ghost" onClick={reset} disabled={busy}>Resetar</Button>}</td>
+      </tr>
+    )
+  }
+
   return (
     <tr className="border-t border-klarim-border">
       <td className="py-2 pr-4">{p.label}</td>

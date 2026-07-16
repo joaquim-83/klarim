@@ -115,6 +115,23 @@ Na dúvida, trate o alvo como site de terceiro que só autorizou olhar o que é 
   Reply-To `scan@klarim.net` e registrados no `email_log`. Endpoints novos: rate limit
   Redis+fallback (invite 10/h, shared-report 20/h, laudo 30/h).
 
+### Vigílias avançadas (KL-44 P4)
+
+- **100% passivo:** `uptime` é um GET honesto (User-Agent `KlarimScanner/1.0`); `changes`
+  faz 1 GET e compara um snapshot leve (hash de conteúdo/headers, contagem de scripts/forms);
+  `phishing`/typosquat só **lê os CT logs públicos** que o discovery já consome — nunca
+  registra domínio, nunca sonda o suspeito. Nenhum check novo altera o score de segurança.
+- **Anti-spam:** uptime exige **3 falhas consecutivas** antes de alertar (anti-glitch) e
+  **1 alerta de "fora do ar" por hora**; envia 1 alerta de recuperação ao voltar. `changes`
+  só alerta em mudança **significativa** (conteúdo >30%, título, headers, scripts↑, forms↑).
+- **Enforcement de plano** é servidor-autoritativo: `uptime` é Pro+, `changes`/`phishing`
+  são Agency; o worker desativa a vigília se o plano deixa de permitir (nunca por erro
+  transiente de lookup). E-mail de vigília é **proativo** → respeita a blocklist (KL-24/62),
+  Reply-To `scan@klarim.net`, registrado no `email_log`.
+- **Config ao vivo:** `BULLETIN_ENABLED` (bool) e `BULLETIN_HOUR_UTC` no painel
+  (`admin_settings` > `.env`), relidos por ciclo — sem redeploy. `/admin/typosquat-alerts`
+  exige JWT admin.
+
 ### Gestão de usuários (KL-69)
 
 - **Enforcement de `is_active` no login:** `POST /account/login` retorna **403** para conta

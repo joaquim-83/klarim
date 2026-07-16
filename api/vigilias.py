@@ -22,12 +22,19 @@ e-mail e reagenda.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
+import time
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
 
-VIGILIA_TYPES = ["ssl", "domain", "score", "email", "reputation"]
+# KL-44 P4: uptime/changes/phishing são as vigílias avançadas (Pro tem uptime; Agency tem todas).
+VIGILIA_TYPES = ["ssl", "domain", "score", "email", "reputation", "uptime", "changes", "phishing"]
+
+_USER_AGENT = "KlarimScanner/1.0 (+https://klarim.net; security monitoring)"
 
 _SITE_BASE = "https://klarim.net"
 
@@ -370,6 +377,207 @@ async def check_reputation(store: Any, domain: str, last_data: Dict[str, Any],
 
 
 # --------------------------------------------------------------------------- #
+# KL-44 P4 — vigílias avançadas: uptime, mudanças, typosquatting
+# --------------------------------------------------------------------------- #
+
+async def _target_url(store: Any, domain: str) -> Optional[str]:
+    t = await store.get_target_by_domain(domain)
+    if not t:
+        return None
+    url = t.get("url")
+    return url if (url and "://" in url) else f"https://{domain}"
+
+
+async def check_uptime(target_url: str, timeout: float = 10.0) -> Dict[str, Any]:
+    """GET na URL. `ok` = respondeu com status < 500 (a aplicação responde). Não levanta."""
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, max_redirects=3) as client:
+            start = time.monotonic()
+            resp = await client.get(target_url, timeout=timeout,
+                                    headers={"User-Agent": _USER_AGENT})
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            return {"ok": resp.status_code < 500, "status_code": resp.status_code,
+                    "response_time_ms": elapsed_ms, "error": None}
+    except Exception as exc:  # noqa: BLE001 - qualquer falha = fora do ar
+        return {"ok": False, "status_code": 0, "response_time_ms": 0, "error": str(exc)[:200]}
+
+
+def _fmt_duration(seconds: float) -> str:
+    m = int(seconds // 60)
+    if m < 60:
+        return f"{m} minuto(s)"
+    h = m // 60
+    return f"{h}h{m % 60:02d}min"
+
+
+async def check_uptime_vigilia(store: Any, domain: str, last_data: Dict[str, Any],
+                               **_: Any) -> Dict[str, Any]:
+    """Vigília de uptime (KL-44 P4): 3 falhas consecutivas → 'fora do ar' (anti-spam 1/h);
+    volta após queda → 'voltou ao ar' com a duração. Estado no `last_data`."""
+    url = await _target_url(store, domain)
+    if not url:
+        return _error("alvo não encontrado")
+    r = await check_uptime(url)
+    now = datetime.now(timezone.utc)
+    now_iso = now.isoformat()
+    data = dict(last_data or {})
+    fails = int(data.get("consecutive_failures", 0))
+    was_down = bool(data.get("down_since"))
+    data.update(last_response_code=r["status_code"], last_response_time_ms=r["response_time_ms"])
+
+    if r["ok"]:
+        data["consecutive_failures"] = 0
+        if was_down:   # RECUPERAÇÃO
+            down_since = data.get("down_since")
+            try:
+                secs = (now - datetime.fromisoformat(down_since)).total_seconds() if down_since else 0
+            except Exception:  # noqa: BLE001
+                secs = 0
+            data["down_since"] = None
+            data["up_since"] = now_iso
+            return {"status": "ok", "should_alert": True, "severity": "info",
+                    "subject": f"✅ {domain} — site voltou ao ar",
+                    "title": f"{domain} voltou ao ar",
+                    "message": (f"Seu site {domain} está respondendo normalmente. Ficou fora do ar "
+                                f"por {_fmt_duration(secs)}. Código HTTP atual: {r['status_code']}, "
+                                f"tempo de resposta: {r['response_time_ms']}ms."),
+                    "action_text": None, "data": data}
+        return {"status": "ok", "should_alert": False, "severity": "info", "subject": "",
+                "title": "", "message": "", "action_text": None, "data": data}
+
+    # falhou
+    fails += 1
+    data["consecutive_failures"] = fails
+    if fails < 3:   # ainda dentro do threshold anti-glitch
+        return {"status": "warning", "should_alert": False, "severity": "warning", "subject": "",
+                "title": "", "message": "", "action_text": None, "data": data}
+    if not data.get("down_since"):
+        data["down_since"] = now_iso
+    # anti-spam: 1 alerta de down por hora
+    last_alert = data.get("last_down_alert_at")
+    if last_alert:
+        try:
+            if (now - datetime.fromisoformat(last_alert)).total_seconds() < 3600:
+                return {"status": "critical", "should_alert": False, "severity": "critical",
+                        "subject": "", "title": "", "message": "", "action_text": None, "data": data}
+        except Exception:  # noqa: BLE001
+            pass
+    data["last_down_alert_at"] = now_iso
+    err = f"\nErro: {r['error']}" if r.get("error") else ""
+    return {"status": "critical", "should_alert": True, "severity": "critical",
+            "subject": f"⚠️ {domain} — site fora do ar",
+            "title": f"{domain} está fora do ar",
+            "message": (f"O Klarim detectou que seu site {domain} não está respondendo (desde "
+                        f"{data['down_since'][:16]}). Último código HTTP: {r['status_code']}.{err}\n\n"
+                        "O que fazer: verifique se o servidor está ligado, confira o DNS do domínio "
+                        "e teste o acesso pelo navegador. Continuaremos monitorando e avisamos quando voltar."),
+            "action_text": f"{domain} está fora do ar (HTTP {r['status_code']}). "
+                           "Verificar servidor/DNS/aplicação.",
+            "data": data}
+
+
+_TITLE_RE = re.compile(r"<title[^>]*>(.*?)</title>", re.IGNORECASE | re.DOTALL)
+_SCRIPT_RE = re.compile(r"<script\b", re.IGNORECASE)
+_FORM_RE = re.compile(r"<form\b", re.IGNORECASE)
+
+
+def _snapshot(text: str, headers: Dict[str, str], status_code: int) -> Dict[str, Any]:
+    m = _TITLE_RE.search(text or "")
+    title = re.sub(r"\s+", " ", m.group(1)).strip()[:200] if m else ""
+    hdr_norm = {k.lower(): v for k, v in dict(headers or {}).items()
+                if k.lower() in ("content-security-policy", "strict-transport-security",
+                                 "x-frame-options", "x-content-type-options", "server")}
+    return {
+        "status_code": status_code,
+        "content_length": len(text or ""),
+        "content_hash": hashlib.sha256((text or "").encode("utf-8", "ignore")).hexdigest()[:16],
+        "title": title,
+        "headers_hash": hashlib.sha256(json.dumps(hdr_norm, sort_keys=True).encode()).hexdigest()[:16],
+        "scripts_count": len(_SCRIPT_RE.findall(text or "")),
+        "forms_count": len(_FORM_RE.findall(text or "")),
+        "taken_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+async def check_changes(store: Any, domain: str, last_data: Dict[str, Any],
+                        **_: Any) -> Dict[str, Any]:
+    """Vigília de mudanças (KL-44 P4): compara um snapshot leve do site entre ciclos. Só
+    alerta em mudança **significativa** (defacement/injeção). 1º snapshot só grava."""
+    url = await _target_url(store, domain)
+    if not url:
+        return _error("alvo não encontrado")
+    try:
+        async with httpx.AsyncClient(follow_redirects=True, max_redirects=3) as client:
+            resp = await client.get(url, timeout=15, headers={"User-Agent": _USER_AGENT})
+        snap = _snapshot(resp.text, dict(resp.headers), resp.status_code)
+    except Exception as exc:  # noqa: BLE001
+        return _error(f"fetch falhou: {exc}")
+    prev = (last_data or {}).get("snapshot")
+    if not prev:   # baseline
+        return {"status": "ok", "should_alert": False, "severity": "info", "subject": "",
+                "title": "", "message": "", "action_text": None, "data": {"snapshot": snap}}
+
+    changes: List[str] = []
+    if snap["content_hash"] != prev.get("content_hash"):
+        old_len = max(prev.get("content_length", 0), 1)
+        pct = abs(snap["content_length"] - old_len) / old_len
+        if pct > 0.30:
+            changes.append(f"conteúdo mudou {int(pct * 100)}% (de {old_len} para {snap['content_length']} bytes)")
+    if snap["title"] and snap["title"] != prev.get("title"):
+        changes.append(f"título mudou (\"{prev.get('title', '')[:40]}\" → \"{snap['title'][:40]}\")")
+    if snap["headers_hash"] != prev.get("headers_hash"):
+        changes.append("cabeçalhos de segurança mudaram (possível remoção de proteção)")
+    if snap["scripts_count"] > prev.get("scripts_count", 0):
+        changes.append(f"scripts aumentaram ({prev.get('scripts_count', 0)}→{snap['scripts_count']}, possível injeção)")
+    if snap["forms_count"] > prev.get("forms_count", 0):
+        changes.append(f"formulários apareceram ({prev.get('forms_count', 0)}→{snap['forms_count']}, possível phishing)")
+
+    data = {"snapshot": snap}
+    if not changes:
+        return {"status": "ok", "should_alert": False, "severity": "info", "subject": "",
+                "title": "", "message": "", "action_text": None, "data": data}
+    bullets = "\n".join(f"  • {c}" for c in changes)
+    return {"status": "warning", "should_alert": True, "severity": "warning",
+            "subject": f"🔍 {domain} — mudança detectada no site",
+            "title": f"{domain} teve alterações detectadas",
+            "message": (f"O Klarim detectou alterações no site {domain} desde a última verificação:\n\n"
+                        f"{bullets}\n\nIsso pode ser normal (atualização do site) ou sinal de problema "
+                        "(invasão, injeção de código). Acesse seu site e confira se tudo está como esperado."),
+            "action_text": f"Mudanças em {domain}: {'; '.join(changes)}. Verificar integridade/logs do servidor.",
+            "data": data}
+
+
+async def check_typosquat(store: Any, domain: str, last_data: Dict[str, Any],
+                          **_: Any) -> Dict[str, Any]:
+    """Vigília de phishing (KL-44 P4): notifica os domínios suspeitos que o discovery
+    detectou (typosquat_alerts) e ainda não foram avisados. A detecção é event-driven."""
+    target = await store.get_target_by_domain(domain)
+    if not target:
+        return _error("alvo não encontrado")
+    try:
+        pend = await store.get_pending_typosquats(target["id"])
+    except Exception as exc:  # noqa: BLE001
+        return _error(f"consulta falhou: {exc}")
+    if not pend:
+        return {"status": "ok", "should_alert": False, "severity": "info", "subject": "",
+                "title": "", "message": "", "action_text": None, "data": {}}
+    from discovery.typosquat import similarity_label
+    await store.mark_typosquats_notified([a["id"] for a in pend])
+    lines = "\n".join(f"  • {a['suspicious_domain']} ({similarity_label(a['similarity_type'])})"
+                      for a in pend[:8])
+    first = pend[0]["suspicious_domain"]
+    return {"status": "critical", "should_alert": True, "severity": "critical",
+            "subject": f"🚨 {domain} — domínio suspeito detectado",
+            "title": f"Domínio parecido com {domain} detectado",
+            "message": (f"O Klarim detectou domínio(s) muito parecido(s) com o seu:\n\n{lines}\n\n"
+                        "Isso pode indicar tentativa de phishing — alguém registrou um domínio parecido "
+                        f"para se passar pelo seu site. Acesse {first} e verifique se imita o seu site; "
+                        "se confirmar, denuncie ao registrador e considere registrar variações do seu domínio."),
+            "action_text": f"Domínio suspeito de {domain}: {first}. Verificar e denunciar se for phishing.",
+            "data": {}}
+
+
+# --------------------------------------------------------------------------- #
 # Dispatcher
 # --------------------------------------------------------------------------- #
 
@@ -379,6 +587,9 @@ _CHECKERS = {
     "score": check_score_change,
     "email": check_email_security,
     "reputation": check_reputation,
+    "changes": check_changes,      # KL-44 P4 (ciclo 6h)
+    "phishing": check_typosquat,   # KL-44 P4 (ciclo 6h; detecção no discovery)
+    # 'uptime' NÃO entra aqui — roda no loop curto (5 min) do worker.
 }
 
 

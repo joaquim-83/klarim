@@ -498,6 +498,21 @@ CREATE TABLE IF NOT EXISTS vigilia_alerts (
 CREATE INDEX IF NOT EXISTS idx_vigilia_alerts_user ON vigilia_alerts(user_id);
 CREATE INDEX IF NOT EXISTS idx_vigilia_alerts_vigilia ON vigilia_alerts(vigilia_id);
 
+-- KL-44 P4 — domínios suspeitos (typosquatting/phishing) detectados nos CT logs.
+CREATE TABLE IF NOT EXISTS typosquat_alerts (
+    id SERIAL PRIMARY KEY,
+    target_id INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    suspicious_domain VARCHAR(255) NOT NULL,
+    similarity_type VARCHAR(30) NOT NULL,   -- levenshtein|homoglyph|tld_variant
+    distance INTEGER,
+    detected_at TIMESTAMPTZ DEFAULT NOW(),
+    notified BOOLEAN DEFAULT FALSE,
+    dismissed BOOLEAN DEFAULT FALSE,
+    UNIQUE(target_id, suspicious_domain)
+);
+CREATE INDEX IF NOT EXISTS idx_typosquat_target ON typosquat_alerts(target_id);
+
 -- KL-44 P3 — papel do usuário (dono de negócio vs profissional de TI).
 ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'owner';  -- owner|technician|both
 
@@ -2269,6 +2284,71 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    # --- KL-44 P4: typosquatting/phishing --- #
+
+    async def get_typosquat_monitored_domains(self) -> List[Dict[str, Any]]:
+        """Domínios com vigília `phishing` ativa (Agency) — o discovery compara os novos
+        CT domains contra estes. Poucos (dezenas). {target_id, user_id, domain}."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT DISTINCT t.id AS target_id, vg.user_id, vg.site_domain AS domain "
+                "FROM vigilias vg JOIN targets t ON t.domain = vg.site_domain "
+                "WHERE vg.tipo = 'phishing' AND vg.enabled = TRUE")
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def record_typosquat_alert(self, target_id: int, user_id: int, suspicious_domain: str,
+                                     similarity_type: str, distance: Optional[int]) -> bool:
+        """Registra um domínio suspeito (idempotente por target+domínio). True se novo."""
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO typosquat_alerts (target_id, user_id, suspicious_domain, "
+                "  similarity_type, distance) VALUES (%s, %s, %s, %s, %s) "
+                "ON CONFLICT (target_id, suspicious_domain) DO NOTHING",
+                (target_id, user_id, suspicious_domain.lower().strip(), similarity_type, distance))
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_pending_typosquats(self, target_id: int) -> List[Dict[str, Any]]:
+        """Suspeitos ainda não notificados e não descartados (para a vigília phishing avisar)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT id, suspicious_domain, similarity_type, distance FROM typosquat_alerts "
+                "WHERE target_id = %s AND notified = FALSE AND dismissed = FALSE "
+                "ORDER BY detected_at DESC", (target_id,))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def mark_typosquats_notified(self, ids: List[int]) -> None:
+        if not ids:
+            return
+        await asyncio.to_thread(self._run, lambda cur: cur.execute(
+            "UPDATE typosquat_alerts SET notified = TRUE WHERE id = ANY(%s)", (list(ids),)))
+
+    async def list_typosquat_alerts(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Alertas de typosquat (admin/MCP): domínio suspeito, tipo, dono, estado."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT ta.id, ta.suspicious_domain, ta.similarity_type, ta.distance, "
+                "       ta.detected_at, ta.notified, ta.dismissed, t.domain, u.email AS owner_email "
+                "FROM typosquat_alerts ta JOIN targets t ON t.id = ta.target_id "
+                "JOIN users u ON u.id = ta.user_id ORDER BY ta.detected_at DESC LIMIT %s", (limit,))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def typosquat_stats(self) -> Dict[str, Any]:
+        def _fn(cur):
+            cur.execute("SELECT COUNT(*), COUNT(*) FILTER (WHERE dismissed), "
+                        "COUNT(*) FILTER (WHERE notified) FROM typosquat_alerts")
+            r = cur.fetchone()
+            return {"total": int(r[0]), "dismissed": int(r[1]), "notified": int(r[2])}
+
+        return await asyncio.to_thread(self._run, _fn)
+
     async def disable_user_vigilias_except(self, user_id: int, keep_types: List[str]) -> int:
         """Desabilita (não deleta) as vigílias do usuário cujo tipo NÃO está em
         `keep_types` — usado no downgrade de plano. Retorna quantas foram desabilitadas."""
@@ -2288,14 +2368,33 @@ class TargetStore:
 
     async def get_due_vigilias(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Vigílias habilitadas com `next_check_at` vencido (ou nulo), da mais atrasada
-        para a menos, com o e-mail do dono. O worker faz o enforcement de plano."""
+        para a menos, com o e-mail do dono. **Exclui `uptime`** (KL-44 P4 — roda no loop
+        curto). O worker faz o enforcement de plano."""
         def _fn(cur):
             cur.execute(
                 "SELECT vg.id, vg.user_id, vg.site_domain, vg.tipo, vg.last_status, "
                 "       vg.last_data, vg.alert_count, u.email AS user_email "
                 "FROM vigilias vg "
                 "JOIN users u ON u.id = vg.user_id AND u.is_active = TRUE "
-                "WHERE vg.enabled = TRUE "
+                "WHERE vg.enabled = TRUE AND vg.tipo <> 'uptime' "
+                "  AND (vg.next_check_at IS NULL OR vg.next_check_at <= NOW()) "
+                "ORDER BY vg.next_check_at ASC NULLS FIRST LIMIT %s", (limit,))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_due_uptime_vigilias(self, limit: int = 200) -> List[Dict[str, Any]]:
+        """Vigílias de uptime vencidas (KL-44 P4) + o intervalo do plano (Pro=30/Agency=5)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT vg.id, vg.user_id, vg.site_domain, vg.tipo, vg.last_status, "
+                "       vg.last_data, vg.alert_count, u.email AS user_email, "
+                "       COALESCE(p.uptime_interval_minutes, 30) AS interval_minutes "
+                "FROM vigilias vg "
+                "JOIN users u ON u.id = vg.user_id AND u.is_active = TRUE "
+                "LEFT JOIN subscriptions sub ON sub.account_id = vg.user_id "
+                "LEFT JOIN plans p ON p.id = COALESCE(sub.plan_id, u.plan) "
+                "WHERE vg.enabled = TRUE AND vg.tipo = 'uptime' "
                 "  AND (vg.next_check_at IS NULL OR vg.next_check_at <= NOW()) "
                 "ORDER BY vg.next_check_at ASC NULLS FIRST LIMIT %s", (limit,))
             return self._rows_to_dicts(cur)
