@@ -15,6 +15,11 @@ def test_validate_phone():
     assert p.validate_phone("3333-4444") is None                  # sem DDD (curto)
     assert p.validate_phone("11 8888-4444-9") is None             # tamanho errado
     assert p.validate_phone("11844444444") is None                # celular sem o 9
+    # KL-67: números especiais BR (sem DDD) são legítimos, NÃO rejeitar.
+    assert p.validate_phone("0800 123 4567") == "08001234567"     # 0800
+    assert p.validate_phone("0800 123 45678") == "080012345678"   # 0800 (8 dígitos)
+    assert p.validate_phone("4004-1234") == "40041234"            # custo compartilhado
+    assert p.validate_phone("3003 1234") == "30031234"
 
 
 # --- redes sociais ---------------------------------------------------------- #

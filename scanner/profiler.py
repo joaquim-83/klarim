@@ -123,10 +123,21 @@ VALID_DDDS = {11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 24, 27, 28, 31, 32, 33
               89, 91, 92, 93, 94, 95, 96, 97, 98, 99}
 
 
+# Números especiais BR (sem DDD) — legítimos de empresas. Não podem ser rejeitados.
+_SPECIAL_PHONE_PREFIXES = ("0800", "0300", "0500", "0900")           # 11-12 dígitos
+_SHARED_PHONE_PREFIXES = ("3003", "4003", "4004", "4007", "4020", "4062", "4090")  # 8 dígitos
+
+
 def validate_phone(raw: Optional[str]) -> Optional[str]:
     """Dígitos limpos do telefone (DDD+8/9) ou None se inválido (DDD inexistente,
-    formato errado, celular sem 9). Aceita e remove o código do país (55)."""
+    formato errado, celular sem 9). Aceita e remove o código do país (55). Números
+    especiais BR (0800/0300/0500/0900 e 3003/4004/… de custo compartilhado) são válidos."""
     digits = re.sub(r"\D", "", raw or "")
+    # Especiais primeiro (não têm DDD): 0800 + 7/8 dígitos; 4004/3003 + 4 dígitos.
+    if any(digits.startswith(p) for p in _SPECIAL_PHONE_PREFIXES) and len(digits) in (11, 12):
+        return digits
+    if len(digits) == 8 and digits[:4] in _SHARED_PHONE_PREFIXES:
+        return digits
     if digits.startswith("55") and len(digits) >= 12:
         digits = digits[2:]
     if len(digits) not in (10, 11):
@@ -248,8 +259,9 @@ def apply_quality_filters(profile: dict, domain: str = "") -> dict:
     `low_confidence_fields`. Filtro puro: rejeita lixo (→ None), nunca substitui por IA."""
     low_conf: List[str] = []
     if profile.get("phone"):
-        digs = validate_phone(profile["phone"])
-        profile["phone"] = _fmt_phone(digs) if digs else None
+        # Valida (mantém o valor original quando OK; não reformata — não mangla 0800/4004).
+        if not validate_phone(profile["phone"]):
+            profile["phone"] = None
     if profile.get("address"):
         profile["address"] = validate_address(profile["address"])
     if profile.get("description"):

@@ -71,9 +71,17 @@ Funções **puras** (regex/heurística), aplicadas na extração — **nunca** s
   a 7,5k perfis × N campos seria ruído. O `revalidate-profiles` reporta as **contagens**
   agregadas (é o que interessa para calibrar).
 
-## Dry-run em produção
-Números de `POST /admin/revalidate-profiles?dry_run=1` (campos que seriam limpos por tipo)
-serão coletados **após o deploy** e anexados aqui / reportados ao dono antes do apply.
+## Dry-run em produção (1º deploy)
+`POST /admin/revalidate-profiles?dry_run=1` sobre **7.810 perfis**: **3.456** mudariam
+(1 pulado por edição manual). Rejeitados por tipo: **telefone 1.665**, **endereço 1.352**,
+**descrição 188**, facebook 58, linkedin 11, instagram 2, youtube/tiktok 0; **1.738 flags**
+de baixa confiança (rede ≠ domínio).
+
+**Fix pós-dry-run (números especiais BR):** o `validate_phone` inicial rejeitava 0800/0300/
+0500/0900 e 3003/4004/… (custo compartilhado) por não terem DDD — telefones legítimos de
+empresa. Corrigido (`_SPECIAL_PHONE_PREFIXES`/`_SHARED_PHONE_PREFIXES`) para aceitá-los; e o
+`apply_quality_filters` deixou de **reformatar** o telefone (só valida) para não manglar o
+0800. O dono optou por **tratar 0800/4004 antes de aplicar** — 2º dry-run + apply após o deploy.
 
 ## Testes
 Suíte offline **verde** (`pytest`). Validadores e Reply-To cobertos.
