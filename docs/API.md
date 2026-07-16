@@ -49,15 +49,15 @@ Um middleware (`_admin_auth_mw`) protege os prefixos abaixo (`_PROTECTED_PREFIXE
 | GET/PUT/DELETE | `/account/me` | perfil / editar nome / excluir conta (por senha) |
 | GET | `/account/subscription` | plano atual |
 | GET/POST | `/account/sites` | lista / adiciona site ao monitoramento (403 se estourar `max_sites`) |
-| GET/DELETE | `/account/sites/{target_id}` | detalhe / remove site |
-| POST | `/account/sites/{target_id}/claim` | reivindica posse (e-mail bate `contact_email`) |
+| GET/DELETE | `/account/sites/{target_id}` | detalhe / **remove self-service** (KL-71: revoga posse + desativa vigílias, sem notificação) |
+| POST | `/account/sites/{target_id}/claim` | reivindica posse (KL-71: e-mail == `contact_email` **OU** domínio do e-mail == domínio do site; first-come) |
 | POST | `/account/ownership/request-verification` | KL-68: envia código ao `contact_email` do alvo (nunca exposto); retorna `email_hint` mascarado; rate limit 5/h/IP |
 | POST | `/account/ownership/verify` | KL-68: valida o código (3 tentativas, TTL 30 min) → dono verificado |
-| GET | `/account/ownership/status?target_id=` | KL-68: `{is_owner, monitored, verification_available, has_pending_verification}` |
+| GET | `/account/ownership/status?target_id=` | KL-68/71: `{is_owner, monitored, verification_available, has_pending_verification, has_other_owner}` |
 | GET | `/account/scan-history` | histórico de consultas do e-mail |
 | GET | `/account/vigilias` | vigílias do usuário (filtrado por `user_id`, IDOR-safe) |
 | GET | `/account/vigilia-alerts` | alertas de vigília do usuário |
-| POST | `/account/technician/invite` | KL-44 P3: convida técnico p/ um site (cria vínculo + laudo, envia convite); 10/h/IP |
+| POST | `/account/technician/invite` | KL-44 P3 / KL-71: convida técnico (cria vínculo + laudo — escaneia se preciso; 422 em auto-convite / dono-como-técnico / já-vinculado); 10/h/IP |
 | POST | `/account/technician/revoke` | KL-44 P3: revoga vínculo de técnico |
 | GET | `/account/technician/links?target_id=` | KL-44 P3: vínculos de técnico do dono |
 | GET | `/account/technician/search?email=` | KL-44 P3: `{found, user_id?, name?}` (só técnicos; nunca outros dados) |

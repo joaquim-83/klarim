@@ -314,6 +314,13 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   endereço e descrição/idioma em `scanner/profiler.py::apply_quality_filters`; flag
   `low_confidence_fields`; edição admin de contatos; `POST /admin/revalidate-profiles`;
   **Reply-To=scan@klarim.net** em TODO e-mail via `_send`/`_send_batch`)
+- **KL-71** — Fixes propriedade/técnico/landing ✅ (Tier 1 **auto_domain**: domínio do e-mail
+  == domínio do site, exceto `PUBLIC_EMAIL_PROVIDERS`, first-come; convite de técnico
+  garante laudo válido — escaneia se preciso — e valida conflito de papel (422 auto-convite/
+  dono-como-técnico/já-vinculado); CTA público some com dono verificado; dashboard mostra
+  `has_other_owner` + badge de técnico + link "Perfil público" + remover site self-service
+  (`DELETE /account/sites/{id}` revoga posse + desativa vigílias); painel Usuários com coluna
+  Perfil (owner/technician/both))
 - **KL-64** — Analytics tracker (pendente)
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos

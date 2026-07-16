@@ -46,8 +46,21 @@ export default function ClaimSite({ url, domain, ownerVerified = false, claimabl
     return <div className={CARD}><p className="text-sm text-slate-400">Carregando…</p></div>;
   }
 
-  // Estado 1 — deslogado.
+  // Estado 1 — deslogado. KL-71 Bug 2: com dono verificado, não oferece "Reivindicar"
+  // (first-come) — só monitorar o score.
   if (state === 'logged_out') {
+    if (ownerVerified) {
+      return (
+        <div className={CARD}>
+          <p className="text-sm font-semibold text-white">✓ Este site tem um dono verificado.</p>
+          <p className="mt-1 text-sm text-slate-300">Você pode acompanhar o score de segurança criando uma conta.</p>
+          <a href={`/cadastrar?url=${encodeURIComponent(url)}`}
+            className="mt-4 inline-flex rounded-xl bg-brand-500 px-6 py-3 text-sm font-semibold text-slate-950 hover:bg-brand-400">
+            Criar conta e monitorar →
+          </a>
+        </div>
+      );
+    }
     return (
       <div className={CARD}>
         <h2 className="text-lg font-bold text-white">É o seu site?</h2>
@@ -74,8 +87,12 @@ export default function ClaimSite({ url, domain, ownerVerified = false, claimabl
     }
     return (
       <div className={CARD}>
-        <h2 className="text-lg font-bold text-white">É o seu site?</h2>
-        <p className="mt-1 text-sm text-slate-300">Adicione ao monitoramento gratuito e acompanhe o score.</p>
+        <h2 className="text-lg font-bold text-white">{ownerVerified ? '✓ Este site tem um dono verificado.' : 'É o seu site?'}</h2>
+        <p className="mt-1 text-sm text-slate-300">
+          {ownerVerified
+            ? 'Você pode acompanhar o score de segurança monitorando este site.'
+            : 'Adicione ao monitoramento gratuito e acompanhe o score.'}
+        </p>
         <button disabled={busy} onClick={monitor}
           className="mt-4 inline-flex rounded-xl bg-brand-500 px-6 py-3 text-sm font-semibold text-slate-950 hover:bg-brand-400 disabled:opacity-50">
           Monitorar este site →

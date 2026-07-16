@@ -2366,6 +2366,18 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    async def disable_user_site_vigilias(self, user_id: int, domain: str) -> int:
+        """KL-71 Bug 8: desabilita as vigílias de UM site do usuário (ao remover o site do
+        monitoramento). Não deleta — mantém histórico de alertas. Retorna quantas afetou."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE vigilias SET enabled = FALSE, updated_at = NOW() "
+                "WHERE user_id = %s AND site_domain = %s AND enabled = TRUE",
+                (user_id, (domain or "").lower().strip()))
+            return cur.rowcount
+
+        return await asyncio.to_thread(self._run, _fn)
+
     async def get_due_vigilias(self, limit: int = 100) -> List[Dict[str, Any]]:
         """Vigílias habilitadas com `next_check_at` vencido (ou nulo), da mais atrasada
         para a menos, com o e-mail do dono. **Exclui `uptime`** (KL-44 P4 — roda no loop
@@ -2704,7 +2716,7 @@ class TargetStore:
             # KL-69: junta a assinatura (status/trial) numa página unificada (sem N+1).
             cur.execute(
                 "SELECT u.id, u.email, u.name, u.plan, u.max_sites, u.created_at, "
-                "       u.last_login_at, u.is_active, "
+                "       u.last_login_at, u.is_active, u.role, "  # KL-71 Bug 9: role p/ badge
                 "       sub.status AS sub_status, sub.plan_id AS sub_plan, sub.trial_ends_at "
                 "FROM users u LEFT JOIN subscriptions sub ON sub.account_id = u.id "
                 "ORDER BY u.created_at DESC")

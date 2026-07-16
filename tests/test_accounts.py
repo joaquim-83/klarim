@@ -225,6 +225,12 @@ class FakeStore:
             if v["user_id"] == user_id and v["target_id"] == target_id and v["status"] in ("pending", "verified"):
                 v["status"] = "revoked"
 
+    # KL-71 Bug 8: desativa vigílias de um site do usuário (self-service removal)
+    async def disable_user_site_vigilias(self, user_id, domain):
+        self.disabled_site_vigilias = getattr(self, "disabled_site_vigilias", [])
+        self.disabled_site_vigilias.append((user_id, domain))
+        return 0
+
     # --- KL-44 P3: técnico + laudo + boletim ---
     async def create_technician_link(self, owner_user_id, target_id, technician_email, invite_code):
         email = technician_email.lower().strip()
@@ -759,15 +765,26 @@ def test_send_report_rate_limit(client, store, monkeypatch):
 
 
 def test_claim_requires_email_match(client, store):
-    u = client.post("/account/signup", json={"email": "owner@x.com.br", "password": "segredo123"}).json()["user"]
+    # KL-71: o e-mail do usuário NÃO bate por e-mail nem por domínio (outrodom.com.br ≠ x.com.br)
+    u = client.post("/account/signup", json={"email": "owner@outrodom.com.br", "password": "segredo123"}).json()["user"]
     store.targets[30] = {"id": 30, "url": "https://x.com.br", "domain": "x.com.br",
-                         "contact_email": "outro@x.com.br"}
+                         "contact_email": "contato@x.com.br"}
     store.sites[(u["id"], 30)] = {"is_owner": False}
-    # e-mail não bate → 403
+    # e-mail não bate (nem exato nem domínio) → 403
     assert client.post("/account/sites/30/claim", headers=_bearer(u)).status_code == 403
-    # e-mail bate → 200 + is_owner
-    store.targets[30]["contact_email"] = "owner@x.com.br"
+    # e-mail bate exato → 200 + is_owner
+    store.targets[30]["contact_email"] = "owner@outrodom.com.br"
     r = client.post("/account/sites/30/claim", headers=_bearer(u))
+    assert r.status_code == 200 and r.json()["is_owner"] is True
+
+
+def test_claim_by_domain_match(client, store):
+    # KL-71 Bug 1: o e-mail bate por DOMÍNIO (owner@x.com.br → x.com.br), sem contact_email
+    u = client.post("/account/signup", json={"email": "owner@x.com.br", "password": "segredo123"}).json()["user"]
+    store.targets[31] = {"id": 31, "url": "https://x.com.br", "domain": "x.com.br",
+                         "contact_email": "terceiro@gmail.com"}
+    store.sites[(u["id"], 31)] = {"is_owner": False}
+    r = client.post("/account/sites/31/claim", headers=_bearer(u))
     assert r.status_code == 200 and r.json()["is_owner"] is True
 
 
@@ -1023,3 +1040,187 @@ def test_public_laudo_expired_and_missing(client, store):
                                "domain": "x.com.br", "checks_json": []}
     assert client.get("/public/laudo/EXP1234").json()["status"] == "expired"
     assert client.get("/public/laudo/NOPE9999").json()["status"] == "not_found"
+
+
+# --------------------------------------------------------------------------- #
+# KL-71 — fixes ownership/técnico/landing
+# --------------------------------------------------------------------------- #
+
+def _reg_target(store, tid, domain, contact=None):
+    store.targets[tid] = {"id": tid, "url": f"https://{domain}", "domain": domain,
+                          "contact_email": contact, "last_scan_score": 80}
+
+
+# Bug 1 — _ownership_method (Tier 1: e-mail exato OU domínio; nunca provedor público)
+
+def test_ownership_method_exact_email(store):
+    _reg_target(store, 70, "igoove.com", contact="contato@igoove.com")
+    assert asyncio.run(m._ownership_method("contato@igoove.com", 70)) == "auto_email"
+
+
+def test_ownership_method_domain_match(store):
+    # e-mail@igoove.com + site igoove.com → auto_domain (mesmo com contact_email diferente)
+    _reg_target(store, 71, "igoove.com", contact="jscidinei@gmail.com")
+    assert asyncio.run(m._ownership_method("cidinei@igoove.com", 71)) == "auto_domain"
+
+
+def test_ownership_method_domain_match_strips_www(store):
+    _reg_target(store, 72, "www.igoove.com", contact=None)
+    assert asyncio.run(m._ownership_method("cidinei@igoove.com", 72)) == "auto_domain"
+
+
+def test_ownership_method_public_provider_rejected(store):
+    # e-mail@gmail.com + site gmail.com → NÃO auto-verifica (provedor público)
+    _reg_target(store, 73, "gmail.com", contact=None)
+    assert asyncio.run(m._ownership_method("alguem@gmail.com", 73)) is None
+
+
+def test_ownership_method_different_domain(store):
+    _reg_target(store, 74, "igoove.com", contact="contato@igoove.com")
+    assert asyncio.run(m._ownership_method("outra@empresa.com.br", 74)) is None
+
+
+# Bug 1 — auto-verificação por domínio no add-site, respeitando first-come
+
+def test_add_site_domain_match_auto_verifies(client, store):
+    u = client.post("/account/signup", json={"email": "cidinei@igoove.com", "password": "segredo123"}).json()["user"]
+    _reg_target(store, 80, "igoove.com", contact="jscidinei@gmail.com")
+    # força o resolve para o target 80
+    m._resolve_or_create_target  # noqa: B018
+    store.targets_by_url = {"https://igoove.com": 80}
+
+    async def fake_resolve(url, source="dashboard"):
+        return 80
+    import api.main as _m
+    orig = _m._resolve_or_create_target
+    _m._resolve_or_create_target = fake_resolve
+    try:
+        r = client.post("/account/sites", json={"url": "https://igoove.com"}, headers=_bearer(u))
+    finally:
+        _m._resolve_or_create_target = orig
+    assert r.status_code == 200
+    assert store.sites[(u["id"], 80)]["is_owner"] is True
+    assert store.sites[(u["id"], 80)]["verification_method"] == "auto_domain"
+
+
+def test_add_site_domain_match_respects_first_come(client, store):
+    owner = client.post("/account/signup", json={"email": "first@igoove.com", "password": "segredo123"}).json()["user"]
+    _reg_target(store, 81, "igoove.com", contact=None)
+    store.sites[(owner["id"], 81)] = {"is_owner": True}  # já tem dono
+    u2 = client.post("/account/signup", json={"email": "second@igoove.com", "password": "segredo123"}).json()["user"]
+
+    async def fake_resolve(url, source="dashboard"):
+        return 81
+    import api.main as _m
+    orig = _m._resolve_or_create_target
+    _m._resolve_or_create_target = fake_resolve
+    try:
+        r = client.post("/account/sites", json={"url": "https://igoove.com"}, headers=_bearer(u2))
+    finally:
+        _m._resolve_or_create_target = orig
+    assert r.status_code == 200
+    assert store.sites[(u2["id"], 81)]["is_owner"] is False  # NÃO virou dono (first-come)
+
+
+# Bug 3 — ownership_status expõe has_other_owner
+
+def test_ownership_status_has_other_owner(client, store):
+    owner = client.post("/account/signup", json={"email": "own@igoove.com", "password": "segredo123"}).json()["user"]
+    monitor = client.post("/account/signup", json={"email": "mon@x.com.br", "password": "segredo123"}).json()["user"]
+    _reg_target(store, 90, "igoove.com", contact=None)
+    store.sites[(owner["id"], 90)] = {"is_owner": True}
+    store.sites[(monitor["id"], 90)] = {"is_owner": False}
+    r = client.get("/account/ownership/status?target_id=90", headers=_bearer(monitor)).json()
+    assert r["has_other_owner"] is True and r["is_owner"] is False
+    assert r["verification_available"] is False
+
+
+# Bug 4 — convite de técnico cria laudo e link /laudo/{code}
+
+def test_technician_invite_creates_laudo(client, store):
+    owner = client.post("/account/signup", json={"email": "dono@x.com.br", "password": "segredo123"}).json()["user"]
+    store.sites[(owner["id"], 95)] = {"is_owner": True}
+    _reg_target(store, 95, "alvo.com.br", contact=None)
+    store.scans[95] = {"id": 950, "score": 73, "semaphore": "amarelo"}
+    r = client.post("/account/technician/invite",
+                    json={"target_id": 95, "technician_email": "tec@empresa.com.br"},
+                    headers=_bearer(owner))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["invited"] is True and body["laudo_code"]
+    # o laudo existe e é acessível pelo código
+    assert store.shared.get(body["laudo_code"]) is not None
+
+
+def test_technician_invite_link_template_uses_laudo():
+    from notifier import bulletin as bl
+    txt = bl.build_technician_invite({"domain": "alvo.com.br", "score": 73, "semaphore": "amarelo",
+                                      "owner_masked": "d***o@x.com.br", "code": "ABC123", "invite_code": "XY12"})
+    assert "https://klarim.net/laudo/ABC123" in txt
+
+
+def test_technician_invite_link_falls_back_to_profile_without_scan():
+    from notifier import bulletin as bl
+    txt = bl.build_technician_invite({"domain": "alvo.com.br", "score": None, "semaphore": None,
+                                      "owner_masked": "d***o@x.com.br", "code": "", "invite_code": "XY12"})
+    assert "https://klarim.net/site/alvo.com.br" in txt and "/laudo/" not in txt
+
+
+# Bug 6 — validação de conflito de papel
+
+def test_technician_invite_self_invite_422(client, store):
+    owner = client.post("/account/signup", json={"email": "dono@x.com.br", "password": "segredo123"}).json()["user"]
+    store.sites[(owner["id"], 96)] = {"is_owner": True}
+    _reg_target(store, 96, "alvo.com.br")
+    r = client.post("/account/technician/invite",
+                    json={"target_id": 96, "technician_email": "dono@x.com.br"},
+                    headers=_bearer(owner))
+    assert r.status_code == 422 and "convidar" in r.json()["detail"]
+
+
+def test_technician_invite_owner_as_tech_422(client, store):
+    owner = client.post("/account/signup", json={"email": "dono@igoove.com", "password": "segredo123"}).json()["user"]
+    store.sites[(owner["id"], 97)] = {"is_owner": True}
+    _reg_target(store, 97, "igoove.com")
+    # convidar o próprio dono verificado (por outro e-mail owner) — aqui o dono é o mesmo user
+    other = client.post("/account/signup", json={"email": "outro@x.com.br", "password": "segredo123"}).json()["user"]
+    store.sites[(other["id"], 97)] = {"is_owner": False}
+    store.sites[(other["id"], 97)] = {"is_owner": False}
+    r = client.post("/account/technician/invite",
+                    json={"target_id": 97, "technician_email": "dono@igoove.com"},
+                    headers=_bearer(other))
+    assert r.status_code == 422 and "dono" in r.json()["detail"].lower()
+
+
+def test_technician_invite_already_linked_422(client, store):
+    owner = client.post("/account/signup", json={"email": "dono@x.com.br", "password": "segredo123"}).json()["user"]
+    store.sites[(owner["id"], 98)] = {"is_owner": True}
+    _reg_target(store, 98, "alvo.com.br")
+    store.scans[98] = {"id": 980, "score": 50, "semaphore": "vermelho"}
+    # 1º convite cria o vínculo (pending) → marca como active manualmente
+    client.post("/account/technician/invite",
+                json={"target_id": 98, "technician_email": "tec@empresa.com.br"}, headers=_bearer(owner))
+    for l in store.tech_links:
+        l["status"] = "active"
+    # 2º convite ao mesmo e-mail → 422
+    r = client.post("/account/technician/invite",
+                    json={"target_id": 98, "technician_email": "tec@empresa.com.br"},
+                    headers=_bearer(owner))
+    assert r.status_code == 422 and "vinculado" in r.json()["detail"]
+
+
+# Bug 8 — remoção self-service de um site
+
+def test_remove_site_self_service(client, store):
+    u = client.post("/account/signup", json={"email": "u@x.com.br", "password": "segredo123"}).json()["user"]
+    _reg_target(store, 99, "alvo.com.br")
+    store.sites[(u["id"], 99)] = {"is_owner": True}
+    r = client.delete("/account/sites/99", headers=_bearer(u))
+    assert r.status_code == 200 and r.json()["removed"] is True
+    assert (u["id"], 99) not in store.sites
+    assert ("alvo.com.br" in [d for (_uid, d) in getattr(store, "disabled_site_vigilias", [])])
+
+
+def test_remove_site_not_found(client, store):
+    u = client.post("/account/signup", json={"email": "u@x.com.br", "password": "segredo123"}).json()["user"]
+    assert client.delete("/account/sites/12345", headers=_bearer(u)).status_code == 404

@@ -19,6 +19,17 @@ const inputCls = 'rounded-lg border border-klarim-border bg-klarim-surface px-3 
 function statusOf(u) { return u.sub_status || 'free' }
 function planOf(u) { return u.sub_plan || u.plan || 'free' }
 
+// KL-71 Bug 9 — distinção de papel no painel admin.
+const ROLE_META = {
+  owner: { label: '👤 Dono', color: '#8B949E' },
+  technician: { label: '🔧 Técnico', color: '#FF6B35' },
+  both: { label: '👤🔧 Ambos', color: '#F0C000' },
+}
+function RoleBadge({ role }) {
+  const m = ROLE_META[role] || ROLE_META.owner
+  return <span className="rounded px-1.5 py-0.5 text-xs font-semibold" style={{ background: m.color + '22', color: m.color }}>{m.label}</span>
+}
+
 export default function UsuariosPage() {
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
@@ -95,6 +106,7 @@ export default function UsuariosPage() {
                 <th className="py-2 pr-3">Status</th>
                 <th className="py-2 pr-3">Sites</th>
                 <th className="py-2 pr-3">Dono</th>
+                <th className="py-2 pr-3">Perfil</th>
                 <th className="py-2 pr-3">Criação</th>
                 <th className="py-2 pr-3">Último login</th>
                 <th className="py-2">Ativo</th>
@@ -102,7 +114,7 @@ export default function UsuariosPage() {
             </thead>
             <tbody>
               {filtered.map((u) => <UserRow key={u.id} u={u} onChanged={(m) => { if (m) notify(m); load() }} />)}
-              {filtered.length === 0 && <tr><td colSpan={9} className="py-8 text-center text-klarim-muted">Nenhum usuário.</td></tr>}
+              {filtered.length === 0 && <tr><td colSpan={10} className="py-8 text-center text-klarim-muted">Nenhum usuário.</td></tr>}
             </tbody>
           </table>
         </div>
@@ -127,13 +139,14 @@ function UserRow({ u, onChanged }) {
         <td className="py-2 pr-3"><span className="rounded px-1.5 py-0.5 text-xs font-semibold" style={{ background: (STATUS_COLOR[st] || '#8B949E') + '22', color: STATUS_COLOR[st] || '#8B949E' }}>{STATUS_LABEL[st] || st}</span></td>
         <td className="py-2 pr-3">{sites.length}</td>
         <td className="py-2 pr-3">{isOwner ? <span className="text-green-400">✓</span> : <span className="text-klarim-muted">—</span>}</td>
+        <td className="py-2 pr-3"><RoleBadge role={u.role} /></td>
         <td className="py-2 pr-3 text-xs text-klarim-muted">{relativeTime(u.created_at)}</td>
         <td className="py-2 pr-3 text-xs text-klarim-muted">{u.last_login_at ? relativeTime(u.last_login_at) : '—'}</td>
         <td className="py-2">{u.is_active ? <span className="text-green-400">●</span> : <span className="text-red-400">●</span>}</td>
       </tr>
       {open && (
         <tr className="border-t border-klarim-border bg-klarim-surface/30">
-          <td colSpan={9} className="px-3 py-4"><UserDetail u={u} onChanged={onChanged} /></td>
+          <td colSpan={10} className="px-3 py-4"><UserDetail u={u} onChanged={onChanged} /></td>
         </tr>
       )}
     </>
@@ -142,8 +155,14 @@ function UserRow({ u, onChanged }) {
 
 function UserDetail({ u, onChanged }) {
   const sites = u.sites || []
+  const isTech = u.role === 'technician' || u.role === 'both'
   return (
     <div className="space-y-4">
+      <div className="flex items-center gap-2 text-sm">
+        <span className="text-xs font-semibold uppercase text-klarim-muted">Perfil</span>
+        <RoleBadge role={u.role} />
+        {isTech && <span className="text-xs text-klarim-muted">— recebe laudos técnicos dos clientes vinculados</span>}
+      </div>
       <div>
         <p className="mb-2 text-xs font-semibold uppercase text-klarim-muted">Sites monitorados ({sites.length})</p>
         {sites.length === 0 ? <p className="text-sm text-klarim-muted">Nenhum site.</p> : (

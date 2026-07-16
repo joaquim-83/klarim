@@ -86,12 +86,21 @@ Na dúvida, trate o alvo como site de terceiro que só autorizou olhar o que é 
 
 ### Verificação de propriedade (KL-68)
 
-- **`contact_email` nunca é exposto.** A auto-verificação Tier 1 compara o e-mail da
-  conta ao `contact_email` do alvo **no servidor**; o Tier 2 envia um código de 6 dígitos
-  **ao `contact_email`** e o frontend só recebe o `email_hint` **mascarado**
-  (`con****@empresa.com.br`).
+- **`contact_email` nunca é exposto.** A auto-verificação Tier 1 (`_ownership_method`,
+  no servidor) valida por (1) e-mail == `contact_email` → `auto_email`, ou (2) **domínio do
+  e-mail == domínio do site** → `auto_domain` (KL-71), **exceto provedores públicos**
+  (`PUBLIC_EMAIL_PROVIDERS`: gmail/hotmail/…, pois `email@gmail.com` não prova ser dono de
+  gmail.com). O Tier 2 envia um código de 6 dígitos **ao `contact_email`** e o frontend só
+  recebe o `email_hint` **mascarado** (`con****@empresa.com.br`).
 - **First-come-first-served:** um site tem no máximo 1 dono verificado; `site_has_owner`
-  bloqueia (409) um segundo usuário — impede sequestro de perfil.
+  bloqueia (409) um segundo usuário e desliga o `auto_domain` — impede sequestro de perfil.
+  O perfil público some com o CTA "Reivindicar" quando já há dono (`owner_verified` → só
+  "Monitorar"); o dashboard informa `has_other_owner` sem expor quem é o dono.
+- **Convite de técnico (KL-71):** valida conflito de papel (422 em auto-convite,
+  dono-como-técnico e já-vinculado); o e-mail do dono ao técnico é sempre **mascarado**.
+- **Remoção self-service** (`DELETE /account/sites/{id}`, JWT do usuário): o próprio dono
+  remove seu site — revoga a posse e desativa as vigílias, **sem** notificação (diferente
+  do remove-site admin, que notifica).
 - **Código:** 6 dígitos CSPRNG, TTL 30 min, **3 tentativas** (depois `failed`),
   comparação constant-time (`hmac.compare_digest`).
 - **Rate limit:** `POST /account/ownership/request-verification` 5/h/IP;

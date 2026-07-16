@@ -125,6 +125,8 @@ def build_technician_invite(data: Dict[str, Any]) -> str:
     dom = data["domain"]
     emoji = _EMOJI.get(data.get("semaphore"), "🟡")
     code, invite = data.get("code"), data.get("invite_code")
+    # KL-71 Bug 4: com laudo → link do laudo; sem laudo (site sem scan) → perfil público.
+    laudo_line = (f"{SITE_BASE}/laudo/{code}" if code else f"{SITE_BASE}/site/{dom}")
     return "\n".join([
         "Olá,",
         "",
@@ -134,7 +136,7 @@ def build_technician_invite(data: Dict[str, Any]) -> str:
         f"Score atual: {data.get('score')}/100 {emoji}",
         "",
         "Acesse o laudo técnico completo:",
-        f"{SITE_BASE}/laudo/{code}",
+        laudo_line,
         "",
         "Se você já tem conta na Klarim, vincule com o código:",
         f"{invite}",

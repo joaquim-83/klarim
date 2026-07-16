@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { apiGet, apiPost } from '../../lib/api.js';
+import { apiGet, apiPost, apiDelete } from '../../lib/api.js';
 import { field, card } from './ui.js';
 import { badgeFor } from '../../lib/badge.js';
 import TechnicianSection from './TechnicianSection.jsx';
@@ -123,6 +123,11 @@ export default function Dashboard({ user = {} }) {
     <div className="space-y-8">
       <div>
         <h1 className="text-2xl font-bold text-white">Olá{user.name ? `, ${user.name}` : ''}</h1>
+        {(user.role === 'technician' || user.role === 'both') && (
+          <p className="mt-1 inline-flex items-center gap-1.5 rounded-full border border-brand-500/40 bg-brand-500/10 px-3 py-0.5 text-sm font-semibold text-brand-300">
+            🔧 Profissional de TI
+          </p>
+        )}
         <p className="mt-1 text-slate-400">Verifique qualquer site à vontade; monitore os que importam.</p>
       </div>
 
@@ -192,7 +197,7 @@ export default function Dashboard({ user = {} }) {
         </div>
       ) : (
         <div className="space-y-4">
-          {sites.map((s) => <SiteCard key={s.target_id} site={s} />)}
+          {sites.map((s) => <SiteCard key={s.target_id} site={s} onRemoved={load} />)}
         </div>
       )}
 
@@ -219,6 +224,9 @@ export default function Dashboard({ user = {} }) {
             <p className="mt-1 font-semibold text-white">
               {user.plan === 'free' ? 'Gratuito' : user.plan} ({maxSites} site{maxSites > 1 ? 's' : ''})
             </p>
+            {(user.role === 'technician' || user.role === 'both') && (
+              <p className="mt-1 text-sm text-brand-300">Perfil: 🔧 Profissional de TI</p>
+            )}
             <p className="mt-2 text-sm text-slate-500">Upgrade para até 5 sites — em breve.</p>
           </div>
           <a href="/dashboard/conta" className="shrink-0 text-sm text-brand-400 hover:text-brand-300">
@@ -252,13 +260,23 @@ function HistoryRow({ scan }) {
   );
 }
 
-function SiteCard({ site }) {
+function SiteCard({ site, onRemoved }) {
   const sema = SEMA[site.last_semaphore] || SEMA.amarelo;
   const nextDays = daysUntilNext(site.last_scan_at);
   const badge = badgeFor(site.last_scan_score);
   // FIX técnico no dashboard: painel expansível com Técnico responsável + compartilhar
   // laudo direto no card (antes só existia no detalhe do site, via "Ver detalhes").
   const [showTech, setShowTech] = useState(false);
+  // KL-71 Bug 8: remover site do próprio monitoramento (self-service, sem notificação).
+  const [confirmRemove, setConfirmRemove] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  async function removeSite() {
+    setRemoving(true);
+    const { ok } = await apiDelete(`/account/sites/${site.target_id}`);
+    setRemoving(false);
+    if (ok) onRemoved && onRemoved();
+    else setConfirmRemove(false);
+  }
   return (
     <div className={card}>
       <div className="flex items-start justify-between gap-4">
@@ -291,9 +309,33 @@ function SiteCard({ site }) {
           className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">
           🔧 Técnico e laudo {showTech ? '▾' : '▸'}
         </button>
+        {site.domain && (
+          <a href={`/site/${site.domain}`} target="_blank" rel="noopener noreferrer"
+            className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">
+            🌐 Perfil público
+          </a>
+        )}
         <a href="/dashboard/widget"
           className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">&lt;/&gt; Widget</a>
+        <button onClick={() => setConfirmRemove(true)}
+          className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-400 hover:bg-slate-800 hover:text-red-300">
+          Remover
+        </button>
       </div>
+      {confirmRemove && (
+        <div className="mt-4 rounded-lg border border-red-500/30 bg-red-500/5 p-4 text-sm">
+          <p className="text-slate-200">Remover <b>{site.domain || site.url}</b> do seu monitoramento?</p>
+          <p className="mt-1 text-xs text-slate-400">As vigílias deste site serão desativadas. Você pode voltar a monitorar quando quiser.</p>
+          <div className="mt-3 flex gap-2">
+            <button disabled={removing} onClick={removeSite}
+              className="rounded-lg bg-red-500/80 px-4 py-2 text-xs font-semibold text-white hover:bg-red-500 disabled:opacity-50">
+              {removing ? 'Removendo…' : 'Remover'}
+            </button>
+            <button onClick={() => setConfirmRemove(false)}
+              className="rounded-lg border border-slate-700 px-4 py-2 text-xs text-slate-300 hover:bg-slate-800">Cancelar</button>
+          </div>
+        </div>
+      )}
       {showTech && (
         <div className="mt-4">
           <TechnicianSection targetId={site.target_id} />

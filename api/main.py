@@ -537,7 +537,9 @@ async def _process_claim(store, user: dict, email: str, url: Optional[str]) -> d
             return info
         info["domain"] = domain
         info["target_id"] = tid
-        owns = await _email_owns_target(email, tid)
+        # KL-71 Bug 1: método Tier 1 = e-mail exato (auto_email) OU domínio (auto_domain).
+        method = await _ownership_method(email, tid)
+        owns = method is not None
         existing = await store.get_user_site(user["id"], tid)
         if existing is None:  # ainda não monitora → respeita o limite do plano
             if await store.count_user_sites(user["id"]) >= int(user.get("max_sites", 1)):
@@ -550,8 +552,9 @@ async def _process_claim(store, user: dict, email: str, url: Optional[str]) -> d
             can_own = (not existing.get("is_owner") and owns
                        and not await store.site_has_owner(tid, exclude_user_id=user["id"]))
         is_owner = bool((existing or {}).get("is_owner")) or can_own
-        if can_own:  # auto-verificação Tier 1 (e-mail == contact_email)
-            await store.mark_site_verified(user["id"], tid, "auto_email")
+        if can_own:  # auto-verificação Tier 1 (e-mail == contact_email OU domínio do e-mail)
+            await store.mark_site_verified(user["id"], tid, method or "auto_email")
+            info["verification_method"] = method
         info.update({"site_added": True, "is_owner": is_owner})
         if not is_owner:  # tem contato público e ninguém é dono → verificação por código
             t = await store.get_target(tid)
@@ -587,10 +590,11 @@ async def _create_account_record(store, email: str, password_hash: str,
             for tid in await store.get_targets_scanned_by_email(email, limit=max_sites):
                 if used >= max_sites:
                     break
-                owns = await _email_owns_target(email, tid) and not await store.site_has_owner(tid)
+                method = await _ownership_method(email, tid)
+                owns = method is not None and not await store.site_has_owner(tid)
                 if await store.link_user_site(user["id"], tid, is_owner=owns):
                     if owns:
-                        await store.mark_site_verified(user["id"], tid, "auto_email")
+                        await store.mark_site_verified(user["id"], tid, method)
                     used += 1
     except Exception as exc:  # noqa: BLE001 - histórico é best-effort
         print(f"[account] vínculo de histórico falhou {email}: {exc!r}", flush=True)
@@ -870,6 +874,44 @@ async def _email_owns_target(email: str, target_id: int) -> bool:
     return bool(ce) and ce.lower().strip() == (email or "").lower().strip()
 
 
+# KL-71 Bug 1 — provedores de e-mail públicos: NÃO valem para auto-verificação por domínio
+# (email@gmail.com não prova ser dono de gmail.com). Lista curta dos comuns no Brasil.
+PUBLIC_EMAIL_PROVIDERS = {
+    "gmail.com", "hotmail.com", "outlook.com", "yahoo.com", "yahoo.com.br", "live.com",
+    "aol.com", "protonmail.com", "proton.me", "zoho.com", "icloud.com", "me.com", "mail.com",
+    "yandex.com", "gmx.com", "uol.com.br", "bol.com.br", "terra.com.br", "ig.com.br",
+    "globo.com", "globomail.com", "r7.com", "hotmail.com.br", "outlook.com.br",
+}
+
+
+def _email_domain(email: str) -> str:
+    return (email or "").split("@")[-1].lower().strip()
+
+
+async def _ownership_method(email: str, target_id: int) -> Optional[str]:
+    """KL-71 Bug 1 — método de auto-verificação Tier 1 (sem código), com precedência:
+    (1) `auto_email` se o e-mail == contact_email do alvo;
+    (2) `auto_domain` se o domínio do e-mail == domínio do site (removido `www.`) E NÃO é
+        provedor público (gmail/hotmail/…). None se nenhum. First-come é checado à parte."""
+    try:
+        t = await get_target_store().get_target(target_id)
+    except Exception:  # noqa: BLE001
+        return None
+    if not t:
+        return None
+    email_n = (email or "").lower().strip()
+    ce = ((t or {}).get("contact_email") or "").lower().strip()
+    if ce and ce == email_n:
+        return "auto_email"
+    edom = _email_domain(email_n)
+    sdom = (t.get("domain") or "").lower().strip()
+    if sdom.startswith("www."):
+        sdom = sdom[4:]
+    if edom and edom == sdom and edom not in PUBLIC_EMAIL_PROVIDERS:
+        return "auto_domain"
+    return None
+
+
 @app.get("/account/sites")
 async def account_sites(request: Request) -> dict:
     user = await auth_users.require_user(request)
@@ -1019,11 +1061,13 @@ async def account_add_site(body: SiteBody, request: Request) -> dict:
     tid = await _resolve_or_create_target(body.url, source="dashboard")
     if not tid:
         raise HTTPException(status_code=400, detail="Não foi possível analisar esta URL.")
-    # KL-68: auto-verificação Tier 1 (e-mail == contact_email), first-come-first-served.
-    owner = await _email_owns_target(user["email"], tid) and not await store.site_has_owner(tid)
+    # KL-68/KL-71: auto-verificação Tier 1 (e-mail == contact_email OU domínio do e-mail ==
+    # domínio do site), first-come-first-served.
+    method = await _ownership_method(user["email"], tid)
+    owner = method is not None and not await store.site_has_owner(tid)
     await store.link_user_site(user["id"], tid, is_owner=owner)
     if owner:
-        await store.mark_site_verified(user["id"], tid, "auto_email")
+        await store.mark_site_verified(user["id"], tid, method)
     # KL-61: marca o lead como tendo monitoramento (fire-and-forget).
     _spawn(_safe_lead(store.set_lead_monitoring(user["email"])))
     # KL-44 P2: cria as vigílias do plano para o novo site (fire-and-forget).
@@ -1037,11 +1081,30 @@ async def account_add_site(body: SiteBody, request: Request) -> dict:
 
 @app.delete("/account/sites/{target_id}")
 async def account_remove_site(target_id: int, request: Request) -> dict:
+    """KL-71 Bug 8 — remoção self-service do próprio monitoramento (JWT do usuário). Sem
+    notificação (o próprio dono está removendo — diferente do remove-site admin, que
+    notifica). Revoga a propriedade (se era dono) e desativa as vigílias desse site."""
     user = await auth_users.require_user(request)
-    removed = await get_target_store().unlink_user_site(user["id"], target_id)
+    store = get_target_store()
+    link = await store.get_user_site(user["id"], target_id)
+    if not link:
+        raise HTTPException(status_code=404, detail="Site não encontrado na sua conta.")
+    target = await store.get_target(target_id)
+    domain = (target or {}).get("domain") or ""
+    if link.get("is_owner"):  # revoga a propriedade (para auditoria)
+        try:
+            await store.mark_ownership_revoked(user["id"], target_id)
+        except Exception as exc:  # noqa: BLE001 - best-effort
+            print(f"[account] revoke ownership falhou u={user['id']} t={target_id}: {exc!r}", flush=True)
+    if domain:  # desativa as vigílias desse site para este usuário
+        try:
+            await store.disable_user_site_vigilias(user["id"], domain)
+        except Exception as exc:  # noqa: BLE001 - best-effort
+            print(f"[account] disable vigilias falhou u={user['id']} d={domain}: {exc!r}", flush=True)
+    removed = await store.unlink_user_site(user["id"], target_id)
     if not removed:
         raise HTTPException(status_code=404, detail="Site não encontrado na sua conta.")
-    return {"ok": True}
+    return {"ok": True, "removed": True, "domain": domain}
 
 
 @app.post("/account/sites/{target_id}/claim")
@@ -1053,12 +1116,15 @@ async def account_claim_site(target_id: int, request: Request) -> dict:
     link = await store.get_user_site(user["id"], target_id)
     if not link:
         raise HTTPException(status_code=404, detail="Vincule o site à sua conta primeiro.")
-    if not await _email_owns_target(user["email"], target_id):
+    if await store.site_has_owner(target_id, exclude_user_id=user["id"]):  # first-come
+        raise HTTPException(status_code=409, detail="Este site já tem um dono verificado.")
+    method = await _ownership_method(user["email"], target_id)  # KL-71: e-mail OU domínio
+    if not method:
         raise HTTPException(
             status_code=403,
             detail="Não foi possível confirmar a propriedade: o e-mail da conta não "
-                   "corresponde ao contato público do site.")
-    await store.mark_site_verified(user["id"], target_id, "auto_email")
+                   "corresponde ao contato público nem ao domínio do site.")
+    await store.mark_site_verified(user["id"], target_id, method)
     return {"ok": True, "is_owner": True}
 
 
@@ -1152,6 +1218,7 @@ async def ownership_status(target_id: int, request: Request) -> dict:
         "monitored": bool(link),
         "verification_available": bool(link and not is_owner and not has_other_owner and has_contact),
         "has_pending_verification": pending is not None,
+        "has_other_owner": bool(has_other_owner),   # KL-71 Bug 3: site tem outro dono
     }
 
 
@@ -1203,6 +1270,17 @@ async def technician_invite(body: TechnicianInviteBody, request: Request) -> dic
     store = get_target_store()
     if not await store.get_user_site(user["id"], body.target_id):
         raise HTTPException(status_code=404, detail="Vincule o site à sua conta primeiro.")
+    # KL-71 Bug 6: validação de conflito de papel.
+    if email == (user["email"] or "").lower().strip():
+        raise HTTPException(status_code=422, detail="Você não pode se convidar como técnico.")
+    owner = await store.get_target_owner(body.target_id)
+    if owner and (owner.get("email") or "").lower().strip() == email:
+        raise HTTPException(status_code=422, detail="Este e-mail já é o dono verificado deste site.")
+    existing = [l for l in await store.get_technician_links(user["id"], body.target_id)
+                if (l.get("technician_email") or "").lower().strip() == email
+                and l.get("status") == "active"]
+    if existing:
+        raise HTTPException(status_code=422, detail="Este técnico já está vinculado a este site.")
     invite_code = _gen_code(8)
     link = await store.create_technician_link(user["id"], body.target_id, email, invite_code)
     if not link:
@@ -1210,6 +1288,13 @@ async def technician_invite(body: TechnicianInviteBody, request: Request) -> dic
     target = await store.get_target(body.target_id)
     domain = (target or {}).get("domain") or _norm_domain((target or {}).get("url") or "")
     shared = await _make_shared_report(store, user["id"], body.target_id, tech_link_id=link["id"])
+    if not shared:  # KL-71 Bug 4: sem scan ainda → escaneia agora p/ gerar um laudo válido
+        try:
+            await _safe_scan((target or {}).get("url") or f"https://{domain}",
+                             full=True, ingest_source="admin")
+            shared = await _make_shared_report(store, user["id"], body.target_id, tech_link_id=link["id"])
+        except Exception as exc:  # noqa: BLE001 - o convite segue mesmo sem laudo
+            print(f"[technician] scan p/ laudo falhou {domain}: {exc!r}", flush=True)
     code = shared["code"] if shared else ""
     if _email_enabled():
         try:

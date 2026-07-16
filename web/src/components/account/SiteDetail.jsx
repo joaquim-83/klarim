@@ -60,6 +60,18 @@ function OwnershipSection({ targetId }) {
       </div>
     );
   }
+  // KL-71 Bug 3: site já tem outro dono verificado (first-come) — explica ao usuário.
+  if (st.has_other_owner) {
+    return (
+      <div className={`${card} border-slate-700 bg-slate-800/40`}>
+        <p className="text-sm font-semibold text-slate-200">ℹ️ Este site já tem um dono verificado.</p>
+        <p className="mt-1 text-sm text-slate-400">
+          Você pode continuar monitorando o score. Se você é o proprietário legítimo, entre em
+          contato com <a href="mailto:seguranca@klarim.net" className="text-brand-400 hover:text-brand-300">seguranca@klarim.net</a>.
+        </p>
+      </div>
+    );
+  }
   if (!st.verification_available) return null;
   return (
     <div className={`${card} border-brand-500/30 bg-brand-500/5`}>
@@ -146,6 +158,12 @@ export default function SiteDetail({ targetId }) {
       <div>
         <a href="/dashboard" className="text-sm text-brand-400 hover:text-brand-300">← Voltar</a>
         <h1 className="mt-1 text-2xl font-bold text-white">{t.domain || t.url}</h1>
+        {t.domain && (
+          <a href={`/site/${t.domain}`} target="_blank" rel="noopener noreferrer"
+            className="mt-1 inline-flex text-sm text-brand-400 hover:text-brand-300">
+            Ver perfil público →
+          </a>
+        )}
       </div>
 
       {/* KL-68 — verificação de propriedade */}
