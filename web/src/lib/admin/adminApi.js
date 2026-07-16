@@ -110,6 +110,11 @@ export const admin = {
   updateStatus: (id, status) => patch(`/targets/${id}/status`, { status }),
   updateEmail: (id, email) => patch(`/targets/${id}/email`, { contact_email: email }),
 
+  // propriedade / ownership (KL-68)
+  revokeOwnership: (id) => post(`/targets/${id}/revoke-ownership`),
+  ownershipStats: () => get('/admin/ownership-stats'),
+  cleanBlockedSites: (dryRun) => post(`/admin/clean-blocked-sites${dryRun ? '?dry_run=1' : ''}`),
+
   // landing pública / perfil (KL-56)
   updateProfile: (id, fields) => put(`/targets/${id}/profile`, fields),
   setProfileVisibility: (id, visible) =>

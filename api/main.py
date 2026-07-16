@@ -63,6 +63,7 @@ from discovery.classifier import classify_sector, classify_by_domain, PRICE_TIER
 from api import health_checks
 from api import auth_users
 from api import plans
+from api import domain_guard
 
 
 # --------------------------------------------------------------------------- #
@@ -326,6 +327,7 @@ _vigilia_rl: dict = {}   # KL-44 P2: rate limit dos endpoints de vigília do usu
 _config_attempts: dict = {}    # KL-44: PUT/reset config
 _password_attempts: dict = {}  # KL-44: troca de senha admin
 _rotate_attempts: dict = {}    # KL-44: rotação do token MCP
+_ownership_attempts: dict = {}  # KL-68: verificação de propriedade
 
 
 def _mask_email(email: str) -> str:
@@ -411,6 +413,7 @@ class SignupBody(BaseModel):
 class AccountLoginBody(BaseModel):
     email: str
     password: str
+    url: Optional[str] = None   # KL-68: reivindicar/monitorar o site ao entrar (claim)
 
 
 class ForgotBody(BaseModel):
@@ -507,37 +510,87 @@ async def _del_pending_signup(email: str) -> None:
     _pending_signups.pop(email, None)
 
 
+async def _process_claim(store, user: dict, email: str, url: Optional[str]) -> dict:
+    """Processa a reivindicação de um site no signup/login (KL-68): aplica o guarda de
+    domínio (público/institucional NÃO é monitorável), respeita o limite do plano,
+    vincula o site e faz a **auto-verificação Tier 1** (e-mail do usuário == contact_email
+    do alvo, first-come-first-served). Retorna as flags para o frontend. Best-effort:
+    qualquer erro devolve `site_added=False` sem derrubar a criação da conta."""
+    info = {"site_added": False, "is_owner": False, "ownership_verification_available": False}
+    if not url:
+        return info
+    try:
+        domain = _norm_domain(url)
+        blocked, reason = domain_guard.is_blocked_domain(domain)
+        if blocked:  # público/institucional: NÃO monitora (scan é livre; monitorar não)
+            info["block_reason"] = domain_guard.get_block_message(reason)
+            info["blocked_domain"] = True
+            return info
+        tid = await _resolve_or_create_target(url, source="signup")
+        if not tid:
+            return info
+        info["domain"] = domain
+        info["target_id"] = tid
+        owns = await _email_owns_target(email, tid)
+        existing = await store.get_user_site(user["id"], tid)
+        if existing is None:  # ainda não monitora → respeita o limite do plano
+            if await store.count_user_sites(user["id"]) >= int(user.get("max_sites", 1)):
+                info["limit_reached"] = True
+                return info
+            can_own = owns and not await store.site_has_owner(tid)  # first-come-first-served
+            await store.link_user_site(user["id"], tid, is_owner=can_own)
+        else:
+            info["already_monitored"] = True
+            can_own = (not existing.get("is_owner") and owns
+                       and not await store.site_has_owner(tid, exclude_user_id=user["id"]))
+        is_owner = bool((existing or {}).get("is_owner")) or can_own
+        if can_own:  # auto-verificação Tier 1 (e-mail == contact_email)
+            await store.mark_site_verified(user["id"], tid, "auto_email")
+        info.update({"site_added": True, "is_owner": is_owner})
+        if not is_owner:  # tem contato público e ninguém é dono → verificação por código
+            t = await store.get_target(tid)
+            if ((t or {}).get("contact_email")
+                    and not await store.site_has_owner(tid, exclude_user_id=user["id"])):
+                info["ownership_verification_available"] = True
+    except Exception as exc:  # noqa: BLE001 - reivindicação nunca derruba o signup/login
+        print(f"[account] claim falhou {email} / {url}: {exc!r}", flush=True)
+    return info
+
+
 async def _create_account_record(store, email: str, password_hash: str,
-                                 name: Optional[str], url: Optional[str]) -> Optional[dict]:
-    """Cria a conta + vincula sites + Pro trial + lead. Retorna o user (ou None se e-mail
-    duplicado). Compartilhado pelo signup (e-mail já verificado) e pelo /account/verify."""
+                                 name: Optional[str], url: Optional[str]) -> tuple:
+    """Cria a conta + reivindica o site (KL-68) + histórico + Pro trial + lead. Retorna
+    ``(user, claim_info)`` — `user` é None se o e-mail já existe. Compartilhado pelo signup
+    (e-mail já verificado) e pelo /account/verify."""
     user = await store.create_user(email, password_hash, name=name)
     if user is None:
-        return None
-    max_sites = int(user.get("max_sites", 1))
-    if url:
-        tid = await _resolve_or_create_target(url, source="signup")
-        if tid:
-            await store.link_user_site(user["id"], tid, is_owner=await _email_owns_target(email, tid))
+        return None, {}
+    claim = await _process_claim(store, user, email, url)  # KL-68: guard + Tier 1 auto-verify
     try:  # histórico: vincula scans anteriores do mesmo e-mail (KL-25) até o limite do plano
+        max_sites = int(user.get("max_sites", 1))
         used = await store.count_user_sites(user["id"])
         if used < max_sites:
             for tid in await store.get_targets_scanned_by_email(email, limit=max_sites):
                 if used >= max_sites:
                     break
-                if await store.link_user_site(user["id"], tid,
-                                              is_owner=await _email_owns_target(email, tid)):
+                owns = await _email_owns_target(email, tid) and not await store.site_has_owner(tid)
+                if await store.link_user_site(user["id"], tid, is_owner=owns):
+                    if owns:
+                        await store.mark_site_verified(user["id"], tid, "auto_email")
                     used += 1
     except Exception as exc:  # noqa: BLE001 - histórico é best-effort
         print(f"[account] vínculo de histórico falhou {email}: {exc!r}", flush=True)
     await store.touch_user_login(user["id"])
     _spawn(_safe_lead(store.set_lead_account(email, user["id"])))          # KL-61
     _spawn(_safe_lead(plans.create_subscription(user["id"], "pro", is_trial=True)))  # KL-44
-    return user
+    return user, claim
 
 
-def _account_session_response(user: dict) -> JSONResponse:
-    resp = JSONResponse({"user": _user_public(user)})
+def _account_session_response(user: dict, claim: Optional[dict] = None) -> JSONResponse:
+    payload = {"user": _user_public(user)}
+    if claim:  # KL-68: flags de reivindicação (site_added / is_owner / …)
+        payload["claim"] = claim
+    resp = JSONResponse(payload)
     _set_session_cookie(resp, auth_users.create_user_token(user))
     return resp
 
@@ -567,10 +620,10 @@ async def account_signup(body: SignupBody, request: Request) -> JSONResponse:
     except Exception:  # noqa: BLE001 - na dúvida, exige verificação
         already_verified = False
     if already_verified:
-        user = await _create_account_record(store, email, pw_hash, body.name or None, body.url)
+        user, claim = await _create_account_record(store, email, pw_hash, body.name or None, body.url)
         if user is None:
             raise HTTPException(status_code=409, detail="Já existe uma conta com este e-mail.")
-        return _account_session_response(user)
+        return _account_session_response(user, claim)
     # E-mail NÃO verificado → exige código (não cria a conta ainda).
     if not _email_enabled():
         raise HTTPException(status_code=503, detail="Verificação de e-mail indisponível no momento.")
@@ -616,12 +669,12 @@ async def account_verify(body: VerifySignupBody, request: Request) -> JSONRespon
     if await store.get_user_by_email(email):
         await _del_pending_signup(email)
         raise HTTPException(status_code=409, detail="Já existe uma conta com este e-mail.")
-    user = await _create_account_record(
+    user, claim = await _create_account_record(
         store, email, pending["password_hash"], pending.get("name"), pending.get("url"))
     await _del_pending_signup(email)
     if user is None:
         raise HTTPException(status_code=409, detail="Já existe uma conta com este e-mail.")
-    return _account_session_response(user)
+    return _account_session_response(user, claim)
 
 
 @app.post("/account/login")
@@ -639,10 +692,8 @@ async def account_login(body: AccountLoginBody, request: Request) -> JSONRespons
     if not user.get("is_active", True):
         raise HTTPException(status_code=403, detail="Conta desativada.")
     await store.touch_user_login(user["id"])
-    token = auth_users.create_user_token(user)
-    resp = JSONResponse({"user": _user_public(user)})
-    _set_session_cookie(resp, token)
-    return resp
+    claim = await _process_claim(store, user, email, body.url) if body.url else None  # KL-68
+    return _account_session_response(user, claim)
 
 
 @app.post("/account/logout")
@@ -934,6 +985,10 @@ async def _sync_user_vigilias(user_id: int) -> None:
 async def account_add_site(body: SiteBody, request: Request) -> dict:
     user = await auth_users.require_user(request)
     store = get_target_store()
+    # KL-68: domínio público/institucional NÃO é monitorável (o scan é livre; monitorar não).
+    blocked, reason = domain_guard.is_blocked_domain(_norm_domain(body.url or ""))
+    if blocked:
+        raise HTTPException(status_code=422, detail=domain_guard.get_block_message(reason))
     used = await store.count_user_sites(user["id"])
     limits = await _effective_plan_limits(user)
     if used >= limits["max_sites"]:
@@ -944,14 +999,20 @@ async def account_add_site(body: SiteBody, request: Request) -> dict:
     tid = await _resolve_or_create_target(body.url, source="dashboard")
     if not tid:
         raise HTTPException(status_code=400, detail="Não foi possível analisar esta URL.")
-    owner = await _email_owns_target(user["email"], tid)
+    # KL-68: auto-verificação Tier 1 (e-mail == contact_email), first-come-first-served.
+    owner = await _email_owns_target(user["email"], tid) and not await store.site_has_owner(tid)
     await store.link_user_site(user["id"], tid, is_owner=owner)
+    if owner:
+        await store.mark_site_verified(user["id"], tid, "auto_email")
     # KL-61: marca o lead como tendo monitoramento (fire-and-forget).
     _spawn(_safe_lead(store.set_lead_monitoring(user["email"])))
     # KL-44 P2: cria as vigílias do plano para o novo site (fire-and-forget).
     target = await store.get_target(tid)
     _spawn(_create_site_vigilias(user["id"], (target or {}).get("domain") or ""))
-    return {"ok": True, "target_id": tid, "is_owner": owner}
+    verification_available = bool(
+        not owner and (target or {}).get("contact_email") and not await store.site_has_owner(tid))
+    return {"ok": True, "target_id": tid, "is_owner": owner,
+            "ownership_verification_available": verification_available}
 
 
 @app.delete("/account/sites/{target_id}")
@@ -977,8 +1038,101 @@ async def account_claim_site(target_id: int, request: Request) -> dict:
             status_code=403,
             detail="Não foi possível confirmar a propriedade: o e-mail da conta não "
                    "corresponde ao contato público do site.")
-    await store.set_user_site_owner(user["id"], target_id, True)
+    await store.mark_site_verified(user["id"], target_id, "auto_email")
     return {"ok": True, "is_owner": True}
+
+
+# --------------------------------------------------------------------------- #
+# KL-68 — verificação de propriedade por código (Tier 2). Namespace /account/* (JWT
+# de usuário). O contact_email do alvo NUNCA é exposto — só o hint mascarado.
+# --------------------------------------------------------------------------- #
+
+class OwnershipTargetBody(BaseModel):
+    target_id: int
+
+
+class OwnershipVerifyBody(BaseModel):
+    target_id: int
+    code: str
+
+
+@app.post("/account/ownership/request-verification")
+async def ownership_request(body: OwnershipTargetBody, request: Request) -> dict:
+    """Envia um código de 6 dígitos ao **contact_email** do alvo (nunca exposto) para o
+    usuário provar a propriedade. Rate limit 5/h/IP. Retorna só o e-mail mascarado."""
+    user = await auth_users.require_user(request)
+    allowed, retry = await _redis_allow("ownership_req", _client_ip(request), 5, 3600,
+                                        _ownership_attempts)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Muitas solicitações. Aguarde um pouco.",
+                            headers={"Retry-After": str(retry)})
+    store = get_target_store()
+    tid = body.target_id
+    if not await store.get_user_site(user["id"], tid):
+        raise HTTPException(status_code=404, detail="Vincule o site à sua conta primeiro.")
+    if await store.site_has_owner(tid, exclude_user_id=user["id"]):
+        raise HTTPException(status_code=409, detail="Este site já tem um dono verificado.")
+    target = await store.get_target(tid)
+    contact = ((target or {}).get("contact_email") or "").strip()
+    if not contact:
+        raise HTTPException(status_code=400,
+                            detail="Não há um e-mail de contato público neste site para verificar.")
+    if not _email_enabled():
+        raise HTTPException(status_code=503, detail="Verificação por e-mail indisponível no momento.")
+    domain = (target or {}).get("domain") or _norm_domain((target or {}).get("url") or "")
+    code = f"{secrets.randbelow(900000) + 100000:06d}"  # CSPRNG, 6 dígitos
+    await store.create_ownership_verification(user["id"], tid, "code_to_contact", code)
+    try:
+        await _mailer().send_ownership_verification(contact, domain, code)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[ownership] falha ao enviar código para {domain}: {exc!r}", flush=True)
+        raise HTTPException(status_code=502, detail="Falha ao enviar o código de verificação.") from exc
+    return {"sent": True, "email_hint": _mask_email(contact)}
+
+
+@app.post("/account/ownership/verify")
+async def ownership_verify(body: OwnershipVerifyBody, request: Request) -> dict:
+    """Valida o código. 3 tentativas; expira em 30 min. Ao acertar, marca o usuário como
+    dono verificado (`verification_method='code_verification'`)."""
+    user = await auth_users.require_user(request)
+    allowed, _ = await _redis_allow("ownership_verify", _client_ip(request), 10, 600,
+                                    _ownership_attempts)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde alguns minutos.")
+    store = get_target_store()
+    tid = body.target_id
+    if not await store.get_user_site(user["id"], tid):
+        raise HTTPException(status_code=404, detail="Site não encontrado na sua conta.")
+    if await store.site_has_owner(tid, exclude_user_id=user["id"]):
+        raise HTTPException(status_code=409, detail="Este site já tem um dono verificado.")
+    pending = await store.get_pending_ownership_verification(user["id"], tid)
+    if not pending:
+        return {"verified": False, "attempts_remaining": 0, "error": "expired"}
+    if hmac.compare_digest(str(body.code or "").strip(), str(pending.get("code") or "")):
+        await store.mark_ownership_verified(pending["id"])
+        await store.mark_site_verified(user["id"], tid, "code_verification")
+        return {"verified": True}
+    attempts = await store.bump_ownership_attempt(pending["id"])
+    return {"verified": False, "attempts_remaining": max(0, 3 - attempts)}
+
+
+@app.get("/account/ownership/status")
+async def ownership_status(target_id: int, request: Request) -> dict:
+    """Estado da propriedade de um site para o usuário logado (KL-68)."""
+    user = await auth_users.require_user(request)
+    store = get_target_store()
+    link = await store.get_user_site(user["id"], target_id)
+    is_owner = bool(link and link.get("is_owner"))
+    has_other_owner = await store.site_has_owner(target_id, exclude_user_id=user["id"])
+    pending = (await store.get_pending_ownership_verification(user["id"], target_id)) if link else None
+    target = await store.get_target(target_id)
+    has_contact = bool((target or {}).get("contact_email"))
+    return {
+        "is_owner": is_owner,
+        "monitored": bool(link),
+        "verification_available": bool(link and not is_owner and not has_other_owner and has_contact),
+        "has_pending_verification": pending is not None,
+    }
 
 
 @app.get("/")
@@ -1173,6 +1327,9 @@ async def public_profile(domain: str) -> dict:
         benchmark = None
 
     last_at = target.get("last_scan_at")
+    # KL-68: há dono verificado? (não expõe QUEM). Domínio público não é reivindicável.
+    owner_verified = await store.site_has_owner(tid)
+    blocked, block_reason = domain_guard.is_blocked_domain(domain)
     return {
         "status": "ok",
         "domain": domain,
@@ -1187,6 +1344,10 @@ async def public_profile(domain: str) -> dict:
         "profile": {k: profile.get(k) for k in _PUBLIC_PROFILE_FIELDS},
         "classifications": classifications,
         "benchmark": benchmark,
+        # KL-68 — reivindicação/propriedade (nunca expõe e-mail/quem é o dono):
+        "owner_verified": owner_verified,
+        "claimable": not blocked,
+        "block_message": domain_guard.get_block_message(block_reason) if blocked else None,
     }
 
 
@@ -3073,6 +3234,11 @@ async def api_get_target(target_id: int) -> dict:
         target["classifications"] = await store.get_target_classifications(target_id)
     except Exception:  # noqa: BLE001
         target["classifications"] = []
+    # KL-68: dono verificado (admin), se houver — inclui e-mail + como/quando verificou.
+    try:
+        target["owner"] = await store.get_target_owner(target_id)
+    except Exception:  # noqa: BLE001
+        target["owner"] = None
     return target
 
 
@@ -3132,6 +3298,17 @@ async def api_targets_discard(target_id: int) -> dict:
         raise HTTPException(status_code=404, detail="Alvo não encontrado.")
     await store.update_status(target_id, "descartado")
     return {"target_id": target_id, "status": "descartado"}
+
+
+@app.post("/targets/{target_id}/revoke-ownership")
+async def api_revoke_ownership(target_id: int) -> dict:
+    """Admin override (KL-68): remove a marca de dono verificado do alvo. O usuário segue
+    monitorando o site; só perde o selo de dono. Retorna quantos vínculos foram afetados."""
+    store = get_target_store()
+    if await store.get_target(target_id) is None:
+        raise HTTPException(status_code=404, detail="Alvo não encontrado.")
+    affected = await store.revoke_ownership(target_id)
+    return {"target_id": target_id, "revoked": affected}
 
 
 @app.get("/scans")
@@ -4788,6 +4965,35 @@ async def admin_clients() -> dict:
     total_sites = sum(len(c.get("sites") or []) for c in clients)
     return {"clients": clients, "total": len(clients),
             "active": active, "total_sites": total_sites}
+
+
+@app.get("/admin/ownership-stats")
+async def admin_ownership_stats() -> dict:
+    """Métricas de verificação de propriedade (KL-68): donos verificados, por método,
+    funil de verificações e taxa de sites com dono."""
+    return await get_target_store().ownership_stats()
+
+
+@app.post("/admin/clean-blocked-sites")
+async def admin_clean_blocked_sites(request: Request) -> dict:
+    """Limpeza retroativa (KL-68): remove de `user_sites` os vínculos cujo domínio é
+    público/institucional (gmail.com, python.org, .gov.br…). Não apaga a conta — só o
+    vínculo. Idempotente. `dry_run=1` só conta, sem remover."""
+    dry = request.query_params.get("dry_run") in ("1", "true", "yes")
+    store = get_target_store()
+    rows = await store.list_user_sites_min()
+    blocked, reasons = [], {}
+    for r in rows:
+        is_blk, reason = domain_guard.is_blocked_domain(r.get("domain") or "")
+        if is_blk:
+            blocked.append(r["id"])
+            dom = domain_guard._normalize(r.get("domain") or "")
+            reasons[dom] = reason
+    removed = 0 if dry else await store.remove_user_sites_by_ids(blocked)
+    print(f"[cleanup] sites bloqueados: {len(blocked)} encontrados, "
+          f"{removed} removidos (dry_run={dry})", flush=True)
+    return {"found": len(blocked), "removed": removed, "dry_run": dry,
+            "domains": sorted(reasons.keys()), "by_reason": reasons}
 
 
 # --------------------------------------------------------------------------- #

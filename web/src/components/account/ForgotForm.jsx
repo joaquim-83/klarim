@@ -3,9 +3,10 @@ import { apiPost } from '../../lib/api.js';
 import { field, btn, card, label, errorBox, okBox } from './ui.js';
 
 // Recuperação de senha em 2 passos na mesma tela: e-mail → código+nova senha.
-export default function ForgotForm() {
+// KL-68: preserva url/email (claim) para voltar ao login carregando o contexto.
+export default function ForgotForm({ url = '', email: initialEmail = '' }) {
   const [step, setStep] = useState('email'); // email | reset | done
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(initialEmail);
   const [code, setCode] = useState('');
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -35,12 +36,17 @@ export default function ForgotForm() {
     else setError(err || 'Código inválido ou expirado.');
   }
 
+  const navQ = new URLSearchParams();
+  if (url) navQ.set('url', url);
+  if (email) navQ.set('email', email);
+  const loginHref = `/entrar${navQ.toString() ? `?${navQ}` : ''}`;
+
   if (step === 'done') {
     return (
       <div className={card}>
         <h1 className="text-2xl font-bold text-white">Senha redefinida</h1>
         <p className="mt-3 text-slate-300">Sua senha foi atualizada com sucesso.</p>
-        <a href="/entrar" className="mt-6 inline-block text-brand-400 hover:text-brand-300">Entrar →</a>
+        <a href={loginHref} className="mt-6 inline-block text-brand-400 hover:text-brand-300">Entrar →</a>
       </div>
     );
   }

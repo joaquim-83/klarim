@@ -55,6 +55,9 @@ class FakeStore:
     async def get_target_classifications(self, target_id):
         return []
 
+    async def site_has_owner(self, target_id, exclude_user_id=None):  # KL-68
+        return False
+
     async def sector_avg_score(self, sector):
         return {"avg": 70.0, "count": 10}
 

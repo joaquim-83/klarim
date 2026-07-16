@@ -10,10 +10,28 @@ const PLAN_LABEL = { free: 'Gratuito', basic: 'Básico', enterprise: 'Enterprise
 export default function ClientesPage() {
   const [data, setData] = useState(null)
   const [error, setError] = useState('')
+  const [cleanMsg, setCleanMsg] = useState('')
+  const [cleaning, setCleaning] = useState(false)
 
   useEffect(() => {
     admin.clients().then(setData).catch((e) => setError(e.message || 'Erro ao carregar.'))
   }, [])
+
+  // KL-68 — limpeza retroativa de sites de domínio público/institucional (gmail.com…).
+  async function cleanBlocked() {
+    setCleaning(true); setCleanMsg('')
+    try {
+      const dry = await admin.cleanBlockedSites(true)
+      if (!dry.found) { setCleanMsg('Nenhum site bloqueado encontrado.'); return }
+      if (!window.confirm(`Remover ${dry.found} vínculo(s) de domínios bloqueados?\n${(dry.domains || []).join(', ')}`)) return
+      const res = await admin.cleanBlockedSites(false)
+      setCleanMsg(`${res.removed} vínculo(s) removido(s).`)
+    } catch (e) {
+      setCleanMsg(e.message || 'Falha na limpeza.')
+    } finally {
+      setCleaning(false)
+    }
+  }
 
   let body
   if (error) body = <ErrorBox message={error} />
@@ -22,7 +40,16 @@ export default function ClientesPage() {
     const clients = data.clients || []
     body = (
       <div className="space-y-6">
-        <h1 className="text-xl font-bold">Gestão de Clientes</h1>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h1 className="text-xl font-bold">Gestão de Clientes</h1>
+          <div className="flex items-center gap-3">
+            {cleanMsg && <span className="text-sm text-klarim-muted">{cleanMsg}</span>}
+            <button onClick={cleanBlocked} disabled={cleaning}
+              className="rounded-lg border border-klarim-border px-3 py-1.5 text-sm text-klarim-muted hover:text-klarim-text disabled:opacity-50">
+              {cleaning ? 'Verificando…' : 'Remover sites bloqueados'}
+            </button>
+          </div>
+        </div>
 
         <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
           <StatCard label="Contas" value={data.total ?? 0} />

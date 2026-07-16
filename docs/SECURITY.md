@@ -84,6 +84,24 @@ Na dúvida, trate o alvo como site de terceiro que só autorizou olhar o que é 
 - Landing do perfil pode ser editada pelo admin (`edited_by_admin`) — o enrich
   automático **preserva** esses campos.
 
+### Verificação de propriedade (KL-68)
+
+- **`contact_email` nunca é exposto.** A auto-verificação Tier 1 compara o e-mail da
+  conta ao `contact_email` do alvo **no servidor**; o Tier 2 envia um código de 6 dígitos
+  **ao `contact_email`** e o frontend só recebe o `email_hint` **mascarado**
+  (`con****@empresa.com.br`).
+- **First-come-first-served:** um site tem no máximo 1 dono verificado; `site_has_owner`
+  bloqueia (409) um segundo usuário — impede sequestro de perfil.
+- **Código:** 6 dígitos CSPRNG, TTL 30 min, **3 tentativas** (depois `failed`),
+  comparação constant-time (`hmac.compare_digest`).
+- **Rate limit:** `POST /account/ownership/request-verification` 5/h/IP;
+  `/verify` 10/10min/IP (Redis + fallback in-memory).
+- **Domain guard** (`api/domain_guard.py`): domínios públicos/institucionais
+  (gmail.com, google.com, `.gov.br`, `.edu.br`…) **não** podem ser monitorados nem
+  reivindicados (422 no `POST /account/sites`; sem CTA no perfil público). O **scan
+  continua livre** (vitrine da plataforma) — só o monitoramento/reivindicação é bloqueado.
+- Email de verificação é **transacional** (`seguranca@klarim.net`), nunca proativo.
+
 ## 6. Reputação de e-mail (anti-bounce, KL-24/62)
 
 - **Isolamento de reputação:** proativo de `alerta@klarimscan.com` (domínio separado, em

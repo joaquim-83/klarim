@@ -67,6 +67,7 @@ EMAIL_TYPES = {
     "admin_alert": "Alerta admin (scan-and-report)",
     "admin_report": "Relatório admin",
     "signup_verification": "Código de cadastro (conta)",
+    "ownership_verification": "Verificação de propriedade (KL-68)",
     "vigilia_ssl": "Vigília — certificado SSL",
     "vigilia_domain": "Vigília — registro do domínio",
     "vigilia_score": "Vigília — score de segurança",
@@ -709,6 +710,20 @@ class KlarimMailer:
             "subject": f"🔐 Seu código Klarim: {code}",
             "html": html,
         }, email_type="verification_code", domain=domain, source="scan_public",
+            skip_blocklist=True)
+
+    async def send_ownership_verification(self, to_email: str, domain: str,
+                                          code: str) -> Dict[str, Any]:
+        """Envia o código de verificação de PROPRIEDADE ao contact_email do site (KL-68).
+        Transacional (via `seguranca@klarim.net`, o remetente normal) — o dono do site
+        pediu para provar a posse. Ignora a blocklist, mas é registrado (KL-62)."""
+        html = _env.get_template("ownership_verification.html").render(code=code, domain=domain)
+        return await self._send({
+            "from": self.from_address,
+            "to": [to_email],
+            "subject": f"Código de verificação — {domain}",
+            "html": html,
+        }, email_type="ownership_verification", domain=domain, source="ownership",
             skip_blocklist=True)
 
     async def send_signup_verification_code(self, to_email: str, code: str) -> Dict[str, Any]:

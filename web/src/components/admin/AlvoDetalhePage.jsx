@@ -76,6 +76,25 @@ export default function AlvoDetalhePage() {
         </div>
         {msg && <div className="text-sm text-klarim-muted">{msg}</div>}
 
+        {/* KL-68 — dono verificado */}
+        {data.owner && (
+          <Card title="Dono verificado (KL-68)">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="text-sm">
+                <p className="text-klarim-text">{data.owner.email}</p>
+                <p className="text-klarim-muted">
+                  Método: {data.owner.verification_method || '—'}
+                  {data.owner.verified_at ? ` · ${new Date(data.owner.verified_at + 'Z').toLocaleDateString('pt-BR')}` : ''}
+                </p>
+              </div>
+              <Button variant="danger" disabled={busy === 'revoke'}
+                onClick={() => act(admin.revokeOwnership, 'Propriedade revogada', 'revoke')}>
+                Revogar propriedade
+              </Button>
+            </div>
+          </Card>
+        )}
+
         {/* Ficha */}
         <Card title="Dados do alvo">
           <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">

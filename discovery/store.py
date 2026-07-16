@@ -249,6 +249,28 @@ CREATE TABLE IF NOT EXISTS user_sites (
 CREATE INDEX IF NOT EXISTS idx_us_user ON user_sites(user_id);
 CREATE INDEX IF NOT EXISTS idx_us_target ON user_sites(target_id);
 
+-- KL-68: verificação de propriedade (ownership) em tiers. `is_owner` já existe;
+-- registramos quando e como foi verificado (auditoria).
+ALTER TABLE user_sites ADD COLUMN IF NOT EXISTS verified_at TIMESTAMPTZ;
+ALTER TABLE user_sites ADD COLUMN IF NOT EXISTS verification_method VARCHAR(20);  -- 'auto_email' | 'code_verification' | NULL
+
+-- Tentativas de verificação de propriedade por código (Tier 2, KL-68). Código enviado
+-- ao contact_email do alvo (nunca exposto), TTL 30 min, máx 3 tentativas.
+CREATE TABLE IF NOT EXISTS ownership_verifications (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    target_id INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    method VARCHAR(20) NOT NULL,           -- 'auto_email' | 'code_to_contact'
+    code VARCHAR(6),
+    attempts INTEGER DEFAULT 0,
+    status VARCHAR(20) DEFAULT 'pending',  -- 'pending' | 'verified' | 'expired' | 'failed'
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    verified_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ DEFAULT (NOW() + INTERVAL '30 minutes')
+);
+CREATE INDEX IF NOT EXISTS idx_ownership_verif_user_target ON ownership_verifications(user_id, target_id);
+CREATE INDEX IF NOT EXISTS idx_ownership_verif_status ON ownership_verifications(status);
+
 -- Recuperação de senha: código 6 dígitos, TTL curto, rate-limited (KL-51 f3).
 CREATE TABLE IF NOT EXISTS password_resets (
     id SERIAL PRIMARY KEY,
@@ -1589,6 +1611,149 @@ class TargetStore:
             cur.execute("UPDATE user_sites SET is_owner = %s "
                         "WHERE user_id = %s AND target_id = %s", (is_owner, user_id, target_id))
             return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- verificação de propriedade (ownership, KL-68) --------------------- #
+
+    async def site_has_owner(self, target_id: int, exclude_user_id: Optional[int] = None) -> bool:
+        """True se algum usuário já é dono verificado do alvo (first-come-first-served).
+        `exclude_user_id` ignora um usuário (ex.: o próprio, ao revalidar)."""
+        def _fn(cur):
+            if exclude_user_id is not None:
+                cur.execute("SELECT 1 FROM user_sites WHERE target_id = %s AND is_owner = TRUE "
+                            "AND user_id <> %s LIMIT 1", (target_id, exclude_user_id))
+            else:
+                cur.execute("SELECT 1 FROM user_sites WHERE target_id = %s AND is_owner = TRUE "
+                            "LIMIT 1", (target_id,))
+            return cur.fetchone() is not None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def mark_site_verified(self, user_id: int, target_id: int, method: str) -> bool:
+        """Marca o vínculo como dono verificado (KL-68): `is_owner=TRUE`, `verified_at=NOW()`
+        e registra o método (`auto_email` | `code_verification`). Retorna True se afetou."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE user_sites SET is_owner = TRUE, verified_at = NOW(), "
+                "verification_method = %s WHERE user_id = %s AND target_id = %s",
+                (method, user_id, target_id))
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def create_ownership_verification(self, user_id: int, target_id: int,
+                                            method: str, code: str) -> Dict[str, Any]:
+        """Cria uma verificação pendente (Tier 2). Expira as pendências anteriores do
+        mesmo (usuário, alvo) para não acumular códigos válidos. TTL 30 min (default do schema)."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE ownership_verifications SET status = 'expired' "
+                "WHERE user_id = %s AND target_id = %s AND status = 'pending'",
+                (user_id, target_id))
+            cur.execute(
+                "INSERT INTO ownership_verifications (user_id, target_id, method, code) "
+                "VALUES (%s, %s, %s, %s) RETURNING id, expires_at",
+                (user_id, target_id, method, code))
+            return self._rows_to_dicts(cur)[0]
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_pending_ownership_verification(self, user_id: int, target_id: int
+                                                 ) -> Optional[Dict[str, Any]]:
+        """Verificação pendente, não expirada e com tentativas < 3 (a mais recente)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT id, code, attempts, status, expires_at FROM ownership_verifications "
+                "WHERE user_id = %s AND target_id = %s AND status = 'pending' "
+                "  AND expires_at > NOW() AND attempts < 3 "
+                "ORDER BY created_at DESC LIMIT 1", (user_id, target_id))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def bump_ownership_attempt(self, verification_id: int) -> int:
+        """Incrementa attempts; se chegar a 3, marca 'failed'. Retorna o novo attempts."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE ownership_verifications SET attempts = attempts + 1, "
+                "status = CASE WHEN attempts + 1 >= 3 THEN 'failed' ELSE status END "
+                "WHERE id = %s RETURNING attempts", (verification_id,))
+            row = cur.fetchone()
+            return int(row[0]) if row else 3
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def mark_ownership_verified(self, verification_id: int) -> None:
+        await asyncio.to_thread(self._run, lambda cur: cur.execute(
+            "UPDATE ownership_verifications SET status = 'verified', verified_at = NOW() "
+            "WHERE id = %s", (verification_id,)))
+
+    async def get_target_owner(self, target_id: int) -> Optional[Dict[str, Any]]:
+        """Dono verificado do alvo (admin): e-mail + quando/como verificou. None se não há."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT u.id AS user_id, u.email, us.verified_at, us.verification_method "
+                "FROM user_sites us JOIN users u ON u.id = us.user_id "
+                "WHERE us.target_id = %s AND us.is_owner = TRUE "
+                "ORDER BY us.verified_at ASC NULLS LAST LIMIT 1", (target_id,))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def revoke_ownership(self, target_id: int) -> int:
+        """Admin override: remove a marca de dono de todos os vínculos do alvo. Retorna
+        quantos foram afetados. Não remove o vínculo (o usuário segue monitorando)."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE user_sites SET is_owner = FALSE, verified_at = NULL, "
+                "verification_method = NULL WHERE target_id = %s AND is_owner = TRUE",
+                (target_id,))
+            return cur.rowcount
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def ownership_stats(self) -> Dict[str, Any]:
+        """Métricas de verificação de propriedade (KL-68 / analytics KL-57)."""
+        def _fn(cur):
+            out: Dict[str, Any] = {}
+            cur.execute("SELECT COUNT(*) FROM user_sites WHERE is_owner = TRUE")
+            out["verified_owners"] = int(cur.fetchone()[0])
+            cur.execute("SELECT COALESCE(verification_method,'legacy') m, COUNT(*) "
+                        "FROM user_sites WHERE is_owner = TRUE GROUP BY 1")
+            out["by_method"] = {r[0]: int(r[1]) for r in cur.fetchall()}
+            cur.execute("SELECT status, COUNT(*) FROM ownership_verifications GROUP BY status")
+            out["verifications"] = {r[0]: int(r[1]) for r in cur.fetchall()}
+            cur.execute("SELECT COUNT(*) FROM user_sites")
+            total_sites = int(cur.fetchone()[0])
+            out["total_monitored"] = total_sites
+            out["owner_rate"] = round(out["verified_owners"] / total_sites, 3) if total_sites else 0.0
+            return out
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def list_user_sites_min(self) -> List[Dict[str, Any]]:
+        """(id do vínculo, user_id, target_id, domínio) de TODOS os vínculos — para a
+        limpeza de domínios bloqueados (KL-68). Domínio derivado de `domain`/`url`."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT us.id, us.user_id, us.target_id, "
+                "       COALESCE(t.domain, t.url) AS domain "
+                "FROM user_sites us JOIN targets t ON t.id = us.target_id")
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def remove_user_sites_by_ids(self, ids: List[int]) -> int:
+        """Remove vínculos user_sites por id (KL-68 — limpeza de domínios bloqueados)."""
+        if not ids:
+            return 0
+
+        def _fn(cur):
+            cur.execute("DELETE FROM user_sites WHERE id = ANY(%s)", (list(ids),))
+            return cur.rowcount
 
         return await asyncio.to_thread(self._run, _fn)
 

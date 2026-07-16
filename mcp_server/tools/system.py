@@ -101,3 +101,11 @@ async def get_config() -> dict:
     """Configuração operacional em uso: batch size, intervalos, limites mensais,
     timeouts, etc. (somente leitura, sem segredos)."""
     return await _guard(lambda: _api().api_config())
+
+
+@mcp.tool()
+async def get_ownership_stats() -> dict:
+    """Verificação de propriedade de sites (KL-68): total de donos verificados, por
+    método (auto_email vs code_verification), funil de verificações por status
+    (pending/verified/expired/failed) e taxa de sites monitorados com dono."""
+    return await _guard(lambda: _store().ownership_stats())

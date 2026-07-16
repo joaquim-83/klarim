@@ -284,6 +284,9 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
 - **KL-51** — Plataforma Astro (fases 1–5 ✅)
 - **KL-61** — Gestão de Leads / PQL ✅ · **KL-62** — email_log unificado ✅
 - **KL-63** — MCP OAuth 2.1 ✅ · **KL-65** — SEO/Schema.org ✅ · **KL-66** — contato nos perfis ✅
+- **KL-68** — Reivindicação de site + verificação de propriedade em tiers ✅ (auto por
+  e-mail == contact_email; código 6 díg. ao contact_email; domain guard bloqueia
+  monitorar domínio público/institucional; `contact_email` nunca exposto — só `email_hint`)
 - **KL-64** — Analytics tracker (pendente) · **KL-67** — qualidade do profiler (pendente)
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos

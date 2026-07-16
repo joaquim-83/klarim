@@ -148,3 +148,21 @@ Auth própria (`MCPAuthMiddleware`, fail-closed, constant-time) — fora do JWT 
 5. Visitante escaneia (verificação por e-mail, KL-25) → vira **lead** (PQL, fire-and-
    forget) → **conta** (signup vincula histórico) → **monitoramento** (vigílias por plano).
 6. Todo e-mail passa por `KlarimMailer._send` → `email_log` (rastreabilidade + blocklist).
+
+### Reivindicação de site + verificação de propriedade em tiers (KL-68)
+
+Do perfil público `/site/{domain}`, o dono reivindica o site (CTA condicional ao login,
+ilha React `ClaimSite`). A propriedade tem **2 tiers**, ambos server-authoritative:
+
+- **Tier 1 — auto (`auto_email`):** no signup/login/add-site, se o e-mail da conta ==
+  `contact_email` do alvo (comparado **no servidor**, `_email_owns_target`), o vínculo
+  `user_sites` vira dono verificado na hora. Nunca expõe o `contact_email`.
+- **Tier 2 — código (`code_verification`):** `POST /account/ownership/request-verification`
+  envia um código de 6 dígitos **ao `contact_email`** (transacional, `seguranca@klarim.net`);
+  o usuário digita → `POST /account/ownership/verify`. TTL 30 min, 3 tentativas, tabela
+  `ownership_verifications`.
+- **First-come-first-served:** 1 dono por site (`site_has_owner` bloqueia o 2º). Admin
+  revoga em `POST /targets/{id}/revoke-ownership`.
+- **Domain guard** (`api/domain_guard.py`, puro): domínio público/institucional
+  (gmail.com, `.gov.br`…) **não é monitorável** — 422 no add-site, sem CTA no perfil; o
+  **scan continua livre**. Limpeza retroativa: `POST /admin/clean-blocked-sites`.

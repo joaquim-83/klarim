@@ -32,6 +32,21 @@ export default function Dashboard({ user = {} }) {
   const [error, setError] = useState('');
   const [upgrade, setUpgrade] = useState(false);
   const [history, setHistory] = useState(null);
+  const [toast, setToast] = useState('');   // KL-68: ?added / ?claimed pós-signup/login
+
+  // KL-68: toast de reivindicação pós-autenticação, depois limpa a URL.
+  useEffect(() => {
+    const q = new URLSearchParams(window.location.search);
+    const claimed = q.get('claimed');
+    const added = q.get('added');
+    const blocked = q.get('blocked');
+    if (claimed) setToast(`✅ ${claimed} adicionado · ✓ Propriedade verificada automaticamente`);
+    else if (added) setToast(`✅ ${added} adicionado ao monitoramento`);
+    else if (blocked) setToast('✅ Conta criada! Adicione o domínio do seu site no painel para começar a monitorar.');
+    if (claimed || added || blocked) {
+      window.history.replaceState({}, '', window.location.pathname);
+    }
+  }, []);
 
   async function load() {
     const { ok, data } = await apiGet('/account/sites');
@@ -81,6 +96,13 @@ export default function Dashboard({ user = {} }) {
         <h1 className="text-2xl font-bold text-white">Olá{user.name ? `, ${user.name}` : ''}</h1>
         <p className="mt-1 text-slate-400">Verifique qualquer site à vontade; monitore os que importam.</p>
       </div>
+
+      {toast && (
+        <div className="flex items-center justify-between rounded-xl border border-green-500/40 bg-green-500/10 px-4 py-3 text-sm text-green-300">
+          <span>{toast}</span>
+          <button onClick={() => setToast('')} className="text-green-400/70 hover:text-green-300">✕</button>
+        </div>
+      )}
 
       {/* Verificar um site — consulta livre e ILIMITADA (vai para /scan) */}
       <form action="/scan" method="GET" className={`${card} border-brand-500/30 bg-brand-500/5`}>

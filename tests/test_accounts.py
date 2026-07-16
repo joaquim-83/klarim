@@ -33,6 +33,8 @@ class FakeStore:
         self.scan_history = []       # linhas de /account/scan-history
         self.users_with_sites = []   # linhas de /admin/clients
         self.verified_scan_emails = None  # None ⇒ todo e-mail é "verificado no scan" (KL-25)
+        self.ownership = []          # KL-68: verificações de propriedade (Tier 2)
+        self.next_verif_id = 1
 
     # --- users ---
     async def email_has_verified_scan(self, email):
@@ -121,6 +123,89 @@ class FakeStore:
             return True
         return False
 
+    # --- ownership (KL-68) ---
+    async def site_has_owner(self, tid, exclude_user_id=None):
+        return any(v.get("is_owner") for (u, t), v in self.sites.items()
+                   if t == tid and (exclude_user_id is None or u != exclude_user_id))
+
+    async def mark_site_verified(self, uid, tid, method):
+        if (uid, tid) in self.sites:
+            self.sites[(uid, tid)]["is_owner"] = True
+            self.sites[(uid, tid)]["verification_method"] = method
+            return True
+        return False
+
+    async def create_ownership_verification(self, uid, tid, method, code):
+        for v in self.ownership:
+            if v["user_id"] == uid and v["target_id"] == tid and v["status"] == "pending":
+                v["status"] = "expired"
+        v = {"id": self.next_verif_id, "user_id": uid, "target_id": tid, "method": method,
+             "code": code, "attempts": 0, "status": "pending", "expired": False}
+        self.next_verif_id += 1
+        self.ownership.append(v)
+        return {"id": v["id"], "expires_at": None}
+
+    async def get_pending_ownership_verification(self, uid, tid):
+        for v in reversed(self.ownership):
+            if (v["user_id"] == uid and v["target_id"] == tid and v["status"] == "pending"
+                    and not v.get("expired") and v["attempts"] < 3):
+                return {"id": v["id"], "code": v["code"], "attempts": v["attempts"],
+                        "status": v["status"], "expires_at": None}
+        return None
+
+    async def bump_ownership_attempt(self, vid):
+        for v in self.ownership:
+            if v["id"] == vid:
+                v["attempts"] += 1
+                if v["attempts"] >= 3:
+                    v["status"] = "failed"
+                return v["attempts"]
+        return 3
+
+    async def mark_ownership_verified(self, vid):
+        for v in self.ownership:
+            if v["id"] == vid:
+                v["status"] = "verified"
+
+    async def get_target_owner(self, tid):
+        for (u, t), v in self.sites.items():
+            if t == tid and v.get("is_owner"):
+                usr = self.by_id.get(u)
+                return {"user_id": u, "email": usr["email"] if usr else None,
+                        "verified_at": None, "verification_method": v.get("verification_method")}
+        return None
+
+    async def revoke_ownership(self, tid):
+        n = 0
+        for (u, t), v in self.sites.items():
+            if t == tid and v.get("is_owner"):
+                v["is_owner"] = False
+                v["verification_method"] = None
+                n += 1
+        return n
+
+    async def ownership_stats(self):
+        owners = sum(1 for v in self.sites.values() if v.get("is_owner"))
+        return {"verified_owners": owners, "by_method": {}, "verifications": {},
+                "total_monitored": len(self.sites), "owner_rate": 0.0}
+
+    async def list_user_sites_min(self):
+        out = []
+        for (u, t) in self.sites:
+            tgt = self.targets.get(t) or {}
+            out.append({"id": t, "user_id": u, "target_id": t,
+                        "domain": tgt.get("domain") or tgt.get("url")})
+        return out
+
+    async def remove_user_sites_by_ids(self, ids):
+        ids = set(ids)
+        removed = 0
+        for key in list(self.sites):
+            if key[1] in ids:   # no fake, o `id` do vínculo == target_id
+                del self.sites[key]
+                removed += 1
+        return removed
+
     # --- targets ---
     async def get_target_by_url(self, url):
         for t in self.targets.values():
@@ -178,7 +263,7 @@ def store(monkeypatch):
     monkeypatch.setattr(auth_users, "_secret", lambda: "k" * 64)
     # zera os rate limits in-memory entre testes
     for bucket in (m._signup_attempts, m._forgot_attempts, m._reset_attempts,
-                   m._send_report_attempts):
+                   m._send_report_attempts, m._ownership_attempts):
         bucket.clear()
     return s
 
@@ -261,6 +346,10 @@ class _FakeMailer:
         self.sent = []
 
     async def send_signup_verification_code(self, to_email, code):
+        self.sent.append((to_email, code))
+        return {"ok": True}
+
+    async def send_ownership_verification(self, to_email, domain, code):
         self.sent.append((to_email, code))
         return {"ok": True}
 
@@ -531,3 +620,114 @@ def test_claim_requires_email_match(client, store):
     store.targets[30]["contact_email"] = "owner@x.com.br"
     r = client.post("/account/sites/30/claim", headers=_bearer(u))
     assert r.status_code == 200 and r.json()["is_owner"] is True
+
+
+# --- KL-68: reivindicação + verificação de propriedade ---------------------- #
+
+from api import domain_guard  # noqa: E402
+
+
+def test_domain_guard_classifies():
+    assert domain_guard.is_blocked_domain("gmail.com") == (True, "public_domain")
+    assert domain_guard.is_blocked_domain("mail.google.com")[0] is True
+    assert domain_guard.is_blocked_domain("prefeitura.sp.gov.br")[0] is True
+    assert domain_guard.is_blocked_domain("usecognato.com.br") == (False, None)
+    assert domain_guard.is_blocked_domain("www.Python.org")[0] is True
+
+
+def test_signup_claim_auto_verifies_when_email_matches(client, store):
+    store.targets[10] = {"id": 10, "url": "https://minhaloja.com.br",
+                         "domain": "minhaloja.com.br", "contact_email": "dono@minhaloja.com.br"}
+    r = client.post("/account/signup", json={"email": "dono@minhaloja.com.br",
+                                             "password": "segredo123", "url": "https://minhaloja.com.br"})
+    assert r.status_code == 200
+    claim = r.json().get("claim") or {}
+    assert claim.get("site_added") is True and claim.get("is_owner") is True
+    uid = r.json()["user"]["id"]
+    assert store.sites[(uid, 10)]["is_owner"] is True
+    assert store.sites[(uid, 10)]["verification_method"] == "auto_email"
+
+
+def test_signup_claim_no_autoverify_when_email_differs(client, store):
+    store.targets[11] = {"id": 11, "url": "https://loja.com.br", "domain": "loja.com.br",
+                         "contact_email": "dono@loja.com.br"}
+    r = client.post("/account/signup", json={"email": "visitante@x.com.br",
+                                             "password": "segredo123", "url": "https://loja.com.br"})
+    claim = r.json().get("claim") or {}
+    assert claim.get("site_added") is True and claim.get("is_owner") is False
+    assert claim.get("ownership_verification_available") is True
+
+
+def test_signup_blocked_domain_not_added(client, store):
+    r = client.post("/account/signup", json={"email": "a@x.com.br",
+                                             "password": "segredo123", "url": "https://gmail.com"})
+    assert r.status_code == 200
+    claim = r.json().get("claim") or {}
+    assert claim.get("site_added") is False and claim.get("blocked_domain") is True
+    assert "a@x.com.br" in store.users     # conta criada mesmo assim (comportamento suave)
+    assert not store.sites                  # nenhum site vinculado
+
+
+def test_add_site_blocked_domain_422(client, store):
+    u = client.post("/account/signup", json={"email": "u@x.com.br", "password": "segredo123"}).json()["user"]
+    r = client.post("/account/sites", json={"url": "https://python.org"}, headers=_bearer(u))
+    assert r.status_code == 422
+
+
+def _seed_owned_site(store, uid, tid, contact="contato@alvo.com.br", owner=False):
+    store.targets[tid] = {"id": tid, "url": "https://alvo.com.br", "domain": "alvo.com.br",
+                          "contact_email": contact}
+    store.sites[(uid, tid)] = {"is_owner": owner}
+
+
+def test_ownership_request_and_verify(client, store, mailer):
+    u = client.post("/account/signup", json={"email": "u@x.com.br", "password": "segredo123"}).json()["user"]
+    _seed_owned_site(store, u["id"], 20)
+    r = client.post("/account/ownership/request-verification", json={"target_id": 20}, headers=_bearer(u))
+    assert r.status_code == 200 and r.json()["sent"] is True
+    hint = r.json()["email_hint"]
+    assert "@" in hint and "contato@alvo.com.br" not in hint       # e-mail mascarado
+    code = mailer.sent[-1][1]
+    r2 = client.post("/account/ownership/verify", json={"target_id": 20, "code": code}, headers=_bearer(u))
+    assert r2.status_code == 200 and r2.json()["verified"] is True
+    assert store.sites[(u["id"], 20)]["is_owner"] is True
+
+
+def test_ownership_no_contact_email(client, store, mailer):
+    u = client.post("/account/signup", json={"email": "u@x.com.br", "password": "segredo123"}).json()["user"]
+    _seed_owned_site(store, u["id"], 24, contact=None)
+    r = client.post("/account/ownership/request-verification", json={"target_id": 24}, headers=_bearer(u))
+    assert r.status_code == 400   # sem contato público não há como verificar
+
+
+def test_ownership_wrong_code_locks(client, store, mailer):
+    u = client.post("/account/signup", json={"email": "u@x.com.br", "password": "segredo123"}).json()["user"]
+    _seed_owned_site(store, u["id"], 21)
+    client.post("/account/ownership/request-verification", json={"target_id": 21}, headers=_bearer(u))
+    real = mailer.sent[-1][1]
+    wrong = "111111" if real != "111111" else "222222"
+    for _ in range(3):
+        r = client.post("/account/ownership/verify", json={"target_id": 21, "code": wrong}, headers=_bearer(u))
+        assert r.json()["verified"] is False
+    # após 3 erros, o código pendente vira 'failed' → sem pendente válido
+    r = client.post("/account/ownership/verify", json={"target_id": 21, "code": real}, headers=_bearer(u))
+    assert r.json().get("error") == "expired"
+    assert store.sites[(u["id"], 21)]["is_owner"] is False
+
+
+def test_ownership_second_user_blocked(client, store, mailer):
+    owner = client.post("/account/signup", json={"email": "owner@x.com.br", "password": "segredo123"}).json()["user"]
+    intruder = client.post("/account/signup", json={"email": "intruso@x.com.br", "password": "segredo123"}).json()["user"]
+    store.targets[22] = {"id": 22, "url": "https://alvo.com.br", "domain": "alvo.com.br",
+                         "contact_email": "contato@alvo.com.br"}
+    store.sites[(owner["id"], 22)] = {"is_owner": True}
+    store.sites[(intruder["id"], 22)] = {"is_owner": False}
+    r = client.post("/account/ownership/request-verification", json={"target_id": 22}, headers=_bearer(intruder))
+    assert r.status_code == 409   # first-come-first-served
+
+
+def test_ownership_status(client, store):
+    u = client.post("/account/signup", json={"email": "u@x.com.br", "password": "segredo123"}).json()["user"]
+    _seed_owned_site(store, u["id"], 23)
+    j = client.get("/account/ownership/status?target_id=23", headers=_bearer(u)).json()
+    assert j["monitored"] is True and j["is_owner"] is False and j["verification_available"] is True

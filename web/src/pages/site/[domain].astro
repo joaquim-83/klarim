@@ -4,6 +4,7 @@ export const prerender = false; // SSR: busca dados por domínio + SEO por pági
 import Base from '../../layouts/Base.astro';
 import Header from '../../components/Header.astro';
 import Footer from '../../components/Footer.astro';
+import ClaimSite from '../../components/account/ClaimSite.jsx';
 
 const SITE = 'https://klarim.net';
 const API = process.env.KLARIM_API_URL || 'http://api:8000';
@@ -102,6 +103,13 @@ const ytLabel = (h) => '@' + String(h).replace(/^(c|channel|user)\//, '').replac
 const siteUrl = isSafeUrl(t.url) ? t.url : `https://${domain}`;
 const monogram = ((p.company_name || domain).trim().charAt(0) || '?').toUpperCase();
 
+// KL-68 — reivindicação de propriedade. `owner_verified`/`claimable`/`block_message`
+// vêm do backend (nunca expõem quem é o dono nem o contact_email).
+const ownerVerified = data?.owner_verified === true;
+const claimable = data?.claimable !== false;
+const blockMessage = data?.block_message || '';
+const claimUrl = siteUrl;
+
 const hasContact = !!(phoneDigits.length >= 8 || addressOk || p.instagram || p.facebook
   || p.linkedin || p.youtube || p.tiktok);
 const contacts = [];
@@ -168,8 +176,17 @@ if (hasContact) {
             <p class="text-2xl">{sema.dot} <span class="align-middle text-lg text-slate-300">{sema.label}</span></p>
             <p class="mt-2 text-sm text-slate-400">Score de segurança do site</p>
             <p class="text-sm text-slate-500">Última análise: {lastScan}</p>
+            {ownerVerified && (
+              <p class="mt-2 inline-flex items-center gap-1 rounded-full border border-green-500/40 bg-green-500/10 px-2.5 py-0.5 text-xs font-semibold text-green-400">
+                ✓ Dono verificado
+              </p>
+            )}
           </div>
         </div>
+
+        {/* KL-68 — reivindicação acima do fold (logo após o score), condicional ao login. */}
+        <ClaimSite client:load url={claimUrl} domain={domain}
+          ownerVerified={ownerVerified} claimable={claimable} blockMessage={blockMessage} />
 
         {hasContact && (
           <div class={card}>
@@ -212,15 +229,6 @@ if (hasContact) {
             <p class="mt-1 text-sm text-slate-400">{scoreN >= bench.avg_score ? 'Acima da média.' : 'Abaixo da média — há espaço para melhorar.'}</p>
           </div>
         )}
-
-        <div class={`${card} border-brand-500/30 bg-brand-500/5`}>
-          <h2 class="text-lg font-bold text-white">É o seu site?</h2>
-          <p class="mt-1 text-sm text-slate-300">Gerencie gratuitamente: monitore o score, receba alertas e melhore a segurança.</p>
-          <a href={`/cadastrar?url=${encodeURIComponent(t.url || 'https://' + domain)}`} data-cta="claim"
-            class="mt-4 inline-flex rounded-xl bg-brand-500 px-6 py-3 text-sm font-semibold text-slate-950 hover:bg-brand-400">
-            Reivindicar este site →
-          </a>
-        </div>
 
         <div class="text-center">
           <a href="/scan" data-cta="verify-other" class="text-sm text-brand-400 hover:text-brand-300">🔍 Verificar outro site →</a>

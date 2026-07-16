@@ -2,19 +2,33 @@ import { useState } from 'react';
 import { apiPost } from '../../lib/api.js';
 import { field, btn, card, label, errorBox } from './ui.js';
 
-export default function LoginForm({ redirect = '/dashboard' }) {
-  const [email, setEmail] = useState('');
+export default function LoginForm({ redirect = '/dashboard', url = '', email: initialEmail = '' }) {
+  const [email, setEmail] = useState(initialEmail);
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+
+  // KL-68: preserva url/email na navegação e reivindica o site ao entrar (claim).
+  const navQ = new URLSearchParams();
+  if (url) navQ.set('url', url);
+  if (email) navQ.set('email', email);
+  const qs = navQ.toString() ? `?${navQ}` : '';
+  function nextUrl(data) {
+    const c = data?.claim;
+    if (c?.blocked_domain) return '/dashboard?blocked=1';
+    if (c?.site_added && c?.domain) {
+      return `/dashboard?${c.is_owner ? 'claimed' : 'added'}=${encodeURIComponent(c.domain)}`;
+    }
+    return redirect;
+  }
 
   async function submit(e) {
     e.preventDefault();
     setError('');
     setBusy(true);
-    const { ok, data, error: err } = await apiPost('/account/login', { email, password });
+    const { ok, data, error: err } = await apiPost('/account/login', { email, password, url: url || undefined });
     setBusy(false);
-    if (ok) { window.location.href = redirect; return; }
+    if (ok) { window.location.href = nextUrl(data); return; }
     setError(err || 'E-mail ou senha incorretos.');
   }
 
@@ -37,8 +51,8 @@ export default function LoginForm({ redirect = '/dashboard' }) {
         <button type="submit" disabled={busy} className={btn}>{busy ? 'Entrando…' : 'Entrar →'}</button>
       </form>
       <div className="mt-6 flex flex-col gap-1 text-sm">
-        <a href="/recuperar-senha" className="text-slate-400 hover:text-white">Esqueci minha senha</a>
-        <p className="text-slate-400">Não tem conta? <a href="/cadastrar" className="text-brand-400 hover:text-brand-300">Cadastrar →</a></p>
+        <a href={`/recuperar-senha${qs}`} className="text-slate-400 hover:text-white">Esqueci minha senha</a>
+        <p className="text-slate-400">Não tem conta? <a href={`/cadastrar${qs}`} className="text-brand-400 hover:text-brand-300">Cadastrar →</a></p>
       </div>
     </div>
   );

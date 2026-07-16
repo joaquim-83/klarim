@@ -3,6 +3,7 @@ import { apiGet } from '../../lib/api.js';
 import { card } from './ui.js';
 import { groupByCategory } from '../scan/checks.js';
 import ShareScore from './ShareScore.jsx';
+import OwnershipVerification from './OwnershipVerification';
 
 const SEMA = {
   verde: { dot: '🟢', ring: 'ring-green-500/50', text: 'text-green-400' },
@@ -42,6 +43,39 @@ function EvolutionChart({ history }) {
   );
 }
 
+// KL-68 — seção de propriedade no detalhe do site (dashboard). Busca o status e mostra
+// o selo (dono) ou o fluxo de verificação por código (se disponível).
+function OwnershipSection({ targetId }) {
+  const [st, setSt] = useState(null);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    apiGet(`/account/ownership/status?target_id=${targetId}`).then(({ ok, data }) => { if (ok) setSt(data); });
+  }, [targetId]);
+  if (!st) return null;
+  if (st.is_owner) {
+    return (
+      <div className={`${card} border-green-500/30 bg-green-500/5`}>
+        <p className="text-sm font-semibold text-green-400">✓ Você é o dono verificado deste site.</p>
+      </div>
+    );
+  }
+  if (!st.verification_available) return null;
+  return (
+    <div className={`${card} border-brand-500/30 bg-brand-500/5`}>
+      <p className="text-sm font-semibold text-white">Confirme que este site é seu</p>
+      <p className="mt-1 text-sm text-slate-400">Verifique a propriedade para ganhar o selo de dono verificado.</p>
+      <div className="mt-3">
+        {open
+          ? <OwnershipVerification targetId={targetId} onVerified={() => setSt({ ...st, is_owner: true })} />
+          : <button onClick={() => setOpen(true)}
+              className="rounded-lg border border-brand-500/40 bg-brand-500/10 px-4 py-2 text-sm font-semibold text-brand-300 hover:bg-brand-500/20">
+              Verificar propriedade →
+            </button>}
+      </div>
+    </div>
+  );
+}
+
 export default function SiteDetail({ targetId }) {
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
@@ -67,6 +101,9 @@ export default function SiteDetail({ targetId }) {
         <a href="/dashboard" className="text-sm text-brand-400 hover:text-brand-300">← Voltar</a>
         <h1 className="mt-1 text-2xl font-bold text-white">{t.domain || t.url}</h1>
       </div>
+
+      {/* KL-68 — verificação de propriedade */}
+      <OwnershipSection targetId={targetId} />
 
       {/* Score */}
       <div className={`${card} text-center`}>

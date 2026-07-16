@@ -49,6 +49,9 @@ class FakeStore:
     async def get_user_by_email(self, email, with_hash=False):
         return {"id": 1, "email": email} if email.lower() in self.users else None
 
+    async def site_has_owner(self, tid, exclude_user_id=None):  # KL-68
+        return False
+
 
 @pytest.fixture
 def store(monkeypatch):

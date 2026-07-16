@@ -1,0 +1,43 @@
+---
+// KL-68 — card de contexto no cadastro/login: mostra qual site está sendo reivindicado
+// (domínio + score + semáforo), buscado no SSR. Sem `?url=` não renderiza nada. Nunca
+// expõe e-mail/contato — só o score público.
+const { url = '' } = Astro.props;
+const API = process.env.KLARIM_API_URL || 'http://api:8000';
+
+function domainOf(u) {
+  const raw = (u || '').trim();
+  try {
+    return new URL(raw.includes('://') ? raw : `https://${raw}`).hostname.replace(/^www\./, '').toLowerCase();
+  } catch {
+    return raw.replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0].toLowerCase();
+  }
+}
+
+let ctx = null;
+if (url) {
+  const domain = domainOf(url);
+  ctx = { domain };
+  try {
+    const r = await fetch(`${API}/public/profile/${encodeURIComponent(domain)}`, {
+      signal: AbortSignal.timeout(4000),
+    });
+    if (r.ok) {
+      const d = await r.json();
+      if (d && d.status === 'ok') { ctx.score = d.target?.score; ctx.semaphore = d.target?.semaphore; }
+    }
+  } catch { /* sem score → mostra só o domínio */ }
+}
+const EMOJI = { verde: '🟢', amarelo: '🟡', vermelho: '🔴' };
+---
+{ctx && (
+  <div class="mb-5 rounded-xl border border-brand-500/30 bg-brand-500/5 p-4">
+    <p class="text-xs font-medium uppercase tracking-wide text-brand-400/80">Você está reivindicando</p>
+    <p class="mt-1 font-semibold text-white">
+      🔒 {ctx.domain}
+      {ctx.score != null && (
+        <span class="text-slate-400"> · Score {ctx.score}/100 {EMOJI[ctx.semaphore] || ''}</span>
+      )}
+    </p>
+  </div>
+)}

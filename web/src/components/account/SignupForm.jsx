@@ -17,6 +17,21 @@ export default function SignupForm({ email: initialEmail = '', url = '', redirec
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
+  // KL-68: preserva url/email na navegação para o login e monta o redirect pós-signup
+  // (?claimed= quando virou dono; ?added= quando só monitorou).
+  const navQ = new URLSearchParams();
+  if (url) navQ.set('url', url);
+  if (email) navQ.set('email', email);
+  const loginHref = `/entrar${navQ.toString() ? `?${navQ}` : ''}`;
+  function nextUrl(data) {
+    const c = data?.claim;
+    if (c?.blocked_domain) return '/dashboard?blocked=1';
+    if (c?.site_added && c?.domain) {
+      return `/dashboard?${c.is_owner ? 'claimed' : 'added'}=${encodeURIComponent(c.domain)}`;
+    }
+    return redirect;
+  }
+
   async function submit(e) {
     e.preventDefault();
     setError('');
@@ -30,7 +45,7 @@ export default function SignupForm({ email: initialEmail = '', url = '', redirec
       setStep('code');
       return;
     }
-    if (ok) { window.location.href = redirect; return; }
+    if (ok) { window.location.href = nextUrl(data); return; }
     if (status === 409) return setError('Já existe uma conta com este e-mail. Faça login.');
     setError(err || 'Não foi possível criar a conta.');
   }
@@ -40,9 +55,9 @@ export default function SignupForm({ email: initialEmail = '', url = '', redirec
     setError('');
     if (!/^\d{6}$/.test(code.trim())) return setError('Digite o código de 6 dígitos.');
     setBusy(true);
-    const { ok, status, error: err } = await apiPost('/account/verify', { email, code: code.trim() });
+    const { ok, status, data, error: err } = await apiPost('/account/verify', { email, code: code.trim() });
     setBusy(false);
-    if (ok) { window.location.href = redirect; return; }
+    if (ok) { window.location.href = nextUrl(data); return; }
     if (status === 409) { setError('Já existe uma conta com este e-mail. Faça login.'); return; }
     if (status === 400 || status === 429) return setError(err || 'Código inválido ou expirado.');
     setError(err || 'Não foi possível confirmar o código.');
@@ -109,7 +124,7 @@ export default function SignupForm({ email: initialEmail = '', url = '', redirec
         <button type="submit" disabled={busy} className={btn}>{busy ? 'Criando…' : 'Criar conta →'}</button>
       </form>
       <p className="mt-6 text-sm text-slate-400">
-        Já tem conta? <a href="/entrar" className="text-brand-400 hover:text-brand-300">Entrar →</a>
+        Já tem conta? <a href={loginHref} className="text-brand-400 hover:text-brand-300">Entrar →</a>
       </p>
     </div>
   );
