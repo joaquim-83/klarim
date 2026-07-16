@@ -147,6 +147,54 @@ def test_send_alert_batch_empty():
     assert asyncio.run(m.send_alert_batch([])) == {"sent": 0, "failed": 0, "ids": []}
 
 
+# --- KL-67: Reply-To → scan@klarim.net em todo e-mail ----------------------- #
+
+def test_reply_to_default_on_single_send(monkeypatch):
+    import resend
+    captured = {}
+
+    class FakeEmails:
+        @staticmethod
+        def send(params):
+            captured.update(params)
+            return {"id": "e"}
+
+    monkeypatch.setattr(resend, "Emails", FakeEmails)
+    m = KlarimMailer("re_fake")
+    asyncio.run(m.send_test("dest@example.com"))
+    assert captured["reply_to"] == "scan@klarim.net"
+
+
+def test_reply_to_contact_form_preserved(monkeypatch):
+    # send_contact define reply_to = e-mail do visitante; o default NÃO sobrescreve.
+    import resend
+    captured = {}
+
+    class FakeEmails:
+        @staticmethod
+        def send(params):
+            captured.update(params)
+            return {"id": "e"}
+
+    monkeypatch.setattr(resend, "Emails", FakeEmails)
+    m = KlarimMailer("re_fake")
+    asyncio.run(m.send_contact("João", "joao@visitante.com", "Olá"))
+    assert captured["reply_to"] == "joao@visitante.com"
+
+
+def test_reply_to_on_batch(monkeypatch):
+    captured = {}
+
+    async def fake_raw(self, payloads, key):
+        captured["payloads"] = payloads
+        return {"data": [{"id": f"em_{i}"} for i in range(len(payloads))]}
+
+    monkeypatch.setattr(KlarimMailer, "_send_batch_raw", fake_raw)
+    m = KlarimMailer("re_fake")
+    asyncio.run(m.send_alert_batch([_alert(1), _alert(2)]))
+    assert all(p["reply_to"] == "scan@klarim.net" for p in captured["payloads"])
+
+
 def test_send_alert_batch_caps_at_100(monkeypatch):
     seen = {}
 

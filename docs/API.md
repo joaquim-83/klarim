@@ -124,7 +124,8 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 | POST | `/targets/add` | adiciona alvo (source=manual) |
 | POST | `/targets/{id}/scan` · `/rescan` · `/alert` · `/discard` | ações |
 | GET | `/targets/{id}/profile` · `/classifications` · `/payments` | anexos |
-| PUT | `/targets/{id}/profile` | edita perfil (marca `edited_by_admin`) |
+| PUT | `/targets/{id}/profile` | edita perfil — texto **+ contatos** (phone/whatsapp/address/socials) + `clear_fields` (KL-67); marca `edited_by_admin`, limpa `low_confidence_fields` |
+| POST | `/admin/revalidate-profiles?dry_run=` | KL-67: aplica os filtros de qualidade aos perfis existentes (sem re-scrape); dry-run conta o impacto |
 | PATCH | `/targets/{id}/classify` · `/email` · `/status` · `/profile/visibility` | edições inline |
 | POST | `/admin/classify-batch` · `/reclassify-domains` · `/reclassify-all` | classificação em massa |
 | GET | `/admin/reclassify-status` | progresso |

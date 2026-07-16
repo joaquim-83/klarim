@@ -4435,6 +4435,16 @@ class ProfileEditBody(BaseModel):
     business_type: Optional[str] = None
     company_name: Optional[str] = None
     tags: Optional[Any] = None  # lista OU string "a, b, c" (o store normaliza)
+    # KL-67 — contatos editáveis à mão (o enrich passa a preservar quando editado).
+    phone: Optional[str] = None
+    whatsapp: Optional[str] = None
+    address: Optional[str] = None
+    instagram: Optional[str] = None
+    facebook: Optional[str] = None
+    linkedin: Optional[str] = None
+    youtube: Optional[str] = None
+    tiktok: Optional[str] = None
+    clear_fields: Optional[list] = None  # campos a setar NULL explicitamente
 
 
 class VisibilityBody(BaseModel):
@@ -4968,6 +4978,56 @@ async def admin_clients() -> dict:
     total_sites = sum(len(c.get("sites") or []) for c in clients)
     return {"clients": clients, "total": len(clients),
             "active": active, "total_sites": total_sites}
+
+
+@app.post("/admin/revalidate-profiles")
+async def admin_revalidate_profiles(request: Request) -> dict:
+    """KL-67 — aplica os filtros de qualidade do profiler aos perfis EXISTENTES (sem
+    re-scrape). `dry_run=1` só conta o que seria limpo; senão zera os campos inválidos e
+    marca os de baixa confiança. Pula perfis com `edited_by_admin` (edição manual). Rate
+    limit 5/min/IP."""
+    allowed, _ = await _redis_allow("admin_revalidate", _client_ip(request), 5, 60, _admin_action_attempts)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Aguarde antes de revalidar de novo.")
+    dry = request.query_params.get("dry_run") in ("1", "true", "yes")
+    from scanner import profiler as pf
+    store = get_target_store()
+    rows = await store.list_site_profiles_min()
+    rejected = {k: 0 for k in ("phone", "address", "description",
+                               "instagram", "facebook", "linkedin", "youtube", "tiktok")}
+    low_conf_total, changed, skipped = 0, 0, 0
+    for r in rows:
+        if r.get("edited_by_admin"):     # regra inviolável: nunca sobrescreve edição manual
+            skipped += 1
+            continue
+        domain = r.get("domain") or ""
+        null_fields, low_conf = [], []
+        if r.get("phone") and not pf.validate_phone(r["phone"]):
+            null_fields.append("phone")
+        if r.get("address") and not pf.validate_address(r["address"]):
+            null_fields.append("address")
+        if r.get("description") and not pf.validate_description(r["description"], domain):
+            null_fields.append("description")
+        for net in ("instagram", "facebook", "linkedin", "youtube", "tiktok"):
+            v = r.get(net)
+            if not v:
+                continue
+            clean = pf.validate_social_handle(net, v)
+            if not clean:
+                null_fields.append(net)
+            elif domain and not pf.handle_matches_domain(clean, domain):
+                low_conf.append(net)
+        for f in null_fields:
+            rejected[f] += 1
+        low_conf_total += len(low_conf)
+        if null_fields or low_conf:
+            changed += 1
+            if not dry:
+                await store.apply_revalidation(r["target_id"], null_fields, low_conf)
+    print(f"[revalidate] {len(rows)} perfis, {changed} alterados, {skipped} pulados "
+          f"(edição manual), dry_run={dry}", flush=True)
+    return {"profiles": len(rows), "changed": changed, "skipped_manual": skipped,
+            "rejected": rejected, "low_confidence_flags": low_conf_total, "dry_run": dry}
 
 
 @app.get("/admin/ownership-stats")

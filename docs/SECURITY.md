@@ -129,6 +129,9 @@ Na dúvida, trate o alvo como site de terceiro que só autorizou olhar o que é 
 - **Regra por construção (KL-62):** todo e-mail passa por `KlarimMailer._send` →
   registra em `email_log`. **Proativo respeita a blocklist; transacional pode ignorá-la
   mas SEMPRE registra.** O log é fire-and-forget; a checagem de blocklist é fail-open.
+- **Reply-To (KL-67):** `_send`/`_send_batch` injetam **`Reply-To: scan@klarim.net`**
+  (`setdefault`) em TODO e-mail — `seguranca@`/`alerta@` são só-envio (Resend), as respostas
+  caem no inbox Hostinger (`scan@`, painel Inbox). `send_contact` mantém o seu (visitante).
 
 ## 7. Segredos
 

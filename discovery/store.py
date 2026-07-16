@@ -202,6 +202,10 @@ ALTER TABLE site_profile ADD COLUMN IF NOT EXISTS public_visible BOOLEAN DEFAULT
 ALTER TABLE site_profile ADD COLUMN IF NOT EXISTS edited_by_admin BOOLEAN DEFAULT FALSE;
 ALTER TABLE site_profile ADD COLUMN IF NOT EXISTS edited_by_admin_at TIMESTAMP;
 
+-- KL-67: campos extraídos com baixa confiança (ex.: rede social que não bate o domínio).
+-- Array de nomes de campo suspeitos, ex.: ['instagram','facebook']. O painel mostra ⚠️.
+ALTER TABLE site_profile ADD COLUMN IF NOT EXISTS low_confidence_fields TEXT[] DEFAULT '{}';
+
 -- Classificação multi-setor via CNAE (KL-55): N classificações por alvo, cada uma
 -- de uma fonte (receita/ai/manual/schema_org). CNAE = referência estrutural do IBGE.
 CREATE TABLE IF NOT EXISTS target_classifications (
@@ -1298,7 +1302,10 @@ class TargetStore:
 
     # KL-56: campos que o operador edita à mão no painel — o enrich (worker/enrich_all)
     # NÃO os sobrescreve quando `edited_by_admin` está ligado (guard no ON CONFLICT).
-    _SP_ADMIN_EDITABLE = ("company_name", "description", "business_type")  # + tags (TEXT[])
+    # KL-67: contatos também passam a ser preservados quando o operador corrige à mão.
+    _SP_ADMIN_EDITABLE = ("company_name", "description", "business_type",
+                          "phone", "whatsapp", "address",
+                          "instagram", "facebook", "linkedin", "youtube", "tiktok")  # + tags (TEXT[])
 
     async def upsert_site_profile(self, target_id: int, profile: Dict[str, Any]) -> None:
         """Grava (ou atualiza) o perfil comercial de um alvo (1 por target).
@@ -1312,6 +1319,7 @@ class TargetStore:
         tech = json.dumps(profile.get("technologies") or {})
         sources = list(profile.get("extraction_sources") or [])
         tags = list(profile.get("tags") or [])  # KL-55: TEXT[] (como extraction_sources)
+        lcf = list(profile.get("low_confidence_fields") or [])  # KL-67: TEXT[]
 
         def _upd(col: str) -> str:
             # Preserva a edição manual: mantém o valor antigo quando edited_by_admin.
@@ -1321,8 +1329,9 @@ class TargetStore:
             return f"{col} = EXCLUDED.{col}"
 
         def _fn(cur):
-            cols = ", ".join(fields) + ", technologies, extraction_sources, tags, extracted_at"
-            ph = ", ".join(["%s"] * len(fields)) + ", %s, %s, %s, NOW()"
+            cols = (", ".join(fields)
+                    + ", technologies, extraction_sources, tags, low_confidence_fields, extracted_at")
+            ph = ", ".join(["%s"] * len(fields)) + ", %s, %s, %s, %s, NOW()"
             updates = ", ".join(_upd(f) for f in fields)
             cur.execute(
                 f"INSERT INTO site_profile (target_id, {cols}) "
@@ -1330,8 +1339,9 @@ class TargetStore:
                 f"ON CONFLICT (target_id) DO UPDATE SET {updates}, "
                 f"  technologies = EXCLUDED.technologies, "
                 f"  extraction_sources = EXCLUDED.extraction_sources, "
-                f"  {_upd('tags')}, extracted_at = NOW()",
-                [target_id, *vals, tech, sources, tags],
+                f"  {_upd('tags')}, "
+                f"  low_confidence_fields = EXCLUDED.low_confidence_fields, extracted_at = NOW()",
+                [target_id, *vals, tech, sources, tags, lcf],
             )
 
         await asyncio.to_thread(self._run, _fn)
@@ -1339,24 +1349,32 @@ class TargetStore:
     async def update_site_profile_fields(
         self, target_id: int, fields: Dict[str, Any]
     ) -> Optional[Dict[str, Any]]:
-        """Edição manual do perfil pelo operador (KL-56). Atualiza só os campos
-        editáveis (description/business_type/tags/company_name), marca
-        `edited_by_admin=TRUE` (o enrich passa a preservá-los). Retorna o perfil
-        atualizado (ou None se o alvo não tem perfil)."""
-        allowed = ("description", "business_type", "company_name")
-        sets, params = [], []
+        """Edição manual do perfil pelo operador (KL-56/67). Atualiza os campos editáveis
+        (texto + contatos), aceita `clear_fields` (setar NULL), marca `edited_by_admin=TRUE`
+        (o enrich passa a preservá-los) e limpa os flags de baixa confiança (o operador
+        revisou). Retorna o perfil atualizado (ou None se o alvo não tem perfil)."""
+        allowed = ("description", "business_type", "company_name", "phone", "whatsapp",
+                   "address", "instagram", "facebook", "linkedin", "youtube", "tiktok")
+        sets, params, touched = [], [], set()
         for col in allowed:
             if col in fields:
                 sets.append(f"{col} = %s")
-                params.append(fields[col])
+                params.append((str(fields[col]).strip() or None) if fields[col] is not None else None)
+                touched.add(col)
+        for col in (fields.get("clear_fields") or []):   # KL-67: limpar explicitamente
+            if col in allowed and col not in touched:
+                sets.append(f"{col} = NULL")
+                touched.add(col)
         if "tags" in fields:
             raw = fields["tags"]
             tags = raw if isinstance(raw, list) else [
                 t.strip() for t in str(raw or "").split(",") if t.strip()]
             sets.append("tags = %s")
             params.append(list(tags))
+            touched.add("tags")
         if not sets:
             return await self.get_site_profile(target_id)
+        sets.append("low_confidence_fields = '{}'")   # KL-67: operador revisou → limpa ⚠️
         sets.append("edited_by_admin = TRUE")
         sets.append("edited_by_admin_at = NOW()")
 
@@ -1368,6 +1386,36 @@ class TargetStore:
             )
             rows = self._rows_to_dicts(cur)
             return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def list_site_profiles_min(self) -> List[Dict[str, Any]]:
+        """Todos os perfis com os campos que passam por revalidação (KL-67) + o domínio
+        (para as heurísticas). Inclui `edited_by_admin` para pular perfis editados à mão."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT sp.target_id, t.domain, sp.phone, sp.address, sp.description, "
+                "       sp.instagram, sp.facebook, sp.linkedin, sp.youtube, sp.tiktok, "
+                "       COALESCE(sp.edited_by_admin, FALSE) AS edited_by_admin "
+                "FROM site_profile sp JOIN targets t ON t.id = sp.target_id")
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    _REVALIDATE_COLS = {"phone", "address", "description",
+                        "instagram", "facebook", "linkedin", "youtube", "tiktok"}
+
+    async def apply_revalidation(self, target_id: int, null_fields: List[str],
+                                 low_conf: List[str]) -> int:
+        """Revalidação retroativa (KL-67): zera os campos inválidos e grava os flags de
+        baixa confiança. NÃO marca `edited_by_admin` (não é edição manual)."""
+        sets = [f"{c} = NULL" for c in null_fields if c in self._REVALIDATE_COLS]
+        sets.append("low_confidence_fields = %s")
+
+        def _fn(cur):
+            cur.execute(f"UPDATE site_profile SET {', '.join(sets)} WHERE target_id = %s",
+                        [list(low_conf), target_id])
+            return cur.rowcount
 
         return await asyncio.to_thread(self._run, _fn)
 

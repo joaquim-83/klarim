@@ -126,6 +126,8 @@ export const admin = {
   updateProfile: (id, fields) => put(`/targets/${id}/profile`, fields),
   setProfileVisibility: (id, visible) =>
     patch(`/targets/${id}/profile/visibility`, { visible }),
+  // KL-67: revalidação retroativa dos perfis (dry-run mostra o impacto)
+  revalidateProfiles: (dryRun) => post(`/admin/revalidate-profiles${dryRun ? '?dry_run=1' : ''}`),
 
   // scans
   scans: (params) => get(`/scans${qs(params)}`),

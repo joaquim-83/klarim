@@ -30,6 +30,9 @@ _env = Environment(
 # Remetente padrão que funciona SEM domínio verificado (bom para testes).
 DEFAULT_FROM = "Klarim <onboarding@resend.dev>"
 SITE_BASE = "https://klarim.net"
+# KL-67 — Reply-To de TODOS os e-mails: o `seguranca@`/`alerta@` são só-envio (Resend,
+# sem inbox); as respostas caem em `scan@klarim.net` (inbox Hostinger, painel Inbox).
+REPLY_TO_DEFAULT = "scan@klarim.net"
 
 SEMAPHORE_COLOR = {"verde": "#00D26A", "amarelo": "#F2C744", "vermelho": "#FF4D4D"}
 SEMAPHORE_LABEL = {"verde": "VERDE", "amarelo": "AMARELO", "vermelho": "VERMELHO"}
@@ -333,6 +336,7 @@ class KlarimMailer:
 
         Checa a blocklist antes (exceto transacionais, `skip_blocklist=True`). Loga
         `blocked`/`sent`/`failed`. Um e-mail bloqueado retorna `email_id=None`."""
+        params.setdefault("reply_to", REPLY_TO_DEFAULT)  # KL-67 (send_contact já define o seu)
         to = _first_recipient(params.get("to"))
         subject = params.get("subject")
         from_domain = _domain_of_from(params.get("from"))
@@ -383,6 +387,8 @@ class KlarimMailer:
         bloqueado vira ``None`` na sua posição em ``ids`` (o `AlertWorker` mapeia
         `ids[i]` → `alerts[i]` posicionalmente). Retorna ``{sent, failed, ids}`` com
         ``ids`` 1:1 com o input."""
+        for p in payloads:   # KL-67 — Reply-To → scan@klarim.net em todo e-mail do batch
+            p.setdefault("reply_to", REPLY_TO_DEFAULT)
         n = len(payloads)
         to_list = [_first_recipient(p.get("to")) for p in payloads]
         blocked = [False] * n

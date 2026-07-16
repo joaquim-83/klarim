@@ -290,7 +290,11 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
 - **KL-69** — Gestão de usuários unificada ✅ (`/painel/usuarios` funde Clientes+Assinantes;
   admin remove site / desativa / reativa conta, com notificação; `is_active` bloqueia login;
   clean-blocked-sites notifica; termos de uso c/ domínios elegíveis)
-- **KL-64** — Analytics tracker (pendente) · **KL-67** — qualidade do profiler (pendente)
+- **KL-67** — Qualidade do profiler ✅ (validadores puros de telefone/DDD, redes sociais,
+  endereço e descrição/idioma em `scanner/profiler.py::apply_quality_filters`; flag
+  `low_confidence_fields`; edição admin de contatos; `POST /admin/revalidate-profiles`;
+  **Reply-To=scan@klarim.net** em TODO e-mail via `_send`/`_send_batch`)
+- **KL-64** — Analytics tracker (pendente)
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

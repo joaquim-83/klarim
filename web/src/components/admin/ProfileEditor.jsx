@@ -13,7 +13,12 @@ export function ProfileEditModal({ target, onClose, onSaved }) {
   const [busy, setBusy] = useState(false)
   const [visible, setVisible] = useState(target.public_visible !== false)
   const [edited, setEdited] = useState(false)
-  const [form, setForm] = useState({ description: '', business_type: '', company_name: '', tags: '' })
+  const [lowConf, setLowConf] = useState([])   // KL-67: campos suspeitos (⚠️)
+  const [form, setForm] = useState({
+    description: '', business_type: '', company_name: '', tags: '',
+    phone: '', whatsapp: '', address: '',
+    instagram: '', facebook: '', linkedin: '', youtube: '', tiktok: '',
+  })
 
   useEffect(() => {
     let alive = true
@@ -22,12 +27,15 @@ export function ProfileEditModal({ target, onClose, onSaved }) {
         if (!alive) return
         const p = full?.profile || {}
         setForm({
-          description: p.description || '',
-          business_type: p.business_type || '',
+          description: p.description || '', business_type: p.business_type || '',
           company_name: p.company_name || '',
           tags: Array.isArray(p.tags) ? p.tags.join(', ') : (p.tags || ''),
+          phone: p.phone || '', whatsapp: p.whatsapp || '', address: p.address || '',
+          instagram: p.instagram || '', facebook: p.facebook || '',
+          linkedin: p.linkedin || '', youtube: p.youtube || '', tiktok: p.tiktok || '',
         })
         setEdited(!!p.edited_by_admin)
+        setLowConf(Array.isArray(p.low_confidence_fields) ? p.low_confidence_fields : [])
         if (typeof p.public_visible === 'boolean') setVisible(p.public_visible)
       })
       .catch((e) => alive && setErr(e.message))
@@ -38,12 +46,7 @@ export function ProfileEditModal({ target, onClose, onSaved }) {
   async function saveProfile() {
     setBusy(true); setErr('')
     try {
-      await admin.updateProfile(target.id, {
-        description: form.description,
-        business_type: form.business_type,
-        company_name: form.company_name,
-        tags: form.tags,
-      })
+      await admin.updateProfile(target.id, { ...form })   // KL-67: envia todos os campos
       onSaved?.('Perfil atualizado ✓')
       onClose()
     } catch (e) { setErr(e.message) } finally { setBusy(false) }
@@ -94,6 +97,11 @@ export function ProfileEditModal({ target, onClose, onSaved }) {
                 ✏️ Editado à mão — o enrich automático não sobrescreve estes campos.
               </div>
             )}
+            {lowConf.length > 0 && (
+              <div className="mb-3 rounded-lg border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-300">
+                ⚠️ Dado extraído com baixa confiança (pode pertencer a outro site): {lowConf.join(', ')}. Revise ou limpe.
+              </div>
+            )}
 
             <div className="space-y-3">
               <div>
@@ -112,6 +120,28 @@ export function ProfileEditModal({ target, onClose, onSaved }) {
                 <label className="mb-1 block text-xs uppercase text-klarim-muted">Tags (separadas por vírgula)</label>
                 <input className={field} value={form.tags} onChange={(e) => setForm({ ...form, tags: e.target.value })} placeholder="hotel, spa, café da manhã" />
               </div>
+
+              {/* KL-67 — contatos editáveis (⚠️ nos de baixa confiança) */}
+              <div className="border-t border-klarim-border pt-3 text-xs font-semibold uppercase text-klarim-muted">Contatos</div>
+              {[
+                ['phone', 'Telefone'], ['whatsapp', 'WhatsApp'], ['address', 'Endereço'],
+                ['instagram', 'Instagram'], ['facebook', 'Facebook'], ['linkedin', 'LinkedIn'],
+                ['youtube', 'YouTube'], ['tiktok', 'TikTok'],
+              ].map(([key, label]) => (
+                <div key={key}>
+                  <label className="mb-1 block text-xs uppercase text-klarim-muted">
+                    {label} {lowConf.includes(key) && <span title="Baixa confiança — pode pertencer a outro site" className="text-yellow-400">⚠️</span>}
+                  </label>
+                  <div className="flex gap-2">
+                    <input className={field} value={form[key]}
+                      onChange={(e) => setForm({ ...form, [key]: e.target.value })} />
+                    {form[key] && (
+                      <button type="button" title="Limpar" onClick={() => setForm({ ...form, [key]: '' })}
+                        className="shrink-0 rounded-lg border border-klarim-border px-2 text-xs text-klarim-muted hover:text-klarim-text">✕</button>
+                    )}
+                  </div>
+                </div>
+              ))}
             </div>
 
             {err && <div className="mt-3"><ErrorBox message={err} /></div>}

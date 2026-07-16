@@ -110,6 +110,162 @@ def _first_phone(html_with_scripts: str, visible: str) -> Optional[str]:
     return None
 
 
+# --------------------------------------------------------------------------- #
+# Validações de qualidade (KL-67) — filtros REGEX/heurística na camada de extração.
+# Regra inviolável: são filtros (rejeitam lixo → NULL), NUNCA sobrescrita por IA. A IA
+# pode preencher um campo NULL depois, mas não substitui um dado que passou na validação.
+# --------------------------------------------------------------------------- #
+
+# DDDs brasileiros válidos (2026). Fora desta lista → telefone rejeitado.
+VALID_DDDS = {11, 12, 13, 14, 15, 16, 17, 18, 19, 21, 22, 24, 27, 28, 31, 32, 33, 34, 35,
+              37, 38, 41, 42, 43, 44, 45, 46, 47, 48, 49, 51, 53, 54, 55, 61, 62, 63, 64,
+              65, 66, 67, 68, 69, 71, 73, 74, 75, 77, 79, 81, 82, 83, 84, 85, 86, 87, 88,
+              89, 91, 92, 93, 94, 95, 96, 97, 98, 99}
+
+
+def validate_phone(raw: Optional[str]) -> Optional[str]:
+    """Dígitos limpos do telefone (DDD+8/9) ou None se inválido (DDD inexistente,
+    formato errado, celular sem 9). Aceita e remove o código do país (55)."""
+    digits = re.sub(r"\D", "", raw or "")
+    if digits.startswith("55") and len(digits) >= 12:
+        digits = digits[2:]
+    if len(digits) not in (10, 11):
+        return None
+    if int(digits[:2]) not in VALID_DDDS:
+        return None
+    if len(digits) == 11 and digits[2] != "9":   # celular tem que começar com 9
+        return None
+    return digits
+
+
+# Handles genéricos / de template (não são o perfil do site).
+SOCIAL_REJECTS = {
+    "people", "share", "sharer", "sharer.php", "intent", "dialog", "pages", "groups",
+    "channel", "hashtag", "search", "explore", "settings", "login", "signup", "help",
+    "about", "privacy", "terms", "policy", "undefined", "null", "home", "profile.php",
+}
+SHARE_PATTERNS = ["share", "sharer.php", "intent/tweet", "pin/create", "dialog/"]
+
+
+def validate_social_handle(platform: str, url_or_handle: str) -> Optional[str]:
+    """Handle limpo ou None. Rejeita genéricos (people/share/…), URLs de compartilhamento
+    e handles curtos/longos demais. Aceita tanto um handle quanto uma URL completa."""
+    s = (url_or_handle or "").strip()
+    if not s:
+        return None
+    low = s.lower()
+    for pat in SHARE_PATTERNS:
+        if pat in low:
+            return None
+    handle = s
+    if "/" in s:   # é uma URL → pega o último segmento significativo
+        segs = [p for p in s.split("?")[0].rstrip("/").split("/") if p]
+        handle = segs[-1] if segs else ""
+    handle = handle.lstrip("@").strip("/")
+    hl = handle.lower()
+    if not hl or hl in SOCIAL_REJECTS:
+        return None
+    if len(hl) < 2 or len(hl) > 50:
+        return None
+    return handle
+
+
+def handle_matches_domain(handle: str, domain: str) -> bool:
+    """Heurística fuzzy: o handle tem relação razoável com o domínio? (evita o Instagram
+    de uma hamburgueria no perfil de uma contabilidade). Sem Levenshtein: substring 4+."""
+    domain_name = (domain or "").split(".")[0].lower()
+    hc = (handle or "").lower().strip("@")
+    if not domain_name or not hc:
+        return False
+    if domain_name in hc or hc in domain_name:
+        return True
+    for i in range(len(domain_name) - 3):
+        if domain_name[i:i + 4] in hc:
+            return True
+    return False
+
+
+# Padrões que denunciam CSS/HTML raspado por engano (não é um endereço).
+ADDRESS_REJECTS = [r"navbar", r"nav-", r"d-flex", r"container", r"col-", r"\brow\b",
+                   r"class=", r"style=", r"<div", r"<span", r"\bpx\b", r"\brem\b",
+                   r"display:", r"margin:", r"padding:"]
+_ADDR_INDICATORS = [r"\brua\b", r"\bav\b", r"av\.", r"avenida", r"travessa", r"alameda",
+                    r"rodovia", r"estrada", r"pra[çc]a", r"largo", r"\bcep\b",
+                    r"bairro", r"\d{5}-?\d{3}"]
+
+
+def validate_address(raw: Optional[str]) -> Optional[str]:
+    """Endereço limpo ou None. Rejeita CSS raspado, tamanhos absurdos e strings sem
+    nenhum indicador de endereço brasileiro (rua/av/cep/…)."""
+    if not raw or len(raw) < 15 or len(raw) > 300:
+        return None
+    low = raw.lower()
+    for pat in ADDRESS_REJECTS:
+        if re.search(pat, low):
+            return None
+    if not any(re.search(ind, low) for ind in _ADDR_INDICATORS):
+        return None
+    return raw.strip()
+
+
+# Descrições genéricas de template (YouTube/WordPress/lorem…).
+DESCRIPTION_REJECTS = [r"you need to enable javascript", r"share your videos with friends",
+                       r"wordpress starter theme", r"just another wordpress site",
+                       r"this is a default description", r"lorem ipsum", r"sample page",
+                       r"hello world", r"website powered by", r"built with"]
+# Palavras distintamente PT-BR (removidas as ambíguas com inglês: a/o/e/as/no/na, que
+# davam falso-positivo em descrições em inglês, ex.: "We are **a** company…").
+_PT_WORDS = {"de", "do", "da", "dos", "das", "em", "para", "com", "uma", "que", "por",
+             "seu", "sua", "são", "está", "não", "mais", "nossa", "nosso", "pela", "pelo",
+             "você", "aos", "às", "ão"}
+
+
+def validate_description(raw: Optional[str], domain: str = "") -> Optional[str]:
+    """Descrição limpa ou None. Rejeita templates genéricos e texto que quase certamente
+    não é português (heurística de palavras comuns PT-BR)."""
+    if not raw or len(raw) < 20:
+        return None
+    if len(raw) > 500:
+        raw = raw[:500]
+    low = raw.lower()
+    for pat in DESCRIPTION_REJECTS:
+        if re.search(pat, low):
+            return None
+    words = low.split()
+    if len(words) > 10:
+        pt_ratio = sum(1 for w in words if w.strip(".,;:!?") in _PT_WORDS) / max(len(words), 1)
+        if pt_ratio < 0.05:   # provavelmente inglês/outro idioma
+            return None
+    return raw.strip()
+
+
+# Redes sociais sujeitas ao flag de baixa confiança (não batem o domínio).
+_SOCIAL_FIELDS = ("instagram", "facebook", "linkedin", "youtube", "tiktok")
+
+
+def apply_quality_filters(profile: dict, domain: str = "") -> dict:
+    """KL-67 — aplica os validadores ao perfil montado (in-place) e popula
+    `low_confidence_fields`. Filtro puro: rejeita lixo (→ None), nunca substitui por IA."""
+    low_conf: List[str] = []
+    if profile.get("phone"):
+        digs = validate_phone(profile["phone"])
+        profile["phone"] = _fmt_phone(digs) if digs else None
+    if profile.get("address"):
+        profile["address"] = validate_address(profile["address"])
+    if profile.get("description"):
+        profile["description"] = validate_description(profile["description"], domain)
+    for net in _SOCIAL_FIELDS:
+        val = profile.get(net)
+        if not val:
+            continue
+        clean = validate_social_handle(net, val)
+        profile[net] = clean
+        if clean and domain and not handle_matches_domain(clean, domain):
+            low_conf.append(net)   # mantém o valor, mas sinaliza suspeita
+    profile["low_confidence_fields"] = low_conf
+    return profile
+
+
 def extract_contacts(html_pages: Dict[str, str], site_domain: str = "") -> dict:
     """Extrai contatos de várias páginas HTML: e-mail, telefone, whatsapp,
     endereço e CNPJ (validado)."""
@@ -532,6 +688,8 @@ async def build_profile(url: str, homepage_html: Optional[str] = None,
         "sector_hint": structured.get("sector"),
         "extraction_sources": sorted(pages.keys()) + (["schema_org"] if structured.get("company_name") else []),
     }
+    # KL-67 — filtros de qualidade (telefone/endereço/descrição/redes) ANTES de gravar.
+    apply_quality_filters(profile, site_domain)
     # sinais auxiliares para a maturidade
     profile["_hsts"] = bool(headers and any(k.lower() == "strict-transport-security" for k in headers))
     profile["_responsive"] = bool(_VIEWPORT_RE.search(combined))

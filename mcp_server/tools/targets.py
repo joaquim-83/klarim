@@ -155,11 +155,24 @@ async def update_site_profile(
     business_type: str | None = None,
     company_name: str | None = None,
     tags: list[str] | None = None,
+    phone: str | None = None,
+    whatsapp: str | None = None,
+    address: str | None = None,
+    instagram: str | None = None,
+    facebook: str | None = None,
+    linkedin: str | None = None,
+    youtube: str | None = None,
+    tiktok: str | None = None,
+    clear_fields: list[str] | None = None,
 ) -> dict:
-    """Edita o perfil da landing (description/business_type/company_name/tags). Marca
-    o perfil como editado à mão — o enrich automático deixa de sobrescrever esses
-    campos (KL-56). Passe só os campos a alterar."""
+    """Edita o perfil da landing: texto (description/business_type/company_name/tags) e
+    contatos (phone/whatsapp/address/instagram/facebook/linkedin/youtube/tiktok). Use
+    `clear_fields` p/ zerar campos. Marca o perfil como editado à mão — o enrich deixa de
+    sobrescrever esses campos (KL-56/67). Passe só os campos a alterar."""
     m = _api()
-    body = m.ProfileEditBody(description=description, business_type=business_type,
-                             company_name=company_name, tags=tags)
+    body = m.ProfileEditBody(
+        description=description, business_type=business_type, company_name=company_name,
+        tags=tags, phone=phone, whatsapp=whatsapp, address=address, instagram=instagram,
+        facebook=facebook, linkedin=linkedin, youtube=youtube, tiktok=tiktok,
+        clear_fields=clear_fields)
     return await _guard(lambda: m.api_update_profile(target_id, body))
