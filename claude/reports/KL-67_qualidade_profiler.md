@@ -81,7 +81,17 @@ de baixa confiança (rede ≠ domínio).
 0500/0900 e 3003/4004/… (custo compartilhado) por não terem DDD — telefones legítimos de
 empresa. Corrigido (`_SPECIAL_PHONE_PREFIXES`/`_SHARED_PHONE_PREFIXES`) para aceitá-los; e o
 `apply_quality_filters` deixou de **reformatar** o telefone (só valida) para não manglar o
-0800. O dono optou por **tratar 0800/4004 antes de aplicar** — 2º dry-run + apply após o deploy.
+0800. O dono optou por **tratar 0800/4004 antes de aplicar**.
+
+**2º dry-run (pós-fix 0800):** 7.831 perfis, 3.426 mudariam — **telefone caiu de 1.665 → 1.614**
+(o fix protegeu ~51 números especiais legítimos), endereço 1.352, descrição 188, redes 71,
+1.740 flags. Números consistentes → **apply autorizado e executado**.
+
+**APPLY em produção (2026-07-16):** 3.426 perfis limpos. Verificação numa 2ª passada:
+**todas as rejeições caíram a 0** (telefone/endereço/descrição/redes zerados). **1.740 flags**
+de baixa confiança em **1.149 perfis** (redes que não batem o domínio — mantidas e sinalizadas
+com ⚠️ no painel para revisão manual). Perfis com telefone válido preservados; os 0800/4004
+legítimos mantidos.
 
 ## Testes
 Suíte offline **verde** (`pytest`). Validadores e Reply-To cobertos.
