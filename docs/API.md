@@ -76,7 +76,8 @@ Um middleware (`_admin_auth_mw`) protege os prefixos abaixo (`_PROTECTED_PREFIXE
 | GET | `/scan/summary` | dispara/retorna o scan (exige `X-Scan-Token`, `charge_id` pago, ou sessão) |
 | POST | `/scan/send-report` | envia os 2 PDFs por e-mail (rate limit 3/e-mail/h) |
 | GET | `/scan` | (rota SSR do fluxo antigo) |
-| GET | `/benchmark` · `/benchmark/{sector}` · `/benchmark/cnae/{division}` | médias de score |
+| GET | `/benchmark` · `/benchmark/{sector}` · `/benchmark/all` · `/benchmark/cnae/{division}` | KL-44 P5: médias/mediana/min/max + distribuição anônima por semáforo (setor ≥10 scans; cache 24h) |
+| GET | `/seal/{domain}` | KL-44 P5: dados do selo "Monitorado por Klarim" (score + privacidade + link; público, CORS `*`, cache 1h, 60/h/IP; `seal_type=monitored`, nunca "certificado") |
 
 ## Relatórios / PDF
 
@@ -180,6 +181,7 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 | GET/PATCH/POST | `/admin/subscriptions*` | assinaturas: `PATCH /{id}/plan` (muda plano + ajusta vigílias via `_sync_user_vigilias`; `free` zera status/vigílias avançadas), `/{id}/trial` (estende N dias), `/{id}/status`, `/bulk`, `/{id}/history`, `/stats`. `account_id == users.id` — a página **Usuários** gere plano por aqui |
 | GET | `/admin/vigilias` · `/{id}` · `/stats` · `/admin/vigilia-alerts` | vigílias (KL-44 P2/P4: 8 tipos) |
 | GET | `/admin/typosquat-alerts` | KL-44 P4: domínios suspeitos (typosquat/phishing) + stats |
+| GET | `/admin/privacy-stats` | KL-44 P5: distribuição PASS/FAIL por indicador de privacidade |
 | GET/POST | `/admin/workers/control` · `/pause` · `/resume` | controle de workers |
 | GET | `/monitoring/admin/list` · `/stats` · POST `/{id}/status` | sites monitorados |
 | GET | `/system/status` · `/system/activity` · `/system/email-health` | operação em tempo real |

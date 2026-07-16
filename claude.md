@@ -135,6 +135,10 @@ Valide com `nginx -t` (há job de CI); config inválida **derruba o site**.
 - **48 checks passivos** = **15 grátis (ORDER≤15)** + **33 pagos** (OWASP/CWE/LGPD,
   CVE via Retire.js, TLS profundo, DNS, content analysis). Cada check é uma coroutine
   descoberta dinamicamente (ver §6).
+- **8 indicadores de privacidade** (KL-44 P5, `scanner/privacy_checks.py`) rodam num
+  **único GET próprio** e geram um `privacy_score` **0–8 SEPARADO** do score de segurança
+  (nunca se combinam) — diagnóstico técnico, **não** conformidade LGPD (disclaimer
+  obrigatório em toda superfície). São indicadores, não `check_*.py` (não entram nos 48).
 - **Semáforo:** 🟢 score **≥90 E zero FAIL Alta/Crítica** · 🟡 ≥50 · 🔴 <50.
 - Cache por tier no Redis (`scan:free:*` / `scan:full:*`, ambos casam `scan:*`) com
   fallback no banco.
@@ -297,7 +301,12 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   técnico vinculado (`role=technician`, e-mail do dono mascarado), templates plain text,
   Reply-To scan@. P4: uptime (loop 5 min, 3 falhas→alerta, anti-spam 1/h, recovery),
   changes (snapshot leve, alerta em mudança significativa), phishing/typosquat (CT logs +
-  `is_typosquat`, `typosquat_alerts`), config `BULLETIN_ENABLED`/`BULLETIN_HOUR_UTC` no painel
+  `is_typosquat`, `typosquat_alerts`), config `BULLETIN_ENABLED`/`BULLETIN_HOUR_UTC` no painel.
+  **P5 ✅**: 8 indicadores técnicos de privacidade (`scanner/privacy_checks.py`, score 0–8
+  separado + disclaimer, NUNCA "conformidade"/"certificado"); selo "Monitorado por Klarim"
+  (`GET /seal/{domain}` + `web/public/seal/widget.js` sem tracking, só dono verificado);
+  benchmark setorial rico (`/benchmark/{sector}`|`/all` com mediana + distribuição anônima,
+  cache 24h); `/admin/privacy-stats` + MCP `get_privacy_stats`
 - **KL-51** — Plataforma Astro (fases 1–5 ✅)
 - **KL-61** — Gestão de Leads / PQL ✅ · **KL-62** — email_log unificado ✅
 - **KL-63** — MCP OAuth 2.1 ✅ · **KL-65** — SEO/Schema.org ✅ · **KL-66** — contato nos perfis ✅

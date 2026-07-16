@@ -44,6 +44,15 @@ class FakeStore:
     async def global_avg_score(self):
         return {"avg_score": 70, "count": 500}
 
+    async def get_latest_scan_full(self, tid):   # KL-44 P5
+        rows = self.scans.get(tid) or []
+        return rows[0] if rows else None
+
+    async def sector_benchmark(self, sector, min_count=10):   # KL-44 P5
+        return {"sector": sector, "count": 20, "avg_score": 68, "median": 70,
+                "min_score": 30, "max_score": 95,
+                "distribution": {"green_pct": 10, "yellow_pct": 80, "red_pct": 10}}
+
     async def list_sector_ranking(self, sector, limit=20):
         return self.sector_ranking.get(sector, [])[:limit]
 

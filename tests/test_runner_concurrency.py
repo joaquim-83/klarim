@@ -11,8 +11,20 @@ from __future__ import annotations
 import asyncio
 import time
 
+import pytest
+
 import scanner.runner as runner
+import scanner.privacy_checks as privacy_checks
 from scanner.checks.base import CheckResult, Status, Severity
+
+
+@pytest.fixture(autouse=True)
+def _no_privacy_fetch(monkeypatch):
+    """KL-44 P5: os indicadores de privacidade fazem 1 GET próprio. Estes testes medem a
+    concorrência dos CHECKS — sem rede — então neutralizamos o fetch de privacidade."""
+    async def _noop(url):
+        return None
+    monkeypatch.setattr(privacy_checks, "scan_privacy", _noop)
 
 
 def _mk(cid: str, delay: float):

@@ -3583,6 +3583,79 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    async def sector_benchmark(self, sector: str, min_count: int = 10) -> Optional[Dict[str, Any]]:
+        """KL-44 P5 — benchmark setorial rico: média/mediana/min/max + distribuição por
+        faixa de semáforo (anônimo, sem nomear sites). None se amostra < `min_count`."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT COUNT(*), COALESCE(ROUND(AVG(last_scan_score)), 0), "
+                "  COALESCE(ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP "
+                "    (ORDER BY last_scan_score)), 0), "
+                "  COALESCE(MIN(last_scan_score), 0), COALESCE(MAX(last_scan_score), 0), "
+                "  COUNT(*) FILTER (WHERE last_scan_score >= 90), "
+                "  COUNT(*) FILTER (WHERE last_scan_score >= 50 AND last_scan_score < 90), "
+                "  COUNT(*) FILTER (WHERE last_scan_score < 50) "
+                "FROM targets WHERE sector = %s AND last_scan_score IS NOT NULL", (sector,))
+            r = cur.fetchone()
+            count = int(r[0] or 0)
+            if count < min_count:
+                return None
+            green, yellow, red = int(r[5] or 0), int(r[6] or 0), int(r[7] or 0)
+            def _pct(n):
+                return round(100 * n / count) if count else 0
+            return {"sector": sector, "count": count, "avg_score": int(r[1] or 0),
+                    "median": int(r[2] or 0), "min_score": int(r[3] or 0),
+                    "max_score": int(r[4] or 0),
+                    "distribution": {"green_pct": _pct(green), "yellow_pct": _pct(yellow),
+                                     "red_pct": _pct(red)}}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def all_sector_benchmarks(self, min_count: int = 10) -> List[Dict[str, Any]]:
+        """Todos os setores com ≥ `min_count` scans (média/mediana), da maior amostra p/ a
+        menor. Anônimo — só agregados."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT sector, COUNT(*), COALESCE(ROUND(AVG(last_scan_score)), 0), "
+                "  COALESCE(ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP "
+                "    (ORDER BY last_scan_score)), 0) "
+                "FROM targets WHERE sector IS NOT NULL AND sector <> 'outro' "
+                "  AND last_scan_score IS NOT NULL "
+                "GROUP BY sector HAVING COUNT(*) >= %s ORDER BY COUNT(*) DESC", (min_count,))
+            return [{"sector": s, "count": int(c), "avg_score": int(a), "median": int(m)}
+                    for s, c, a, m in cur.fetchall()]
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def privacy_indicator_stats(self) -> Dict[str, Any]:
+        """KL-44 P5 — distribuição PASS/FAIL por indicador de privacidade sobre o último
+        scan de cada alvo (inteligência comercial: quais indicadores mais falham). Lê
+        `checks_json->'privacy'`. Best-effort (ignora scans sem o bloco privacy)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT checks_json->'privacy' AS pj FROM scans s "
+                "WHERE checks_json ? 'privacy' AND checks_json->'privacy' IS NOT NULL "
+                "  AND scanned_at > NOW() - INTERVAL '90 days' LIMIT 20000")
+            by_id: Dict[str, Dict[str, int]] = {}
+            total = 0
+            score_sum = 0
+            for (pj,) in cur.fetchall():
+                if not pj or not isinstance(pj, dict):
+                    continue
+                total += 1
+                score_sum += int(pj.get("score") or 0)
+                for c in pj.get("checks") or []:
+                    cid = c.get("id")
+                    if not cid:
+                        continue
+                    d = by_id.setdefault(cid, {"pass": 0, "fail": 0, "name": c.get("name") or cid})
+                    d["pass" if c.get("status") == "PASS" else "fail"] += 1
+            return {"scanned": total,
+                    "avg_privacy_score": round(score_sum / total, 1) if total else 0,
+                    "indicators": by_id}
+
+        return await asyncio.to_thread(self._run, _fn)
+
     # --- rankings por setor (KL-42) ---------------------------------------- #
 
     async def list_sector_ranking(self, sector: str, limit: int = 20) -> List[Dict[str, Any]]:

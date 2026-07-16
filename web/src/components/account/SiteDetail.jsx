@@ -134,6 +134,82 @@ function MonitoringSection({ domain }) {
   );
 }
 
+// KL-44 P5 — recomendação genérica por indicador (NÃO é assessoria jurídica).
+const PRIVACY_TODO = {
+  privacy_policy: 'Publique uma página de Política de Privacidade e linke-a no rodapé.',
+  cookie_consent: 'Instale um banner de consentimento de cookies (CookieYes, OneTrust, Cookiebot, etc.).',
+  third_party_cookies: 'Carregue scripts de rastreio (Analytics, Meta, Ads) só após o consentimento.',
+  dsar_channel: 'Ofereça um canal para o titular exercer seus direitos (acesso, correção, exclusão).',
+  dpo_info: 'Identifique o Encarregado (DPO) e um contato na política de privacidade.',
+  cookie_policy: 'Crie uma Política de Cookies dedicada (além da política de privacidade).',
+  https_forms: 'Sirva todo o site (e os formulários) sobre HTTPS.',
+  form_security_headers: 'Ative HSTS, CSP e X-Content-Type-Options nas páginas com formulários.',
+};
+const PRIVACY_DISCLAIMER = 'Este é um diagnóstico técnico automatizado baseado em verificações passivas. Não constitui assessoria jurídica e não substitui a avaliação de um advogado ou Encarregado de Proteção de Dados (DPO). Para conformidade completa com a LGPD, consulte um profissional qualificado.';
+
+function PrivacySection({ privacy }) {
+  if (!privacy || !Array.isArray(privacy.checks)) return null;
+  return (
+    <div className={card}>
+      <h2 className="text-lg font-bold text-white">Indicadores de privacidade: {privacy.score}/{privacy.total}</h2>
+      <p className="mt-1 text-sm text-slate-400">Fatos técnicos observáveis por varredura passiva. Referência LGPD por indicador.</p>
+      <ul className="mt-4 space-y-2.5">
+        {privacy.checks.map((c) => (
+          <li key={c.id} className="text-sm">
+            <div className="flex items-start gap-2">
+              <span aria-hidden="true">{c.status === 'PASS' ? '✅' : '❌'}</span>
+              <span className="text-slate-200">{c.name}</span>
+              <span className="ml-auto shrink-0 text-xs text-slate-500">{c.lgpd_ref}</span>
+            </div>
+            {c.status === 'FAIL' && PRIVACY_TODO[c.id] && (
+              <p className="ml-6 mt-0.5 text-xs text-slate-400"><span className="text-slate-500">O que fazer:</span> {PRIVACY_TODO[c.id]}</p>
+            )}
+          </li>
+        ))}
+      </ul>
+      <p className="mt-4 border-t border-slate-800 pt-3 text-xs leading-relaxed text-slate-500">⚖️ {PRIVACY_DISCLAIMER}</p>
+    </div>
+  );
+}
+
+// KL-44 P5 (Bloco 2C) — selo "Monitorado por Klarim". Só para dono verificado.
+function SealSection({ domain }) {
+  const [theme, setTheme] = useState('auto');
+  const [size, setSize] = useState('compact');
+  const [copied, setCopied] = useState(false);
+  const snippet = `<!-- Selo Klarim - Monitorado -->
+<div id="klarim-seal"></div>
+<script src="https://klarim.net/seal/widget.js"
+        data-domain="${domain}"${theme !== 'auto' ? `\n        data-theme="${theme}"` : ''}${size !== 'compact' ? `\n        data-size="${size}"` : ''}></script>`;
+  function copy() {
+    navigator.clipboard?.writeText(snippet);
+    setCopied(true); setTimeout(() => setCopied(false), 2000);
+  }
+  return (
+    <div className={card}>
+      <h2 className="text-lg font-bold text-white">Selo de monitoramento</h2>
+      <p className="mt-1 text-sm text-slate-400">Exiba "Monitorado por Klarim" no seu site. Sem rastreio de visitantes.</p>
+      <div className="mt-4 flex flex-wrap gap-3 text-sm">
+        <label className="flex items-center gap-1.5 text-slate-400">Tema
+          <select value={theme} onChange={(e) => setTheme(e.target.value)} className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-200">
+            <option value="auto">Auto</option><option value="dark">Escuro</option><option value="light">Claro</option>
+          </select>
+        </label>
+        <label className="flex items-center gap-1.5 text-slate-400">Tamanho
+          <select value={size} onChange={(e) => setSize(e.target.value)} className="rounded border border-slate-700 bg-slate-950 px-2 py-1 text-slate-200">
+            <option value="compact">Compacto</option><option value="full">Completo</option>
+          </select>
+        </label>
+      </div>
+      <pre className="mt-3 overflow-x-auto rounded-lg border border-slate-800 bg-slate-950 p-3 text-xs text-slate-300"><code>{snippet}</code></pre>
+      <button onClick={copy} className="mt-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-brand-400">
+        {copied ? 'Copiado ✓' : 'Copiar snippet'}
+      </button>
+      <p className="mt-2 text-xs text-slate-500">Sugestão: cole no rodapé do site. O selo abre o perfil público em nova aba.</p>
+    </div>
+  );
+}
+
 export default function SiteDetail({ targetId }) {
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
@@ -174,6 +250,10 @@ export default function SiteDetail({ targetId }) {
 
       {/* KL-44 P4 — monitoramento contínuo (vigílias + uptime) */}
       <MonitoringSection domain={t.domain} />
+
+      {/* KL-44 P5 — indicadores de privacidade + selo (selo só p/ dono verificado) */}
+      <PrivacySection privacy={data.privacy} />
+      {data.is_owner && t.domain && <SealSection domain={t.domain} />}
 
       {/* Score */}
       <div className={`${card} text-center`}>

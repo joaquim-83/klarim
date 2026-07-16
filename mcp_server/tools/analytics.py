@@ -16,3 +16,12 @@ async def get_funnel(period: str = "7d") -> dict:
 async def get_rescan_stats() -> dict:
     """Estatísticas de re-scans: improved, worsened, unchanged, first_rescan."""
     return await _guard(lambda: _store().rescan_stats())
+
+
+@mcp.tool()
+async def get_privacy_stats() -> dict:
+    """KL-44 P5 — distribuição PASS/FAIL por indicador TÉCNICO de privacidade nos sites
+    escaneados (ex.: quantos têm política de privacidade, banner de cookies, DPO). Dado
+    agregado/anônimo — inteligência comercial ('X% do setor não tem banner de cookies').
+    NÃO é avaliação de conformidade LGPD."""
+    return await _guard(lambda: _store().privacy_indicator_stats())

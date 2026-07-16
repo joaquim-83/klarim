@@ -119,6 +119,11 @@ Schema criado idempotente no `ensure_schema` (sem Alembic). Principais tabelas:
   `scan_credits`, `site_events` (tracking), `scan_leads` (PQL).
 - **Contas:** `users`, `user_sites`, `password_resets`, `vigilias`, `vigilia_alerts`,
   `typosquat_alerts` (KL-44 P4: domínios suspeitos dos CT logs), planos/assinaturas (KL-44).
+- **Privacidade (KL-44 P5):** sem tabela nova — os 8 indicadores vivem no
+  `scans.checks_json->'privacy'` (`scanner/privacy_checks.py`, um GET próprio, `privacy_score`
+  0–8 separado do de segurança). Selo público `GET /seal/{domain}` (cache Redis 1h) +
+  `web/public/seal/widget.js` (estático, CORS `*`, sem tracking). Benchmark setorial rico
+  (mediana + distribuição anônima) cacheado em `benchmark:{sector}`/`benchmark:all` (24h).
 - **Operação:** `monitored_sites`, `inbox_messages`, `admin_settings` (config ao vivo).
 
 ## 8. Integrações externas

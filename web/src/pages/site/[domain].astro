@@ -45,6 +45,8 @@ const t = data?.target || {};
 const p = data?.profile || {};
 const cls = data?.classifications || [];
 const bench = data?.benchmark || null;
+const privacy = data?.privacy || null;  // KL-44 P5: indicadores técnicos de privacidade
+const PRIVACY_DISCLAIMER = 'Este é um diagnóstico técnico automatizado baseado em verificações passivas. Não constitui assessoria jurídica e não substitui a avaliação de um advogado ou Encarregado de Proteção de Dados (DPO). Para conformidade completa com a LGPD, consulte um profissional qualificado.';
 const sema = SEMA[t.semaphore] || SEMA.amarelo;
 const scoreN = t.score ?? null;
 const lastScan = t.last_scan_at ? new Date(t.last_scan_at).toLocaleDateString('pt-BR') : '—';
@@ -222,11 +224,37 @@ if (hasContact) {
           </div>
         )}
 
+        {/* KL-44 P5 — Indicadores técnicos de privacidade (score SEPARADO do de segurança). */}
+        {privacy && Array.isArray(privacy.checks) && (
+          <div class={card}>
+            <h2 class="text-lg font-bold text-white">Indicadores de privacidade: {privacy.score}/{privacy.total}</h2>
+            <p class="mt-1 text-sm text-slate-400">Fatos técnicos observáveis por varredura passiva. Referência LGPD por indicador.</p>
+            <ul class="mt-4 space-y-2">
+              {privacy.checks.map((c) => (
+                <li class="flex items-start gap-2 text-sm">
+                  <span aria-hidden="true">{c.status === 'PASS' ? '✅' : '❌'}</span>
+                  <span class="text-slate-200">{c.name}</span>
+                  <span class="ml-auto shrink-0 text-xs text-slate-500">{c.lgpd_ref}</span>
+                </li>
+              ))}
+            </ul>
+            <p class="mt-4 border-t border-slate-800 pt-3 text-xs leading-relaxed text-slate-500">⚖️ {PRIVACY_DISCLAIMER}</p>
+          </div>
+        )}
+
         {bench && bench.count > 0 && (
           <div class={card}>
-            <p class="text-sm font-medium uppercase tracking-wide text-brand-400/80">Benchmark</p>
-            <p class="mt-2 text-slate-300">Score deste site: <span class="font-bold text-white">{scoreN}</span> · Média{bench.scope === 'sector' ? ' do setor' : ' nacional'}: <span class="font-bold text-white">{bench.avg_score}</span></p>
-            <p class="mt-1 text-sm text-slate-400">{scoreN >= bench.avg_score ? 'Acima da média.' : 'Abaixo da média — há espaço para melhorar.'}</p>
+            <p class="text-sm font-medium uppercase tracking-wide text-brand-400/80">Benchmark{bench.sector_label ? ` — ${bench.sector_label}` : ''}</p>
+            <p class="mt-2 text-slate-300">Score deste site: <span class="font-bold text-white">{scoreN}</span> · Média{bench.scope === 'sector' ? ' do setor' : ' nacional'}: <span class="font-bold text-white">{bench.avg_score}</span>{bench.median != null ? <span class="text-slate-500"> · mediana {bench.median}</span> : null}</p>
+            <p class="mt-1 text-sm text-slate-400">{scoreN >= bench.avg_score ? 'Acima da média ↑' : 'Abaixo da média ↓ — há espaço para melhorar.'}</p>
+            {bench.distribution && (
+              <div class="mt-4 space-y-1 text-sm">
+                <p class="text-xs uppercase tracking-wide text-slate-500">Distribuição do setor ({bench.count} sites)</p>
+                <p class="text-slate-300">🟢 Excelente (≥90): <span class="font-semibold text-white">{bench.distribution.green_pct}%</span></p>
+                <p class="text-slate-300">🟡 Adequado (50–89): <span class="font-semibold text-white">{bench.distribution.yellow_pct}%</span></p>
+                <p class="text-slate-300">🔴 Crítico (&lt;50): <span class="font-semibold text-white">{bench.distribution.red_pct}%</span></p>
+              </div>
+            )}
           </div>
         )}
 

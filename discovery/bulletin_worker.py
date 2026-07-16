@@ -149,12 +149,20 @@ class BulletinWorker:
             return False
         score = scan["score"]
         semaphore = scan.get("semaphore") or _semaphore(score)
-        checks = scan.get("checks_json") or []
-        if isinstance(checks, str):
+        raw = scan.get("checks_json") or []
+        if isinstance(raw, str):
             try:
-                checks = json.loads(checks)
+                raw = json.loads(raw)
             except Exception:  # noqa: BLE001
-                checks = []
+                raw = []
+        # checks_json pode ser o dict completo do report ({results, score, privacy}) ou a
+        # lista de checks (formato antigo). KL-44 P5: extrai a lista + o bloco de privacidade.
+        privacy = None
+        if isinstance(raw, dict):
+            privacy = raw.get("privacy")
+            checks = raw.get("results") or raw.get("checks") or []
+        else:
+            checks = raw
 
         last = await self.store.get_last_bulletin(uid, tid)
         prev = last.get("score") if last else None
@@ -183,12 +191,22 @@ class BulletinWorker:
         except Exception as exc:  # noqa: BLE001 - sem laudo o boletim ainda vai (só sem link)
             print(f"[bulletin] shared_report falhou: {exc!r}", flush=True)
 
+        # KL-44 P5: benchmark do setor (anônimo) para o boletim — best-effort.
+        benchmark = None
+        try:
+            sector = row.get("sector") or (await self.store.get_target(tid) or {}).get("sector")
+            if sector and sector != "outro":
+                benchmark = await self.store.sector_benchmark(sector, min_count=10)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[bulletin] benchmark falhou: {exc!r}", flush=True)
+
         owner_text = _bl.build_owner_bulletin({
             "domain": domain, "score": score, "semaphore": semaphore, "trend": trend,
             "delta": delta, "vigilias": vig, "vigilia_alerts": vig_alerts,
             "top_action": top_action, "code": code,
             "whatsapp_url": _whatsapp_url(domain, score, code),
             "technician_masked": _mask_email(tech_link["technician_email"]) if tech_link else None,
+            "benchmark": benchmark, "privacy": privacy,   # KL-44 P5
         })
         subject = _bl.owner_subject(domain, _bl.bulletin_period_label(now.month, now.year))
 

@@ -39,6 +39,8 @@ READ_TOOLS = [
     "get_vigilia_stats", "list_vigilia_alerts",
     # KL-44 P4: typosquat/phishing
     "get_typosquat_alerts",
+    # KL-44 P5: indicadores de privacidade
+    "get_privacy_stats",
     # KL-68: verificação de propriedade
     "get_ownership_stats",
     # KL-44 P3: boletim + técnico

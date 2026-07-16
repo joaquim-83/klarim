@@ -331,6 +331,7 @@ _ownership_attempts: dict = {}  # KL-68: verificação de propriedade
 _admin_action_attempts: dict = {}  # KL-69: ações admin de gestão de usuários
 _technician_attempts: dict = {}    # KL-44 P3: convite/laudo de técnico
 _laudo_attempts: dict = {}         # KL-44 P3: acesso ao laudo público
+_seal_attempts: dict = {}          # KL-44 P5: selo "Monitorado por Klarim"
 
 
 def _mask_email(email: str) -> str:
@@ -937,6 +938,7 @@ async def account_site_detail(target_id: int, request: Request) -> dict:
                 "scanned_at": (s.get("scanned_at").isoformat() if s.get("scanned_at") else None)}
                for s in reversed(scans)]
     checks: list = []
+    privacy = None
     score = target.get("last_scan_score")
     semaphore = None
     fail_count = 0
@@ -944,10 +946,11 @@ async def account_site_detail(target_id: int, request: Request) -> dict:
         full = await store.get_scan(scans[0]["id"])
         cj = (full or {}).get("checks_json") or {}
         if isinstance(cj, dict):
-            checks = cj.get("checks") or []
+            checks = cj.get("checks") or cj.get("results") or []
             sc = cj.get("score") or {}
             score = sc.get("score", score)
             semaphore = sc.get("semaphore")
+            privacy = cj.get("privacy")   # KL-44 P5: indicadores técnicos de privacidade
         fail_count = scans[0].get("fail_count") or 0
     profile = await store.get_site_profile(target_id)
     classifications = await store.get_target_classifications(target_id)
@@ -976,6 +979,7 @@ async def account_site_detail(target_id: int, request: Request) -> dict:
         "score": score, "semaphore": semaphore, "fail_count": fail_count,
         "badge": badge, "ranking": ranking,
         "history": history, "checks": checks,
+        "privacy": privacy,   # KL-44 P5
         "profile": profile, "classifications": classifications,
     }
 
@@ -1394,12 +1398,20 @@ async def public_laudo(code: str, request: Request) -> dict:
     if rep.get("expired"):
         return {"status": "expired", "domain": rep.get("domain")}
     _spawn(store.register_shared_report_access(rep["code"]))   # fire-and-forget
-    checks = rep.get("checks_json") or []
-    if isinstance(checks, str):
+    raw = rep.get("checks_json") or []
+    if isinstance(raw, str):
         try:
-            checks = json.loads(checks)
+            raw = json.loads(raw)
         except Exception:  # noqa: BLE001
-            checks = []
+            raw = []
+    # checks_json pode ser o dict completo do report ({results, score, privacy}) ou já a
+    # lista de checks (formato antigo/testes). KL-44 P5: extrai privacy do dict.
+    privacy = None
+    if isinstance(raw, dict):
+        privacy = raw.get("privacy")
+        checks = raw.get("results") or raw.get("checks") or []
+    else:
+        checks = raw
     fails = _enrich_fails(checks)
     passed = [{"check_id": c.get("check_id"), "name": c.get("name"), "status": c.get("status")}
               for c in checks if c.get("status") != "FAIL"]
@@ -1417,6 +1429,7 @@ async def public_laudo(code: str, request: Request) -> dict:
         "fails": fails,
         "checks": [{"check_id": c.get("check_id"), "name": c.get("name"),
                     "status": c.get("status"), "severity": c.get("severity")} for c in checks],
+        "privacy": privacy,   # KL-44 P5: indicadores técnicos (score separado + disclaimer)
     }
 
 
@@ -1493,21 +1506,102 @@ async def api_benchmark_global() -> dict:
     return {"scope": "global", "avg_score": data["avg_score"], "count": data["count"]}
 
 
+async def _cache_get(key: str) -> Optional[dict]:
+    if _cache is None or _cache.redis is None:
+        return None
+    try:
+        raw = await _cache.redis.get(key)
+        return json.loads(raw) if raw else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+async def _cache_set(key: str, value: dict, ttl: int = 86400) -> None:
+    if _cache is None or _cache.redis is None:
+        return
+    try:
+        await _cache.redis.set(key, json.dumps(value), ex=ttl)
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@app.get("/benchmark/all")
+async def api_benchmark_all() -> dict:
+    """KL-44 P5 — todos os setores com ≥10 scans (média/mediana), anônimo. Cache 24h."""
+    cached = await _cache_get("benchmark:all")
+    if cached is not None:
+        return cached
+    try:
+        sectors = await get_target_store().all_sector_benchmarks(min_count=10)
+    except Exception:  # noqa: BLE001
+        sectors = []
+    for s in sectors:
+        s["sector_label"] = _sector_label(s["sector"])
+    out = {"sectors": sectors, "count": len(sectors)}
+    await _cache_set("benchmark:all", out)
+    return out
+
+
 @app.get("/benchmark/{sector}")
 async def api_benchmark_sector(sector: str) -> dict:
-    """Média de score do setor. Cai para o benchmark geral se o setor tem amostra
-    pequena (< 5 sites) ou é desconhecido."""
+    """Benchmark do setor (KL-44 P5): média/mediana/min/max + distribuição por semáforo
+    (anônimo). Cache Redis 24h. Cai para o benchmark geral se o setor tem < 10 sites."""
+    cached = await _cache_get(f"benchmark:{sector}")
+    if cached is not None:
+        return cached
     store = get_target_store()
     try:
-        data = await store.sector_avg_score(sector)
-        if data["count"] < 5:
+        rich = await store.sector_benchmark(sector, min_count=10)
+        if rich is None:  # amostra pequena → geral (compat)
             g = await store.global_avg_score()
-            return {"scope": "global", "sector": sector, "avg_score": g["avg_score"],
-                    "count": g["count"]}
+            out = {"scope": "global", "sector": sector, "sector_label": _sector_label(sector),
+                   "avg_score": g["avg_score"], "count": g["count"]}
+        else:
+            out = {"scope": "sector", "sector_label": _sector_label(sector), **rich}
     except Exception:  # noqa: BLE001
         return {"scope": "global", "sector": sector, "avg_score": 0, "count": 0}
-    return {"scope": "sector", "sector": sector, "avg_score": data["avg_score"],
-            "count": data["count"]}
+    await _cache_set(f"benchmark:{sector}", out)
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# KL-44 P5 — Selo "Monitorado por Klarim" (público, factual — NUNCA "certificado"/
+# "aprovado"). Consumido pelo widget.js instalado no site do dono. Sem PII, sem tracking.
+# --------------------------------------------------------------------------- #
+
+@app.get("/seal/{domain}")
+async def api_seal(domain: str, request: Request) -> JSONResponse:
+    """Dados do selo de monitoramento (score + privacidade + link do perfil). Público,
+    factual (`seal_type='monitored'`), rate limit 60/h/IP, cache 1h. Nunca expõe PII."""
+    allowed, _ = await _redis_allow("seal", _client_ip(request), 60, 3600, _seal_attempts)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Muitos acessos ao selo. Aguarde um pouco.")
+    dom = _norm_domain(domain)
+    headers = {"Access-Control-Allow-Origin": "*", "Cache-Control": "public, max-age=3600"}
+    cached = await _cache_get(f"seal:{dom}")
+    if cached is not None:
+        return JSONResponse(cached, headers=headers)
+    store = get_target_store()
+    target = await store.get_target_by_domain(dom)
+    if not target:
+        return JSONResponse({"domain": dom, "found": False, "seal_type": "monitored"},
+                            headers=headers)
+    scan = await store.get_latest_scan_full(target["id"])
+    privacy = None
+    if scan and isinstance(scan.get("checks_json"), dict):
+        privacy = scan["checks_json"].get("privacy")
+    last_at = (scan or {}).get("scanned_at") or target.get("last_scan_at")
+    payload = {
+        "domain": dom, "found": True, "seal_type": "monitored",
+        "score": (scan or {}).get("score") if scan else target.get("last_scan_score"),
+        "semaphore": (scan or {}).get("semaphore") if scan else target.get("last_semaphore"),
+        "privacy_score": (privacy or {}).get("score"),
+        "privacy_total": (privacy or {}).get("total"),
+        "last_scan": last_at.date().isoformat() if hasattr(last_at, "date") else None,
+        "profile_url": f"{_SITE}/site/{dom}",
+    }
+    await _cache_set(f"seal:{dom}", payload, ttl=3600)
+    return JSONResponse(payload, headers=headers)
 
 
 # --------------------------------------------------------------------------- #
@@ -1590,24 +1684,28 @@ async def public_profile(domain: str) -> dict:
     if profile.get("public_visible") is False:
         return {"status": "not_found", "domain": domain}
     classifications = await store.get_target_classifications(tid)
-    # semáforo real do último scan (KL-12); fallback por score p/ scans antigos.
+    # semáforo real do último scan (KL-12) + indicadores de privacidade (KL-44 P5), do
+    # mesmo scan (1 query). Fallback de semáforo por score p/ scans antigos.
     semaphore = _semaphore_from_score(score)
+    privacy = None
     try:
-        recent = await store.list_scans(target_id=tid, limit=1)
-        if recent and recent[0].get("semaphore"):
-            semaphore = recent[0]["semaphore"]
+        latest = await store.get_latest_scan_full(tid)
+        if latest and latest.get("semaphore"):
+            semaphore = latest["semaphore"]
+        if latest and isinstance(latest.get("checks_json"), dict):
+            privacy = latest["checks_json"].get("privacy")
     except Exception:  # noqa: BLE001
         pass
 
     sector = target.get("sector")
     benchmark = None
     try:
-        b = (await store.sector_avg_score(sector)) if sector and sector != "outro" else None
-        if not b or b.get("count", 0) < 5:
-            b = await store.global_avg_score()
-            benchmark = {"scope": "global", **b}
+        rich = (await store.sector_benchmark(sector, min_count=10)) if sector and sector != "outro" else None
+        if rich:  # KL-44 P5: benchmark rico (mediana + distribuição anônima)
+            benchmark = {"scope": "sector", "sector_label": _sector_label(sector), **rich}
         else:
-            benchmark = {"scope": "sector", "sector": sector, **b}
+            g = await store.global_avg_score()
+            benchmark = {"scope": "global", **g}
     except Exception:  # noqa: BLE001
         benchmark = None
 
@@ -1629,6 +1727,7 @@ async def public_profile(domain: str) -> dict:
         "profile": {k: profile.get(k) for k in _PUBLIC_PROFILE_FIELDS},
         "classifications": classifications,
         "benchmark": benchmark,
+        "privacy": privacy,   # KL-44 P5: indicadores técnicos (score separado + disclaimer)
         # KL-68 — reivindicação/propriedade (nunca expõe e-mail/quem é o dono):
         "owner_verified": owner_verified,
         "claimable": not blocked,
@@ -2558,6 +2657,7 @@ def _summary_payload(report: ScanReport, full: bool = False) -> dict:
         "free_count": len(_FREE_META),
         "paid_count": len(_PAID_META),
         "total_checks": len(_FREE_META) + len(_PAID_META),
+        "privacy": getattr(report, "privacy", None),  # KL-44 P5: indicadores (score separado)
         "is_full": full,
         "price": PRICE_AMOUNT,
         "price_display": PRICE_DISPLAY,
@@ -5281,6 +5381,13 @@ async def api_admin_vigilia_alerts(tipo: Optional[str] = None, severity: Optiona
     rows = await get_target_store().list_vigilia_alerts(
         tipo=tipo, severity=severity, user_id=user_id, limit=limit, offset=offset)
     return {"alerts": rows}
+
+
+@app.get("/admin/privacy-stats")
+async def api_admin_privacy_stats() -> dict:
+    """KL-44 P5 — distribuição PASS/FAIL por indicador de privacidade (inteligência
+    comercial: quais indicadores mais falham nos sites brasileiros)."""
+    return await get_target_store().privacy_indicator_stats()
 
 
 @app.get("/admin/typosquat-alerts")

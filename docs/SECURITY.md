@@ -124,6 +124,21 @@ Na dúvida, trate o alvo como site de terceiro que só autorizou olhar o que é 
   Reply-To `scan@klarim.net` e registrados no `email_log`. Endpoints novos: rate limit
   Redis+fallback (invite 10/h, shared-report 20/h, laudo 30/h).
 
+### Posicionamento legal — indicadores de privacidade (KL-44 P5)
+
+- **Diagnóstico técnico, NÃO certificação.** Os 8 indicadores de privacidade
+  (`scanner/privacy_checks.py`) são **fatos técnicos** de varredura passiva. É **proibido**
+  usar "LGPD Compliant", "Em conformidade", "Certificado", "Aprovado", "Site Seguro".
+  Sempre: "Indicadores técnicos", "Monitorado por", "Diagnóstico".
+- **Disclaimer obrigatório** em TODA superfície com menção a LGPD/privacidade (perfil
+  público, laudo, dashboard, boletim) — `PRIVACY_DISCLAIMER` (uma fonte só, reexposta pela
+  API). O selo/widget não leva disclaimer (muito pequeno), mas o perfil que ele linka leva.
+- **`privacy_score` (0–8) é SEPARADO** do score de segurança (0–100) — nunca se combinam.
+- **Selo factual** — `seal_type="monitored"`, nunca "certificado"/"aprovado". O widget
+  **não coleta dados dos visitantes** do site do cliente (1 GET de leitura; CORS `*`).
+- **Benchmark anônimo** — só médias/mediana/distribuição por setor (≥10 scans), **nunca**
+  nomeia sites. `contact_email`/PII continuam fora de qualquer payload.
+
 ### Vigílias avançadas (KL-44 P4)
 
 - **100% passivo:** `uptime` é um GET honesto (User-Agent `KlarimScanner/1.0`); `changes`

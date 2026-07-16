@@ -40,6 +40,7 @@ class ScanReport:
     duration_s: float
     results: List[CheckResult] = field(default_factory=list)
     score: Optional[ScoreBreakdown] = None
+    privacy: Optional[dict] = None   # KL-44 P5: indicadores de privacidade (score SEPARADO)
 
     def to_dict(self) -> dict:
         return {
@@ -49,6 +50,7 @@ class ScanReport:
             "duration_s": round(self.duration_s, 2),
             "score": self.score.to_dict() if self.score else None,
             "results": [r.to_dict() for r in self.results],
+            "privacy": self.privacy,
         }
 
     @classmethod
@@ -62,6 +64,7 @@ class ScanReport:
             duration_s=d.get("duration_s", 0.0),
             results=[CheckResult.from_dict(r) for r in d.get("results", [])],
             score=ScoreBreakdown.from_dict(d["score"]) if d.get("score") else None,
+            privacy=d.get("privacy"),
         )
 
 
@@ -103,13 +106,24 @@ async def run_scan(url: str, full: bool = True) -> ScanReport:
         result.owasp, result.cwe, result.lgpd = cls.owasp, cls.cwe, cls.lgpd
         return result
 
+    # KL-44 P5: os indicadores de privacidade rodam JUNTO (um único GET próprio, passivo)
+    # e são independentes do score de segurança. Fail-open: erro → privacy=None.
+    async def _privacy() -> Optional[dict]:
+        try:
+            from . import privacy_checks
+            return await privacy_checks.scan_privacy(target)
+        except Exception:  # noqa: BLE001
+            return None
+
     # gather preserva a ordem de entrada → o relatório mantém a ordem dos checks.
-    results: List[CheckResult] = list(
-        await asyncio.gather(*(_run_one(cid, fn) for cid, fn in checks)))
+    gathered = await asyncio.gather(
+        *(_run_one(cid, fn) for cid, fn in checks), _privacy())
+    results: List[CheckResult] = list(gathered[:-1])
+    privacy = gathered[-1]
 
     duration = loop.time() - t0
     finished_at = datetime.now(timezone.utc)
-    score = compute_score(results)
+    score = compute_score(results)  # privacidade NÃO entra no score de segurança
 
     return ScanReport(
         url=target,
@@ -118,6 +132,7 @@ async def run_scan(url: str, full: bool = True) -> ScanReport:
         duration_s=duration,
         results=results,
         score=score,
+        privacy=privacy,
     )
 
 

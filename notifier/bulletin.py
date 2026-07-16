@@ -71,6 +71,22 @@ def build_owner_bulletin(data: Dict[str, Any]) -> str:
         if top.get("technical"):
             lines += ["", "Texto para enviar ao técnico:", f'"{top["technical"]}"']
 
+    # KL-44 P5: benchmark do setor (anônimo) + indicadores técnicos de privacidade.
+    bench = data.get("benchmark")
+    if bench and bench.get("avg_score") is not None:
+        score = data.get("score") or 0
+        avg = bench.get("avg_score") or 0
+        pos = "Acima da média ↑" if score > avg else ("Na média" if score == avg else "Abaixo da média ↓")
+        label = bench.get("sector_label") or bench.get("sector") or "geral"
+        lines += ["", f"--- Benchmark do setor ({label}) ---", "",
+                  f"Seu score: {score}/100", f"Média do setor: {avg}/100", pos]
+    priv = data.get("privacy")
+    if priv and priv.get("total"):
+        lines += ["", f"--- Indicadores de privacidade: {priv.get('score')}/{priv.get('total')} ---", ""]
+        for c in (priv.get("checks") or []):
+            lines.append(f"  {'✓' if c.get('status') == 'PASS' else '✗'} {c.get('name')} ({c.get('lgpd_ref')})")
+        lines += ["", ("⚖️ " + (priv.get("disclaimer") or ""))]
+
     lines += ["", "--- Seu técnico ---", ""]
     if data.get("technician_masked"):
         lines.append(f"Este boletim também foi enviado para {data['technician_masked']} "
