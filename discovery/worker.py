@@ -289,14 +289,17 @@ async def _run_all() -> None:
     from .alert_worker import AlertWorker
     from .rescan_worker import RescanWorker
     from .vigilia_worker import VigiliaWorker
+    from .bulletin_worker import BulletinWorker
 
     # Um único container roda os loops: descoberta (Certstream, ~30min), alertas (1h),
-    # re-scan de evolução (24h) e vigílias (6h, KL-44 P2 — começa pausado via seed).
+    # re-scan de evolução (24h), vigílias (6h, KL-44 P2) e boletim (1h, KL-44 P3 — envia
+    # às 13h UTC por frequência do plano).
     await asyncio.gather(
         DiscoveryWorker().start(),
         AlertWorker().start(),
         RescanWorker().start(),
         VigiliaWorker().start(),
+        BulletinWorker().start(),
     )
 
 

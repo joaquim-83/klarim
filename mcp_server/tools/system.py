@@ -112,6 +112,20 @@ async def get_ownership_stats() -> dict:
 
 
 @mcp.tool()
+async def get_bulletin_stats() -> dict:
+    """Boletim de segurança (KL-44 P3): total enviados, hoje, semana, por frequência
+    (weekly/monthly/daily) e quantos notificaram o técnico vinculado."""
+    return await _guard(lambda: _store().bulletin_stats())
+
+
+@mcp.tool()
+async def list_technician_links(limit: int = 50) -> dict:
+    """Vínculos dono↔técnico (KL-44 P3): dono, alvo, e-mail do técnico e status
+    (pending/active/revoked)."""
+    return await _guard(lambda: _store().list_technician_links_admin(min(max(limit, 1), 200)))
+
+
+@mcp.tool()
 async def admin_remove_user_site(user_id: int, target_id: int, notify: bool = True) -> dict:
     """Remove um site do monitoramento de um usuário (KL-69). Revoga a propriedade
     (auditoria) e remove o vínculo. Se notify=true, envia e-mail ao usuário avisando

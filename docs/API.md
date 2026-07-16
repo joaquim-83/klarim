@@ -57,6 +57,13 @@ Um middleware (`_admin_auth_mw`) protege os prefixos abaixo (`_PROTECTED_PREFIXE
 | GET | `/account/scan-history` | histórico de consultas do e-mail |
 | GET | `/account/vigilias` | vigílias do usuário (filtrado por `user_id`, IDOR-safe) |
 | GET | `/account/vigilia-alerts` | alertas de vigília do usuário |
+| POST | `/account/technician/invite` | KL-44 P3: convida técnico p/ um site (cria vínculo + laudo, envia convite); 10/h/IP |
+| POST | `/account/technician/revoke` | KL-44 P3: revoga vínculo de técnico |
+| GET | `/account/technician/links?target_id=` | KL-44 P3: vínculos de técnico do dono |
+| GET | `/account/technician/search?email=` | KL-44 P3: `{found, user_id?, name?}` (só técnicos; nunca outros dados) |
+| POST | `/account/technician/accept-invite` | KL-44 P3: técnico aceita convite (`invite_code`) |
+| GET | `/account/technician/clients` | KL-44 P3: sites dos clientes do técnico (dono mascarado) |
+| POST | `/account/shared-report/create` | KL-44 P3: gera laudo compartilhável (`{code, url, whatsapp_url, expires_at}`) |
 
 ## Scan público
 
@@ -112,6 +119,7 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 | POST | `/notify/profile-view` | notifica dono ("alguém consultou"; 1/domínio/24h) |
 | GET | `/sectors` | 48 setores + 13 macro-setores |
 | GET | `/cnaes/sections` · `/cnaes/divisions` | referência CNAE |
+| GET | `/public/laudo/{code}` | KL-44 P3: laudo técnico público (checks + ação prioritária; sem PII; TTL 30d; 30/h/IP) |
 | POST | `/contact` | formulário de contato → inbox + Resend (best-effort) |
 | POST | `/events` | tracking do funil (fire-and-forget, 100/min/sessão) |
 | GET | `/unsubscribe?email=&token=` | descadastro (token HMAC) |
@@ -144,6 +152,8 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 | POST | `/leads/recalculate` | recalcula scores |
 | POST | `/targets/{id}/revoke-ownership` | KL-68: admin override — remove o selo de dono do alvo |
 | GET | `/admin/ownership-stats` | KL-68: donos verificados, por método, funil, taxa |
+| GET | `/admin/bulletin-stats` | KL-44 P3: boletins (total/hoje/semana/por freq/técnico) |
+| GET | `/admin/technician-links` | KL-44 P3: vínculos dono↔técnico |
 | POST | `/admin/clean-blocked-sites?dry_run=` | KL-68/69: remove vínculos de domínio público/institucional (+ notifica os donos) |
 | POST | `/admin/users/{user_id}/remove-site` | KL-69: `{target_id, notify}` — remove site do usuário (revoga posse, notifica) |
 | POST | `/admin/users/{user_id}/deactivate` | KL-69: `{notify}` — `is_active=false` (bloqueia login) |
@@ -204,7 +214,8 @@ passam por `_guard` (nunca derrubam a sessão).
 
 - **system.py** — `get_system_status`, `get_email_health`, `get_discovery_status`,
   `get_config`, `get_dashboard_stats`, `get_enrichment_status`, `get_user_accounts`,
-  `get_email_log`, `get_ownership_stats` (KL-68), `admin_remove_user_site` (KL-69, write)
+  `get_email_log`, `get_ownership_stats` (KL-68), `admin_remove_user_site` (KL-69, write),
+  `get_bulletin_stats` + `list_technician_links` (KL-44 P3)
 - **targets.py** — `list_targets`, `get_target`, `get_target_stats`, `search_targets`,
   `add_target`, `update_target_email`, `update_target_status`, `update_target_sector`,
   `classify_targets_batch`, `get_target_classifications`, `get_site_profile`,

@@ -39,6 +39,8 @@ READ_TOOLS = [
     "get_vigilia_stats", "list_vigilia_alerts",
     # KL-68: verificação de propriedade
     "get_ownership_stats",
+    # KL-44 P3: boletim + técnico
+    "get_bulletin_stats", "list_technician_links",
 ]
 WRITE_TOOLS = [
     "scan_url", "add_target", "update_target_email", "update_target_status",

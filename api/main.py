@@ -329,6 +329,8 @@ _password_attempts: dict = {}  # KL-44: troca de senha admin
 _rotate_attempts: dict = {}    # KL-44: rotação do token MCP
 _ownership_attempts: dict = {}  # KL-68: verificação de propriedade
 _admin_action_attempts: dict = {}  # KL-69: ações admin de gestão de usuários
+_technician_attempts: dict = {}    # KL-44 P3: convite/laudo de técnico
+_laudo_attempts: dict = {}         # KL-44 P3: acesso ao laudo público
 
 
 def _mask_email(email: str) -> str:
@@ -394,6 +396,7 @@ def _user_public(user: dict) -> dict:
     return {
         "id": user["id"], "email": user["email"], "name": user.get("name"),
         "plan": user.get("plan", "free"), "max_sites": user.get("max_sites", 1),
+        "role": user.get("role", "owner"),   # KL-44 P3: owner|technician|both
         "created_at": created.isoformat() if hasattr(created, "isoformat") else created,
     }
 
@@ -409,6 +412,8 @@ class SignupBody(BaseModel):
     password: str
     name: Optional[str] = None
     url: Optional[str] = None   # site recém-escaneado, para vincular no signup
+    role: Optional[str] = None  # KL-44 P3: 'technician' cria perfil de profissional de TI
+    invite: Optional[str] = None  # KL-44 P3: código de convite de técnico (auto-vincula)
 
 
 class AccountLoginBody(BaseModel):
@@ -559,13 +564,21 @@ async def _process_claim(store, user: dict, email: str, url: Optional[str]) -> d
 
 
 async def _create_account_record(store, email: str, password_hash: str,
-                                 name: Optional[str], url: Optional[str]) -> tuple:
-    """Cria a conta + reivindica o site (KL-68) + histórico + Pro trial + lead. Retorna
-    ``(user, claim_info)`` — `user` é None se o e-mail já existe. Compartilhado pelo signup
-    (e-mail já verificado) e pelo /account/verify."""
-    user = await store.create_user(email, password_hash, name=name)
+                                 name: Optional[str], url: Optional[str],
+                                 role: str = "owner", invite: Optional[str] = None) -> tuple:
+    """Cria a conta + reivindica o site (KL-68) + histórico + Pro trial + lead + vínculo de
+    técnico (KL-44 P3). Retorna ``(user, claim_info)`` — `user` é None se o e-mail já existe.
+    Compartilhado pelo signup (e-mail já verificado) e pelo /account/verify."""
+    user = await store.create_user(email, password_hash, name=name, role=role)
     if user is None:
         return None, {}
+    # KL-44 P3: vincula convites de técnico pendentes deste e-mail + o convite explícito.
+    try:
+        await store.auto_link_technician_by_email(email, user["id"])
+        if invite:
+            await store.accept_technician_invite(invite.strip(), user["id"])
+    except Exception as exc:  # noqa: BLE001 - vínculo de técnico é best-effort
+        print(f"[account] auto-link técnico falhou {email}: {exc!r}", flush=True)
     claim = await _process_claim(store, user, email, url)  # KL-68: guard + Tier 1 auto-verify
     try:  # histórico: vincula scans anteriores do mesmo e-mail (KL-25) até o limite do plano
         max_sites = int(user.get("max_sites", 1))
@@ -621,7 +634,9 @@ async def account_signup(body: SignupBody, request: Request) -> JSONResponse:
     except Exception:  # noqa: BLE001 - na dúvida, exige verificação
         already_verified = False
     if already_verified:
-        user, claim = await _create_account_record(store, email, pw_hash, body.name or None, body.url)
+        user, claim = await _create_account_record(
+            store, email, pw_hash, body.name or None, body.url,
+            role=(body.role or "owner"), invite=body.invite)
         if user is None:
             raise HTTPException(status_code=409, detail="Já existe uma conta com este e-mail.")
         return _account_session_response(user, claim)
@@ -631,7 +646,8 @@ async def account_signup(body: SignupBody, request: Request) -> JSONResponse:
     code = f"{secrets.randbelow(900000) + 100000:06d}"  # CSPRNG, 6 dígitos
     await _store_pending_signup(email, {
         "code": code, "password_hash": pw_hash, "name": body.name or None,
-        "url": body.url or None, "attempts": 0})
+        "url": body.url or None, "attempts": 0,
+        "role": body.role or "owner", "invite": body.invite or None})
     try:
         await _mailer().send_signup_verification_code(email, code)
     except Exception as exc:  # noqa: BLE001
@@ -671,7 +687,8 @@ async def account_verify(body: VerifySignupBody, request: Request) -> JSONRespon
         await _del_pending_signup(email)
         raise HTTPException(status_code=409, detail="Já existe uma conta com este e-mail.")
     user, claim = await _create_account_record(
-        store, email, pending["password_hash"], pending.get("name"), pending.get("url"))
+        store, email, pending["password_hash"], pending.get("name"), pending.get("url"),
+        role=pending.get("role") or "owner", invite=pending.get("invite"))
     await _del_pending_signup(email)
     if user is None:
         raise HTTPException(status_code=409, detail="Já existe uma conta com este e-mail.")
@@ -1135,6 +1152,186 @@ async def ownership_status(target_id: int, request: Request) -> dict:
         "monitored": bool(link),
         "verification_available": bool(link and not is_owner and not has_other_owner and has_contact),
         "has_pending_verification": pending is not None,
+    }
+
+
+# --------------------------------------------------------------------------- #
+# KL-44 P3 — técnico vinculado + laudo compartilhável (namespace /account/*, JWT
+# usuário) + laudo público /public/laudo/{code}. E-mail do dono/técnico nunca cru.
+# --------------------------------------------------------------------------- #
+
+class TechnicianInviteBody(BaseModel):
+    target_id: int
+    technician_email: str
+
+
+class LinkIdBody(BaseModel):
+    link_id: int
+
+
+class AcceptInviteBody(BaseModel):
+    invite_code: str
+
+
+class SharedReportBody(BaseModel):
+    target_id: int
+
+
+async def _make_shared_report(store, user_id: int, target_id: int,
+                              tech_link_id: Optional[int] = None) -> Optional[dict]:
+    """Cria um laudo compartilhável do scan mais recente do alvo. None se não há scan."""
+    scan = await store.get_latest_scan_id(target_id)
+    if not scan:
+        return None
+    code = _gen_code(6)
+    row = await store.create_shared_report(target_id, user_id, code, scan_id=scan["id"],
+                                           technician_link_id=tech_link_id)
+    return {"code": code, "scan": scan, "row": row}
+
+
+@app.post("/account/technician/invite")
+async def technician_invite(body: TechnicianInviteBody, request: Request) -> dict:
+    """Convida um técnico para um site (KL-44 P3). Cria o vínculo (pending) + um laudo e
+    envia o convite ao técnico. Rate limit 10/h/IP."""
+    user = await auth_users.require_user(request)
+    allowed, _ = await _redis_allow("tech_invite", _client_ip(request), 10, 3600, _technician_attempts)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Muitos convites. Aguarde um pouco.")
+    email = (body.technician_email or "").lower().strip()
+    if not _ACCOUNT_EMAIL_RE.match(email):
+        raise HTTPException(status_code=400, detail="E-mail do técnico inválido.")
+    store = get_target_store()
+    if not await store.get_user_site(user["id"], body.target_id):
+        raise HTTPException(status_code=404, detail="Vincule o site à sua conta primeiro.")
+    invite_code = _gen_code(8)
+    link = await store.create_technician_link(user["id"], body.target_id, email, invite_code)
+    if not link:
+        raise HTTPException(status_code=500, detail="Não foi possível criar o vínculo.")
+    target = await store.get_target(body.target_id)
+    domain = (target or {}).get("domain") or _norm_domain((target or {}).get("url") or "")
+    shared = await _make_shared_report(store, user["id"], body.target_id, tech_link_id=link["id"])
+    code = shared["code"] if shared else ""
+    if _email_enabled():
+        try:
+            from notifier import bulletin as _bl
+            text = _bl.build_technician_invite({
+                "domain": domain, "score": (target or {}).get("last_scan_score"),
+                "semaphore": _semaphore_from_score((target or {}).get("last_scan_score") or 0),
+                "owner_masked": _mask_email(user["email"]), "code": code,
+                "invite_code": link.get("invite_code")})
+            subject = _bl.invite_subject(user.get("name") or _mask_email(user["email"]), domain)
+            await _mailer().send_technician_invite(email, domain, subject, text, target_id=body.target_id)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[technician] convite e-mail falhou {email}: {exc!r}", flush=True)
+    return {"invited": True, "invite_code": link.get("invite_code"), "laudo_code": code}
+
+
+@app.post("/account/technician/revoke")
+async def technician_revoke(body: LinkIdBody, request: Request) -> dict:
+    user = await auth_users.require_user(request)
+    ok = await get_target_store().revoke_technician_link(body.link_id, user["id"])
+    if not ok:
+        raise HTTPException(status_code=404, detail="Vínculo não encontrado.")
+    return {"revoked": True}
+
+
+@app.get("/account/technician/links")
+async def technician_links(request: Request, target_id: Optional[int] = None) -> dict:
+    user = await auth_users.require_user(request)
+    links = await get_target_store().get_technician_links(user["id"], target_id)
+    return {"links": links}
+
+
+@app.get("/account/technician/search")
+async def technician_search(request: Request, email: str) -> dict:
+    """Busca um técnico por e-mail (só found/user_id/name — nunca outros dados)."""
+    await auth_users.require_user(request)
+    t = await get_target_store().search_technician_by_email(email)
+    if not t:
+        return {"found": False}
+    return {"found": True, "user_id": t["id"], "name": t.get("name")}
+
+
+@app.post("/account/technician/accept-invite")
+async def technician_accept(body: AcceptInviteBody, request: Request) -> dict:
+    user = await auth_users.require_user(request)
+    link = await get_target_store().accept_technician_invite(
+        (body.invite_code or "").strip(), user["id"])
+    if not link:
+        raise HTTPException(status_code=404, detail="Convite inválido ou já usado.")
+    return {"accepted": True, "target_id": link.get("target_id")}
+
+
+@app.get("/account/technician/clients")
+async def technician_clients(request: Request) -> dict:
+    """Sites dos clientes do técnico (dashboard do técnico). E-mail do dono mascarado."""
+    user = await auth_users.require_user(request)
+    rows = await get_target_store().get_technician_clients(user["id"])
+    for r in rows:   # KL-44 P3: regra inviolável — nunca expor o e-mail do dono cru
+        r["owner_email"] = _mask_email(r.get("owner_email") or "")
+    return {"clients": rows}
+
+
+@app.post("/account/shared-report/create")
+async def shared_report_create(body: SharedReportBody, request: Request) -> dict:
+    """Gera um laudo compartilhável (código + link + WhatsApp) do site do usuário."""
+    user = await auth_users.require_user(request)
+    allowed, _ = await _redis_allow("shared_report", _client_ip(request), 20, 3600, _technician_attempts)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Muitos laudos gerados. Aguarde um pouco.")
+    store = get_target_store()
+    if not await store.get_user_site(user["id"], body.target_id):
+        raise HTTPException(status_code=404, detail="Site não encontrado na sua conta.")
+    shared = await _make_shared_report(store, user["id"], body.target_id)
+    if not shared:
+        raise HTTPException(status_code=409, detail="Este site ainda não foi escaneado.")
+    target = await store.get_target(body.target_id)
+    domain = (target or {}).get("domain") or _norm_domain((target or {}).get("url") or "")
+    score = shared["scan"].get("score")
+    code = shared["code"]
+    exp = shared["row"].get("expires_at")
+    return {"code": code, "url": f"{_SITE}/laudo/{code}",
+            "whatsapp_url": _whatsapp_share_url(domain, score, code),
+            "expires_at": exp.isoformat() if hasattr(exp, "isoformat") else exp}
+
+
+@app.get("/public/laudo/{code}")
+async def public_laudo(code: str, request: Request) -> dict:
+    """Laudo técnico público (KL-44 P3). SEM e-mail/dado interno do dono/alvo. Rate limit
+    30/h/IP. Expirado → status 'expired'. Válido → checks completos + ação prioritária."""
+    allowed, _ = await _redis_allow("laudo", _client_ip(request), 30, 3600, _laudo_attempts)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Muitos acessos. Aguarde um pouco.")
+    store = get_target_store()
+    rep = await store.get_shared_report_by_code((code or "").strip().upper())
+    if not rep:
+        return {"status": "not_found"}
+    if rep.get("expired"):
+        return {"status": "expired", "domain": rep.get("domain")}
+    _spawn(store.register_shared_report_access(rep["code"]))   # fire-and-forget
+    checks = rep.get("checks_json") or []
+    if isinstance(checks, str):
+        try:
+            checks = json.loads(checks)
+        except Exception:  # noqa: BLE001
+            checks = []
+    fails = _enrich_fails(checks)
+    passed = [{"check_id": c.get("check_id"), "name": c.get("name"), "status": c.get("status")}
+              for c in checks if c.get("status") != "FAIL"]
+    score = rep.get("score")
+    last = rep.get("scanned_at")
+    return {
+        "status": "ok",
+        "domain": rep.get("domain"),
+        "score": score,
+        "semaphore": rep.get("semaphore") or _semaphore_from_score(score or 0),
+        "scanned_at": last.isoformat() if hasattr(last, "isoformat") else last,
+        "fail_count": len(fails),
+        "pass_count": len(passed),
+        "top_action": fails[0] if fails else None,
+        "fails": fails,
+        "checks": [{"check_id": c.get("check_id"), "name": c.get("name"),
+                    "status": c.get("status"), "severity": c.get("severity")} for c in checks],
     }
 
 
@@ -2194,6 +2391,33 @@ def _technical_content() -> dict:
         return TECHNICAL
     except Exception:  # noqa: BLE001 - sem libs nativas → sem detalhe (degrada)
         return {}
+
+
+_SITE = os.environ.get("SITE_BASE", "https://klarim.net")
+_SEVERITY_ORDER = {"CRITICA": 0, "ALTA": 1, "MEDIA": 2, "BAIXA": 3}
+
+
+def _enrich_fails(checks_json: Optional[list]) -> list:
+    """KL-44 P3 — FALHAS enriquecidas (evidência + impacto + correção + OWASP/CWE/LGPD),
+    ordenadas por severidade. Delega ao helper compartilhado (reusado pelo bulletin worker)."""
+    from reporter.laudo import enrich_fails
+    return enrich_fails(checks_json)
+
+
+def _whatsapp_share_url(domain: str, score: Any, code: str) -> str:
+    """URL wa.me com a mensagem pré-formatada do dono para o técnico (KL-44 P3)."""
+    from urllib.parse import quote
+    msg = (f"Oi, nosso site está com score {score} de segurança. Pode dar uma olhada?\n\n"
+           f"Relatório completo: {_SITE}/laudo/{code}")
+    return f"https://wa.me/?text={quote(msg)}"
+
+
+def _gen_code(nbytes: int = 6) -> str:
+    """Código curto alfanumérico (CSPRNG) para laudo/convite (KL-44 P3)."""
+    import secrets as _s
+    import string
+    alphabet = string.ascii_uppercase + string.digits
+    return "".join(_s.choice(alphabet) for _ in range(nbytes + 2))
 
 
 def _summary_payload(report: ScanReport, full: bool = False) -> dict:
@@ -5035,6 +5259,19 @@ async def admin_ownership_stats() -> dict:
     """Métricas de verificação de propriedade (KL-68): donos verificados, por método,
     funil de verificações e taxa de sites com dono."""
     return await get_target_store().ownership_stats()
+
+
+@app.get("/admin/bulletin-stats")
+async def admin_bulletin_stats() -> dict:
+    """Métricas de boletim de segurança (KL-44 P3): total, hoje, semana, por frequência
+    e quantos notificaram o técnico vinculado."""
+    return await get_target_store().bulletin_stats()
+
+
+@app.get("/admin/technician-links")
+async def admin_technician_links(limit: int = Query(default=100, le=500)) -> dict:
+    """Vínculos dono↔técnico (KL-44 P3): dono, alvo, e-mail do técnico, status."""
+    return {"links": await get_target_store().list_technician_links_admin(limit)}
 
 
 # --------------------------------------------------------------------------- #

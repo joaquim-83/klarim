@@ -74,6 +74,9 @@ EMAIL_TYPES = {
     "site_removed": "Site removido do monitoramento (KL-69)",
     "account_deactivated": "Conta desativada pelo admin (KL-69)",
     "account_reactivated": "Conta reativada pelo admin (KL-69)",
+    "bulletin": "Boletim de segurança — dono (KL-44 P3)",
+    "bulletin_technician": "Laudo técnico — técnico vinculado (KL-44 P3)",
+    "technician_invite": "Convite de técnico (KL-44 P3)",
     "vigilia_ssl": "Vigília — certificado SSL",
     "vigilia_domain": "Vigília — registro do domínio",
     "vigilia_score": "Vigília — score de segurança",
@@ -793,6 +796,33 @@ class KlarimMailer:
             "from": self.from_address, "to": [to_email],
             "subject": "Sua conta Klarim foi reativada", "html": html,
         }, email_type="account_reactivated", source="admin", skip_blocklist=True)
+
+    async def send_bulletin_owner(self, to_email: str, domain: str, subject: str,
+                                  text: str, target_id: Optional[int] = None) -> Dict[str, Any]:
+        """Boletim de segurança ao DONO (KL-44 P3). Plain text, **proativo** (klarimscan.com),
+        respeita a blocklist, registrado no email_log (`bulletin`)."""
+        return await self._send({
+            "from": self._proactive_from(), "to": [to_email],
+            "subject": subject, "text": text,
+        }, email_type="bulletin", target_id=target_id, domain=domain, source="bulletin_worker")
+
+    async def send_bulletin_technician(self, to_email: str, domain: str, subject: str,
+                                       text: str, target_id: Optional[int] = None) -> Dict[str, Any]:
+        """Laudo técnico ao técnico vinculado (KL-44 P3). Plain text, **transacional**
+        (seguranca@klarim.net), ignora blocklist mas registra (`bulletin_technician`)."""
+        return await self._send({
+            "from": self.from_address, "to": [to_email], "subject": subject, "text": text,
+        }, email_type="bulletin_technician", target_id=target_id, domain=domain,
+            source="bulletin_worker", skip_blocklist=True)
+
+    async def send_technician_invite(self, to_email: str, domain: str, subject: str,
+                                     text: str, target_id: Optional[int] = None) -> Dict[str, Any]:
+        """Convite ao técnico (KL-44 P3). Plain text, transacional, registrado
+        (`technician_invite`)."""
+        return await self._send({
+            "from": self.from_address, "to": [to_email], "subject": subject, "text": text,
+        }, email_type="technician_invite", target_id=target_id, domain=domain,
+            source="account", skip_blocklist=True)
 
     async def send_profile_view(self, to_email: str, domain: str, score: int,
                                 semaphore: str, cta_url: str,

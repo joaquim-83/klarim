@@ -11,6 +11,8 @@ const params = Astro.url.searchParams;
 const email = params.get('email') || '';
 const url = params.get('url') || '';
 const redirect = params.get('redirect') || '/dashboard';
+const role = params.get('role') === 'technician' ? 'technician' : '';   // KL-44 P3
+const invite = params.get('invite') || '';
 ---
 
 <Base
@@ -21,7 +23,7 @@ const redirect = params.get('redirect') || '/dashboard';
   <Header />
   <main class="mx-auto max-w-md px-5 pt-28 pb-20 sm:pt-32">
     <ClaimContext url={url} />
-    <SignupForm client:load email={email} url={url} redirect={redirect} />
+    <SignupForm client:load email={email} url={url} redirect={redirect} role={role} invite={invite} />
   </main>
   <Footer />
 </Base>

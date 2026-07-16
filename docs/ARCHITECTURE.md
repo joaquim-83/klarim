@@ -100,6 +100,7 @@ RescanWorker, VigiliaWorker)`. Cada um relê config por ciclo (`get_setting`) e 
 | Alert | `alert_worker.py` | 30 min | alerta proativo em batch (50, Resend Batch API), teto `ALERT_DAILY_LIMIT`/cota mensal, anti-bounce, kill-switch `STOP_ALERTS` |
 | Rescan | `rescan_worker.py` | 24 h | reescaneia alvos ≥30 dias + e-mail de evolução; monitora sites 100 |
 | Vigília | `vigilia_worker.py` | 6 h | 5 vigílias (SSL, domínio, score, e-mail, reputação) p/ contas Pro/Agency; enforcement de plano; **começa pausada** |
+| Bulletin | `bulletin_worker.py` | 1 h | KL-44 P3: boletim de segurança por frequência do plano (free=mensal/pro=semanal/agency=diário), às `BULLETIN_HOUR_UTC`; laudo técnico ao técnico vinculado |
 | Scan | `scanner/main.py --worker` | contínuo | `blpop` da fila → escaneia → cacheia → salva + enriquece inline |
 
 **Resiliência:** heartbeat no Redis (`worker:<name>:status`, TTL 600s) → painel mostra

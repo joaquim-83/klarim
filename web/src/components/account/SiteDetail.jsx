@@ -4,6 +4,7 @@ import { card } from './ui.js';
 import { groupByCategory } from '../scan/checks.js';
 import ShareScore from './ShareScore.jsx';
 import OwnershipVerification from './OwnershipVerification';
+import TechnicianSection from './TechnicianSection';
 
 const SEMA = {
   verde: { dot: '🟢', ring: 'ring-green-500/50', text: 'text-green-400' },
@@ -104,6 +105,9 @@ export default function SiteDetail({ targetId }) {
 
       {/* KL-68 — verificação de propriedade */}
       <OwnershipSection targetId={targetId} />
+
+      {/* KL-44 P3 — técnico responsável + compartilhar laudo */}
+      <TechnicianSection targetId={targetId} />
 
       {/* Score */}
       <div className={`${card} text-center`}>

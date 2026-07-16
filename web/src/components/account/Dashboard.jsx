@@ -22,6 +22,34 @@ function fmtDate(s) {
   try { return new Date(s).toLocaleDateString('pt-BR'); } catch { return '—'; }
 }
 
+// KL-44 P3 — sites dos clientes do técnico (dono mascarado, link para o laudo).
+function TechnicianClients() {
+  const [clients, setClients] = useState(null);
+  useEffect(() => {
+    apiGet('/account/technician/clients').then(({ ok, data }) => setClients(ok ? (data.clients || []) : []));
+  }, []);
+  if (clients === null) return null;
+  return (
+    <div className={`${card} border-brand-500/30 bg-brand-500/5`}>
+      <p className="text-lg font-bold text-white">Sites dos meus clientes</p>
+      {clients.length === 0 ? (
+        <p className="mt-2 text-sm text-slate-400">Nenhum cliente vinculado ainda. Quando um dono de site convidar você, aparecerá aqui.</p>
+      ) : (
+        <div className="mt-3 space-y-2">
+          {clients.map((c) => (
+            <div key={c.link_id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-slate-800 bg-slate-950 px-3 py-2 text-sm">
+              <span className="font-mono text-slate-200">{c.domain}</span>
+              <span className="text-slate-400">{c.last_scan_score ?? '—'}/100</span>
+              <span className="text-xs text-slate-500">Dono: {c.owner_email}</span>
+              <a href={`/scan?url=${encodeURIComponent(c.domain)}`} className="text-xs text-brand-400 hover:text-brand-300">Ver →</a>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Dashboard({ user = {} }) {
   const [sites, setSites] = useState(null);
   const [maxSites, setMaxSites] = useState(user.max_sites || 1);
@@ -103,6 +131,8 @@ export default function Dashboard({ user = {} }) {
           <button onClick={() => setToast('')} className="text-green-400/70 hover:text-green-300">✕</button>
         </div>
       )}
+
+      {(user.role === 'technician' || user.role === 'both') && <TechnicianClients />}
 
       {/* Verificar um site — consulta livre e ILIMITADA (vai para /scan) */}
       <form action="/scan" method="GET" className={`${card} border-brand-500/30 bg-brand-500/5`}>

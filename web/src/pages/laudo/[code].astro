@@ -1,0 +1,133 @@
+---
+export const prerender = false; // SSR: busca o laudo por código, funciona sem JS
+
+import Base from '../../layouts/Base.astro';
+import Header from '../../components/Header.astro';
+import Footer from '../../components/Footer.astro';
+
+const API = process.env.KLARIM_API_URL || 'http://api:8000';
+const code = (Astro.params.code || '').toUpperCase();
+
+let data = null;
+try {
+  const res = await fetch(`${API}/public/laudo/${encodeURIComponent(code)}`, {
+    signal: AbortSignal.timeout(6000),
+  });
+  if (res.ok) data = await res.json();
+} catch { /* API fora → trata como não encontrado */ }
+
+const status = data?.status || 'not_found';
+const SEMA = { verde: '🟢', amarelo: '🟡', vermelho: '🔴' };
+const SEV = {
+  CRITICA: { label: 'Crítica', c: 'text-red-400 border-red-500/40 bg-red-500/10' },
+  ALTA: { label: 'Alta', c: 'text-orange-400 border-orange-500/40 bg-orange-500/10' },
+  MEDIA: { label: 'Média', c: 'text-yellow-400 border-yellow-500/40 bg-yellow-500/10' },
+  BAIXA: { label: 'Baixa', c: 'text-slate-400 border-slate-600/40 bg-slate-700/10' },
+};
+const sev = (s) => SEV[(s || '').toUpperCase()] || SEV.BAIXA;
+
+const domain = data?.domain || code;
+const scoreN = data?.score ?? null;
+const emoji = SEMA[data?.semaphore] || '🟡';
+const scanned = data?.scanned_at ? new Date(data.scanned_at).toLocaleDateString('pt-BR') : '—';
+const fails = data?.fails || [];
+const top = data?.top_action || null;
+const card = 'rounded-2xl border border-slate-800 bg-slate-900/60 p-6';
+---
+
+<Base title={`Laudo técnico — ${domain}`}
+  description={`Laudo de segurança de ${domain} gerado pela Klarim.`}
+  path={`/laudo/${code}`} noindex={true}>
+  <Header />
+  <main class="mx-auto max-w-3xl px-5 pt-28 pb-20 sm:pt-32">
+    {status === 'expired' && (
+      <div class={card}>
+        <h1 class="text-2xl font-bold text-white">Este laudo expirou</h1>
+        <p class="mt-3 text-slate-300">Laudos de segurança são válidos por 30 dias. Gere uma nova análise:</p>
+        <a href={`/scan?url=${encodeURIComponent(domain)}`}
+          class="mt-6 inline-flex rounded-xl bg-brand-500 px-6 py-3.5 text-base font-semibold text-slate-950 hover:bg-brand-400">
+          Verificar este site →
+        </a>
+      </div>
+    )}
+
+    {status === 'not_found' && (
+      <div class={card}>
+        <h1 class="text-2xl font-bold text-white">Laudo não encontrado</h1>
+        <p class="mt-3 text-slate-300">O código informado não existe ou foi removido.</p>
+        <a href="/scan" class="mt-6 inline-block text-brand-400 hover:text-brand-300">Verificar um site →</a>
+      </div>
+    )}
+
+    {status === 'ok' && (
+      <div class="space-y-6">
+        <div class={`${card} flex flex-wrap items-center gap-6`}>
+          <div class="flex h-28 w-28 shrink-0 flex-col items-center justify-center rounded-full ring-4 ring-slate-700">
+            <span class="text-4xl font-extrabold text-white">{scoreN}</span>
+            <span class="text-xs text-slate-500">/100</span>
+          </div>
+          <div class="min-w-0">
+            <h1 class="text-2xl font-bold text-white sm:text-3xl">Laudo técnico</h1>
+            <p class="mt-1 font-mono text-brand-400">{domain}</p>
+            <p class="mt-1 text-sm text-slate-400">{emoji} · {data.fail_count} falha(s) · {data.pass_count} ok · Análise: {scanned}</p>
+          </div>
+        </div>
+
+        {top && (
+          <div class={`${card} border-brand-500/40 bg-brand-500/5`}>
+            <p class="text-xs font-semibold uppercase tracking-wide text-brand-400/80">Ação prioritária</p>
+            <h2 class="mt-1 text-lg font-bold text-white">{top.name}</h2>
+            {top.evidence && <p class="mt-2 text-sm text-slate-300"><span class="text-slate-500">Evidência:</span> {top.evidence}</p>}
+            {top.fix && <p class="mt-2 text-sm text-slate-300"><span class="text-slate-500">Correção:</span> {top.fix}</p>}
+            {top.fix_code && <pre class="mt-3 overflow-x-auto rounded-lg bg-slate-950 p-3 text-xs text-brand-300">{top.fix_code}</pre>}
+          </div>
+        )}
+
+        {fails.length > 0 && (
+          <div class="space-y-3">
+            <h2 class="text-lg font-bold text-white">Checks com falha ({fails.length})</h2>
+            {fails.map((f) => (
+              <div class={card}>
+                <div class="flex flex-wrap items-center gap-2">
+                  <span class={`rounded-md border px-2 py-0.5 text-xs font-semibold ${sev(f.severity).c}`}>{sev(f.severity).label}</span>
+                  <span class="font-semibold text-white">{f.name}</span>
+                </div>
+                {f.evidence && <p class="mt-2 text-sm text-slate-300"><span class="text-slate-500">Evidência:</span> {f.evidence}</p>}
+                {f.fix && <p class="mt-2 text-sm text-slate-300"><span class="text-slate-500">Correção:</span> {f.fix}</p>}
+                {f.fix_code && <pre class="mt-2 overflow-x-auto rounded-lg bg-slate-950 p-3 text-xs text-brand-300">{f.fix_code}</pre>}
+                <p class="mt-2 text-xs text-slate-500">
+                  {[f.owasp, f.cwe, f.lgpd].filter(Boolean).join(' · ') || 'Sem classificação'}
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div class={card}>
+          <h2 class="text-sm font-bold uppercase text-slate-400">Todos os checks</h2>
+          <ul class="mt-3 grid gap-1.5 text-sm sm:grid-cols-2">
+            {data.checks.map((c) => (
+              <li class="flex items-center gap-2">
+                <span>{c.status === 'FAIL' ? '❌' : c.status === 'PASS' ? '✅' : '➖'}</span>
+                <span class="text-slate-300">{c.name}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+
+        <div class={`${card} border-brand-500/30 bg-brand-500/5 text-center`}>
+          <p class="text-sm text-slate-300">Você é profissional de TI e atende outros clientes?</p>
+          <a href="/cadastrar?role=technician" class="mt-2 inline-flex text-sm font-semibold text-brand-400 hover:text-brand-300">
+            Gerencie os sites dos seus clientes num só painel →
+          </a>
+        </div>
+
+        <p class="border-t border-slate-800 pt-6 text-xs leading-relaxed text-slate-600">
+          Laudo gerado por análise passiva automatizada pela Klarim. Não constitui auditoria de
+          segurança. O Klarim avalia a segurança do <strong>site</strong>, não do negócio.
+        </p>
+      </div>
+    )}
+  </main>
+  <Footer />
+</Base>

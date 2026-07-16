@@ -498,6 +498,64 @@ CREATE TABLE IF NOT EXISTS vigilia_alerts (
 CREATE INDEX IF NOT EXISTS idx_vigilia_alerts_user ON vigilia_alerts(user_id);
 CREATE INDEX IF NOT EXISTS idx_vigilia_alerts_vigilia ON vigilia_alerts(vigilia_id);
 
+-- KL-44 P3 — papel do usuário (dono de negócio vs profissional de TI).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'owner';  -- owner|technician|both
+
+-- KL-44 P3 — vínculo dono ↔ técnico (o técnico recebe o laudo técnico do site).
+CREATE TABLE IF NOT EXISTS technician_links (
+    id SERIAL PRIMARY KEY,
+    owner_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    target_id INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    technician_email VARCHAR(255) NOT NULL,
+    technician_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    status VARCHAR(20) DEFAULT 'pending',   -- pending|active|revoked
+    invite_code VARCHAR(16) UNIQUE,
+    invited_at TIMESTAMPTZ DEFAULT NOW(),
+    linked_at TIMESTAMPTZ,
+    revoked_at TIMESTAMPTZ,
+    last_access_at TIMESTAMPTZ,
+    UNIQUE(owner_user_id, target_id, technician_email)
+);
+CREATE INDEX IF NOT EXISTS idx_tech_links_owner ON technician_links(owner_user_id);
+CREATE INDEX IF NOT EXISTS idx_tech_links_tech_user ON technician_links(technician_user_id);
+CREATE INDEX IF NOT EXISTS idx_tech_links_email ON technician_links(technician_email);
+CREATE INDEX IF NOT EXISTS idx_tech_links_invite ON technician_links(invite_code);
+
+-- KL-44 P3 — laudos compartilháveis (link público /laudo/{code}, TTL 30 dias).
+CREATE TABLE IF NOT EXISTS shared_reports (
+    id SERIAL PRIMARY KEY,
+    target_id INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    owner_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    code VARCHAR(12) UNIQUE NOT NULL,
+    scan_id INTEGER REFERENCES scans(id),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    expires_at TIMESTAMPTZ DEFAULT (NOW() + INTERVAL '30 days'),
+    access_count INTEGER DEFAULT 0,
+    last_accessed_at TIMESTAMPTZ,
+    technician_link_id INTEGER REFERENCES technician_links(id) ON DELETE SET NULL
+);
+CREATE INDEX IF NOT EXISTS idx_shared_reports_code ON shared_reports(code);
+CREATE INDEX IF NOT EXISTS idx_shared_reports_target ON shared_reports(target_id);
+
+-- KL-44 P3 — histórico de boletins de segurança enviados (recorrentes por plano).
+CREATE TABLE IF NOT EXISTS bulletins (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    target_id INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    scan_id INTEGER REFERENCES scans(id),
+    bulletin_type VARCHAR(20) NOT NULL,     -- weekly|monthly|daily
+    score INTEGER,
+    previous_score INTEGER,
+    score_trend VARCHAR(10),                -- up|down|stable
+    vigilias_summary JSONB,
+    top_action TEXT,
+    shared_report_code VARCHAR(12),
+    technician_notified BOOLEAN DEFAULT FALSE,
+    sent_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_bulletins_user ON bulletins(user_id);
+CREATE INDEX IF NOT EXISTS idx_bulletins_target ON bulletins(target_id, sent_at);
+
 -- Overrides de configuração ao vivo (admin) — o banco tem prioridade sobre o .env.
 -- Guarda também ADMIN_PASSWORD_HASH (bcrypt) e MCP_API_KEY (rotação). Sem segredos em
 -- texto puro no .env quando há hash no banco.
@@ -1530,18 +1588,21 @@ class TargetStore:
     # --- contas de usuário (KL-51 f3) -------------------------------------- #
 
     _USER_COLS = ("id", "email", "name", "plan", "max_sites", "created_at",
-                  "last_login_at", "is_active")
+                  "last_login_at", "is_active", "role")
 
     async def create_user(self, email: str, password_hash: str,
-                          name: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        """Cria um usuário. Retorna o dict do user (sem hash) ou ``None`` se o e-mail
-        já existe (violação da UNIQUE constraint)."""
+                          name: Optional[str] = None,
+                          role: str = "owner") -> Optional[Dict[str, Any]]:
+        """Cria um usuário. `role`: owner|technician|both (KL-44 P3). Retorna o dict do
+        user (sem hash) ou ``None`` se o e-mail já existe (violação da UNIQUE)."""
+        r = role if role in ("owner", "technician", "both") else "owner"
+
         def _fn(cur):
             try:
                 cur.execute(
-                    "INSERT INTO users (email, password_hash, name) VALUES (%s, %s, %s) "
+                    "INSERT INTO users (email, password_hash, name, role) VALUES (%s, %s, %s, %s) "
                     "RETURNING " + ", ".join(self._USER_COLS),
-                    (email.lower().strip(), password_hash, name))
+                    (email.lower().strip(), password_hash, name, r))
             except Exception:  # noqa: BLE001 - e-mail duplicado (UNIQUE) → None
                 return None
             return self._rows_to_dicts(cur)[0]
@@ -1766,6 +1827,315 @@ class TargetStore:
             "UPDATE ownership_verifications SET status = 'revoked' "
             "WHERE user_id = %s AND target_id = %s AND status IN ('pending', 'verified')",
             (user_id, target_id)))
+
+    # --- KL-44 P3: técnico vinculado + laudo compartilhável + boletim ------- #
+
+    _TL_COLS = ("id", "owner_user_id", "target_id", "technician_email",
+                "technician_user_id", "status", "invite_code", "invited_at",
+                "linked_at", "revoked_at", "last_access_at")
+
+    async def create_technician_link(self, owner_user_id: int, target_id: int,
+                                     technician_email: str, invite_code: str
+                                     ) -> Optional[Dict[str, Any]]:
+        """Cria (ou reativa) o vínculo dono→técnico. Idempotente por (owner,target,email):
+        se já existe revogado, volta a pending. Retorna a linha (None em corrida)."""
+        email = (technician_email or "").lower().strip()
+
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO technician_links (owner_user_id, target_id, technician_email, "
+                "  invite_code, status) VALUES (%s, %s, %s, %s, 'pending') "
+                "ON CONFLICT (owner_user_id, target_id, technician_email) DO UPDATE SET "
+                "  status = 'pending', invite_code = EXCLUDED.invite_code, "
+                "  invited_at = NOW(), revoked_at = NULL "
+                "RETURNING " + ", ".join(self._TL_COLS),
+                (owner_user_id, target_id, email, invite_code))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_technician_links(self, owner_user_id: int,
+                                   target_id: Optional[int] = None) -> List[Dict[str, Any]]:
+        """Vínculos técnicos do dono (opcionalmente de um alvo)."""
+        def _fn(cur):
+            if target_id is not None:
+                cur.execute(
+                    "SELECT " + ", ".join(self._TL_COLS) + " FROM technician_links "
+                    "WHERE owner_user_id = %s AND target_id = %s AND status <> 'revoked' "
+                    "ORDER BY invited_at DESC", (owner_user_id, target_id))
+            else:
+                cur.execute(
+                    "SELECT " + ", ".join(self._TL_COLS) + " FROM technician_links "
+                    "WHERE owner_user_id = %s AND status <> 'revoked' "
+                    "ORDER BY invited_at DESC", (owner_user_id,))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_technician_link(self, link_id: int) -> Optional[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute("SELECT " + ", ".join(self._TL_COLS) +
+                        " FROM technician_links WHERE id = %s", (link_id,))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def revoke_technician_link(self, link_id: int, owner_user_id: int) -> bool:
+        """Revoga um vínculo (só o dono dono pode). Retorna True se afetou."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE technician_links SET status = 'revoked', revoked_at = NOW() "
+                "WHERE id = %s AND owner_user_id = %s AND status <> 'revoked'",
+                (link_id, owner_user_id))
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def accept_technician_invite(self, invite_code: str, technician_user_id: int) -> Optional[Dict[str, Any]]:
+        """Vincula a conta do técnico a um convite pendente (status→active)."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE technician_links SET technician_user_id = %s, status = 'active', "
+                "  linked_at = NOW() WHERE invite_code = %s AND status = 'pending' "
+                "RETURNING " + ", ".join(self._TL_COLS),
+                (technician_user_id, invite_code))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def auto_link_technician_by_email(self, email: str, technician_user_id: int) -> int:
+        """Vincula os convites pendentes de um e-mail à conta recém-criada (signup KL-44 P3)."""
+        e = (email or "").lower().strip()
+
+        def _fn(cur):
+            cur.execute(
+                "UPDATE technician_links SET technician_user_id = %s, status = 'active', "
+                "  linked_at = NOW() WHERE lower(technician_email) = %s AND status = 'pending'",
+                (technician_user_id, e))
+            return cur.rowcount
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_technician_clients(self, technician_user_id: int) -> List[Dict[str, Any]]:
+        """Sites vinculados ao técnico (dashboard do técnico): domínio, score, semáforo,
+        e-mail do dono (mascarado no endpoint), último boletim."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT tl.id AS link_id, tl.target_id, tl.status, tl.last_access_at, "
+                "       tl.owner_user_id, ou.email AS owner_email, "
+                "       t.url, t.domain, t.last_scan_score, t.last_scan_at, "
+                "       s.semaphore AS last_semaphore, "
+                "       (SELECT MAX(sent_at) FROM bulletins b "
+                "        WHERE b.target_id = tl.target_id AND b.user_id = tl.owner_user_id) AS last_bulletin_at "
+                "FROM technician_links tl "
+                "JOIN users ou ON ou.id = tl.owner_user_id "
+                "JOIN targets t ON t.id = tl.target_id "
+                "LEFT JOIN LATERAL (SELECT semaphore FROM scans WHERE target_id = t.id "
+                "                   ORDER BY scanned_at DESC LIMIT 1) s ON TRUE "
+                "WHERE tl.technician_user_id = %s AND tl.status = 'active' "
+                "ORDER BY tl.owner_user_id, t.domain", (technician_user_id,))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_active_technician_for_target(self, owner_user_id: int, target_id: int
+                                               ) -> Optional[Dict[str, Any]]:
+        """Técnico ativo de um site (para o boletim notificar). None se não há."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT " + ", ".join(self._TL_COLS) + " FROM technician_links "
+                "WHERE owner_user_id = %s AND target_id = %s AND status = 'active' "
+                "ORDER BY linked_at DESC LIMIT 1", (owner_user_id, target_id))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def touch_technician_access(self, link_id: int) -> None:
+        await asyncio.to_thread(self._run, lambda cur: cur.execute(
+            "UPDATE technician_links SET last_access_at = NOW() WHERE id = %s", (link_id,)))
+
+    async def search_technician_by_email(self, email: str) -> Optional[Dict[str, Any]]:
+        """Busca um usuário TÉCNICO por e-mail (só id/name/role — nunca outros dados)."""
+        e = (email or "").lower().strip()
+
+        def _fn(cur):
+            cur.execute("SELECT id, name, role FROM users WHERE email = %s "
+                        "AND role IN ('technician', 'both') AND is_active = TRUE", (e,))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- laudos compartilháveis --- #
+
+    async def get_latest_scan_id(self, target_id: int) -> Optional[Dict[str, Any]]:
+        """Scan mais recente do alvo (id + score + semáforo) — p/ vincular ao laudo."""
+        def _fn(cur):
+            cur.execute("SELECT id, score, semaphore FROM scans WHERE target_id = %s "
+                        "ORDER BY scanned_at DESC LIMIT 1", (target_id,))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_latest_scan_full(self, target_id: int) -> Optional[Dict[str, Any]]:
+        """Scan mais recente COM checks_json (para o boletim montar ação prioritária)."""
+        def _fn(cur):
+            cur.execute("SELECT id, score, semaphore, fail_count, checks_json, scanned_at "
+                        "FROM scans WHERE target_id = %s ORDER BY scanned_at DESC LIMIT 1",
+                        (target_id,))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_user_target_vigilias(self, user_id: int, domain: str) -> Dict[str, str]:
+        """{tipo: last_status} das vigílias ativas de um usuário para um domínio (boletim)."""
+        def _fn(cur):
+            cur.execute("SELECT tipo, last_status FROM vigilias "
+                        "WHERE user_id = %s AND site_domain = %s AND enabled = TRUE",
+                        (user_id, domain))
+            return {r[0]: r[1] for r in cur.fetchall()}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def create_shared_report(self, target_id: int, owner_user_id: int, code: str,
+                                   scan_id: Optional[int] = None,
+                                   technician_link_id: Optional[int] = None
+                                   ) -> Dict[str, Any]:
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO shared_reports (target_id, owner_user_id, code, scan_id, "
+                "  technician_link_id) VALUES (%s, %s, %s, %s, %s) "
+                "RETURNING id, code, expires_at, created_at",
+                (target_id, owner_user_id, code, scan_id, technician_link_id))
+            return self._rows_to_dicts(cur)[0]
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_shared_report_by_code(self, code: str) -> Optional[Dict[str, Any]]:
+        """Laudo pelo código + snapshot do scan (checks/score/semáforo) + domínio. NÃO
+        traz e-mail/dado interno do alvo (o endpoint filtra o que expõe)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT sr.id, sr.code, sr.target_id, sr.owner_user_id, sr.scan_id, "
+                "       sr.created_at, sr.expires_at, sr.access_count, sr.technician_link_id, "
+                "       (sr.expires_at < NOW()) AS expired, "
+                "       t.domain, t.url, "
+                "       s.score, s.semaphore, s.checks_json, s.scanned_at, s.fail_count "
+                "FROM shared_reports sr JOIN targets t ON t.id = sr.target_id "
+                "LEFT JOIN scans s ON s.id = sr.scan_id "
+                "WHERE sr.code = %s", (code,))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def register_shared_report_access(self, code: str) -> None:
+        """Incrementa o contador de acesso + last_accessed_at; propaga ao vínculo técnico."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE shared_reports SET access_count = access_count + 1, "
+                "  last_accessed_at = NOW() WHERE code = %s RETURNING technician_link_id",
+                (code,))
+            row = cur.fetchone()
+            if row and row[0]:
+                cur.execute("UPDATE technician_links SET last_access_at = NOW() WHERE id = %s",
+                            (row[0],))
+
+        await asyncio.to_thread(self._run, _fn)
+
+    # --- boletins --- #
+
+    async def create_bulletin(self, *, user_id: int, target_id: int, scan_id: Optional[int],
+                              bulletin_type: str, score: Optional[int], previous_score: Optional[int],
+                              score_trend: str, vigilias_summary: Any, top_action: Optional[str],
+                              shared_report_code: Optional[str], technician_notified: bool) -> None:
+        vs = json.dumps(vigilias_summary or {})
+
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO bulletins (user_id, target_id, scan_id, bulletin_type, score, "
+                "  previous_score, score_trend, vigilias_summary, top_action, "
+                "  shared_report_code, technician_notified) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (user_id, target_id, scan_id, bulletin_type, score, previous_score,
+                 score_trend, vs, top_action, shared_report_code, technician_notified))
+
+        await asyncio.to_thread(self._run, _fn)
+
+    async def get_last_bulletin(self, user_id: int, target_id: int) -> Optional[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute(
+                "SELECT id, score, sent_at FROM bulletins WHERE user_id = %s AND target_id = %s "
+                "ORDER BY sent_at DESC LIMIT 1", (user_id, target_id))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    _BULLETIN_FREQ_PLANS = {"weekly": ("pro",), "monthly": ("free", "basic"), "daily": ("agency",)}
+    _BULLETIN_FREQ_INTERVAL = {"weekly": "7 days", "monthly": "30 days", "daily": "1 day"}
+
+    async def list_users_due_bulletin(self, frequency: str) -> List[Dict[str, Any]]:
+        """Contas (+ sites) que precisam de boletim agora, pela frequência do plano
+        (free→monthly, pro→weekly, agency→daily). Uma linha por (usuário, site); o worker
+        agrupa. Só sites já escaneados. Respeita o intervalo mínimo (ou nunca enviado)."""
+        plans = self._BULLETIN_FREQ_PLANS.get(frequency)
+        interval = self._BULLETIN_FREQ_INTERVAL.get(frequency)
+        if not plans or not interval:
+            return []
+
+        def _fn(cur):
+            cur.execute(
+                "SELECT u.id AS user_id, u.email, u.name, u.role, "
+                "       us.target_id, t.url, t.domain, t.last_scan_score "
+                "FROM users u "
+                "JOIN user_sites us ON us.user_id = u.id "
+                "JOIN targets t ON t.id = us.target_id "
+                "LEFT JOIN subscriptions sub ON sub.account_id = u.id "
+                "WHERE u.is_active = TRUE AND t.last_scan_score IS NOT NULL "
+                "  AND COALESCE(sub.plan_id, u.plan, 'free') = ANY(%s) "
+                "  AND NOT EXISTS (SELECT 1 FROM bulletins b WHERE b.user_id = u.id "
+                "        AND b.target_id = us.target_id AND b.sent_at > NOW() - %s::interval) "
+                "ORDER BY u.id",
+                (list(plans), interval))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def bulletin_stats(self) -> Dict[str, Any]:
+        def _fn(cur):
+            out: Dict[str, Any] = {}
+            cur.execute("SELECT COUNT(*), "
+                        "  COUNT(*) FILTER (WHERE sent_at >= CURRENT_DATE), "
+                        "  COUNT(*) FILTER (WHERE sent_at > NOW() - INTERVAL '7 days'), "
+                        "  COUNT(*) FILTER (WHERE technician_notified) FROM bulletins")
+            r = cur.fetchone()
+            out["total"], out["today"], out["week"], out["tech_notified"] = (
+                int(r[0]), int(r[1]), int(r[2]), int(r[3]))
+            cur.execute("SELECT bulletin_type, COUNT(*) FROM bulletins GROUP BY 1")
+            out["by_type"] = {row[0]: int(row[1]) for row in cur.fetchall()}
+            return out
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def list_technician_links_admin(self, limit: int = 100) -> List[Dict[str, Any]]:
+        """Vínculos técnicos (admin): dono, alvo, e-mail do técnico, status."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT tl.id, tl.status, tl.technician_email, tl.invited_at, tl.linked_at, "
+                "       tl.last_access_at, ou.email AS owner_email, t.domain "
+                "FROM technician_links tl JOIN users ou ON ou.id = tl.owner_user_id "
+                "JOIN targets t ON t.id = tl.target_id ORDER BY tl.invited_at DESC LIMIT %s",
+                (limit,))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
 
     async def revoke_ownership(self, target_id: int) -> int:
         """Admin override: remove a marca de dono de todos os vínculos do alvo. Retorna

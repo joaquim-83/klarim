@@ -147,6 +147,9 @@ Valide com `nginx -t` (há job de CI); config inválida **derruba o site**.
 - **Rescan** — ciclo 24 h, alvos ≥30 dias.
 - **Vigília** (KL-44 P2) — ciclo 6 h, 5 tipos (SSL, domínio, score, e-mail,
   reputação), enforcement por plano; **começa pausada** (dono ativa via MCP).
+- **Bulletin** (KL-44 P3) — ciclo 1 h, envia às `BULLETIN_HOUR_UTC` (13h) o boletim por
+  frequência do plano (free=mensal · pro=semanal · agency=diário útil); plain text via
+  `klarimscan.com`, + laudo técnico ao técnico vinculado via `seguranca@klarim.net`.
 - **Scan worker** — consome a fila Redis, `WORKER_MAX_SCANS_PER_HOUR` (subir p/ 100 na
   VM), enriquece perfil + IA inline (~US$0,001/site).
 - Heartbeat no Redis (TTL 600s) + watchdog `os._exit(1)` + `restart:unless-stopped`.
@@ -280,7 +283,10 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
 
 ## 9. Referência rápida de cards
 
-- **KL-44** — Guardião Digital (P1 planos ✅, P2 vigílias ✅, P3–P6 pendentes)
+- **KL-44** — Guardião Digital (P1 planos ✅, P2 vigílias ✅, **P3 boletim+técnico+laudo ✅**,
+  P4–P6 pendentes). P3: bulletin worker (free=mensal/pro=semanal/agency=diário, 13h UTC),
+  laudo compartilhável `/laudo/{code}` (público, TTL 30d, sem PII), técnico vinculado
+  (`role=technician`, e-mail do dono mascarado), templates plain text, Reply-To scan@
 - **KL-51** — Plataforma Astro (fases 1–5 ✅)
 - **KL-61** — Gestão de Leads / PQL ✅ · **KL-62** — email_log unificado ✅
 - **KL-63** — MCP OAuth 2.1 ✅ · **KL-65** — SEO/Schema.org ✅ · **KL-66** — contato nos perfis ✅

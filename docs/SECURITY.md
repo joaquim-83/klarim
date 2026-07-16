@@ -102,6 +102,19 @@ Na dúvida, trate o alvo como site de terceiro que só autorizou olhar o que é 
   continua livre** (vitrine da plataforma) — só o monitoramento/reivindicação é bloqueado.
 - Email de verificação é **transacional** (`seguranca@klarim.net`), nunca proativo.
 
+### Laudo compartilhável + técnico vinculado (KL-44 P3)
+
+- **Laudo público `/public/laudo/{code}`**: **sem PII** — nunca `contact_email`, e-mail/dados
+  do dono ou internos do alvo; só domínio + score + checks técnicos. Rate limit **30/h/IP**
+  (anti-scraping). **Código CSPRNG** (`secrets.choice`), **TTL 30 dias** (dados de segurança
+  não são eternos). Página Astro SSR com `noindex` (link privado, não é conteúdo de SEO).
+- **E-mail do dono mascarado** para o técnico (`d***o@x.com.br`); `technician/search` só
+  devolve `{found, user_id, name}` de quem é `role='technician'`, nunca outros dados.
+- **Boletim do dono** = plain text via `alerta@klarimscan.com` (proativo, respeita blocklist);
+  **laudo/convite ao técnico** = transacional via `seguranca@klarim.net`. Todos com
+  Reply-To `scan@klarim.net` e registrados no `email_log`. Endpoints novos: rate limit
+  Redis+fallback (invite 10/h, shared-report 20/h, laudo 30/h).
+
 ### Gestão de usuários (KL-69)
 
 - **Enforcement de `is_active` no login:** `POST /account/login` retorna **403** para conta

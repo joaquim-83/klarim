@@ -35,6 +35,11 @@ class FakeStore:
         self.verified_scan_emails = None  # None ⇒ todo e-mail é "verificado no scan" (KL-25)
         self.ownership = []          # KL-68: verificações de propriedade (Tier 2)
         self.next_verif_id = 1
+        self.tech_links = []         # KL-44 P3
+        self.shared = {}             # code -> report
+        self.bulletins = []
+        self.scans = {}              # target_id -> scan dict
+        self.next_link_id = 1
 
     # --- users ---
     async def email_has_verified_scan(self, email):
@@ -45,12 +50,13 @@ class FakeStore:
             return True
         return email.lower().strip() in self.verified_scan_emails
 
-    async def create_user(self, email, password_hash, name=None):
+    async def create_user(self, email, password_hash, name=None, role="owner"):
         email = email.lower().strip()
         if email in self.users:
             return None
         u = {"id": self.next_id, "email": email, "name": name, "plan": "free",
-             "max_sites": 1, "is_active": True, "password_hash": password_hash}
+             "max_sites": 1, "is_active": True, "password_hash": password_hash,
+             "role": role if role in ("owner", "technician", "both") else "owner"}
         self.users[email] = u
         self.by_id[u["id"]] = u
         self.next_id += 1
@@ -219,6 +225,119 @@ class FakeStore:
             if v["user_id"] == user_id and v["target_id"] == target_id and v["status"] in ("pending", "verified"):
                 v["status"] = "revoked"
 
+    # --- KL-44 P3: técnico + laudo + boletim ---
+    async def create_technician_link(self, owner_user_id, target_id, technician_email, invite_code):
+        email = technician_email.lower().strip()
+        for l in self.tech_links:
+            if l["owner_user_id"] == owner_user_id and l["target_id"] == target_id and l["technician_email"] == email:
+                l.update(status="pending", invite_code=invite_code)
+                return dict(l)
+        link = {"id": self.next_link_id, "owner_user_id": owner_user_id, "target_id": target_id,
+                "technician_email": email, "technician_user_id": None, "status": "pending",
+                "invite_code": invite_code, "linked_at": None, "last_access_at": None}
+        self.next_link_id += 1
+        self.tech_links.append(link)
+        return dict(link)
+
+    async def get_technician_links(self, owner_user_id, target_id=None):
+        return [dict(l) for l in self.tech_links
+                if l["owner_user_id"] == owner_user_id and l["status"] != "revoked"
+                and (target_id is None or l["target_id"] == target_id)]
+
+    async def get_technician_link(self, link_id):
+        for l in self.tech_links:
+            if l["id"] == link_id:
+                return dict(l)
+        return None
+
+    async def revoke_technician_link(self, link_id, owner_user_id):
+        for l in self.tech_links:
+            if l["id"] == link_id and l["owner_user_id"] == owner_user_id and l["status"] != "revoked":
+                l["status"] = "revoked"
+                return True
+        return False
+
+    async def accept_technician_invite(self, invite_code, technician_user_id):
+        for l in self.tech_links:
+            if l["invite_code"] == invite_code and l["status"] == "pending":
+                l.update(status="active", technician_user_id=technician_user_id)
+                return dict(l)
+        return None
+
+    async def auto_link_technician_by_email(self, email, technician_user_id):
+        e = email.lower().strip()
+        n = 0
+        for l in self.tech_links:
+            if l["technician_email"] == e and l["status"] == "pending":
+                l.update(status="active", technician_user_id=technician_user_id)
+                n += 1
+        return n
+
+    async def get_technician_clients(self, technician_user_id):
+        out = []
+        for l in self.tech_links:
+            if l["technician_user_id"] == technician_user_id and l["status"] == "active":
+                owner = self.by_id.get(l["owner_user_id"], {})
+                out.append({"link_id": l["id"], "target_id": l["target_id"], "status": "active",
+                            "owner_email": owner.get("email"), "domain": "alvo.com.br",
+                            "last_scan_score": 70, "last_semaphore": "amarelo", "last_bulletin_at": None})
+        return out
+
+    async def get_active_technician_for_target(self, owner_user_id, target_id):
+        for l in self.tech_links:
+            if l["owner_user_id"] == owner_user_id and l["target_id"] == target_id and l["status"] == "active":
+                return dict(l)
+        return None
+
+    async def search_technician_by_email(self, email):
+        u = self.users.get(email.lower().strip())
+        if u and u.get("role") in ("technician", "both") and u.get("is_active", True):
+            return {"id": u["id"], "name": u.get("name"), "role": u["role"]}
+        return None
+
+    async def get_latest_scan_id(self, target_id):
+        return self.scans.get(target_id)
+
+    async def get_latest_scan_full(self, target_id):
+        return self.scans.get(target_id)
+
+    async def create_shared_report(self, target_id, owner_user_id, code, scan_id=None, technician_link_id=None):
+        from datetime import datetime, timedelta, timezone
+        row = {"id": len(self.shared) + 1, "code": code, "target_id": target_id,
+               "owner_user_id": owner_user_id, "scan_id": scan_id,
+               "technician_link_id": technician_link_id, "access_count": 0, "expired": False,
+               "expires_at": datetime.now(timezone.utc) + timedelta(days=30),
+               "domain": "alvo.com.br", "score": 73, "semaphore": "amarelo",
+               "checks_json": [], "scanned_at": None}
+        self.shared[code] = row
+        return {"code": code, "expires_at": row["expires_at"], "created_at": None}
+
+    async def get_shared_report_by_code(self, code):
+        return self.shared.get(code)
+
+    async def register_shared_report_access(self, code):
+        if code in self.shared:
+            self.shared[code]["access_count"] += 1
+
+    async def create_bulletin(self, **kw):
+        self.bulletins.append(kw)
+
+    async def get_last_bulletin(self, user_id, target_id):
+        rows = [b for b in self.bulletins if b.get("user_id") == user_id and b.get("target_id") == target_id]
+        return rows[-1] if rows else None
+
+    async def list_users_due_bulletin(self, frequency):
+        return []
+
+    async def bulletin_stats(self):
+        return {"total": len(self.bulletins), "today": 0, "week": 0, "tech_notified": 0, "by_type": {}}
+
+    async def list_technician_links_admin(self, limit=100):
+        return [dict(l) for l in self.tech_links][:limit]
+
+    async def get_user_target_vigilias(self, user_id, domain):
+        return {}
+
     # --- targets ---
     async def get_target_by_url(self, url):
         for t in self.targets.values():
@@ -276,7 +395,8 @@ def store(monkeypatch):
     monkeypatch.setattr(auth_users, "_secret", lambda: "k" * 64)
     # zera os rate limits in-memory entre testes
     for bucket in (m._signup_attempts, m._forgot_attempts, m._reset_attempts,
-                   m._send_report_attempts, m._ownership_attempts, m._admin_action_attempts):
+                   m._send_report_attempts, m._ownership_attempts, m._admin_action_attempts,
+                   m._technician_attempts, m._laudo_attempts):
         bucket.clear()
     return s
 
@@ -376,6 +496,10 @@ class _FakeMailer:
 
     async def send_account_reactivated(self, to_email):
         self.sent.append((to_email, "reactivated"))
+        return {"ok": True}
+
+    async def send_technician_invite(self, to_email, domain, subject, text, target_id=None):
+        self.sent.append((to_email, "technician_invite"))
         return {"ok": True}
 
 
@@ -819,3 +943,83 @@ def test_clean_blocked_sites_dry_and_apply(client, store, mailer):
     assert res["removed"] == 1 and res["notified"] == 1
     assert (u1["id"], 50) not in store.sites
     assert (u2["id"], 51) in store.sites                # o site legítimo permanece
+
+
+# --- KL-44 P3: técnico vinculado + laudo compartilhável --------------------- #
+
+def test_signup_role_technician(client, store):
+    r = client.post("/account/signup", json={"email": "tec@x.com.br", "password": "segredo123",
+                                             "role": "technician"})
+    assert r.status_code == 200 and r.json()["user"]["role"] == "technician"
+
+
+def test_signup_auto_links_pending_invite(client, store):
+    # dono convida um e-mail; quando esse e-mail cria conta, o vínculo vira active.
+    owner = client.post("/account/signup", json={"email": "dono@x.com.br", "password": "segredo123"}).json()["user"]
+    store.tech_links.append({"id": 1, "owner_user_id": owner["id"], "target_id": 5,
+                             "technician_email": "tec@x.com.br", "technician_user_id": None,
+                             "status": "pending", "invite_code": "ABC12345", "linked_at": None,
+                             "last_access_at": None})
+    client.post("/account/signup", json={"email": "tec@x.com.br", "password": "segredo123", "role": "technician"})
+    assert store.tech_links[0]["status"] == "active"
+
+
+def test_technician_invite_and_revoke(client, store, mailer):
+    owner = client.post("/account/signup", json={"email": "o@x.com.br", "password": "segredo123"}).json()["user"]
+    store.sites[(owner["id"], 60)] = {"is_owner": True}
+    store.targets[60] = {"id": 60, "url": "https://alvo.com.br", "domain": "alvo.com.br", "last_scan_score": 73}
+    store.scans[60] = {"id": 900, "score": 73, "semaphore": "amarelo"}
+    r = client.post("/account/technician/invite",
+                    json={"target_id": 60, "technician_email": "tec@x.com.br"}, headers=_bearer(owner))
+    assert r.status_code == 200 and r.json()["invited"] is True and r.json()["invite_code"]
+    assert mailer.sent[-1][1] == "technician_invite"
+    link_id = store.tech_links[-1]["id"]
+    rev = client.post("/account/technician/revoke", json={"link_id": link_id}, headers=_bearer(owner))
+    assert rev.status_code == 200 and store.tech_links[-1]["status"] == "revoked"
+
+
+def test_technician_invite_site_not_owned(client, store, mailer):
+    owner = client.post("/account/signup", json={"email": "o@x.com.br", "password": "segredo123"}).json()["user"]
+    r = client.post("/account/technician/invite",
+                    json={"target_id": 999, "technician_email": "t@x.com.br"}, headers=_bearer(owner))
+    assert r.status_code == 404
+
+
+def test_technician_search(client, store):
+    u = client.post("/account/signup", json={"email": "o@x.com.br", "password": "segredo123"}).json()["user"]
+    client.post("/account/signup", json={"email": "tec@x.com.br", "password": "segredo123", "role": "technician"})
+    found = client.get("/account/technician/search?email=tec@x.com.br", headers=_bearer(u)).json()
+    assert found["found"] is True and "user_id" in found
+    nope = client.get("/account/technician/search?email=nobody@x.com.br", headers=_bearer(u)).json()
+    assert nope["found"] is False
+
+
+def test_shared_report_create(client, store):
+    owner = client.post("/account/signup", json={"email": "o@x.com.br", "password": "segredo123"}).json()["user"]
+    store.sites[(owner["id"], 61)] = {"is_owner": True}
+    store.targets[61] = {"id": 61, "url": "https://alvo.com.br", "domain": "alvo.com.br", "last_scan_score": 73}
+    store.scans[61] = {"id": 901, "score": 73, "semaphore": "amarelo"}
+    r = client.post("/account/shared-report/create", json={"target_id": 61}, headers=_bearer(owner)).json()
+    assert r["code"] and r["url"].endswith(r["code"]) and "wa.me" in r["whatsapp_url"]
+
+
+def test_public_laudo(client, store):
+    owner = client.post("/account/signup", json={"email": "o@x.com.br", "password": "segredo123"}).json()["user"]
+    store.shared["A7K2M9"] = {"id": 1, "code": "A7K2M9", "target_id": 62, "owner_user_id": owner["id"],
+                              "scan_id": 902, "expired": False, "domain": "alvo.com.br",
+                              "score": 73, "semaphore": "amarelo", "technician_link_id": None,
+                              "checks_json": [{"check_id": "check_02", "name": "HSTS", "status": "FAIL",
+                                               "severity": "ALTA", "evidence": "sem header"}],
+                              "scanned_at": None}
+    r = client.get("/public/laudo/A7K2M9").json()
+    assert r["status"] == "ok" and r["domain"] == "alvo.com.br"
+    assert r["fail_count"] == 1 and r["top_action"]["name"] == "HSTS"
+    # sem dado interno do dono
+    assert "owner_email" not in r and "contact_email" not in str(r)
+
+
+def test_public_laudo_expired_and_missing(client, store):
+    store.shared["EXP1234"] = {"code": "EXP1234", "target_id": 1, "owner_user_id": 1, "expired": True,
+                               "domain": "x.com.br", "checks_json": []}
+    assert client.get("/public/laudo/EXP1234").json()["status"] == "expired"
+    assert client.get("/public/laudo/NOPE9999").json()["status"] == "not_found"

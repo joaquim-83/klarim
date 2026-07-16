@@ -33,16 +33,22 @@ class FakeStore:
         # então o signup cria a conta direto (sem exigir código).
         return True
 
-    async def create_user(self, email, password_hash, name=None):
+    async def create_user(self, email, password_hash, name=None, role="owner"):
         email = email.lower().strip()
         if email in self.users:
             return None
         u = {"id": self.next_id, "email": email, "name": name, "plan": "free",
-             "max_sites": 1, "is_active": True, "password_hash": password_hash}
+             "max_sites": 1, "is_active": True, "password_hash": password_hash, "role": role}
         self.users[email] = u
         self.by_id[u["id"]] = u
         self.next_id += 1
         return {k: v for k, v in u.items() if k != "password_hash"}
+
+    async def auto_link_technician_by_email(self, email, technician_user_id):  # KL-44 P3
+        return 0
+
+    async def accept_technician_invite(self, invite_code, technician_user_id):  # KL-44 P3
+        return None
 
     async def get_user_by_email(self, email, with_hash=False):
         u = self.users.get(email.lower().strip())
