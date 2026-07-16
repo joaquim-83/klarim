@@ -53,6 +53,21 @@ export default function AlvoDetalhePage() {
     }
   }
 
+  // FIX scan admin: síncrono → mostra o score no detalhe.
+  async function scanNow() {
+    setBusy('scan')
+    setMsg('')
+    try {
+      const r = await admin.scanTarget(id)
+      setMsg(r.score != null ? `Scan concluído: ${r.score}/100` : 'Scan enfileirado ✓')
+      reload()
+    } catch (e) {
+      setMsg(e.message)
+    } finally {
+      setBusy('')
+    }
+  }
+
   let body
   if (loading) body = <Loading />
   else if (error) body = <ErrorBox message={error} />
@@ -68,7 +83,7 @@ export default function AlvoDetalhePage() {
 
         {/* Ações */}
         <div className="flex flex-wrap gap-2">
-          <Button variant="primary" disabled={busy === 'scan'} onClick={() => act(admin.scanTarget, 'Scan enfileirado', 'scan')}>Escanear agora</Button>
+          <Button variant="primary" disabled={busy === 'scan'} onClick={scanNow}>{busy === 'scan' ? 'Escaneando…' : 'Escanear agora'}</Button>
           <Button disabled={busy === 'alert' || !t.contact_email} onClick={() => act(admin.resendAlert, 'Alerta reenviado', 'alert')}>Reenviar alerta</Button>
           <Button disabled={busy === 'report' || !t.contact_email} onClick={() => act(admin.sendReport, 'Relatório enviado', 'report')}>Enviar relatório completo</Button>
           <Button disabled={busy === 'rescan'} onClick={() => act(admin.rescanTarget, 'Re-scan feito', 'rescan')}>Forçar re-scan</Button>

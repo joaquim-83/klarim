@@ -103,7 +103,9 @@ export const admin = {
   targets: (params) => get(`/targets${qs(params)}`),
   target: (id) => get(`/targets/${id}`),
   addTarget: (url) => post('/targets/add', { url }),
-  scanTarget: (id) => post(`/targets/${id}/scan`),
+  // FIX scan admin: síncrono (sync=1) devolve score/semaphore imediatamente
+  scanTarget: (id) => post(`/targets/${id}/scan?sync=1`),
+  enqueueScan: (id) => post(`/targets/${id}/scan`),  // assíncrono (fila) — legado
   alertTarget: (id) => post(`/targets/${id}/alert`),
   rescanTarget: (id) => post(`/targets/${id}/rescan`),
   discardTarget: (id) => post(`/targets/${id}/discard`),
@@ -121,6 +123,14 @@ export const admin = {
     post(`/admin/users/${userId}/remove-site`, { target_id: targetId, notify }),
   deactivateUser: (userId, notify = true) => post(`/admin/users/${userId}/deactivate`, { notify }),
   reactivateUser: (userId, notify = true) => post(`/admin/users/${userId}/reactivate`, { notify }),
+  // FIX gestão de planos: aliases sobre /admin/subscriptions/* (account_id == users.id).
+  // change_plan já ajusta as vigílias (via _sync_user_vigilias) e o status (free → 'free').
+  changeUserPlan: (userId, plan) =>
+    patch(`/admin/subscriptions/${userId}/plan`, { plan_id: plan, reason: 'gestão de usuários' }),
+  extendUserTrial: (userId, days = 30) =>
+    patch(`/admin/subscriptions/${userId}/trial`, { days }),
+  resetUserFree: (userId) =>
+    patch(`/admin/subscriptions/${userId}/plan`, { plan_id: 'free', reason: 'reset para free' }),
 
   // landing pública / perfil (KL-56)
   updateProfile: (id, fields) => put(`/targets/${id}/profile`, fields),

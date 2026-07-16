@@ -154,16 +154,71 @@ function UserDetail({ u, onChanged }) {
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2">
-        <div>
-          <p className="mb-1 text-xs font-semibold uppercase text-klarim-muted">Assinatura</p>
-          <p className="text-sm text-klarim-text">Plano: {PLAN_LABEL[planOf(u)] || planOf(u)} · Status: {STATUS_LABEL[statusOf(u)] || statusOf(u)}</p>
-          {u.trial_ends_at && <p className="text-xs text-klarim-muted">Trial até {formatDate(u.trial_ends_at)}</p>}
-          <p className="mt-1 text-xs text-klarim-muted">Ações de plano em /painel/assinantes (KL-44).</p>
-        </div>
+        <SubscriptionEditor u={u} onChanged={onChanged} />
         <div>
           <p className="mb-1 text-xs font-semibold uppercase text-klarim-muted">Ações</p>
           <AccountToggle u={u} onChanged={onChanged} />
         </div>
+      </div>
+    </div>
+  )
+}
+
+// FIX gestão de planos (KL-69 P6 antecipado) — alterar plano / estender trial / resetar
+// para free direto no detalhe do usuário. Reusa /admin/subscriptions/* (account_id ==
+// users.id); change_plan já ajusta as vigílias e o status. Necessário p/ testar o boletim.
+function SubscriptionEditor({ u, onChanged }) {
+  const [plan, setPlanState] = useState(planOf(u))
+  const [busy, setBusy] = useState('')
+  const status = statusOf(u)
+
+  async function changePlan(newPlan) {
+    if (newPlan === plan) return
+    setBusy('plan')
+    try {
+      await admin.changeUserPlan(u.id, newPlan)
+      setPlanState(newPlan)
+      onChanged(`Plano de ${u.email} alterado para ${PLAN_LABEL[newPlan] || newPlan}`)
+    } catch (e) { onChanged(e.message || 'Falha ao alterar plano.') } finally { setBusy('') }
+  }
+  async function extendTrial() {
+    setBusy('trial')
+    try {
+      await admin.extendUserTrial(u.id, 30)
+      onChanged(`Trial de ${u.email} estendido por 30 dias`)
+    } catch (e) { onChanged(e.message || 'Falha ao estender trial.') } finally { setBusy('') }
+  }
+  async function resetFree() {
+    setBusy('reset')
+    try {
+      await admin.resetUserFree(u.id)
+      setPlanState('free')
+      onChanged(`Plano de ${u.email} resetado para Free`)
+    } catch (e) { onChanged(e.message || 'Falha ao resetar.') } finally { setBusy('') }
+  }
+
+  return (
+    <div>
+      <p className="mb-1 text-xs font-semibold uppercase text-klarim-muted">Assinatura</p>
+      <p className="text-sm text-klarim-text">Status: {STATUS_LABEL[status] || status}</p>
+      {u.trial_ends_at && <p className="text-xs text-klarim-muted">Trial até {formatDate(u.trial_ends_at)}</p>}
+      <div className="mt-2 flex flex-wrap items-center gap-2">
+        <label className="text-xs text-klarim-muted">Plano</label>
+        <select value={plan} disabled={busy === 'plan'} onChange={(e) => changePlan(e.target.value)} className={inputCls}>
+          {['free', 'pro', 'agency'].map((p) => <option key={p} value={p}>{PLAN_LABEL[p]}</option>)}
+        </select>
+        {status === 'trial' && (
+          <button onClick={extendTrial} disabled={busy === 'trial'}
+            className="rounded-lg border border-klarim-border px-2.5 py-1 text-xs text-klarim-muted hover:text-klarim-text disabled:opacity-50">
+            {busy === 'trial' ? '…' : 'Estender trial 30d'}
+          </button>
+        )}
+        {plan !== 'free' && (
+          <button onClick={resetFree} disabled={busy === 'reset'}
+            className="rounded-lg border border-red-500/40 px-2.5 py-1 text-xs text-red-300 hover:bg-red-500/10 disabled:opacity-50">
+            {busy === 'reset' ? '…' : 'Resetar para Free'}
+          </button>
+        )}
       </div>
     </div>
   )

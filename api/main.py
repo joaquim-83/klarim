@@ -3509,10 +3509,21 @@ async def api_targets_add(body: TargetAddBody) -> dict:
 
 
 @app.post("/targets/{target_id}/scan")
-async def api_targets_scan(target_id: int) -> dict:
+async def api_targets_scan(target_id: int, sync: bool = False) -> dict:
+    """Escaneia um alvo (admin). `sync=1` → varredura **síncrona** com feedback imediato
+    (reusa `get_or_scan`: escaneia, cacheia e persiste como `source='admin'`), devolvendo
+    `score`/`semaphore`; sem `sync`, apenas **enfileira** (assíncrono, worker de scan).
+    O caminho síncrono roda inline — site lento pode se aproximar do proxy_read_timeout,
+    mas o resultado cacheia (a retentativa pega o cache quente)."""
     target = await get_target_store().get_target(target_id)
     if target is None:
         raise HTTPException(status_code=404, detail="Alvo não encontrado.")
+    if sync:
+        report = await _safe_scan(target["url"], full=True, ingest_source="admin")
+        summary = _summary_payload(report, full=True)
+        return {"target_id": target_id, "url": target["url"], "synchronous": True,
+                "score": summary.get("score"), "semaphore": summary.get("semaphore"),
+                "fail_count": summary.get("fail_count")}
     enq = await _enqueue_scan(target_id, target["url"], source="admin")
     return {"target_id": target_id, "url": target["url"], "enqueued": enq}
 

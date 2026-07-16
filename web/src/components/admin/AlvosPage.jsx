@@ -113,6 +113,23 @@ export default function AlvosPage() {
     }
   }
 
+  // FIX scan admin: síncrono → mostra o score e atualiza a linha.
+  async function scanNow(t) {
+    setBusyId(t.id)
+    setMsg('')
+    try {
+      const r = await admin.scanTarget(t.id)
+      setMsg(r.score != null
+        ? `Scan de ${t.domain || t.url} concluído: ${r.score}/100`
+        : 'Scan enfileirado ✓')
+      reload()
+    } catch (e) {
+      setMsg(e.message)
+    } finally {
+      setBusyId(null)
+    }
+  }
+
   const rows = data?.targets || []  // busca é server-side (por URL/domínio/e-mail)
 
   return (
@@ -237,7 +254,7 @@ export default function AlvosPage() {
                       <td className="py-2 pr-3 text-xs text-klarim-muted">{t.last_scan_at ? relativeTime(t.last_scan_at) : '—'}</td>
                       <td className="py-2">
                         <div className="flex flex-wrap gap-1">
-                          <Button disabled={busyId === t.id} onClick={() => act(t.id, admin.scanTarget, 'Scan enfileirado')}>Escanear</Button>
+                          <Button disabled={busyId === t.id} onClick={() => scanNow(t)}>{busyId === t.id ? 'Escaneando…' : 'Escanear'}</Button>
                           <Button disabled={busyId === t.id || !t.contact_email} onClick={() => act(t.id, admin.alertTarget, 'Alerta enviado')}>Alertar</Button>
                           {t.has_profile && ['scanned', 'alerted'].includes(t.status) && (
                             <Button
@@ -262,7 +279,7 @@ export default function AlvosPage() {
           <Pagination page={page} setPage={setPage} hasNext={(data?.targets || []).length === PAGE_SIZE} />
         </Card>
 
-        {showAdd && <AddTargetModal onClose={() => setShowAdd(false)} onAdded={() => { setShowAdd(false); reload() }} />}
+        {showAdd && <AddTargetModal onClose={() => setShowAdd(false)} onAdded={(note) => { setShowAdd(false); if (note) setMsg(note); reload() }} />}
         {profileTarget && (
           <ProfileEditModal
             target={profileTarget}
@@ -279,17 +296,29 @@ function AddTargetModal({ onClose, onAdded }) {
   const [url, setUrl] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  const [phase, setPhase] = useState('')
 
   async function submit() {
     setBusy(true)
     setError('')
     try {
-      await admin.addTarget(url.trim())
-      onAdded()
+      setPhase('Adicionando…')
+      const added = await admin.addTarget(url.trim())
+      // FIX: "Adicionar e escanear" → dispara o scan síncrono no alvo recém-criado.
+      let note = `${added.domain || added.url} adicionado`
+      if (added.target_id) {
+        setPhase('Escaneando…')
+        try {
+          const r = await admin.scanTarget(added.target_id)
+          if (r.score != null) note += ` · scan: ${r.score}/100`
+        } catch { /* o alvo foi criado; o scan pode ser refeito pela lista */ }
+      }
+      onAdded(note)
     } catch (e) {
       setError(e.message)
     } finally {
       setBusy(false)
+      setPhase('')
     }
   }
 
@@ -308,7 +337,7 @@ function AddTargetModal({ onClose, onAdded }) {
         <div className="flex justify-end gap-2">
           <Button onClick={onClose}>Cancelar</Button>
           <Button variant="primary" disabled={busy || !url.trim()} onClick={submit}>
-            {busy ? 'Adicionando…' : 'Adicionar e escanear'}
+            {busy ? (phase || 'Processando…') : 'Adicionar e escanear'}
           </Button>
         </div>
       </div>

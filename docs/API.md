@@ -129,8 +129,9 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 | Método | Path | Descrição |
 |---|---|---|
 | GET | `/targets` · `/targets/{id}` · `/targets/stats` | lista/detalhe/stats (filtros + `search`) |
-| POST | `/targets/add` | adiciona alvo (source=manual) |
-| POST | `/targets/{id}/scan` · `/rescan` · `/alert` · `/discard` | ações |
+| POST | `/targets/add` | adiciona alvo (source=manual) + enfileira scan |
+| POST | `/targets/{id}/scan` | `?sync=1` → varredura **síncrona** (devolve `score`/`semaphore`); sem `sync` → enfileira |
+| POST | `/targets/{id}/rescan` · `/alert` · `/discard` | ações |
 | GET | `/targets/{id}/profile` · `/classifications` · `/payments` | anexos |
 | PUT | `/targets/{id}/profile` | edita perfil — texto **+ contatos** (phone/whatsapp/address/socials) + `clear_fields` (KL-67); marca `edited_by_admin`, limpa `low_confidence_fields` |
 | POST | `/admin/revalidate-profiles?dry_run=` | KL-67: aplica os filtros de qualidade aos perfis existentes (sem re-scrape); dry-run conta o impacto |
@@ -176,7 +177,7 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 | POST | `/admin/rotate-mcp-token` | rotaciona `MCP_API_KEY` |
 | GET | `/admin/system-info` · `/admin/dashboard-stats` · `/admin/clients` | dashboards |
 | GET/PUT | `/admin/plans` · `/{id}` | planos (KL-44) |
-| GET/PATCH/POST | `/admin/subscriptions*` | assinaturas (plan/status/trial/bulk/history/stats) |
+| GET/PATCH/POST | `/admin/subscriptions*` | assinaturas: `PATCH /{id}/plan` (muda plano + ajusta vigílias via `_sync_user_vigilias`; `free` zera status/vigílias avançadas), `/{id}/trial` (estende N dias), `/{id}/status`, `/bulk`, `/{id}/history`, `/stats`. `account_id == users.id` — a página **Usuários** gere plano por aqui |
 | GET | `/admin/vigilias` · `/{id}` · `/stats` · `/admin/vigilia-alerts` | vigílias (KL-44 P2/P4: 8 tipos) |
 | GET | `/admin/typosquat-alerts` | KL-44 P4: domínios suspeitos (typosquat/phishing) + stats |
 | GET/POST | `/admin/workers/control` · `/pause` · `/resume` | controle de workers |

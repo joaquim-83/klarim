@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { apiGet, apiPost } from '../../lib/api.js';
 import { field, card } from './ui.js';
 import { badgeFor } from '../../lib/badge.js';
+import TechnicianSection from './TechnicianSection.jsx';
 
 const SEMA = {
   verde: { dot: '🟢', ring: 'ring-green-500/50', text: 'text-green-400' },
@@ -255,6 +256,9 @@ function SiteCard({ site }) {
   const sema = SEMA[site.last_semaphore] || SEMA.amarelo;
   const nextDays = daysUntilNext(site.last_scan_at);
   const badge = badgeFor(site.last_scan_score);
+  // FIX técnico no dashboard: painel expansível com Técnico responsável + compartilhar
+  // laudo direto no card (antes só existia no detalhe do site, via "Ver detalhes").
+  const [showTech, setShowTech] = useState(false);
   return (
     <div className={card}>
       <div className="flex items-start justify-between gap-4">
@@ -283,11 +287,18 @@ function SiteCard({ site }) {
       <div className="mt-5 flex flex-wrap gap-3">
         <a href={`/dashboard/site/${site.target_id}`}
           className="rounded-lg bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700">Ver detalhes</a>
-        <a href={`/dashboard/site/${site.target_id}`}
-          className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">📤 Compartilhar</a>
+        <button onClick={() => setShowTech((v) => !v)}
+          className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">
+          🔧 Técnico e laudo {showTech ? '▾' : '▸'}
+        </button>
         <a href="/dashboard/widget"
           className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">&lt;/&gt; Widget</a>
       </div>
+      {showTech && (
+        <div className="mt-4">
+          <TechnicianSection targetId={site.target_id} />
+        </div>
+      )}
     </div>
   );
 }

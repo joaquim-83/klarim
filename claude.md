@@ -282,6 +282,10 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
 - **504 no `/scan/summary`:** o scan roda inline; site lento pode passar do
   `proxy_read_timeout` (180s) — o resultado ainda **cacheia**, então a retentativa pega
   o cache quente. Enriquecimento roda em **background** (fora do caminho síncrono).
+- **"Escanear" no painel = síncrono** (`POST /targets/{id}/scan?sync=1`): reusa
+  `get_or_scan` (escaneia+cacheia+persiste `source='admin'`) e devolve `score`/`semaphore`
+  na hora. Sem `sync` o endpoint só **enfileira** (o botão antigo mostrava "enfileirado"
+  sem resultado visível — daí a impressão de "não funciona").
 
 ---
 
@@ -302,7 +306,10 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   monitorar domínio público/institucional; `contact_email` nunca exposto — só `email_hint`)
 - **KL-69** — Gestão de usuários unificada ✅ (`/painel/usuarios` funde Clientes+Assinantes;
   admin remove site / desativa / reativa conta, com notificação; `is_active` bloqueia login;
-  clean-blocked-sites notifica; termos de uso c/ domínios elegíveis)
+  clean-blocked-sites notifica; termos de uso c/ domínios elegíveis; **gestão de plano no
+  detalhe do usuário** — dropdown Free/Pro/Agency + estender trial + resetar free, via
+  `PATCH /admin/subscriptions/{id}/plan|trial` (`account_id==users.id`; `change_plan` já
+  ajusta vigílias e status))
 - **KL-67** — Qualidade do profiler ✅ (validadores puros de telefone/DDD, redes sociais,
   endereço e descrição/idioma em `scanner/profiler.py::apply_quality_filters`; flag
   `low_confidence_fields`; edição admin de contatos; `POST /admin/revalidate-profiles`;
