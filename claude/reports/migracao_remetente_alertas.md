@@ -83,6 +83,28 @@ Disparar um alerta manual (ex.: target 8172 / `igoove.com` → `jscidinei@gmail.
 conferir: remetente `alerta@klarimscan.com`, chegada na inbox (não spam), `email_id`
 reportado.
 
+## Verificação em produção (2026-07-15)
+
+Deploy **verde** (Test + Build web + Nginx check + Deploy). Após adicionar as vars ao
+`/opt/klarim/.env` e recriar `api`/`worker`/`discovery`:
+
+- `docker compose exec api printenv ALERT_FROM_EMAIL` → `alerta@klarimscan.com` (idem
+  worker e discovery); `ALERT_DAILY_LIMIT=30`.
+- **Alerta de teste** (target 8172, `igoove.com` → `jscidinei@gmail.com`): remetente
+  computado `Klarim Scanner <alerta@klarimscan.com>`; **`email_id`
+  `0f4e04c3-6445-4068-b991-f089cd51a785`**; `email_log` gravou `status=sent`,
+  `from_domain=klarimscan.com`.
+- **Cutover limpo** (alertas de hoje por `from_domain`): 28 pré-deploy (sem coluna,
+  klarim.net) · 5 na janela de ~2 min entre o recreate e a gravação das vars
+  (`from_domain=klarim.net` — o **fail-safe** caiu no remetente normal, como esperado) ·
+  1 pós-vars (`klarimscan.com`). Confirma que sem a var nada quebra e o corte é automático.
+- **Worker ativo** (sem `STOP_ALERTS`, sem `worker_control.json` → fail-open): hoje já
+  somou 34 ≥ 30, então **pula os ciclos restantes do dia** — o warmup começa limpo amanhã
+  em 30/dia por `alerta@klarimscan.com`. O worker **não foi pausado** (regra do card).
+
+> ⚠️ **Confirmar na inbox:** o dono deve checar se o e-mail de teste chegou na **caixa de
+> entrada** (não spam) do `jscidinei@gmail.com` — sinal inicial da reputação do domínio novo.
+
 ## Regra inviolável
 
 O **alert worker** (+ a notificação de perfil consultado) é o **único** componente no novo
