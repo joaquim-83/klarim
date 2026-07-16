@@ -75,6 +75,15 @@ EMAIL_TYPES = {
 }
 
 
+def _domain_of_from(from_str: Any) -> str:
+    """Extrai o domínio do campo `from` ('Nome <a@b.com>' ou 'a@b.com') — usado no
+    email_log (migração klarimscan.com), para filtrar por domínio de envio."""
+    s = str(from_str or "")
+    if "<" in s and ">" in s:
+        s = s[s.index("<") + 1:s.index(">")]
+    return s.rsplit("@", 1)[-1].strip().lower() if "@" in s else ""
+
+
 def _first_recipient(to: Any) -> str:
     """Normaliza o destinatário (o Resend aceita str ou lista) → primeiro e-mail."""
     if isinstance(to, (list, tuple)):
@@ -190,6 +199,18 @@ class KlarimMailer:
         # (produção), usa o singleton lazy — sem import no topo (evita ciclo).
         self._store = store
 
+    def _proactive_from(self) -> str:
+        """Remetente dos e-mails **PROATIVOS** (cold: alerta + perfil consultado).
+        Migração de reputação: sai de `ALERT_FROM_EMAIL`/`ALERT_FROM_NAME`
+        (`alerta@klarimscan.com`), isolando o domínio principal. **Fail-safe:** sem a
+        var, cai para `self.from_address` (o remetente normal) — nunca quebra. Lido do
+        env a cada envio, então a troca vale sem reiniciar."""
+        email = (os.environ.get("ALERT_FROM_EMAIL") or "").strip()
+        if not email:
+            return self.from_address
+        name = (os.environ.get("ALERT_FROM_NAME") or "Klarim").strip()
+        return f"{name} <{email}>"
+
     # ----- log unificado + blocklist (KL-62) ------------------------------- #
 
     def _get_store(self) -> Any:
@@ -234,10 +255,12 @@ class KlarimMailer:
         `blocked`/`sent`/`failed`. Um e-mail bloqueado retorna `email_id=None`."""
         to = _first_recipient(params.get("to"))
         subject = params.get("subject")
+        from_domain = _domain_of_from(params.get("from"))
         if not skip_blocklist and await self._is_blocked(to):
             await self._log_email(email_id=None, to_email=to, email_type=email_type,
                                   subject=subject, target_id=target_id, domain=domain,
-                                  status="blocked", blocked_reason="blocklist", source=source)
+                                  status="blocked", blocked_reason="blocklist", source=source,
+                                  from_domain=from_domain)
             print(f"[email] BLOQUEADO (blocklist) {email_type} → {to}", flush=True)
             return {"email_id": None, "raw": None, "blocked": True}
         try:
@@ -245,11 +268,13 @@ class KlarimMailer:
         except Exception as exc:  # noqa: BLE001 - loga a falha e propaga
             await self._log_email(email_id=None, to_email=to, email_type=email_type,
                                   subject=subject, target_id=target_id, domain=domain,
-                                  status="failed", error=str(exc), source=source)
+                                  status="failed", error=str(exc), source=source,
+                                  from_domain=from_domain)
             raise
         await self._log_email(email_id=result.get("email_id"), to_email=to,
                               email_type=email_type, subject=subject, target_id=target_id,
-                              domain=domain, status="sent", source=source)
+                              domain=domain, status="sent", source=source,
+                              from_domain=from_domain)
         return result
 
     def _send_sync(self, params: Dict[str, Any]) -> Dict[str, Any]:
@@ -307,19 +332,20 @@ class KlarimMailer:
             turl = it.get("target_url")
             dom = site_name(turl) if turl else None
             subject = payloads[i].get("subject")
+            fdom = _domain_of_from(payloads[i].get("from"))
             if blocked[i]:
                 ids.append(None)
                 await self._log_email(email_id=None, to_email=to_list[i], email_type=etype,
                                       subject=subject, target_id=target_id, domain=dom,
                                       status="blocked", blocked_reason="blocklist",
-                                      source=source, batch_id=batch_id)
+                                      source=source, batch_id=batch_id, from_domain=fdom)
             else:
                 eid = next(sent_iter, None)
                 ids.append(eid)
                 await self._log_email(email_id=eid, to_email=to_list[i], email_type=etype,
                                       subject=subject, target_id=target_id, domain=dom,
                                       status=("sent" if eid else "failed"),
-                                      source=source, batch_id=batch_id)
+                                      source=source, batch_id=batch_id, from_domain=fdom)
         sent = len([i for i in ids if i])
         return {"sent": sent, "failed": n - sent, "ids": ids}
 
@@ -425,7 +451,8 @@ class KlarimMailer:
             result_link=result_link,
             unsubscribe_link=unsubscribe_link,
         )
-        return {"from": self.from_address, "to": [to_email], "subject": subject, "html": html}
+        # PROATIVO (cold) → remetente do domínio de warmup (klarimscan.com).
+        return {"from": self._proactive_from(), "to": [to_email], "subject": subject, "html": html}
 
     async def send_alert(
         self,
@@ -665,7 +692,7 @@ class KlarimMailer:
             domain=domain, score=score, semaphore_emoji=emoji, cta_url=cta_url,
             unsubscribe_link=unsubscribe_link)
         return await self._send({
-            "from": self.from_address,
+            "from": self._proactive_from(),  # PROATIVO → domínio de warmup (klarimscan.com)
             "to": [to_email],
             "subject": f"Alguém verificou a segurança do site {domain}",
             "html": html,

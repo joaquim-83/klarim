@@ -323,6 +323,16 @@ class AlertWorker:
                   f"ciclo pulado", flush=True)
             return stats
 
+        # Warmup do domínio novo (klarimscan.com): LIMITE DIÁRIO de alertas proativos,
+        # ajustável ao vivo pelo painel (ALERT_DAILY_LIMIT). Default alto = sem limite.
+        daily_limit = int(await self.store.get_setting("ALERT_DAILY_LIMIT", "5000"))
+        sent_today = await self.store.count_alerts_sent_today()
+        if sent_today >= daily_limit:
+            print(f"[alert] limite diário atingido ({sent_today}/{daily_limit}); "
+                  f"ciclo pulado", flush=True)
+            stats["daily_limit_reached"] = True
+            return stats
+
         # Throttle dinâmico (KL-32): batch_size + max_per_hour lidos do controle.
         cfg = worker_control.worker_config("alert")
         batch_size = int(cfg.get("batch_size") or self.batch_size)
@@ -333,8 +343,8 @@ class AlertWorker:
         if max_per_hour:
             per_cycle = max(1, int(int(max_per_hour) * self.interval_minutes / 60))
             cycle_cap = min(cycle_cap, per_cycle)
-        want = min(cycle_cap, self.monthly_limit - sent_month)
-        raw_targets = await self.store.get_eligible_targets_for_alert(limit=want)
+        want = min(cycle_cap, self.monthly_limit - sent_month, daily_limit - sent_today)
+        raw_targets = await self.store.get_eligible_targets_for_alert(limit=max(0, want))
         stats["eligible"] = len(raw_targets)
 
         # Validação pré-envio (KL-24): remove blocklist + domínios sem MX.
@@ -345,8 +355,9 @@ class AlertWorker:
             chunk = targets[bi * self.batch_size:(bi + 1) * self.batch_size]
             if not chunk:
                 break
-            # Respeita a cota mensal em tempo real (recalculada com o que já enviamos).
-            room = self.monthly_limit - (sent_month + stats["sent"])
+            # Respeita a cota mensal E o limite diário em tempo real (com o já enviado).
+            room = min(self.monthly_limit - (sent_month + stats["sent"]),
+                       daily_limit - (sent_today + stats["sent"]))
             if room <= 0:
                 stats["skipped"] += len(chunk)
                 break

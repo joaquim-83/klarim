@@ -102,6 +102,13 @@ class FakeStore:
     async def count_proactive_emails_this_month(self):
         return self._sent_month
 
+    async def get_setting(self, key, default=None):
+        # espelha a resolução do store real (DB > env > default): sem override, o default.
+        return default
+
+    async def count_alerts_sent_today(self):
+        return getattr(self, "_sent_today", 0)
+
     async def email_health(self):
         return dict(self._health)
 

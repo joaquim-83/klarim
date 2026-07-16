@@ -338,8 +338,11 @@ CREATE TABLE IF NOT EXISTS email_log (
     error TEXT,
     sent_at TIMESTAMPTZ DEFAULT NOW(),
     source TEXT,
-    batch_id TEXT
+    batch_id TEXT,
+    from_domain TEXT
 );
+-- Migração da migração de remetente (klarimscan.com): coluna nova em tabelas já criadas.
+ALTER TABLE email_log ADD COLUMN IF NOT EXISTS from_domain TEXT;
 CREATE INDEX IF NOT EXISTS idx_email_log_sent_at ON email_log(sent_at DESC);
 CREATE INDEX IF NOT EXISTS idx_email_log_to_email ON email_log(to_email);
 CREATE INDEX IF NOT EXISTS idx_email_log_type ON email_log(email_type);
@@ -2988,9 +2991,11 @@ class TargetStore:
                         subject: Optional[str] = None, target_id: Optional[int] = None,
                         domain: Optional[str] = None, status: str = "sent",
                         blocked_reason: Optional[str] = None, error: Optional[str] = None,
-                        source: Optional[str] = None, batch_id: Optional[str] = None) -> None:
+                        source: Optional[str] = None, batch_id: Optional[str] = None,
+                        from_domain: Optional[str] = None) -> None:
         """Grava uma entrada no `email_log` (KL-62). Chamado pelo KlarimMailer em TODO
-        envio. Best-effort — quem chama já envolve em try/except (nunca derruba o envio)."""
+        envio. `from_domain` (migração klarimscan.com) registra de qual domínio o e-mail
+        saiu. Best-effort — quem chama já envolve em try/except (nunca derruba o envio)."""
         to_email = (to_email or "").strip().lower()
         if not to_email:
             return
@@ -2998,13 +3003,25 @@ class TargetStore:
         def _fn(cur):
             cur.execute(
                 "INSERT INTO email_log (email_id, to_email, email_type, subject, target_id, "
-                "  domain, status, blocked_reason, error, source, batch_id) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "  domain, status, blocked_reason, error, source, batch_id, from_domain) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (email_id, to_email, email_type, (subject or None), target_id,
                  (domain or None), status, blocked_reason, (error[:2000] if error else None),
-                 source, batch_id))
+                 source, batch_id, (from_domain or None)))
 
         await asyncio.to_thread(self._run, _fn)
+
+    async def count_alerts_sent_today(self) -> int:
+        """Alertas PROATIVOS efetivamente enviados hoje (calendário) — controla o warmup
+        do domínio novo. Conta `email_log` (status='sent') dos tipos de alerta cold."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT COUNT(*) FROM email_log "
+                "WHERE status = 'sent' AND email_type IN ('alert', 'alert_score100') "
+                "  AND sent_at >= date_trunc('day', NOW())")
+            return int(cur.fetchone()[0])
+
+        return await asyncio.to_thread(self._run, _fn)
 
     async def list_email_log(self, email_type: Optional[str] = None,
                              status: Optional[str] = None, to_email: Optional[str] = None,
