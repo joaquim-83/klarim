@@ -1,6 +1,5 @@
 ---
-// Rota legada — a antiga "Sites Monitorados" virou "Gestão de Clientes" (KL-51 f3 fix).
-// Mantém o redirect 301 que o Vite fazia (App.jsx: /painel/monitorados → /painel/clientes).
+// Rota legada — "Sites Monitorados" → "Gestão de Clientes" → "Usuários" (KL-69).
 export const prerender = false;
-return Astro.redirect('/painel/clientes', 301);
+return Astro.redirect('/painel/usuarios', 301);
 ---

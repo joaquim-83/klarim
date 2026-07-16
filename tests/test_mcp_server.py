@@ -37,11 +37,15 @@ READ_TOOLS = [
     "get_subscription_stats", "list_subscribers",
     # KL-44 P2: vigílias
     "get_vigilia_stats", "list_vigilia_alerts",
+    # KL-68: verificação de propriedade
+    "get_ownership_stats",
 ]
 WRITE_TOOLS = [
     "scan_url", "add_target", "update_target_email", "update_target_status",
     "update_target_sector", "send_alert_to_target", "send_report_to_email",
     "classify_targets_batch",
+    # KL-69: gestão de usuários
+    "admin_remove_user_site",
 ]
 
 

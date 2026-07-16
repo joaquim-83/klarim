@@ -1703,6 +1703,22 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    async def set_user_active(self, user_id: int, active: bool) -> bool:
+        """Ativa/desativa a conta do usuário (KL-69). Retorna True se afetou uma linha."""
+        def _fn(cur):
+            cur.execute("UPDATE users SET is_active = %s WHERE id = %s", (active, user_id))
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def mark_ownership_revoked(self, user_id: int, target_id: int) -> None:
+        """Marca as verificações de propriedade de (usuário, alvo) como 'revoked' — usado
+        ao remover um site do usuário (KL-69), para auditoria."""
+        await asyncio.to_thread(self._run, lambda cur: cur.execute(
+            "UPDATE ownership_verifications SET status = 'revoked' "
+            "WHERE user_id = %s AND target_id = %s AND status IN ('pending', 'verified')",
+            (user_id, target_id)))
+
     async def revoke_ownership(self, target_id: int) -> int:
         """Admin override: remove a marca de dono de todos os vínculos do alvo. Retorna
         quantos foram afetados. Não remove o vínculo (o usuário segue monitorando)."""
@@ -2168,12 +2184,17 @@ class TargetStore:
         """Contas de usuário (KL-51 f3) + os sites vinculados (via `user_sites`), para a
         Gestão de Clientes no painel admin. 2 queries numa conexão (evita N+1)."""
         def _fn(cur):
+            # KL-69: junta a assinatura (status/trial) numa página unificada (sem N+1).
             cur.execute(
-                "SELECT id, email, name, plan, max_sites, created_at, last_login_at, is_active "
-                "FROM users ORDER BY created_at DESC")
+                "SELECT u.id, u.email, u.name, u.plan, u.max_sites, u.created_at, "
+                "       u.last_login_at, u.is_active, "
+                "       sub.status AS sub_status, sub.plan_id AS sub_plan, sub.trial_ends_at "
+                "FROM users u LEFT JOIN subscriptions sub ON sub.account_id = u.id "
+                "ORDER BY u.created_at DESC")
             users = self._rows_to_dicts(cur)
             cur.execute(
-                "SELECT us.user_id, us.is_owner, t.id AS target_id, t.url, t.domain, "
+                "SELECT us.user_id, us.is_owner, us.verified_at, us.verification_method, "
+                "       us.added_at, t.id AS target_id, t.url, t.domain, "
                 "       t.sector, t.last_scan_score, t.last_scan_at, s.semaphore AS last_semaphore "
                 "FROM user_sites us JOIN targets t ON t.id = us.target_id "
                 "LEFT JOIN LATERAL (SELECT semaphore FROM scans WHERE target_id = t.id "

@@ -328,6 +328,7 @@ _config_attempts: dict = {}    # KL-44: PUT/reset config
 _password_attempts: dict = {}  # KL-44: troca de senha admin
 _rotate_attempts: dict = {}    # KL-44: rotação do token MCP
 _ownership_attempts: dict = {}  # KL-68: verificação de propriedade
+_admin_action_attempts: dict = {}  # KL-69: ações admin de gestão de usuários
 
 
 def _mask_email(email: str) -> str:
@@ -689,8 +690,10 @@ async def account_login(body: AccountLoginBody, request: Request) -> JSONRespons
     user = await store.get_user_by_email(email, with_hash=True)
     if not user or not auth_users.verify_password(body.password, user.get("password_hash", "")):
         raise HTTPException(status_code=401, detail="E-mail ou senha incorretos.")
-    if not user.get("is_active", True):
-        raise HTTPException(status_code=403, detail="Conta desativada.")
+    if not user.get("is_active", True):   # KL-69: enforcement de conta desativada
+        raise HTTPException(
+            status_code=403,
+            detail="Sua conta foi desativada. Entre em contato com seguranca@klarim.net.")
     await store.touch_user_login(user["id"])
     claim = await _process_claim(store, user, email, body.url) if body.url else None  # KL-68
     return _account_session_response(user, claim)
@@ -4974,26 +4977,129 @@ async def admin_ownership_stats() -> dict:
     return await get_target_store().ownership_stats()
 
 
+# --------------------------------------------------------------------------- #
+# KL-69 — gestão de usuários (remover site, desativar/reativar conta). Prefixo /admin
+# (JWT admin). Notificações transacionais via seguranca@klarim.net.
+# --------------------------------------------------------------------------- #
+
+class RemoveSiteBody(BaseModel):
+    target_id: int
+    notify: bool = True
+
+
+class AdminNotifyBody(BaseModel):
+    notify: bool = True
+
+
+async def _notify_site_removed(user: Optional[dict], domain: str) -> bool:
+    """E-mail 'site removido' (best-effort). True se enviou."""
+    if not (_email_enabled() and user and user.get("email") and domain):
+        return False
+    try:
+        await _mailer().send_site_removed(user["email"], domain)
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"[admin] site_removed e-mail falhou {user.get('email')}: {exc!r}", flush=True)
+        return False
+
+
+@app.post("/admin/users/{user_id}/remove-site")
+async def admin_remove_user_site(user_id: int, body: RemoveSiteBody, request: Request) -> dict:
+    """Remove um site do monitoramento de um usuário (KL-69). Revoga a propriedade
+    (auditoria), remove o vínculo e (opcional) notifica o usuário."""
+    allowed, _ = await _redis_allow("admin_user_action", _client_ip(request), 30, 60, _admin_action_attempts)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Muitas ações. Aguarde um momento.")
+    store = get_target_store()
+    user = await store.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado.")
+    link = await store.get_user_site(user_id, body.target_id)
+    if not link:
+        raise HTTPException(status_code=404, detail="Este site não está vinculado ao usuário.")
+    target = await store.get_target(body.target_id)
+    domain = (target or {}).get("domain") or _norm_domain((target or {}).get("url") or "")
+    if link.get("is_owner"):
+        await store.mark_ownership_revoked(user_id, body.target_id)
+    await store.unlink_user_site(user_id, body.target_id)
+    notified = await _notify_site_removed(user, domain) if body.notify else False
+    return {"removed": True, "domain": domain, "notified": notified}
+
+
+@app.post("/admin/users/{user_id}/deactivate")
+async def admin_deactivate_user(user_id: int, body: AdminNotifyBody, request: Request) -> dict:
+    """Desativa a conta (KL-69): `is_active=false` (bloqueia login) + notificação opcional."""
+    allowed, _ = await _redis_allow("admin_user_action", _client_ip(request), 30, 60, _admin_action_attempts)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Muitas ações. Aguarde um momento.")
+    store = get_target_store()
+    user = await store.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado.")
+    await store.set_user_active(user_id, False)
+    notified = False
+    if body.notify and _email_enabled() and user.get("email"):
+        try:
+            await _mailer().send_account_deactivated(user["email"])
+            notified = True
+        except Exception as exc:  # noqa: BLE001
+            print(f"[admin] deactivate e-mail falhou: {exc!r}", flush=True)
+    return {"deactivated": True, "notified": notified}
+
+
+@app.post("/admin/users/{user_id}/reactivate")
+async def admin_reactivate_user(user_id: int, body: AdminNotifyBody, request: Request) -> dict:
+    """Reativa a conta (KL-69): `is_active=true` + notificação opcional."""
+    allowed, _ = await _redis_allow("admin_user_action", _client_ip(request), 30, 60, _admin_action_attempts)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Muitas ações. Aguarde um momento.")
+    store = get_target_store()
+    user = await store.get_user_by_id(user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuário não encontrado.")
+    await store.set_user_active(user_id, True)
+    notified = False
+    if body.notify and _email_enabled() and user.get("email"):
+        try:
+            await _mailer().send_account_reactivated(user["email"])
+            notified = True
+        except Exception as exc:  # noqa: BLE001
+            print(f"[admin] reactivate e-mail falhou: {exc!r}", flush=True)
+    return {"reactivated": True, "notified": notified}
+
+
 @app.post("/admin/clean-blocked-sites")
 async def admin_clean_blocked_sites(request: Request) -> dict:
-    """Limpeza retroativa (KL-68): remove de `user_sites` os vínculos cujo domínio é
+    """Limpeza retroativa (KL-68/69): remove de `user_sites` os vínculos cujo domínio é
     público/institucional (gmail.com, python.org, .gov.br…). Não apaga a conta — só o
-    vínculo. Idempotente. `dry_run=1` só conta, sem remover."""
+    vínculo. Idempotente. `dry_run=1` só faz o preview; senão remove e **notifica** cada
+    dono (`site_removed`). Retorna os `items` (domínio + e-mail) e quantos foram notificados."""
     dry = request.query_params.get("dry_run") in ("1", "true", "yes")
     store = get_target_store()
     rows = await store.list_user_sites_min()
-    blocked, reasons = [], {}
+    blocked = []
     for r in rows:
         is_blk, reason = domain_guard.is_blocked_domain(r.get("domain") or "")
         if is_blk:
-            blocked.append(r["id"])
-            dom = domain_guard._normalize(r.get("domain") or "")
-            reasons[dom] = reason
-    removed = 0 if dry else await store.remove_user_sites_by_ids(blocked)
-    print(f"[cleanup] sites bloqueados: {len(blocked)} encontrados, "
-          f"{removed} removidos (dry_run={dry})", flush=True)
-    return {"found": len(blocked), "removed": removed, "dry_run": dry,
-            "domains": sorted(reasons.keys()), "by_reason": reasons}
+            blocked.append({"link_id": r["id"], "user_id": r["user_id"],
+                            "domain": domain_guard._normalize(r.get("domain") or ""), "reason": reason})
+    users = {}
+    for uid in {b["user_id"] for b in blocked}:
+        u = await store.get_user_by_id(uid)
+        if u:
+            users[uid] = u
+    items = [{"domain": b["domain"], "email": (users.get(b["user_id"]) or {}).get("email"),
+              "reason": b["reason"]} for b in blocked]
+    if dry:
+        return {"found": len(blocked), "removed": 0, "notified": 0, "dry_run": True, "items": items}
+    removed = await store.remove_user_sites_by_ids([b["link_id"] for b in blocked])
+    notified = 0
+    for b in blocked:
+        if await _notify_site_removed(users.get(b["user_id"]), b["domain"]):
+            notified += 1
+    print(f"[cleanup] {len(blocked)} bloqueados, {removed} removidos, {notified} notificados", flush=True)
+    return {"found": len(blocked), "removed": removed, "notified": notified,
+            "dry_run": False, "items": items}
 
 
 # --------------------------------------------------------------------------- #

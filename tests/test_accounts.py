@@ -206,6 +206,19 @@ class FakeStore:
                 removed += 1
         return removed
 
+    # --- gestão de usuários (KL-69) ---
+    async def set_user_active(self, user_id, active):
+        u = self.by_id.get(int(user_id))
+        if not u:
+            return False
+        u["is_active"] = active
+        return True
+
+    async def mark_ownership_revoked(self, user_id, target_id):
+        for v in self.ownership:
+            if v["user_id"] == user_id and v["target_id"] == target_id and v["status"] in ("pending", "verified"):
+                v["status"] = "revoked"
+
     # --- targets ---
     async def get_target_by_url(self, url):
         for t in self.targets.values():
@@ -263,7 +276,7 @@ def store(monkeypatch):
     monkeypatch.setattr(auth_users, "_secret", lambda: "k" * 64)
     # zera os rate limits in-memory entre testes
     for bucket in (m._signup_attempts, m._forgot_attempts, m._reset_attempts,
-                   m._send_report_attempts, m._ownership_attempts):
+                   m._send_report_attempts, m._ownership_attempts, m._admin_action_attempts):
         bucket.clear()
     return s
 
@@ -351,6 +364,18 @@ class _FakeMailer:
 
     async def send_ownership_verification(self, to_email, domain, code):
         self.sent.append((to_email, code))
+        return {"ok": True}
+
+    async def send_site_removed(self, to_email, domain):
+        self.sent.append((to_email, f"site_removed:{domain}"))
+        return {"ok": True}
+
+    async def send_account_deactivated(self, to_email):
+        self.sent.append((to_email, "deactivated"))
+        return {"ok": True}
+
+    async def send_account_reactivated(self, to_email):
+        self.sent.append((to_email, "reactivated"))
         return {"ok": True}
 
 
@@ -731,3 +756,66 @@ def test_ownership_status(client, store):
     _seed_owned_site(store, u["id"], 23)
     j = client.get("/account/ownership/status?target_id=23", headers=_bearer(u)).json()
     assert j["monitored"] is True and j["is_owner"] is False and j["verification_available"] is True
+
+
+# --- KL-69: gestão de usuários (ações admin) -------------------------------- #
+
+def _admin():
+    return {"Authorization": f"Bearer {m._create_token('admin')}"}
+
+
+def test_admin_remove_user_site(client, store, mailer):
+    u = client.post("/account/signup", json={"email": "u@x.com.br", "password": "segredo123"}).json()["user"]
+    store.targets[40] = {"id": 40, "url": "https://alvo.com.br", "domain": "alvo.com.br",
+                         "contact_email": "c@alvo.com.br"}
+    store.sites[(u["id"], 40)] = {"is_owner": True}
+    r = client.post(f"/admin/users/{u['id']}/remove-site",
+                    json={"target_id": 40, "notify": True}, headers=_admin())
+    assert r.status_code == 200 and r.json()["removed"] is True and r.json()["notified"] is True
+    assert (u["id"], 40) not in store.sites
+    assert mailer.sent[-1] == ("u@x.com.br", "site_removed:alvo.com.br")
+
+
+def test_admin_remove_user_site_404(client, store):
+    u = client.post("/account/signup", json={"email": "u@x.com.br", "password": "segredo123"}).json()["user"]
+    r = client.post(f"/admin/users/{u['id']}/remove-site", json={"target_id": 999}, headers=_admin())
+    assert r.status_code == 404
+
+
+def test_admin_deactivate_reactivate(client, store, mailer):
+    u = client.post("/account/signup", json={"email": "u@x.com.br", "password": "segredo123"}).json()["user"]
+    r = client.post(f"/admin/users/{u['id']}/deactivate", json={"notify": True}, headers=_admin())
+    assert r.status_code == 200 and r.json()["deactivated"] is True and r.json()["notified"] is True
+    assert store.by_id[u["id"]]["is_active"] is False
+    r2 = client.post(f"/admin/users/{u['id']}/reactivate", json={"notify": True}, headers=_admin())
+    assert r2.status_code == 200 and r2.json()["reactivated"] is True
+    assert store.by_id[u["id"]]["is_active"] is True
+
+
+def test_login_deactivated_403(client, store):
+    u = client.post("/account/signup", json={"email": "dead@x.com.br", "password": "segredo123"}).json()["user"]
+    store.by_id[u["id"]]["is_active"] = False
+    r = client.post("/account/login", json={"email": "dead@x.com.br", "password": "segredo123"})
+    assert r.status_code == 403 and "desativada" in r.json()["detail"].lower()
+
+
+def test_admin_action_requires_jwt(client, store):
+    u = client.post("/account/signup", json={"email": "u@x.com.br", "password": "segredo123"}).json()["user"]
+    assert client.post(f"/admin/users/{u['id']}/deactivate", json={}).status_code == 401
+
+
+def test_clean_blocked_sites_dry_and_apply(client, store, mailer):
+    u1 = client.post("/account/signup", json={"email": "a@x.com.br", "password": "segredo123"}).json()["user"]
+    u2 = client.post("/account/signup", json={"email": "b@x.com.br", "password": "segredo123"}).json()["user"]
+    store.targets[50] = {"id": 50, "url": "https://gmail.com", "domain": "gmail.com"}
+    store.targets[51] = {"id": 51, "url": "https://ok.com.br", "domain": "ok.com.br"}
+    store.sites[(u1["id"], 50)] = {"is_owner": False}   # bloqueado
+    store.sites[(u2["id"], 51)] = {"is_owner": False}   # ok
+    dry = client.post("/admin/clean-blocked-sites?dry_run=1", headers=_admin()).json()
+    assert dry["found"] == 1 and dry["removed"] == 0 and dry["dry_run"] is True
+    assert dry["items"][0]["domain"] == "gmail.com" and dry["items"][0]["email"] == "a@x.com.br"
+    assert (u1["id"], 50) in store.sites                # dry-run não removeu
+    res = client.post("/admin/clean-blocked-sites?dry_run=0", headers=_admin()).json()
+    assert res["removed"] == 1 and res["notified"] == 1
+    assert (u1["id"], 50) not in store.sites
+    assert (u2["id"], 51) in store.sites                # o site legítimo permanece

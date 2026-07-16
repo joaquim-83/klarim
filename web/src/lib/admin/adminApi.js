@@ -115,6 +115,13 @@ export const admin = {
   ownershipStats: () => get('/admin/ownership-stats'),
   cleanBlockedSites: (dryRun) => post(`/admin/clean-blocked-sites${dryRun ? '?dry_run=1' : ''}`),
 
+  // gestão de usuários (KL-69) — página unificada
+  users: () => get('/admin/clients'),
+  removeUserSite: (userId, targetId, notify = true) =>
+    post(`/admin/users/${userId}/remove-site`, { target_id: targetId, notify }),
+  deactivateUser: (userId, notify = true) => post(`/admin/users/${userId}/deactivate`, { notify }),
+  reactivateUser: (userId, notify = true) => post(`/admin/users/${userId}/reactivate`, { notify }),
+
   // landing pública / perfil (KL-56)
   updateProfile: (id, fields) => put(`/targets/${id}/profile`, fields),
   setProfileVisibility: (id, visible) =>

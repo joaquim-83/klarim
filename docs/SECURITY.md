@@ -102,6 +102,19 @@ Na dúvida, trate o alvo como site de terceiro que só autorizou olhar o que é 
   continua livre** (vitrine da plataforma) — só o monitoramento/reivindicação é bloqueado.
 - Email de verificação é **transacional** (`seguranca@klarim.net`), nunca proativo.
 
+### Gestão de usuários (KL-69)
+
+- **Enforcement de `is_active` no login:** `POST /account/login` retorna **403** para conta
+  desativada (`is_active=false`), mesmo com senha correta — mensagem aponta para
+  `seguranca@klarim.net`.
+- **Ações admin** (`/admin/users/{id}/remove-site|deactivate|reactivate`, `/admin/clean-
+  blocked-sites`) exigem **JWT admin** (prefixo `/admin`) + **rate limit** 30/min/IP
+  (Redis + fallback). Remover um site **não** apaga a conta (segue ativa); revoga a posse
+  (`ownership_verifications.status='revoked'`, auditoria).
+- **Notificações** de site removido / conta desativada / reativada são **transacionais**
+  (`seguranca@klarim.net`), registradas no `email_log` (`site_removed` / `account_deactivated`
+  / `account_reactivated`).
+
 ## 6. Reputação de e-mail (anti-bounce, KL-24/62)
 
 - **Isolamento de reputação:** proativo de `alerta@klarimscan.com` (domínio separado, em

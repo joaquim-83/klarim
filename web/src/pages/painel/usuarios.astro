@@ -1,0 +1,9 @@
+---
+export const prerender = false;
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import UsuariosPage from '../../components/admin/UsuariosPage.jsx';
+---
+
+<AdminLayout>
+  <UsuariosPage client:only="react" />
+</AdminLayout>

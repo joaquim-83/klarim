@@ -68,6 +68,9 @@ EMAIL_TYPES = {
     "admin_report": "Relatório admin",
     "signup_verification": "Código de cadastro (conta)",
     "ownership_verification": "Verificação de propriedade (KL-68)",
+    "site_removed": "Site removido do monitoramento (KL-69)",
+    "account_deactivated": "Conta desativada pelo admin (KL-69)",
+    "account_reactivated": "Conta reativada pelo admin (KL-69)",
     "vigilia_ssl": "Vigília — certificado SSL",
     "vigilia_domain": "Vigília — registro do domínio",
     "vigilia_score": "Vigília — score de segurança",
@@ -759,6 +762,31 @@ class KlarimMailer:
             "subject": "Sua conta Klarim foi excluída",
             "html": html,
         }, email_type="account_deleted", source="account", skip_blocklist=True)
+
+    async def send_site_removed(self, to_email: str, domain: str) -> Dict[str, Any]:
+        """Avisa o usuário que um site foi removido do monitoramento (KL-69, admin/
+        limpeza). Transacional (`seguranca@klarim.net`), registrado no email_log."""
+        html = _env.get_template("site_removed.html").render(domain=domain)
+        return await self._send({
+            "from": self.from_address, "to": [to_email],
+            "subject": f"Atualização no seu monitoramento — {domain}", "html": html,
+        }, email_type="site_removed", domain=domain, source="admin", skip_blocklist=True)
+
+    async def send_account_deactivated(self, to_email: str) -> Dict[str, Any]:
+        """Avisa que a conta foi desativada por um admin (KL-69)."""
+        html = _env.get_template("account_deactivated.html").render()
+        return await self._send({
+            "from": self.from_address, "to": [to_email],
+            "subject": "Sua conta Klarim foi desativada", "html": html,
+        }, email_type="account_deactivated", source="admin", skip_blocklist=True)
+
+    async def send_account_reactivated(self, to_email: str) -> Dict[str, Any]:
+        """Avisa que a conta foi reativada por um admin (KL-69)."""
+        html = _env.get_template("account_reactivated.html").render()
+        return await self._send({
+            "from": self.from_address, "to": [to_email],
+            "subject": "Sua conta Klarim foi reativada", "html": html,
+        }, email_type="account_reactivated", source="admin", skip_blocklist=True)
 
     async def send_profile_view(self, to_email: str, domain: str, score: int,
                                 semaphore: str, cta_url: str,

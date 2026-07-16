@@ -287,6 +287,9 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
 - **KL-68** — Reivindicação de site + verificação de propriedade em tiers ✅ (auto por
   e-mail == contact_email; código 6 díg. ao contact_email; domain guard bloqueia
   monitorar domínio público/institucional; `contact_email` nunca exposto — só `email_hint`)
+- **KL-69** — Gestão de usuários unificada ✅ (`/painel/usuarios` funde Clientes+Assinantes;
+  admin remove site / desativa / reativa conta, com notificação; `is_active` bloqueia login;
+  clean-blocked-sites notifica; termos de uso c/ domínios elegíveis)
 - **KL-64** — Analytics tracker (pendente) · **KL-67** — qualidade do profiler (pendente)
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos

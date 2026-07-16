@@ -109,3 +109,28 @@ async def get_ownership_stats() -> dict:
     método (auto_email vs code_verification), funil de verificações por status
     (pending/verified/expired/failed) e taxa de sites monitorados com dono."""
     return await _guard(lambda: _store().ownership_stats())
+
+
+@mcp.tool()
+async def admin_remove_user_site(user_id: int, target_id: int, notify: bool = True) -> dict:
+    """Remove um site do monitoramento de um usuário (KL-69). Revoga a propriedade
+    (auditoria) e remove o vínculo. Se notify=true, envia e-mail ao usuário avisando
+    da remoção. A conta do usuário permanece ativa."""
+    async def _impl():
+        m = _api()
+        store = _store()
+        user = await store.get_user_by_id(user_id)
+        if not user:
+            return {"error": "usuário não encontrado", "status_code": 404}
+        link = await store.get_user_site(user_id, target_id)
+        if not link:
+            return {"error": "site não vinculado ao usuário", "status_code": 404}
+        target = await store.get_target(target_id)
+        domain = (target or {}).get("domain") or ""
+        if link.get("is_owner"):
+            await store.mark_ownership_revoked(user_id, target_id)
+        await store.unlink_user_site(user_id, target_id)
+        notified = await m._notify_site_removed(user, domain) if notify else False
+        return {"removed": True, "domain": domain, "notified": notified}
+
+    return await _guard(_impl)

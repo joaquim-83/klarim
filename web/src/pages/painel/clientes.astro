@@ -1,9 +1,6 @@
 ---
+// KL-69 — "Gestão de Clientes" e "Assinantes" foram unificadas em "Usuários".
+// Redirect 301 (o componente ClientesPage.jsx é mantido para limpeza futura).
 export const prerender = false;
-import AdminLayout from '../../layouts/AdminLayout.astro';
-import ClientesPage from '../../components/admin/ClientesPage.jsx';
+return Astro.redirect('/painel/usuarios', 301);
 ---
-
-<AdminLayout>
-  <ClientesPage client:only="react" />
-</AdminLayout>

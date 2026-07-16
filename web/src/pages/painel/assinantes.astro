@@ -1,9 +1,7 @@
 ---
+// KL-69 — "Assinantes" foi unificada em "Usuários" (redirect 301). O componente
+// AssinantesPage.jsx (gestão de plano/trial) é mantido para limpeza futura; as ações
+// de plano voltam na página unificada em KL-44 P6.
 export const prerender = false;
-import AdminLayout from '../../layouts/AdminLayout.astro';
-import AssinantesPage from '../../components/admin/AssinantesPage.jsx';
+return Astro.redirect('/painel/usuarios', 301);
 ---
-
-<AdminLayout>
-  <AssinantesPage client:only="react" />
-</AdminLayout>

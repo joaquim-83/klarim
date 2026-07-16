@@ -55,6 +55,7 @@ const ICONS = {
 
 const NAV = [
   { to: '/painel', label: 'Visão geral', icon: 'overview', key: 'overview' },
+  { to: '/painel/usuarios', label: 'Usuários', icon: 'subscribers', key: 'usuarios' },
   { to: '/painel/alvos', label: 'Alvos', icon: 'targets', key: 'alvos' },
   { to: '/painel/scans', label: 'Scans', icon: 'scans', key: 'scans' },
   { to: '/painel/alertas', label: 'Alertas', icon: 'alerts', key: 'alertas' },
@@ -63,9 +64,7 @@ const NAV = [
   { to: '/painel/inbox', label: 'Inbox', icon: 'inbox', key: 'inbox' },
   { to: '/painel/rescans', label: 'Re-scans', icon: 'rescans', key: 'rescans' },
   { to: '/painel/analytics', label: 'Analytics', icon: 'analytics', key: 'analytics' },
-  { to: '/painel/clientes', label: 'Gestão de Clientes', icon: 'monitored', key: 'clientes' },
   { to: '/painel/servicos', label: 'Serviços', icon: 'services', key: 'servicos' },
-  { to: '/painel/assinantes', label: 'Assinantes', icon: 'subscribers', key: 'assinantes' },
   { to: '/painel/vigilias', label: 'Vigílias', icon: 'vigilias', key: 'vigilias' },
   { to: '/painel/sistema', label: 'Sistema', icon: 'system', key: 'sistema' },
   { to: '/painel/config', label: 'Configurações', icon: 'config', key: 'config' },

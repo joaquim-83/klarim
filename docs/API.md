@@ -143,7 +143,10 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 | POST | `/leads/recalculate` | recalcula scores |
 | POST | `/targets/{id}/revoke-ownership` | KL-68: admin override — remove o selo de dono do alvo |
 | GET | `/admin/ownership-stats` | KL-68: donos verificados, por método, funil, taxa |
-| POST | `/admin/clean-blocked-sites?dry_run=` | KL-68: remove vínculos de domínio público/institucional |
+| POST | `/admin/clean-blocked-sites?dry_run=` | KL-68/69: remove vínculos de domínio público/institucional (+ notifica os donos) |
+| POST | `/admin/users/{user_id}/remove-site` | KL-69: `{target_id, notify}` — remove site do usuário (revoga posse, notifica) |
+| POST | `/admin/users/{user_id}/deactivate` | KL-69: `{notify}` — `is_active=false` (bloqueia login) |
+| POST | `/admin/users/{user_id}/reactivate` | KL-69: `{notify}` — `is_active=true` |
 | POST | `/admin/scan-and-report` | escaneia + ingere + (opcional) e-mail |
 | POST | `/admin/resend-alert` · `/send-report` · `/resend-payment` | reenvios (ignora throttle) |
 | POST | `/admin/clean-emails` · `/process-bounces` | manutenção de e-mail |
@@ -200,7 +203,7 @@ passam por `_guard` (nunca derrubam a sessão).
 
 - **system.py** — `get_system_status`, `get_email_health`, `get_discovery_status`,
   `get_config`, `get_dashboard_stats`, `get_enrichment_status`, `get_user_accounts`,
-  `get_email_log`, `get_ownership_stats` (KL-68)
+  `get_email_log`, `get_ownership_stats` (KL-68), `admin_remove_user_site` (KL-69, write)
 - **targets.py** — `list_targets`, `get_target`, `get_target_stats`, `search_targets`,
   `add_target`, `update_target_email`, `update_target_status`, `update_target_sector`,
   `classify_targets_batch`, `get_target_classifications`, `get_site_profile`,
