@@ -64,8 +64,11 @@ export default function Dashboard({ user = {} }) {
   const [history, setHistory] = useState(null);
   const [toast, setToast] = useState('');   // KL-68: ?added / ?claimed pós-signup/login
   // KL-44 P6: ?upgrade=pro (abre o modal) / ?upgraded=1 (pós-checkout PIX). Capturados 1x.
-  const [planUpgradeParam] = useState(() => new URLSearchParams(window.location.search).get('upgrade') || '');
-  const [upgradedFlag] = useState(() => new URLSearchParams(window.location.search).get('upgraded') === '1');
+  // ⚠️ `window` NÃO existe no SSR (client:load também renderiza no servidor) → guarda.
+  const [planUpgradeParam] = useState(() =>
+    (typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('upgrade') : '') || '');
+  const [upgradedFlag] = useState(() =>
+    typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('upgraded') === '1');
 
   // KL-68: toast de reivindicação pós-autenticação, depois limpa a URL.
   useEffect(() => {
