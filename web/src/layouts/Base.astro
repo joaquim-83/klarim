@@ -108,5 +108,11 @@ const allJsonLd = [ORG_JSONLD, WEBSITE_JSONLD, ...extraLd];
     <slot />
     <!-- Tracking (KL-21): asset EXTERNO (não inline) → passa na CSP `script-src 'self'`. -->
     <script src="/track.js" is:inline></script>
+    <!-- Cloudflare Web Analytics — só nas páginas Astro (públicas + conta), NUNCA no
+         /painel (AdminLayout). Externo → coberto pela CSP (`script-src` inclui o host).
+         `is:inline` = Astro renderiza verbatim (não processa/bundle). -->
+    <script type="module" src="https://static.cloudflareinsights.com/beacon.min.js"
+      data-cf-beacon='{"token": "5f28e636bcda47a6af21724c223f6e55"}' is:inline></script>
+    <!-- End Cloudflare Web Analytics -->
   </body>
 </html>
