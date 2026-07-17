@@ -122,7 +122,8 @@ export default function Dashboard({ user = {} }) {
   }
 
   if (sites === null) {
-    return <p className="text-slate-400">Carregando seus sites…</p>;
+    // min-h reserva a altura enquanto carrega (evita o footer pular quando os sites chegam — CLS).
+    return <div className="min-h-screen"><p className="text-slate-400">Carregando seus sites…</p></div>;
   }
 
   const used = sites.length;

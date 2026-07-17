@@ -145,6 +145,16 @@ def build_unsubscribe_link(email: str, secret: str) -> str:
     return f"{SITE_BASE}/api/unsubscribe?email={quote(email)}&token={unsubscribe_token(email, secret)}"
 
 
+def list_unsubscribe_headers(unsubscribe_url: Optional[str]) -> Dict[str, str]:
+    """Headers RFC 8058 (one-click) para e-mails **proativos** (alerta, profile_view).
+    O botão "Cancelar inscrição" do Gmail/Outlook/Apple Mail usa isto; melhora a
+    reputação e evita cliques falsos de pre-fetch. Vazio se não há URL de descadastro."""
+    if not unsubscribe_url:
+        return {}
+    return {"List-Unsubscribe": f"<{unsubscribe_url}>",
+            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click"}
+
+
 # --------------------------------------------------------------------------- #
 # Corpo em TEXTO PURO dos e-mails PROATIVOS (alerta + perfil consultado) — KL-44.
 # O template HTML (alert.html / alert_score100.html / profile_view.html) foi mantido
@@ -534,12 +544,16 @@ class KlarimMailer:
 
         is_100 = score == 100 and (semaphore or "").lower() == "verde"
         # PROATIVO (cold) → remetente do domínio de warmup (klarimscan.com), plain text.
-        return {
+        params = {
             "from": self._proactive_from(),
             "to": [to_email],
             "subject": alert_subject(site, is_100),
             "text": build_alert_text(site, score, unsubscribe_link, is_score100=is_100),
         }
+        hdrs = list_unsubscribe_headers(unsubscribe_link)   # RFC 8058 one-click (proativo)
+        if hdrs:
+            params["headers"] = hdrs
+        return params
 
     async def send_alert(
         self,
@@ -635,7 +649,11 @@ class KlarimMailer:
             result_link=utm_result_link(target_url, f"evolucao_{evolution}", target_id),
             unsubscribe_link=unsubscribe_link,
         )
-        return {"from": self.from_address, "to": [to_email], "subject": subject, "html": html}
+        params = {"from": self.from_address, "to": [to_email], "subject": subject, "html": html}
+        hdrs = list_unsubscribe_headers(unsubscribe_link)  # proativo a lead → RFC 8058
+        if hdrs:
+            params["headers"] = hdrs
+        return params
 
     async def send_evolution(
         self,
@@ -898,13 +916,17 @@ class KlarimMailer:
             secret = os.environ.get("UNSUBSCRIBE_SECRET") or os.environ.get("JWT_SECRET") or ""
             if secret:
                 unsubscribe_link = build_unsubscribe_link(to_email, secret)
-        return await self._send({
+        params = {
             "from": self._proactive_from(),  # PROATIVO → domínio de warmup (klarimscan.com)
             "to": [to_email],
             "subject": f"Alguém consultou a segurança do site {domain}",
             "text": build_profile_view_text(domain, score, unsubscribe_link),
-        }, email_type="profile_view", target_id=target_id, domain=domain,
-            source="profile_view")
+        }
+        hdrs = list_unsubscribe_headers(unsubscribe_link)   # RFC 8058 one-click (proativo)
+        if hdrs:
+            params["headers"] = hdrs
+        return await self._send(params, email_type="profile_view", target_id=target_id,
+                                domain=domain, source="profile_view")
 
     async def send_account_evolution(self, to_email: str, domain: str, prev_score: int,
                                      new_score: int, fixed: int, remaining: int,

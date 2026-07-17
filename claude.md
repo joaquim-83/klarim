@@ -108,6 +108,11 @@ standalone) + **React** (islands) + **Tailwind v4** (CSS-first, sem config) +
   `/site/{domain}` com UTM. Builders em `notifier/email_client.py`
   (`build_alert_text`/`build_profile_view_text`); os templates HTML ficam só como
   referência. Linguagem freemium, sem menção a preço/pagamento/relatório.
+- **Proativos levam `List-Unsubscribe` + `List-Unsubscribe-Post` (one-click RFC 8058,
+  `list_unsubscribe_headers`)** — alerta/profile_view/evolution. O `GET/POST /unsubscribe`
+  aceita params **opcionais** (ausentes → HTML "Link incompleto", nunca 422 JSON) e trata
+  o POST one-click; a validação HMAC constant-time é inalterada. Todos os workers que
+  e-mailam o `contact_email` (alert/rescan/profile-view) já filtram `status='unsubscribed'`.
 
 ---
 

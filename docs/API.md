@@ -127,7 +127,7 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 | GET | `/public/laudo/{code}` | KL-44 P3: laudo técnico público (checks + ação prioritária; sem PII; TTL 30d; 30/h/IP) |
 | POST | `/contact` | formulário de contato → inbox + Resend (best-effort) |
 | POST | `/events` | tracking do funil (fire-and-forget, 100/min/sessão) |
-| GET | `/unsubscribe?email=&token=` | descadastro (token HMAC) |
+| GET/POST | `/unsubscribe?email=&token=` | descadastro (token HMAC constant-time). Params **opcionais**: ausentes → página HTML "Link incompleto" (nunca 422 JSON — evita ruído do pre-fetch de bots). **POST** = one-click RFC 8058 (`List-Unsubscribe-Post`) |
 
 ## Admin — gestão de alvos
 

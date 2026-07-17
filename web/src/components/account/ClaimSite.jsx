@@ -6,7 +6,10 @@ import OwnershipVerification from './OwnershipVerification';
 // /site/{domain}). 4 estados: (1) deslogado → cadastrar; (2) logado sem monitorar →
 // monitorar; (3) logado monitorando, sem dono → verificar; (4) logado dono verificado →
 // painel. Domínio bloqueado (público/institucional) → mensagem educativa, sem claim.
-const CARD = 'rounded-2xl border border-brand-500/30 bg-brand-500/5 p-6';
+// `min-h` reserva a altura: a ilha SSR renderiza "Carregando…" (curto) e depois expande
+// para o estado resolvido (login/monitorar) — reservar evita o layout shift (CLS) que
+// empurrava o rodapé nas páginas de perfil (alto tráfego orgânico).
+const CARD = 'rounded-2xl border border-brand-500/30 bg-brand-500/5 p-6 min-h-[168px]';
 
 export default function ClaimSite({ url, domain, ownerVerified = false, claimable = true, blockMessage = '' }) {
   const [state, setState] = useState('loading'); // loading | logged_out | site

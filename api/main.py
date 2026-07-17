@@ -4987,12 +4987,12 @@ async def api_target_alert(target_id: int) -> dict:
     return {"target_id": target_id, "email": target["contact_email"], "email_id": email_id, "sent": True}
 
 
-@app.get("/unsubscribe")
-async def api_unsubscribe(
-    email: str = Query(...),
-    token: str = Query(...),
-) -> HTMLResponse:
-    """Descadastro via link do rodapé do alerta (token HMAC do e-mail)."""
+async def _process_unsubscribe(email: Optional[str], token: Optional[str]) -> HTMLResponse:
+    """Lógica única do descadastro (GET link + POST one-click RFC 8058). A validação HMAC
+    constant-time NÃO muda; só o tratamento de params ausentes (T1A)."""
+    if not email or not token:
+        # Params ausentes (pre-fetch de bots de e-mail): página branded, não 422 JSON.
+        return HTMLResponse(_unsubscribe_html("", success=False, incomplete=True))
     secret = os.environ.get("UNSUBSCRIBE_SECRET")
     ok = bool(secret) and hmac.compare_digest(token, unsubscribe_token(email, secret))
     if not ok:
@@ -5001,10 +5001,36 @@ async def api_unsubscribe(
     return HTMLResponse(_unsubscribe_html(email, success=True))
 
 
-def _unsubscribe_html(email: str, success: bool) -> str:
+@app.get("/unsubscribe")
+async def api_unsubscribe(
+    email: Optional[str] = Query(default=None),
+    token: Optional[str] = Query(default=None),
+) -> HTMLResponse:
+    """Descadastro via link do rodapé do alerta (token HMAC do e-mail). Params opcionais:
+    ausentes → página branded "Link incompleto" (T1A), nunca 422 JSON."""
+    return await _process_unsubscribe(email, token)
+
+
+@app.post("/unsubscribe")
+async def api_unsubscribe_oneclick(
+    email: Optional[str] = Query(default=None),
+    token: Optional[str] = Query(default=None),
+) -> HTMLResponse:
+    """One-click unsubscribe (RFC 8058): o cliente de e-mail faz POST ao `List-Unsubscribe`
+    sem interação. Mesma lógica/segurança do GET."""
+    return await _process_unsubscribe(email, token)
+
+
+def _unsubscribe_html(email: str, success: bool, incomplete: bool = False) -> str:
     from html import escape
 
-    if success:
+    if incomplete:
+        # T1A: link sem/params (pre-fetch de bots de e-mail) → página branded, não 422 JSON.
+        title, msg = "Link incompleto", (
+            "Para cancelar os alertas, use o link presente no e-mail que você recebeu. "
+            "Se preferir, escreva para <a href=\"mailto:scan@klarim.net\" "
+            "style=\"color:#FF6B35\">scan@klarim.net</a>.")
+    elif success:
         title, msg = "Descadastro concluído", (
             f"O endereço <strong>{escape(email)}</strong> não receberá mais alertas do Klarim.")
     else:
