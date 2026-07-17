@@ -6,9 +6,10 @@ import { field, btn, card, label, errorBox } from './ui.js';
 // o backend cria a conta direto (chega pré-preenchido via query param). Se NÃO foi
 // verificado (cadastro direto), o backend responde `verification_sent` e a UI pede o
 // código de 6 dígitos enviado por e-mail (fecha o gap de cadastro com e-mail de terceiro).
-export default function SignupForm({ email: initialEmail = '', url = '', redirect = '/dashboard', role = '', invite = '' }) {
+export default function SignupForm({ email: initialEmail = '', url = '', redirect = '/dashboard', role = '', invite = '', plan = '' }) {
   const emailFromScan = !!initialEmail;
   const isTech = role === 'technician';   // KL-44 P3: perfil de profissional de TI
+  const planName = plan === 'agency' ? 'Agency' : (plan === 'pro' ? 'Pro' : '');   // KL-44 P6
   const [step, setStep] = useState('form');   // 'form' | 'code'
   const [email, setEmail] = useState(initialEmail);
   const [password, setPassword] = useState('');
@@ -41,7 +42,7 @@ export default function SignupForm({ email: initialEmail = '', url = '', redirec
     setBusy(true);
     const { ok, status, data, error: err } = await apiPost('/account/signup', {
       email, password, url: url || undefined,
-      role: role || undefined, invite: invite || undefined });
+      role: role || undefined, invite: invite || undefined, plan: plan || undefined });
     setBusy(false);
     if (ok && data?.status === 'verification_sent') {
       setMaskedEmail(data.email || email);
@@ -70,7 +71,7 @@ export default function SignupForm({ email: initialEmail = '', url = '', redirec
     setError('');
     setBusy(true);
     const { ok, error: err } = await apiPost('/account/signup', {
-      email, password, url: url || undefined, role: role || undefined, invite: invite || undefined });
+      email, password, url: url || undefined, role: role || undefined, invite: invite || undefined, plan: plan || undefined });
     setBusy(false);
     if (!ok) setError(err || 'Não foi possível reenviar o código.');
   }
@@ -102,9 +103,10 @@ export default function SignupForm({ email: initialEmail = '', url = '', redirec
 
   return (
     <div className={card}>
-      <h1 className="text-2xl font-bold text-white">{isTech ? 'Crie seu perfil de profissional de TI' : 'Criar sua conta'}</h1>
+      <h1 className="text-2xl font-bold text-white">{isTech ? 'Crie seu perfil de profissional de TI' : (planName ? `Comece seu trial ${planName}` : 'Criar sua conta')}</h1>
       <p className="mt-2 text-sm text-slate-400">
         {isTech ? 'Gerencie os sites dos seus clientes em um só painel.'
+          : planName ? `Teste o plano ${planName} por 30 dias, sem cartão. Depois sua conta continua no Gratuito automaticamente.`
           : (emailFromScan ? 'Seu e-mail já está verificado. Só falta uma senha.' : 'Monitore seu site gratuitamente.')}
       </p>
       {error && <p className={`mt-4 ${errorBox}`}>{error}</p>}

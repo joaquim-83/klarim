@@ -14,5 +14,12 @@ async def list_payments(limit: int = 20) -> dict:
 
 @mcp.tool()
 async def get_payment_stats() -> dict:
-    """Receita total, contagem por status e ticket médio."""
+    """Receita de COMPRA DE RELATÓRIO (KL-27): total, contagem por status, ticket médio."""
     return await _guard(lambda: _api().api_payments_stats())
+
+
+@mcp.tool()
+async def get_subscription_payment_stats() -> dict:
+    """KL-44 P6 — receita de ASSINATURAS (PIX): total pago, por plano (pro/agency), por
+    status (pending/paid/expired) e os pagamentos recentes. MRR/ticket vêm daqui."""
+    return await _guard(lambda: _api().api_subscription_payment_stats())

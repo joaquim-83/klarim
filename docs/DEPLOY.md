@@ -86,12 +86,24 @@ Todas vivem em `/opt/klarim/.env` na VM (serviços usam `env_file: .env`). ⚠�
 | `GOOGLE_SAFE_BROWSING_KEY` | check 29 (opcional; sem ela → INCONCLUSO) |
 | `KLARIM_API_URL` | API interna p/ os fetches SSR do Astro (`http://api:8000`) |
 
-### Pagamento (AbacatePay)
+### Pagamento (AbacatePay) — compra de relatório (KL-27) + assinatura (KL-44 P6)
 | Var | Uso |
 |---|---|
 | `ABACATEPAY_API_KEY` | chave (`abc_dev_` = sandbox); vazia = modo livre |
-| `ABACATEPAY_WEBHOOK_SECRET` | query-secret do webhook |
+| `ABACATEPAY_WEBHOOK_SECRET` | query-secret do webhook (registrar `.../webhooks/abacatepay?webhookSecret=<secret>`) |
 | `ABACATEPAY_HMAC_STRICT` | opcional (HMAC defense-in-depth) |
+
+**Webhook único** para os dois fluxos: `POST /webhooks/abacatepay` trata compra de relatório
+e **assinatura** (KL-44 P6) — no evento `.paid`/`.completed` ativa o plano se o `charge_id`
+casar um `subscription_payments`; idempotente (só transiciona de `pending`). O selo/QR de
+upgrade usa PIX **transparente** (sem checkout hospedado). Preços: Pro R$19 (1900), Agency
+R$49 (4900). **Nenhum dado de cartão/PIX é armazenado.**
+
+### Trial (KL-44 P6) — config ao vivo no painel (`admin_settings` > .env)
+| Var | Uso |
+|---|---|
+| `TRIAL_EXPIRATION_ENABLED` | liga/desliga o downgrade automático de trials (default `true`) |
+| `TRIAL_HOUR_UTC` | hora UTC em que o worker `trial` age (default `6`) |
 
 ### E-mail (Resend) — **2 domínios, nunca misturar**
 | Var | Uso |

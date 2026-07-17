@@ -176,6 +176,26 @@ async def set_status(account_id: int, status: str, changed_by: str = "admin",
     return row
 
 
+async def activate_paid(account_id: int, plan_id: str, changed_by: str = "payment",
+                        reason: Optional[str] = None) -> Dict[str, Any]:
+    """KL-44 P6 — ativa um plano PAGO: status='active', trial_ends_at=NULL (sai do trial),
+    registra `last_payment_at`. Idempotente do ponto de vista do plano (o webhook filtra
+    reprocessamento pelo status do pagamento)."""
+    store = _store()
+    cur = await store.get_subscription_row(account_id)
+    old_plan = cur.get("plan_id") if cur else None
+    old_status = cur.get("status") if cur else None
+    fields = {"plan_id": plan_id, "status": "active", "trial_ends_at": None,
+              "last_payment_at": datetime.now(timezone.utc)}
+    row = await store.update_subscription(account_id, **fields)
+    if row is None:  # não havia assinatura
+        row = await store.upsert_subscription(account_id, plan_id, "active")
+    await store.log_subscription_change(
+        account_id, old_plan, plan_id, old_status, "active",
+        changed_by=changed_by, reason=reason or "pagamento confirmado")
+    return row
+
+
 async def get_subscription_stats() -> Dict[str, Any]:
     """Contagens por plano/status, trials ativos, expirando em 7d e taxa de conversão."""
     store = _store()

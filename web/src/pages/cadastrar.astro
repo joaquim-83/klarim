@@ -13,6 +13,7 @@ const url = params.get('url') || '';
 const redirect = params.get('redirect') || '/dashboard';
 const role = params.get('role') === 'technician' ? 'technician' : '';   // KL-44 P3
 const invite = params.get('invite') || '';
+const plan = ['pro', 'agency'].includes(params.get('plan')) ? params.get('plan') : '';   // KL-44 P6
 ---
 
 <Base
@@ -23,7 +24,7 @@ const invite = params.get('invite') || '';
   <Header />
   <main class="mx-auto max-w-md px-5 pt-28 pb-20 sm:pt-32">
     <ClaimContext url={url} />
-    <SignupForm client:load email={email} url={url} redirect={redirect} role={role} invite={invite} />
+    <SignupForm client:load email={email} url={url} redirect={redirect} role={role} invite={invite} plan={plan} />
   </main>
   <Footer />
 </Base>

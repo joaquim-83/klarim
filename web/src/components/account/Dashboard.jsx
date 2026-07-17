@@ -3,6 +3,7 @@ import { apiGet, apiPost, apiDelete } from '../../lib/api.js';
 import { field, card } from './ui.js';
 import { badgeFor } from '../../lib/badge.js';
 import TechnicianSection from './TechnicianSection.jsx';
+import PlanSection from './PlanSection.jsx';
 
 const SEMA = {
   verde: { dot: '🟢', ring: 'ring-green-500/50', text: 'text-green-400' },
@@ -62,6 +63,9 @@ export default function Dashboard({ user = {} }) {
   const [upgrade, setUpgrade] = useState(false);
   const [history, setHistory] = useState(null);
   const [toast, setToast] = useState('');   // KL-68: ?added / ?claimed pós-signup/login
+  // KL-44 P6: ?upgrade=pro (abre o modal) / ?upgraded=1 (pós-checkout PIX). Capturados 1x.
+  const [planUpgradeParam] = useState(() => new URLSearchParams(window.location.search).get('upgrade') || '');
+  const [upgradedFlag] = useState(() => new URLSearchParams(window.location.search).get('upgraded') === '1');
 
   // KL-68: toast de reivindicação pós-autenticação, depois limpa a URL.
   useEffect(() => {
@@ -72,7 +76,7 @@ export default function Dashboard({ user = {} }) {
     if (claimed) setToast(`✅ ${claimed} adicionado · ✓ Propriedade verificada automaticamente`);
     else if (added) setToast(`✅ ${added} adicionado ao monitoramento`);
     else if (blocked) setToast('✅ Conta criada! Adicione o domínio do seu site no painel para começar a monitorar.');
-    if (claimed || added || blocked) {
+    if (claimed || added || blocked || q.get('upgrade') || q.get('upgraded')) {
       window.history.replaceState({}, '', window.location.pathname);
     }
   }, []);
@@ -217,23 +221,15 @@ export default function Dashboard({ user = {} }) {
         </div>
       )}
 
-      <div className={card}>
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="text-sm text-slate-400">Plano</p>
-            <p className="mt-1 font-semibold text-white">
-              {user.plan === 'free' ? 'Gratuito' : user.plan} ({maxSites} site{maxSites > 1 ? 's' : ''})
-            </p>
-            {(user.role === 'technician' || user.role === 'both') && (
-              <p className="mt-1 text-sm text-brand-300">Perfil: 🔧 Profissional de TI</p>
-            )}
-            <p className="mt-2 text-sm text-slate-500">Upgrade para até 5 sites — em breve.</p>
-          </div>
-          <a href="/dashboard/conta" className="shrink-0 text-sm text-brand-400 hover:text-brand-300">
-            Gerenciar conta →
-          </a>
+      {/* KL-44 P6 — plano interativo (trial/upgrade/downgrade/pagamentos) */}
+      <PlanSection initialUpgrade={planUpgradeParam} showUpgradedToast={upgradedFlag} />
+
+      {(user.role === 'technician' || user.role === 'both') && (
+        <div className={card}>
+          <p className="text-sm text-brand-300">Perfil: 🔧 Profissional de TI</p>
+          <a href="/dashboard/conta" className="mt-1 inline-flex text-sm text-brand-400 hover:text-brand-300">Gerenciar conta →</a>
         </div>
-      </div>
+      )}
     </div>
   );
 }

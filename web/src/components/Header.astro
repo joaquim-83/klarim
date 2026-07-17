@@ -12,12 +12,14 @@ import Logo from './Logo.astro';
 
     <!-- Estado deslogado (padrão) -->
     <div data-auth="out" class="flex items-center gap-1">
+      <a href="/planos" class="rounded-lg px-3.5 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Planos</a>
       <a href="/entrar" class="rounded-lg px-3.5 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Entrar</a>
       <a href="/cadastrar" class="rounded-lg bg-brand-500 px-3.5 py-2 text-sm font-semibold text-slate-950 transition-colors hover:bg-brand-400">Cadastrar</a>
     </div>
 
     <!-- Estado logado (revelado pelo script) -->
     <div data-auth="in" class="hidden items-center gap-1">
+      <a href="/planos" class="rounded-lg px-3.5 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Planos</a>
       <a href="/dashboard" class="rounded-lg px-3.5 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Dashboard</a>
       <a href="/dashboard/conta" class="rounded-lg px-3.5 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Minha conta</a>
       <button type="button" data-logout class="rounded-lg px-3.5 py-2 text-sm font-medium text-slate-400 transition-colors hover:text-white">Sair</button>

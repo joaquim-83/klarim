@@ -82,6 +82,9 @@ EMAIL_TYPES = {
     "vigilia_score": "Vigília — score de segurança",
     "vigilia_email": "Vigília — proteção de e-mail",
     "vigilia_reputation": "Vigília — reputação",
+    "upgrade_confirmed": "Assinatura — pagamento confirmado (KL-44 P6)",
+    "trial_warning": "Assinatura — aviso de expiração de trial (KL-44 P6)",
+    "trial_expired": "Assinatura — trial expirado (KL-44 P6)",
     "vigilia_uptime": "Vigília — disponibilidade (KL-44 P4)",
     "vigilia_changes": "Vigília — integridade do site (KL-44 P4)",
     "vigilia_phishing": "Vigília — domínios suspeitos (KL-44 P4)",
@@ -740,6 +743,61 @@ class KlarimMailer:
             "html": html,
         }, email_type="ownership_verification", domain=domain, source="ownership",
             skip_blocklist=True)
+
+    # ----- KL-44 P6: ciclo de assinatura (transacional, plain text) -------- #
+
+    _PLAN_DISPLAY = {"pro": ("Pro", "R$ 19/mês"), "agency": ("Agency", "R$ 49/mês")}
+
+    async def send_upgrade_confirmed(self, to_email: str, plan: str) -> Dict[str, Any]:
+        """Confirmação de pagamento + plano ativo (transacional, o usuário pagou)."""
+        name, price = self._PLAN_DISPLAY.get(plan, (plan.capitalize(), ""))
+        text = "\n".join([
+            "Olá,", "",
+            f"Seu pagamento foi confirmado e o plano {name} ({price}) está ativo.",
+            "Aproveite o monitoramento avançado, o boletim e as vigílias do seu plano.", "",
+            "Acesse seu painel:", f"{SITE_BASE}/dashboard", "",
+            "Klarim · Segurança web para o Brasil", SITE_BASE])
+        return await self._send({
+            "from": self.from_address, "to": [to_email],
+            "subject": f"✅ Plano {name} ativo — pagamento confirmado", "text": text,
+        }, email_type="upgrade_confirmed", source="billing", skip_blocklist=True)
+
+    async def send_trial_warning(self, to_email: str, days: int,
+                                 ends_label: str = "") -> Dict[str, Any]:
+        """Aviso de expiração de trial (7 dias / 1 dia antes). Transacional."""
+        when = f" ({ends_label})" if ends_label else ""
+        if days <= 1:
+            subject = "Último dia do seu trial Klarim"
+            body = [f"Seu período de teste expira amanhã{when}.", "",
+                    "Faça upgrade agora para não perder o monitoramento avançado:",
+                    f"{SITE_BASE}/dashboard?upgrade=pro"]
+        else:
+            subject = f"Seu trial Klarim expira em {days} dias"
+            body = [f"Seu período de teste do plano Pro expira em {days} dias{when}.", "",
+                    "Após a expiração, sua conta será rebaixada para o plano Gratuito:",
+                    "  • Monitoramento de 1 site (em vez de 5)",
+                    "  • Boletim mensal (em vez de semanal)",
+                    "  • Sem vigílias avançadas", "",
+                    "Para continuar com o Pro:", f"{SITE_BASE}/dashboard?upgrade=pro"]
+        text = "\n".join(["Olá,", ""] + body + ["", "Klarim · Segurança web para o Brasil", SITE_BASE])
+        return await self._send({
+            "from": self.from_address, "to": [to_email], "subject": subject, "text": text,
+        }, email_type="trial_warning", source="billing", skip_blocklist=True)
+
+    async def send_trial_expired(self, to_email: str) -> Dict[str, Any]:
+        """Aviso de trial expirado (após o downgrade silencioso para Free). Transacional."""
+        text = "\n".join([
+            "Olá,", "",
+            "Seu período de teste do plano Pro expirou.", "",
+            "Sua conta foi rebaixada para o plano Gratuito. Seus dados foram preservados,",
+            "mas o monitoramento avançado foi desativado.", "",
+            "Você pode fazer upgrade a qualquer momento:",
+            f"{SITE_BASE}/dashboard?upgrade=pro", "",
+            "Klarim · Segurança web para o Brasil", SITE_BASE])
+        return await self._send({
+            "from": self.from_address, "to": [to_email],
+            "subject": "Seu trial expirou — conta rebaixada para Gratuito", "text": text,
+        }, email_type="trial_expired", source="billing", skip_blocklist=True)
 
     async def send_signup_verification_code(self, to_email: str, code: str) -> Dict[str, Any]:
         """Envia o código de 6 dígitos para verificar o e-mail no cadastro de conta

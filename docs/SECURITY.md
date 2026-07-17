@@ -124,6 +124,21 @@ Na dúvida, trate o alvo como site de terceiro que só autorizou olhar o que é 
   Reply-To `scan@klarim.net` e registrados no `email_log`. Endpoints novos: rate limit
   Redis+fallback (invite 10/h, shared-report 20/h, laudo 30/h).
 
+### Pagamento de assinatura (KL-44 P6)
+
+- **NUNCA armazena dado de cartão/PIX** — o Klarim só recebe o webhook de confirmação;
+  `subscription_payments` guarda apenas o `provider_charge_id` (id da cobrança AbacatePay).
+- **Webhook idempotente:** `_confirm_subscription_payment` só transiciona de `pending`
+  (`mark_subscription_payment`); receber o mesmo evento 2× não ativa/cobra 2×. Validação
+  em camadas: query-secret obrigatório + HMAC opcional (`ABACATEPAY_HMAC_STRICT`). Responde
+  sempre 200 (evita retries infinitos).
+- **Upgrade/downgrade** exigem **JWT de usuário**; upgrade rate-limited (10/h/IP, Redis +
+  fallback). `_PLAN_RANK` garante que upgrade só sobe e downgrade só desce (servidor-
+  autoritativo). **Downgrade preserva dados** (sites/scans/histórico) — só desativa features.
+- **Trial expira → downgrade silencioso p/ Free** (worker `trial`): nunca bloqueia nem
+  apaga dados; e-mails de aviso/expiração são **transacionais** (`seguranca@klarim.net`,
+  Reply-To `scan@klarim.net`, registrados no `email_log`).
+
 ### Posicionamento legal — indicadores de privacidade (KL-44 P5)
 
 - **Diagnóstico técnico, NÃO certificação.** Os 8 indicadores de privacidade

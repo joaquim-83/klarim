@@ -17,7 +17,7 @@ import tempfile
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-WORKERS: List[str] = ["discovery", "alert", "rescan", "scan", "vigilia", "bulletin"]
+WORKERS: List[str] = ["discovery", "alert", "rescan", "scan", "vigilia", "bulletin", "trial"]
 
 # Chaves de config (override do env) por worker.
 _CONFIG_KEYS = {
@@ -27,6 +27,7 @@ _CONFIG_KEYS = {
     "scan": ("max_per_hour",),
     "vigilia": ("cycle_hours", "max_per_cycle"),  # KL-44 P2
     "bulletin": ("hour_utc", "batch_size"),       # KL-44 P3
+    "trial": ("hour_utc",),                        # KL-44 P6
 }
 
 

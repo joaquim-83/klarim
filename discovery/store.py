@@ -458,6 +458,26 @@ CREATE TABLE IF NOT EXISTS subscription_history (
 );
 CREATE INDEX IF NOT EXISTS idx_subhist_account ON subscription_history(account_id);
 
+-- KL-44 P6 — pagamentos de assinatura (PIX via AbacatePay). Separado da tabela `payments`
+-- (compra de relatório, KL-27). NUNCA guarda dado de cartão/PIX — só o id da cobrança.
+CREATE TABLE IF NOT EXISTS subscription_payments (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    plan VARCHAR(20) NOT NULL,                 -- pro|agency
+    amount INTEGER NOT NULL,                    -- centavos
+    currency VARCHAR(3) DEFAULT 'BRL',
+    provider VARCHAR(20) DEFAULT 'abacatepay',
+    provider_charge_id VARCHAR(255) UNIQUE,     -- id da cobrança na AbacatePay
+    br_code TEXT,                               -- copia-e-cola PIX
+    br_code_base64 TEXT,                        -- QR (data URI)
+    status VARCHAR(20) DEFAULT 'pending',       -- pending|paid|expired|cancelled
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    paid_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_subpay_user ON subscription_payments(user_id);
+CREATE INDEX IF NOT EXISTS idx_subpay_charge ON subscription_payments(provider_charge_id);
+
 -- ===== KL-44 P2 (Vigílias core): monitoramento silencioso contínuo ===== --
 -- Uma vigília por (usuário, domínio, tipo). O worker roda os checks e cria alertas.
 CREATE TABLE IF NOT EXISTS vigilias (
@@ -3580,6 +3600,106 @@ class TargetStore:
                 "WHERE last_scan_score IS NOT NULL")
             count, avg = cur.fetchone()
             return {"count": int(count or 0), "avg_score": int(avg or 0)}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- KL-44 P6: pagamentos de assinatura + expiração de trial ----------- #
+
+    _SUBPAY_COLS = ("id", "user_id", "plan", "amount", "currency", "provider",
+                    "provider_charge_id", "br_code", "br_code_base64", "status",
+                    "created_at", "paid_at", "expires_at")
+
+    async def create_subscription_payment(self, user_id: int, plan: str, amount: int,
+                                          charge_id: str, br_code: Optional[str],
+                                          br_code_base64: Optional[str],
+                                          expires_at: Any = None) -> Dict[str, Any]:
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO subscription_payments (user_id, plan, amount, provider_charge_id, "
+                "  br_code, br_code_base64, expires_at) VALUES (%s, %s, %s, %s, %s, %s, %s) "
+                "RETURNING " + ", ".join(self._SUBPAY_COLS),
+                (user_id, plan, amount, charge_id, br_code, br_code_base64, expires_at))
+            return self._rows_to_dicts(cur)[0]
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_subscription_payment_by_charge(self, charge_id: str) -> Optional[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute("SELECT " + ", ".join(self._SUBPAY_COLS) +
+                        " FROM subscription_payments WHERE provider_charge_id = %s", (charge_id,))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def mark_subscription_payment(self, charge_id: str, status: str) -> Optional[Dict[str, Any]]:
+        """Marca o pagamento (idempotente): só transiciona de 'pending'. Retorna a linha
+        atualizada, ou None se já estava nesse estado (para o webhook não reprocessar)."""
+        def _fn(cur):
+            paid = ", paid_at = NOW()" if status == "paid" else ""
+            cur.execute(
+                f"UPDATE subscription_payments SET status = %s{paid} "
+                "WHERE provider_charge_id = %s AND status = 'pending' "
+                "RETURNING " + ", ".join(self._SUBPAY_COLS), (status, charge_id))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def list_user_subscription_payments(self, user_id: int, limit: int = 20
+                                              ) -> List[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute("SELECT " + ", ".join(self._SUBPAY_COLS) +
+                        " FROM subscription_payments WHERE user_id = %s "
+                        "ORDER BY created_at DESC LIMIT %s", (user_id, limit))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def subscription_payment_stats(self) -> Dict[str, Any]:
+        """Receita de assinaturas: total pago, por plano, por status, últimos pagos."""
+        def _fn(cur):
+            cur.execute("SELECT status, COUNT(*), COALESCE(SUM(amount), 0) "
+                        "FROM subscription_payments GROUP BY status")
+            by_status = {r[0]: {"count": int(r[1]), "amount": int(r[2])} for r in cur.fetchall()}
+            cur.execute("SELECT plan, COUNT(*), COALESCE(SUM(amount), 0) "
+                        "FROM subscription_payments WHERE status = 'paid' GROUP BY plan")
+            by_plan = {r[0]: {"count": int(r[1]), "amount": int(r[2])} for r in cur.fetchall()}
+            cur.execute("SELECT COALESCE(SUM(amount), 0), COUNT(*) "
+                        "FROM subscription_payments WHERE status = 'paid'")
+            total_amount, total_count = cur.fetchone()
+            cur.execute(
+                "SELECT sp.plan, sp.amount, sp.paid_at, u.email FROM subscription_payments sp "
+                "JOIN users u ON u.id = sp.user_id WHERE sp.status = 'paid' "
+                "ORDER BY sp.paid_at DESC LIMIT 10")
+            recent = self._rows_to_dicts(cur)
+            return {"total_paid_amount": int(total_amount or 0), "total_paid_count": int(total_count or 0),
+                    "by_status": by_status, "by_plan": by_plan, "recent": recent}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_expired_trials(self) -> List[Dict[str, Any]]:
+        """Assinaturas em trial com `trial_ends_at < NOW()` (para o downgrade proativo)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT s.account_id AS user_id, s.plan_id, s.trial_ends_at, u.email, u.name "
+                "FROM subscriptions s JOIN users u ON u.id = s.account_id "
+                "WHERE s.status = 'trial' AND s.trial_ends_at IS NOT NULL "
+                "  AND s.trial_ends_at < NOW() AND u.is_active = TRUE")
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_trials_expiring_in(self, days: int) -> List[Dict[str, Any]]:
+        """Trials que expiram em exatamente `days` dias (avisos 7d/1d)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT s.account_id AS user_id, s.plan_id, s.trial_ends_at, u.email, u.name "
+                "FROM subscriptions s JOIN users u ON u.id = s.account_id "
+                "WHERE s.status = 'trial' AND s.trial_ends_at IS NOT NULL "
+                "  AND s.trial_ends_at::date = (CURRENT_DATE + (%s || ' days')::interval)::date "
+                "  AND u.is_active = TRUE", (int(days),))
+            return self._rows_to_dicts(cur)
 
         return await asyncio.to_thread(self._run, _fn)
 

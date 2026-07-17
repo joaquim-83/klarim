@@ -1,0 +1,110 @@
+---
+export const prerender = false; // SSR (nav depende do estado de login via script client)
+
+import Base from '../layouts/Base.astro';
+import Header from '../components/Header.astro';
+import Footer from '../components/Footer.astro';
+
+// KL-44 P6 — página pública de preços. Deslogado → /cadastrar?plan=; logado → /dashboard?upgrade=
+// (o script no fim ajusta os hrefs conforme /api/account/me).
+const PLANS = [
+  {
+    id: 'free', name: 'Gratuito', price: 'R$ 0', period: '/mês', highlight: false,
+    cta: 'Criar conta', href: '/cadastrar',
+    features: ['1 site monitorado', 'Scan ilimitado', 'Boletim mensal',
+               'Indicadores de privacidade', 'Selo Klarim'],
+    missing: ['Vigílias', 'Uptime', 'Vincular técnico'],
+  },
+  {
+    id: 'pro', name: 'Pro', price: 'R$ 19', period: '/mês', highlight: true, badge: 'Mais popular',
+    cta: 'Começar trial de 30 dias', href: '/cadastrar?plan=pro',
+    features: ['5 sites monitorados', 'Scan ilimitado', 'Boletim semanal',
+               '5 vigílias core (SSL, domínio, score, e-mail, reputação)', 'Uptime a cada 30 min',
+               'Selo Klarim', 'Vincular técnico', 'Laudo compartilhável'],
+    missing: ['Vigília de mudanças', 'Detecção de phishing'],
+  },
+  {
+    id: 'agency', name: 'Agency', price: 'R$ 49', period: '/mês', highlight: false,
+    cta: 'Começar trial de 30 dias', href: '/cadastrar?plan=agency',
+    features: ['15 sites monitorados', 'Scan ilimitado', 'Boletim diário',
+               '8 vigílias (todas)', 'Uptime a cada 5 min', 'Selo Klarim', 'Vincular técnico',
+               'Vigília de mudanças', 'Detecção de phishing (typosquat)'],
+    missing: [],
+  },
+];
+
+const FAQ = [
+  { q: 'O que acontece após o trial de 30 dias?',
+    a: 'Sua conta é rebaixada automaticamente para o plano Gratuito — sem cobrança e sem bloqueio. Seus dados (sites, scans, histórico) são preservados; só o monitoramento avançado é desativado. Avisamos por e-mail 7 dias e 1 dia antes.' },
+  { q: 'Como funciona o pagamento?',
+    a: 'Pagamento por PIX, processado pela AbacatePay. O Klarim nunca armazena dados de cartão ou PIX — recebe apenas a confirmação do pagamento. A ativação é imediata após a confirmação.' },
+  { q: 'Posso cancelar a qualquer momento?',
+    a: 'Sim. Você pode fazer downgrade para Gratuito quando quiser, direto no painel. Seus sites e dados continuam preservados.' },
+];
+
+const card = 'rounded-2xl border p-6 flex flex-col';
+---
+
+<Base title="Planos e preços — Klarim" description="Monitoramento de segurança web para PMEs brasileiras. Planos Gratuito, Pro (R$19/mês) e Agency (R$49/mês) com trial de 30 dias." path="/planos">
+  <Header />
+  <main class="mx-auto max-w-6xl px-5 pt-28 pb-20 sm:pt-32">
+    <div class="text-center">
+      <h1 class="text-3xl font-bold text-white sm:text-4xl">Escolha seu plano</h1>
+      <p class="mt-3 text-slate-400">Verifique qualquer site à vontade. Monitore os que importam. Trial de 30 dias sem cartão.</p>
+    </div>
+
+    <div class="mt-10 grid gap-6 lg:grid-cols-3">
+      {PLANS.map((p) => (
+        <div class={`${card} ${p.highlight ? 'border-brand-500 bg-brand-500/5 ring-1 ring-brand-500/40' : 'border-slate-800 bg-slate-900/60'}`}>
+          {p.badge && <span class="mb-2 inline-flex w-fit rounded-full bg-brand-500 px-2.5 py-0.5 text-xs font-bold text-slate-950">{p.badge}</span>}
+          <h2 class="text-xl font-bold text-white">{p.name}</h2>
+          <p class="mt-1"><span class="text-3xl font-extrabold text-white">{p.price}</span><span class="text-sm text-slate-400">{p.period}</span></p>
+          <ul class="mt-5 flex-1 space-y-2 text-sm">
+            {p.features.map((f) => (
+              <li class="flex items-start gap-2 text-slate-200"><span class="text-brand-400">✓</span>{f}</li>
+            ))}
+            {p.missing.map((f) => (
+              <li class="flex items-start gap-2 text-slate-600"><span>✕</span>{f}</li>
+            ))}
+          </ul>
+          <a href={p.href} data-plan={p.id}
+            class={`mt-6 rounded-xl px-5 py-3 text-center text-sm font-semibold ${p.highlight ? 'bg-brand-500 text-slate-950 hover:bg-brand-400' : 'border border-slate-700 text-slate-200 hover:bg-slate-800'}`}>
+            {p.cta}
+          </a>
+        </div>
+      ))}
+    </div>
+
+    <section class="mx-auto mt-16 max-w-3xl">
+      <h2 class="text-2xl font-bold text-white">Perguntas frequentes</h2>
+      <dl class="mt-6 space-y-5">
+        {FAQ.map((item) => (
+          <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
+            <dt class="font-semibold text-white">{item.q}</dt>
+            <dd class="mt-2 text-sm leading-relaxed text-slate-400">{item.a}</dd>
+          </div>
+        ))}
+      </dl>
+    </section>
+
+    <p class="mx-auto mt-10 max-w-3xl text-center text-xs leading-relaxed text-slate-600">
+      O Klarim avalia a segurança do <strong>site</strong> por varredura passiva. Os indicadores de
+      privacidade são um diagnóstico técnico e não constituem assessoria jurídica nem certificação LGPD.
+    </p>
+  </main>
+  <Footer />
+</Base>
+
+<script>
+  // Se o usuário já está logado, os botões Pro/Agency vão para o upgrade no painel.
+  (async () => {
+    try {
+      const r = await fetch('/api/account/me', { credentials: 'include' });
+      if (!r.ok) return;
+      document.querySelectorAll('a[data-plan]').forEach((a) => {
+        const plan = a.getAttribute('data-plan');
+        a.setAttribute('href', plan === 'free' ? '/dashboard' : `/dashboard?upgrade=${plan}`);
+      });
+    } catch { /* deslogado → mantém /cadastrar */ }
+  })();
+</script>

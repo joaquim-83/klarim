@@ -96,6 +96,7 @@ export const admin = {
   rescansStats: () => get('/rescans/stats'),
   scansStats: () => get('/scans/stats'),
   paymentsStats: () => get('/payments/stats'),
+  subscriptionPaymentStats: () => get('/payments/subscription-stats'),  // KL-44 P6
   scansDaily: (days = 30) => get(`/scans/daily?days=${days}`),
   alertsDaily: (days = 30) => get(`/alerts/daily?days=${days}`),
 

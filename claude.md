@@ -158,6 +158,10 @@ Valide com `nginx -t` (há job de CI); config inválida **derruba o site**.
 - **Bulletin** (KL-44 P3) — ciclo 1 h, envia às `BULLETIN_HOUR_UTC` (13h) o boletim por
   frequência do plano (free=mensal · pro=semanal · agency=diário útil); plain text via
   `klarimscan.com`, + laudo técnico ao técnico vinculado via `seguranca@klarim.net`.
+- **Trial** (KL-44 P6) — ciclo 1 h, **age 1x/dia** às `TRIAL_HOUR_UTC` (6h): avisa 7d/1d
+  antes e, no vencimento, faz **downgrade silencioso para Free** (desativa vigílias, dados
+  preservados) + e-mail. Flag `TRIAL_EXPIRATION_ENABLED`. (Também há expiração *lazy* na
+  leitura de `plans.get_subscription`.)
 - **Scan worker** — consome a fila Redis, `WORKER_MAX_SCANS_PER_HOUR` (subir p/ 100 na
   VM), enriquece perfil + IA inline (~US$0,001/site).
 - Heartbeat no Redis (TTL 600s) + watchdog `os._exit(1)` + `restart:unless-stopped`.
@@ -168,7 +172,10 @@ detalhe; PDF sempre gratuito. Assinatura define o **monitoramento**:
 - **Free** — 1 site, monitoramento mensal.
 - **Pro** — R$ 19/mês (R$ 99/ano), 5 sites, semanal, vigílias.
 - **Agency** — R$ 49/mês, 15 sites, diário, vigílias avançadas.
-- **Reverse trial 30 dias** no signup (Pro automático).
+- **Reverse trial 30 dias** no signup (Pro automático; `?plan=agency` no signup começa
+  trial Agency). **Upgrade self-service** via PIX (KL-44 P6): `POST /account/upgrade` →
+  cobrança AbacatePay transparente (QR), webhook idempotente ativa o plano; `/account/
+  downgrade` imediato. **Trial expira → downgrade silencioso p/ Free** (worker `trial`).
 
 R$ 19 avulso (KL-27) só existe se o site **não** passou nos 48 e quer re-verificar.
 
@@ -306,7 +313,14 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   separado + disclaimer, NUNCA "conformidade"/"certificado"); selo "Monitorado por Klarim"
   (`GET /seal/{domain}` + `web/public/seal/widget.js` sem tracking, só dono verificado);
   benchmark setorial rico (`/benchmark/{sector}`|`/all` com mediana + distribuição anônima,
-  cache 24h); `/admin/privacy-stats` + MCP `get_privacy_stats`
+  cache 24h); `/admin/privacy-stats` + MCP `get_privacy_stats`.
+  **P6 ✅** (fecha o KL-44): checkout PIX self-service (`/account/upgrade` transparente +
+  webhook idempotente que ativa o plano; `subscription_payments` — separada de `payments`),
+  `/account/downgrade`, worker `trial` (avisos 7d/1d + downgrade silencioso p/ Free às
+  `TRIAL_HOUR_UTC`), página pública `/planos`, UX de plano no dashboard (`PlanSection`:
+  trial/upgrade QR/downgrade/histórico + `?upgrade=`/`?upgraded=1`), signup `?plan=`,
+  `/payments/subscription-stats` + MCP `get_subscription_payment_stats`. **NUNCA guarda
+  dado de cartão/PIX** — só o id da cobrança
 - **KL-51** — Plataforma Astro (fases 1–5 ✅)
 - **KL-61** — Gestão de Leads / PQL ✅ · **KL-62** — email_log unificado ✅
 - **KL-63** — MCP OAuth 2.1 ✅ · **KL-65** — SEO/Schema.org ✅ · **KL-66** — contato nos perfis ✅

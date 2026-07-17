@@ -48,6 +48,10 @@ Um middleware (`_admin_auth_mw`) protege os prefixos abaixo (`_PROTECTED_PREFIXE
 | POST | `/account/change-password` | troca senha (confere a atual; 5/e-mail/10min) |
 | GET/PUT/DELETE | `/account/me` | perfil / editar nome / excluir conta (por senha) |
 | GET | `/account/subscription` | plano atual |
+| POST | `/account/upgrade` | KL-44 P6: cria cobrança PIX (free→pro/agency, pro→agency) → `{charge_id, br_code, br_code_base64}`; 10/h/IP |
+| GET | `/account/upgrade/status?charge_id=` | KL-44 P6: polling do checkout (revalida na AbacatePay + ativa quando pago) |
+| POST | `/account/downgrade` | KL-44 P6: downgrade self-service (free/pro); preserva dados, desativa vigílias |
+| GET | `/account/payments` | KL-44 P6: histórico de pagamentos de assinatura |
 | GET/POST | `/account/sites` | lista / adiciona site ao monitoramento (403 se estourar `max_sites`) |
 | GET/DELETE | `/account/sites/{target_id}` | detalhe / **remove self-service** (KL-71: revoga posse + desativa vigílias, sem notificação) |
 | POST | `/account/sites/{target_id}/claim` | reivindica posse (KL-71: e-mail == `contact_email` **OU** domínio do e-mail == domínio do site; first-come) |
@@ -95,7 +99,7 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 |---|---|---|
 | POST | `/payment/create` | cria cobrança PIX (R$ 19) → QR |
 | GET | `/payment/status?charge_id=` | polling do status + `email_status` |
-| POST | `/webhooks/abacatepay` | webhook (query-secret + HMAC) |
+| POST | `/webhooks/abacatepay` | webhook (query-secret + HMAC): relatório (KL-27) **e** assinatura (KL-44 P6, idempotente → ativa plano; `.expired` → marca expirado) |
 
 ## Recuperação de relatórios
 
@@ -148,7 +152,9 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 | GET | `/scans/{id}/report/{executive\|technical}` | PDF sem gating |
 | GET | `/alerts` · `/alerts/stats` · `/alerts/daily` | alertas |
 | GET | `/rescans` · `/rescans/stats` | rescans |
-| GET | `/payments/list` · `/payments/stats` | pagamentos (com `target_id`) |
+| GET | `/payments/list` · `/payments/stats` | pagamentos de relatório (com `target_id`) |
+| GET | `/payments/subscription-stats` | KL-44 P6: receita de assinaturas (total/por plano/status/recentes) |
+| GET | `/admin/config` | KL-44 P6: `TRIAL_EXPIRATION_ENABLED` (bool), `TRIAL_HOUR_UTC` |
 | GET | `/leads` · `/leads/{id}` · `/leads/stats` · `/leads/funnel` | leads (PQL) |
 | PATCH | `/leads/{id}` | edita tags/notes/opted_out (só isso) |
 | POST | `/leads/recalculate` | recalcula scores |

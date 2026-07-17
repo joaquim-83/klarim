@@ -101,6 +101,7 @@ RescanWorker, VigiliaWorker)`. Cada um relê config por ciclo (`get_setting`) e 
 | Rescan | `rescan_worker.py` | 24 h | reescaneia alvos ≥30 dias + e-mail de evolução; monitora sites 100 |
 | Vigília | `vigilia_worker.py` | 6 h + loop uptime 5 min | 8 vigílias: core (SSL, domínio, score, e-mail, reputação) + P4 (`changes`, `phishing`) no ciclo 6 h; **`uptime`** num loop próprio de 5 min (reagenda pelo intervalo do plano: Pro 30 / Agency 5 min). Enforcement de plano; **começa pausada** |
 | Bulletin | `bulletin_worker.py` | 1 h | KL-44 P3: boletim de segurança por frequência do plano (free=mensal/pro=semanal/agency=diário), às `BULLETIN_HOUR_UTC`; laudo técnico ao técnico vinculado |
+| Trial | `trial_worker.py` | 1 h (age 1x/dia às `TRIAL_HOUR_UTC`) | KL-44 P6: avisos 7d/1d + downgrade silencioso de trials expirados p/ Free (desativa vigílias, preserva dados). Flag `TRIAL_EXPIRATION_ENABLED` |
 | Scan | `scanner/main.py --worker` | contínuo | `blpop` da fila → escaneia → cacheia → salva + enriquece inline |
 
 **Resiliência:** heartbeat no Redis (`worker:<name>:status`, TTL 600s) → painel mostra
@@ -118,7 +119,14 @@ Schema criado idempotente no `ensure_schema` (sem Alembic). Principais tabelas:
   unificada, KL-62), `email_blocklist`, `recovery_tokens`, `scan_verifications`,
   `scan_credits`, `site_events` (tracking), `scan_leads` (PQL).
 - **Contas:** `users`, `user_sites`, `password_resets`, `vigilias`, `vigilia_alerts`,
-  `typosquat_alerts` (KL-44 P4: domínios suspeitos dos CT logs), planos/assinaturas (KL-44).
+  `typosquat_alerts` (KL-44 P4), `plans`/`subscriptions`/`subscription_history` (KL-44 P1),
+  `subscription_payments` (KL-44 P6: PIX de upgrade, **separada** de `payments`/relatório).
+- **Pagamento de assinatura (KL-44 P6):** `POST /account/upgrade` → cobrança PIX
+  transparente (AbacatePay, reusa `payments/abacatepay.py`) → QR no dashboard
+  (`PlanSection`). O `POST /webhooks/abacatepay` (idempotente) ativa o plano
+  (`_confirm_subscription_payment` → `plans.activate_paid` + `_sync_user_vigilias`); o
+  poller `/account/upgrade/status` revalida (o redirect pode chegar antes do webhook).
+  **NUNCA guarda dado de cartão/PIX** — só o `provider_charge_id`.
 - **Privacidade (KL-44 P5):** sem tabela nova — os 8 indicadores vivem no
   `scans.checks_json->'privacy'` (`scanner/privacy_checks.py`, um GET próprio, `privacy_score`
   0–8 separado do de segurança). Selo público `GET /seal/{domain}` (cache Redis 1h) +

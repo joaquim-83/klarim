@@ -332,6 +332,8 @@ _admin_action_attempts: dict = {}  # KL-69: ações admin de gestão de usuário
 _technician_attempts: dict = {}    # KL-44 P3: convite/laudo de técnico
 _laudo_attempts: dict = {}         # KL-44 P3: acesso ao laudo público
 _seal_attempts: dict = {}          # KL-44 P5: selo "Monitorado por Klarim"
+_upgrade_attempts: dict = {}       # KL-44 P6: checkout de upgrade de plano
+_sub_webhook_attempts: dict = {}   # KL-44 P6: webhook de pagamento de assinatura
 
 
 def _mask_email(email: str) -> str:
@@ -415,6 +417,7 @@ class SignupBody(BaseModel):
     url: Optional[str] = None   # site recém-escaneado, para vincular no signup
     role: Optional[str] = None  # KL-44 P3: 'technician' cria perfil de profissional de TI
     invite: Optional[str] = None  # KL-44 P3: código de convite de técnico (auto-vincula)
+    plan: Optional[str] = None  # KL-44 P6: 'pro'|'agency' → trial de 30 dias do plano
 
 
 class AccountLoginBody(BaseModel):
@@ -569,7 +572,8 @@ async def _process_claim(store, user: dict, email: str, url: Optional[str]) -> d
 
 async def _create_account_record(store, email: str, password_hash: str,
                                  name: Optional[str], url: Optional[str],
-                                 role: str = "owner", invite: Optional[str] = None) -> tuple:
+                                 role: str = "owner", invite: Optional[str] = None,
+                                 plan: Optional[str] = None) -> tuple:
     """Cria a conta + reivindica o site (KL-68) + histórico + Pro trial + lead + vínculo de
     técnico (KL-44 P3). Retorna ``(user, claim_info)`` — `user` é None se o e-mail já existe.
     Compartilhado pelo signup (e-mail já verificado) e pelo /account/verify."""
@@ -601,7 +605,9 @@ async def _create_account_record(store, email: str, password_hash: str,
         print(f"[account] vínculo de histórico falhou {email}: {exc!r}", flush=True)
     await store.touch_user_login(user["id"])
     _spawn(_safe_lead(store.set_lead_account(email, user["id"])))          # KL-61
-    _spawn(_safe_lead(plans.create_subscription(user["id"], "pro", is_trial=True)))  # KL-44
+    # KL-44 P6: trial de 30 dias do plano escolhido (pro/agency); default pro.
+    trial_plan = plan if plan in ("pro", "agency") else "pro"
+    _spawn(_safe_lead(plans.create_subscription(user["id"], trial_plan, is_trial=True)))  # KL-44
     return user, claim
 
 
@@ -641,7 +647,7 @@ async def account_signup(body: SignupBody, request: Request) -> JSONResponse:
     if already_verified:
         user, claim = await _create_account_record(
             store, email, pw_hash, body.name or None, body.url,
-            role=(body.role or "owner"), invite=body.invite)
+            role=(body.role or "owner"), invite=body.invite, plan=body.plan)
         if user is None:
             raise HTTPException(status_code=409, detail="Já existe uma conta com este e-mail.")
         return _account_session_response(user, claim)
@@ -652,7 +658,8 @@ async def account_signup(body: SignupBody, request: Request) -> JSONResponse:
     await _store_pending_signup(email, {
         "code": code, "password_hash": pw_hash, "name": body.name or None,
         "url": body.url or None, "attempts": 0,
-        "role": body.role or "owner", "invite": body.invite or None})
+        "role": body.role or "owner", "invite": body.invite or None,
+        "plan": body.plan or None})
     try:
         await _mailer().send_signup_verification_code(email, code)
     except Exception as exc:  # noqa: BLE001
@@ -693,7 +700,7 @@ async def account_verify(body: VerifySignupBody, request: Request) -> JSONRespon
         raise HTTPException(status_code=409, detail="Já existe uma conta com este e-mail.")
     user, claim = await _create_account_record(
         store, email, pending["password_hash"], pending.get("name"), pending.get("url"),
-        role=pending.get("role") or "owner", invite=pending.get("invite"))
+        role=pending.get("role") or "owner", invite=pending.get("invite"), plan=pending.get("plan"))
     await _del_pending_signup(email)
     if user is None:
         raise HTTPException(status_code=409, detail="Já existe uma conta com este e-mail.")
@@ -2779,6 +2786,16 @@ async def webhook_abacatepay(request: Request, webhookSecret: str = Query(defaul
         charge = await get_store().get(charge_id)
         if charge:
             await _maybe_send_report_email(charge)
+        # KL-44 P6: se o charge for um pagamento de ASSINATURA, ativa o plano (idempotente).
+        try:
+            await _confirm_subscription_payment(charge_id)
+        except Exception as exc:  # noqa: BLE001 - nunca falha o webhook (evita retries infinitos)
+            print(f"[webhook] ativação de assinatura falhou {charge_id}: {exc!r}", flush=True)
+    elif charge_id and event.endswith(".expired"):
+        try:
+            await get_target_store().mark_subscription_payment(charge_id, "expired")
+        except Exception:  # noqa: BLE001
+            pass
 
     return {"received": True, "charge_id": charge_id, "event": event}
 
@@ -3829,6 +3846,12 @@ async def api_payments_stats() -> dict:
     return await get_store().payment_stats()
 
 
+@app.get("/payments/subscription-stats")
+async def api_subscription_payment_stats() -> dict:
+    """KL-44 P6 — receita de assinaturas (PIX): total pago, por plano, por status, recentes."""
+    return await get_target_store().subscription_payment_stats()
+
+
 @app.get("/discovery/status")
 async def api_discovery_status() -> dict:
     """Estado do Discovery Worker (Certstream) — publicado no Redis pelo worker."""
@@ -4314,6 +4337,11 @@ _CONFIG_PARAMS: Dict[str, Dict[str, Any]] = {
                          "unit": "", "description": "Liga/desliga o envio de boletins de segurança"},
     "BULLETIN_HOUR_UTC": {"label": "Hora do boletim (UTC)", "default": "13", "min": 0, "max": 23, "unit": "h",
                           "description": "Hora do dia (UTC) em que os boletins são enviados"},
+    # KL-44 P6 — expiração de trial
+    "TRIAL_EXPIRATION_ENABLED": {"label": "Expiração de trial habilitada", "default": "true", "type": "bool",
+                                 "unit": "", "description": "Liga/desliga o downgrade automático de trials expirados"},
+    "TRIAL_HOUR_UTC": {"label": "Hora da expiração de trial (UTC)", "default": "6", "min": 0, "max": 23, "unit": "h",
+                       "description": "Hora do dia (UTC) em que os trials expirados são rebaixados"},
 }
 
 
@@ -5338,6 +5366,127 @@ async def account_subscription(request: Request) -> dict:
     """Assinatura da conta logada (dashboard do usuário — usado no P6)."""
     user = await auth_users.require_user(request)
     return await plans.get_subscription(user["id"])
+
+
+# --------------------------------------------------------------------------- #
+# KL-44 P6 — checkout PIX self-service (upgrade), downgrade e histórico. Reusa o
+# AbacatePay transparente (PIX/QR, sem redirect); tabela `subscription_payments`
+# (separada da compra de relatório). NUNCA guarda dado de cartão/PIX.
+# --------------------------------------------------------------------------- #
+
+_PLAN_PRICES = {"pro": 1900, "agency": 4900}   # centavos
+_PLAN_RANK = {"free": 0, "pro": 1, "agency": 2}
+
+
+class UpgradeBody(BaseModel):
+    plan: str
+
+
+class DowngradeBody(BaseModel):
+    plan: str
+
+
+async def _confirm_subscription_payment(charge_id: str) -> bool:
+    """Idempotente: marca o pagamento como pago e ativa o plano UMA vez. Usado pelo
+    webhook e pelo poller de status. True se ativou agora, False se já estava processado."""
+    store = get_target_store()
+    row = await store.mark_subscription_payment(charge_id, "paid")  # só transiciona de pending
+    if not row:
+        return False
+    try:
+        await plans.activate_paid(row["user_id"], row["plan"])
+        await _sync_user_vigilias(row["user_id"])            # cria as vigílias do novo plano
+        user = await store.get_user_by_id(row["user_id"])
+        if user and _email_enabled():
+            _spawn(_mailer().send_upgrade_confirmed(user["email"], row["plan"]))
+        print(f"[upgrade] plano {row['plan']} ativado p/ user={row['user_id']}", flush=True)
+    except Exception as exc:  # noqa: BLE001 - pagamento já registrado; ativação é best-effort
+        print(f"[upgrade] ativação falhou charge={charge_id}: {exc!r}", flush=True)
+    return True
+
+
+@app.post("/account/upgrade")
+async def account_upgrade(body: UpgradeBody, request: Request) -> dict:
+    """Cria uma cobrança PIX para subir de plano (free→pro/agency, pro→agency). Retorna o
+    QR/copia-e-cola PIX (transparente, sem redirect). Rate limit 10/h/IP."""
+    user = await auth_users.require_user(request)
+    allowed, retry = await _redis_allow("upgrade", _client_ip(request), 10, 3600, _upgrade_attempts)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde um pouco.",
+                            headers={"Retry-After": str(retry)})
+    plan = (body.plan or "").lower().strip()
+    if plan not in _PLAN_PRICES:
+        raise HTTPException(status_code=400, detail="Plano inválido para upgrade.")
+    sub = await plans.get_subscription(user["id"])
+    current = sub.get("plan_id") or "free"
+    if _PLAN_RANK.get(plan, 0) <= _PLAN_RANK.get(current, 0):
+        raise HTTPException(status_code=400,
+                            detail=f"Você já está no plano {current} ou superior.")
+    if not _payments_enabled():
+        raise HTTPException(status_code=503, detail="Pagamentos não configurados no momento.")
+    amount = _PLAN_PRICES[plan]
+    client = AbacatePayClient(_api_key())
+    try:
+        data = await client.create_pix_charge(amount, f"Klarim {plan.capitalize()} — assinatura mensal")
+    except AbacatePayError as exc:
+        raise HTTPException(status_code=502, detail=f"Falha ao criar cobrança: {exc}") from exc
+    charge_id = data.get("id")
+    if not charge_id:
+        raise HTTPException(status_code=502, detail="AbacatePay não retornou o id da cobrança.")
+    await get_target_store().create_subscription_payment(
+        user["id"], plan, amount, charge_id, data.get("brCode"), data.get("brCodeBase64"),
+        expires_at=data.get("expiresAt"))
+    return {"charge_id": charge_id, "plan": plan, "amount": amount,
+            "br_code": data.get("brCode"), "br_code_base64": data.get("brCodeBase64"),
+            "expires_at": data.get("expiresAt")}
+
+
+@app.get("/account/upgrade/status")
+async def account_upgrade_status(charge_id: str, request: Request) -> dict:
+    """Polling do checkout (o redirect pode chegar antes do webhook). Revalida na
+    AbacatePay se ainda pendente e ativa o plano quando confirmado."""
+    user = await auth_users.require_user(request)
+    store = get_target_store()
+    pay = await store.get_subscription_payment_by_charge(charge_id)
+    if not pay or pay["user_id"] != user["id"]:
+        raise HTTPException(status_code=404, detail="Pagamento não encontrado.")
+    if pay["status"] == "pending" and _payments_enabled():
+        try:
+            data = await AbacatePayClient(_api_key()).check_payment(charge_id)
+            if (data.get("status") or "").upper() in ("PAID", "COMPLETED"):
+                await _confirm_subscription_payment(charge_id)
+                pay = await store.get_subscription_payment_by_charge(charge_id)
+        except Exception as exc:  # noqa: BLE001 - polling é best-effort (o webhook confirma)
+            print(f"[upgrade] revalidação falhou charge={charge_id}: {exc!r}", flush=True)
+    return {"status": pay["status"], "plan": pay["plan"], "paid": pay["status"] == "paid"}
+
+
+@app.post("/account/downgrade")
+async def account_downgrade(body: DowngradeBody, request: Request) -> dict:
+    """Downgrade self-service (imediato, sem prorata). Preserva sites/scans; só desativa as
+    vigílias que o novo plano não inclui (o enforcement de limite passa a valer)."""
+    user = await auth_users.require_user(request)
+    plan = (body.plan or "").lower().strip()
+    if plan not in ("free", "pro"):
+        raise HTTPException(status_code=400, detail="Plano inválido para downgrade.")
+    sub = await plans.get_subscription(user["id"])
+    current = sub.get("plan_id") or "free"
+    if _PLAN_RANK.get(plan, 0) >= _PLAN_RANK.get(current, 0):
+        raise HTTPException(status_code=400, detail="O plano solicitado não é inferior ao atual.")
+    await plans.change_plan(user["id"], plan, changed_by="user", reason="downgrade self-service")
+    await _sync_user_vigilias(user["id"])
+    return {"downgraded": True, "plan": plan}
+
+
+@app.get("/account/payments")
+async def account_payments(request: Request) -> dict:
+    """Histórico de pagamentos de assinatura do usuário logado (dashboard)."""
+    user = await auth_users.require_user(request)
+    rows = await get_target_store().list_user_subscription_payments(user["id"], limit=20)
+    return {"payments": [{"plan": r["plan"], "amount": r["amount"], "status": r["status"],
+                          "created_at": r["created_at"].isoformat() if hasattr(r.get("created_at"), "isoformat") else None,
+                          "paid_at": r["paid_at"].isoformat() if hasattr(r.get("paid_at"), "isoformat") else None}
+                         for r in rows]}
 
 
 # --------------------------------------------------------------------------- #

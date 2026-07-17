@@ -35,6 +35,8 @@ READ_TOOLS = [
     "get_email_log",
     # KL-44: planos & assinaturas
     "get_subscription_stats", "list_subscribers",
+    # KL-44 P6: pagamentos de assinatura
+    "get_subscription_payment_stats",
     # KL-44 P2: vigílias
     "get_vigilia_stats", "list_vigilia_alerts",
     # KL-44 P4: typosquat/phishing

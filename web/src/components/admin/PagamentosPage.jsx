@@ -13,8 +13,8 @@ export default function PagamentosPage() {
   const [status, setStatus] = useState('')
   const [page, setPage] = useState(0)
 
-  const meta = useAsync(() => Promise.all([admin.paymentsStats(), admin.alertsStats()])
-    .then(([pay, alerts]) => ({ pay, alerts })), [])
+  const meta = useAsync(() => Promise.all([admin.paymentsStats(), admin.alertsStats(), admin.subscriptionPaymentStats()])
+    .then(([pay, alerts, subs]) => ({ pay, alerts, subs })), [])
   const { data, loading, error } = useAsync(
     () => admin.payments({ status, limit: PAGE_SIZE, offset: page * PAGE_SIZE }), [status, page],
   )
@@ -35,6 +35,28 @@ export default function PagamentosPage() {
           <StatCard label="Total cobranças" value={meta.data?.pay?.total ?? 0} />
           <StatCard label="Conversão (alerta→pago)" value={conversion} accent="#FF6B35" />
         </div>
+
+        {/* KL-44 P6 — receita de ASSINATURAS (PIX) */}
+        <Card>
+          <p className="mb-3 text-sm font-semibold">Assinaturas (KL-44 P6)</p>
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <StatCard label="Receita assinaturas" value={`R$ ${(((meta.data?.subs?.total_paid_amount) || 0) / 100).toFixed(2).replace('.', ',')}`} accent="#00D26A" />
+            <StatCard label="Assinaturas pagas" value={meta.data?.subs?.total_paid_count ?? 0} accent="#00D26A" />
+            <StatCard label="Pro pagos" value={meta.data?.subs?.by_plan?.pro?.count ?? 0} />
+            <StatCard label="Agency pagos" value={meta.data?.subs?.by_plan?.agency?.count ?? 0} accent="#FF6B35" />
+          </div>
+          {(meta.data?.subs?.recent || []).length > 0 && (
+            <ul className="mt-3 space-y-1 text-sm text-klarim-muted">
+              {meta.data.subs.recent.map((r, i) => (
+                <li key={i} className="flex flex-wrap gap-x-4">
+                  <span>{formatDate(r.paid_at)}</span>
+                  <span className="text-klarim-text">{r.plan} · R$ {((r.amount || 0) / 100).toFixed(2).replace('.', ',')}</span>
+                  <span>{r.email}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+        </Card>
 
         <select value={status} onChange={(e) => { setStatus(e.target.value); setPage(0) }}
           className="rounded-lg border border-klarim-border bg-klarim-surface px-3 py-1.5 text-sm outline-none focus:border-klarim-alert">
