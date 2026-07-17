@@ -7,6 +7,12 @@ import { card } from './ui.js';
 const PLAN_LABEL = { free: 'Gratuito', pro: 'Pro', agency: 'Agency' };
 const PLAN_PRICE = { pro: 'R$ 19/mês', agency: 'R$ 49/mês' };
 const RANK = { free: 0, pro: 1, agency: 2 };
+// KL-44 P6: o que cada plano inclui (para o modal de comparação antes do PIX).
+const PLAN_FEATURES = {
+  free: ['1 site monitorado', 'Boletim mensal', 'Sem vigílias'],
+  pro: ['5 sites monitorados', 'Boletim semanal', 'Vigílias core + uptime (30 min)', 'Selo Klarim', 'Vincular técnico'],
+  agency: ['15 sites monitorados', 'Boletim diário', 'Todas as vigílias (uptime 5 min, mudanças, phishing)', 'Selo Klarim', 'Vincular técnico'],
+};
 
 function fmtDate(s) {
   if (!s) return '—';
@@ -14,25 +20,20 @@ function fmtDate(s) {
 }
 function fmtAmount(cents) { return `R$ ${(cents / 100).toFixed(2).replace('.', ',')}`; }
 
-function UpgradeModal({ plan, onClose, onActive }) {
+function UpgradeModal({ plan, currentPlan = 'free', onClose, onActive }) {
   const [charge, setCharge] = useState(null);   // {charge_id, br_code, br_code_base64}
   const [err, setErr] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState('creating'); // creating | pending | paid | error
+  // KL-44 P6: começa em 'compare' (mostra o que o plano inclui) → só gera o QR ao confirmar.
+  const [status, setStatus] = useState('compare'); // compare | creating | pending | paid | error
   const [copied, setCopied] = useState(false);
 
-  useEffect(() => {
-    let alive = true;
-    (async () => {
-      setBusy(true);
-      const { ok, data, error } = await apiPost('/account/upgrade', { plan });
-      if (!alive) return;
-      setBusy(false);
-      if (!ok) { setErr(error || 'Não foi possível iniciar o pagamento.'); setStatus('error'); return; }
-      setCharge(data); setStatus('pending');
-    })();
-    return () => { alive = false; };
-  }, [plan]);
+  // Gera a cobrança PIX só APÓS o usuário confirmar (não na montagem).
+  async function confirmUpgrade() {
+    setStatus('creating');
+    const { ok, data, error } = await apiPost('/account/upgrade', { plan });
+    if (!ok) { setErr(error || 'Não foi possível iniciar o pagamento.'); setStatus('error'); return; }
+    setCharge(data); setStatus('pending');
+  }
 
   // Polling do status enquanto pendente.
   useEffect(() => {
@@ -59,6 +60,28 @@ function UpgradeModal({ plan, onClose, onActive }) {
           <h3 className="text-lg font-bold text-white">Upgrade para {PLAN_LABEL[plan]} · {PLAN_PRICE[plan]}</h3>
           <button onClick={onClose} className="text-slate-500 hover:text-white">✕</button>
         </div>
+        {status === 'compare' && (
+          <div className="mt-4 space-y-4">
+            <div>
+              <p className="text-xs font-semibold uppercase text-slate-500">Seu plano atual: {PLAN_LABEL[currentPlan]}</p>
+              <ul className="mt-1 space-y-1 text-sm text-slate-400">
+                {(PLAN_FEATURES[currentPlan] || []).map((f) => <li key={f}>• {f}</li>)}
+              </ul>
+            </div>
+            <div className="rounded-lg border border-brand-500/30 bg-brand-500/5 p-3">
+              <p className="text-xs font-semibold uppercase text-brand-300">Upgrade para {PLAN_LABEL[plan]} — {PLAN_PRICE[plan]}</p>
+              <ul className="mt-1 space-y-1 text-sm text-slate-200">
+                {(PLAN_FEATURES[plan] || []).map((f) => <li key={f} className="flex gap-2"><span className="text-brand-400">✓</span>{f}</li>)}
+              </ul>
+            </div>
+            <div className="flex gap-2">
+              <button onClick={confirmUpgrade} className="flex-1 rounded-xl bg-brand-500 px-4 py-3 text-sm font-semibold text-slate-950 hover:bg-brand-400">
+                Confirmar upgrade → {PLAN_PRICE[plan]}
+              </button>
+              <button onClick={onClose} className="rounded-xl border border-slate-700 px-4 py-3 text-sm text-slate-300 hover:bg-slate-800">Cancelar</button>
+            </div>
+          </div>
+        )}
         {status === 'creating' && <p className="mt-4 text-sm text-slate-400">Gerando cobrança PIX…</p>}
         {status === 'error' && <p className="mt-4 rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">{err}</p>}
         {status === 'pending' && charge && (
@@ -180,7 +203,7 @@ export default function PlanSection({ initialUpgrade = '', showUpgradedToast = f
         </div>
       )}
 
-      {modalPlan && <UpgradeModal plan={modalPlan} onClose={() => { setModalPlan(''); load(); }} onActive={() => { load(); }} />}
+      {modalPlan && <UpgradeModal plan={modalPlan} currentPlan={plan} onClose={() => { setModalPlan(''); load(); }} onActive={() => { load(); }} />}
     </div>
   );
 }

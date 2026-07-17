@@ -59,24 +59,10 @@ const okTitle = `${domain} — Score de segurança: ${scoreN}/100 | Klarim`;
 const okDesc = ((p.description ? p.description + ' ' : '')
   + `Score de segurança do site: ${scoreN}/100. Análise com 48 verificações.`).slice(0, 300);
 const ogImage = status === 'ok' ? `${SITE}/api/og/${encodeURIComponent(domain)}.png` : undefined;
-// KL-65 — WebPage + Review (avaliação verificada pelo Klarim) por perfil público.
-const jsonLd = status === 'ok' ? {
-  '@context': 'https://schema.org',
-  '@type': 'WebPage',
-  name: `Avaliação de segurança de ${domain}`,
-  description: `Score de segurança web de ${domain}: ${scoreN}/100. Verificado pelo Klarim.`,
-  url: `${SITE}/site/${domain}`,
-  isPartOf: { '@type': 'WebSite', name: 'Klarim', url: SITE },
-  about: { '@type': 'WebSite', name: domain, url: `https://${domain}` },
-  mainEntity: {
-    '@type': 'Review',
-    reviewRating: {
-      '@type': 'Rating', ratingValue: `${scoreN}`, bestRating: '100', worstRating: '0',
-    },
-    author: { '@type': 'Organization', name: 'Klarim' },
-    itemReviewed: { '@type': 'WebSite', name: domain, url: `https://${domain}` },
-  },
-} : undefined;
+// Fix Schema.org (2026-07-17): o Review/`itemReviewed: WebSite` era INVÁLIDO (Google
+// Search Console reprova WebSite como itemReviewed). Removido — o Organization + WebSite
+// (site-wide, no Base) seguem válidos, e o score já é capturado pelo <title>/description/OG.
+const jsonLd = undefined;
 
 const card = 'rounded-2xl border border-slate-800 bg-slate-900/60 p-6';
 

@@ -105,14 +105,14 @@ def _target(**kw):
 
 # --- selo/badge (puro) ------------------------------------------------------ #
 
-def test_badge_verified():
+def test_badge_high():
     b = m._score_badge(95)
-    assert b["level"] == "verified" and b["icon"] == "⭐"
+    assert b["level"] == "high" and b["icon"] == "⭐" and b["label"] == "Monitorado por Klarim"
 
 
-def test_badge_approved():
+def test_badge_mid():
     b = m._score_badge(82)
-    assert b["level"] == "approved" and b["icon"] == "✅"
+    assert b["level"] == "mid" and b["icon"] == "✅" and "Monitorado" in b["label"]
 
 
 def test_badge_none():
@@ -131,7 +131,7 @@ def test_score_json(client, store):
     body = r.json()
     assert body["domain"] == "poll360.com.br" and body["score"] == 82
     assert body["semaphore"] == "amarelo"
-    assert body["badge"]["level"] == "approved"
+    assert body["badge"]["level"] == "mid"
     assert body["profile_url"].endswith("/site/poll360.com.br")
 
 
@@ -220,8 +220,8 @@ def test_ranking_sector(client, store):
     sites = body["sites"]
     assert len(sites) == 3
     assert sites[0]["position"] == 1 and sites[0]["domain"] == "hotelparaiso.com.br"
-    assert sites[0]["badge"]["level"] == "verified"   # 95 → Verified
-    assert sites[1]["badge"]["level"] == "approved"   # 82 → Approved
+    assert sites[0]["badge"]["level"] == "high"   # 95 → Verified
+    assert sites[1]["badge"]["level"] == "mid"   # 82 → Approved
     assert sites[2]["badge"] is None                  # 60 → sem selo
 
 
@@ -240,7 +240,7 @@ def test_account_site_detail_ranking(client, store):
     r = client.get("/account/sites/1", headers={"Authorization": f"Bearer {tok}"})
     assert r.status_code == 200
     body = r.json()
-    assert body["badge"]["level"] == "approved"
+    assert body["badge"]["level"] == "mid"
     assert body["ranking"]["position"] == 12 and body["ranking"]["total"] == 471
     # acima de (471-12)/471 ≈ 97%
     assert body["ranking"]["percentile"] == 97

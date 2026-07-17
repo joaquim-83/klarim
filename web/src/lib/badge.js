@@ -1,9 +1,10 @@
-// Selo de certificação derivado do score (KL-42) — espelha `_score_badge` do backend.
-// ≥90 Klarim Verified ⭐ · ≥80 Klarim Approved ✅ · <80 sem selo.
+// Selo FACTUAL derivado do score (KL-42) — espelha `_score_badge` do backend.
+// Regra inviolável: NUNCA "Approved"/"Certificado"/"Verified" (endosso) — sempre
+// "Monitorado por Klarim". O ícone diferencia a faixa: ≥90 ⭐ · ≥80 ✅ · <80 sem selo.
 export function badgeFor(score) {
   if (score == null) return null;
-  if (score >= 90) return { level: 'verified', label: 'Klarim Verified', icon: '⭐', short: 'Verificado' };
-  if (score >= 80) return { level: 'approved', label: 'Klarim Approved', icon: '✅', short: 'Aprovado' };
+  if (score >= 90) return { level: 'high', label: 'Monitorado por Klarim', icon: '⭐', short: 'Monitorado' };
+  if (score >= 80) return { level: 'mid', label: 'Monitorado por Klarim', icon: '✅', short: 'Monitorado' };
   return null;
 }
 

@@ -2712,6 +2712,26 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    async def remove_scan_history(self, email: str, scan_id: int) -> Optional[str]:
+        """Remove uma consulta do histórico do usuário: desvincula do e-mail TODOS os scans
+        da mesma URL do scan indicado (senão o próximo mais recente reapareceria). **Preserva
+        os scans** (só limpa `scanned_by_email`). Ownership: o scan tem de ser do próprio
+        e-mail. Retorna a URL removida, ou None se não pertence/não existe."""
+        e = (email or "").lower().strip()
+
+        def _fn(cur):
+            cur.execute("SELECT url FROM scans WHERE id = %s AND lower(scanned_by_email) = %s",
+                        (scan_id, e))
+            row = cur.fetchone()
+            if not row:
+                return None
+            url = row[0]
+            cur.execute("UPDATE scans SET scanned_by_email = NULL "
+                        "WHERE lower(scanned_by_email) = %s AND url = %s", (e, url))
+            return url
+
+        return await asyncio.to_thread(self._run, _fn)
+
     async def list_public_profile_domains(self, limit: int = 50000) -> List[Dict[str, Any]]:
         """Domínios com **perfil público** (para o sitemap, KL-51 f4): sites com scan
         real (`scanned`/`alerted`, com score) e `site_profile`. Exclui descartado/

@@ -96,6 +96,13 @@ export default function Dashboard({ user = {} }) {
     apiGet('/account/scan-history').then(({ ok, data }) => setHistory(ok ? (data.scans || []) : []));
   }, []);
 
+  // Remover um item do histórico (desvincula o scan do e-mail; o scan em si é preservado).
+  async function removeHistory(scanId, domain) {
+    if (!window.confirm(`Remover ${domain} do histórico?`)) return;
+    const { ok } = await apiDelete(`/account/scan-history/${scanId}`);
+    if (ok) setHistory((prev) => (prev || []).filter((h) => h.id !== scanId));
+  }
+
   // benchmark do setor do primeiro site
   useEffect(() => {
     const s = sites && sites[0];
@@ -218,14 +225,17 @@ export default function Dashboard({ user = {} }) {
           <h2 className="text-lg font-semibold text-white">Histórico de consultas</h2>
           <div className={`${card} mt-3 !p-0`}>
             <ul className="divide-y divide-slate-800">
-              {historyItems.map((h) => <HistoryRow key={h.id} scan={h} />)}
+              {historyItems.map((h) => <HistoryRow key={h.id} scan={h} onRemove={removeHistory} />)}
             </ul>
           </div>
         </div>
       )}
 
-      {/* KL-44 P6 — plano interativo (trial/upgrade/downgrade/pagamentos) */}
-      <PlanSection initialUpgrade={planUpgradeParam} showUpgradedToast={upgradedFlag} />
+      {/* KL-44 P6 — plano interativo (trial/upgrade/downgrade/pagamentos). `#plano` = âncora
+          do nav "Planos" quando logado. */}
+      <div id="plano">
+        <PlanSection initialUpgrade={planUpgradeParam} showUpgradedToast={upgradedFlag} />
+      </div>
 
       {(user.role === 'technician' || user.role === 'both') && (
         <div className={card}>
@@ -239,7 +249,7 @@ export default function Dashboard({ user = {} }) {
 
 const HSEMA = { verde: '🟢', amarelo: '🟡', vermelho: '🔴' };
 
-function HistoryRow({ scan }) {
+function HistoryRow({ scan, onRemove }) {
   const domain = (() => {
     try { return new URL(scan.url.includes('://') ? scan.url : `https://${scan.url}`).hostname.replace(/^www\./, ''); }
     catch { return scan.url; }
@@ -252,8 +262,11 @@ function HistoryRow({ scan }) {
       </div>
       <div className="flex items-center gap-4">
         <span className="text-slate-300">{HSEMA[scan.semaphore] || '⚪'} {scan.score ?? '—'}</span>
-        <a href={`/scan?url=${encodeURIComponent(scan.url)}`}
-          className="text-brand-400 hover:text-brand-300">Ver resultado →</a>
+        {/* "Ver" abre o perfil público existente (não re-escaneia). */}
+        <a href={`/site/${domain}`} target="_blank" rel="noopener noreferrer"
+          className="text-brand-400 hover:text-brand-300">Ver</a>
+        <button onClick={() => onRemove && onRemove(scan.id, domain)} title="Remover do histórico"
+          className="text-slate-500 hover:text-red-400" aria-label={`Remover ${domain} do histórico`}>✕</button>
       </div>
     </li>
   );

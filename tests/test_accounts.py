@@ -366,6 +366,13 @@ class FakeStore:
     async def get_scan_history_for_email(self, email, limit=20):
         return self.scan_history[:limit]
 
+    async def remove_scan_history(self, email, scan_id):   # UX fix 2026-07-17
+        row = next((h for h in self.scan_history if h.get("id") == scan_id), None)
+        if not row:
+            return None
+        self.scan_history = [h for h in self.scan_history if h.get("id") != scan_id]
+        return row.get("url")
+
     async def list_users_with_sites(self):
         return self.users_with_sites
 
@@ -664,6 +671,24 @@ def test_scan_history_returns_scans(client, store):
     assert len(scans) == 2
     assert scans[0]["semaphore"] == "amarelo" and scans[0]["scanned_at"].startswith("2026-07-12")
     assert scans[1]["semaphore"] == "verde"   # score 95 → fallback verde
+
+
+def test_remove_scan_history(client, store):
+    u = client.post("/account/signup", json={"email": "rm@x.com.br", "password": "segredo123"}).json()["user"]
+    store.scan_history = [{"id": 5, "url": "https://x.com.br", "score": 80,
+                           "semaphore": "amarelo", "scanned_at": None}]
+    r = client.delete("/account/scan-history/5", headers=_bearer(u))
+    assert r.status_code == 200 and r.json()["removed"] is True and r.json()["domain"] == "x.com.br"
+    assert store.scan_history == []   # item saiu do histórico
+
+
+def test_remove_scan_history_not_found(client, store):
+    u = client.post("/account/signup", json={"email": "rm2@x.com.br", "password": "segredo123"}).json()["user"]
+    assert client.delete("/account/scan-history/999", headers=_bearer(u)).status_code == 404
+
+
+def test_remove_scan_history_requires_auth(client):
+    assert client.delete("/account/scan-history/5").status_code == 401
 
 
 def test_admin_clients_requires_admin(client):

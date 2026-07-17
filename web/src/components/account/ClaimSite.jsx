@@ -14,6 +14,7 @@ export default function ClaimSite({ url, domain, ownerVerified = false, claimabl
   const [msg, setMsg] = useState('');
   const [busy, setBusy] = useState(false);
   const [verifyOpen, setVerifyOpen] = useState(false);
+  const [editInfo, setEditInfo] = useState(false);   // "solicitar edição do perfil público"
 
   useEffect(() => {
     if (!claimable) return;
@@ -109,8 +110,18 @@ export default function ClaimSite({ url, domain, ownerVerified = false, claimabl
         <p className="text-lg font-bold text-white">✓ Você é o dono verificado deste site.</p>
         <div className="mt-3 flex flex-wrap gap-3">
           <a href="/dashboard" className="rounded-xl bg-slate-800 px-5 py-2.5 text-sm font-semibold text-white hover:bg-slate-700">Acessar painel →</a>
-          <a href="/dashboard/conta" className="rounded-xl border border-slate-700 px-5 py-2.5 text-sm text-slate-300 hover:bg-slate-800">Editar perfil →</a>
+          <button onClick={() => setEditInfo((v) => !v)}
+            className="rounded-xl border border-slate-700 px-5 py-2.5 text-sm text-slate-300 hover:bg-slate-800">
+            Solicitar edição do perfil público
+          </button>
         </div>
+        {editInfo && (
+          <p className="mt-3 text-sm text-slate-400">
+            A edição do perfil público está em desenvolvimento. Por enquanto, entre em contato com{' '}
+            <a href="mailto:seguranca@klarim.net" className="text-brand-400 hover:text-brand-300">seguranca@klarim.net</a>{' '}
+            para solicitar alterações.
+          </p>
+        )}
       </div>
     );
   }

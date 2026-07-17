@@ -870,6 +870,17 @@ async def account_scan_history(request: Request) -> dict:
         for r in rows]}
 
 
+@app.delete("/account/scan-history/{scan_id}")
+async def account_remove_scan_history(scan_id: int, request: Request) -> dict:
+    """Remove uma consulta do histórico do usuário (só do próprio e-mail). Desvincula o
+    scan do e-mail (o scan em si é preservado). 404 se não estiver no histórico dele."""
+    user = await auth_users.require_user(request)
+    url = await get_target_store().remove_scan_history(user["email"], scan_id)
+    if url is None:
+        raise HTTPException(status_code=404, detail="Consulta não encontrada no seu histórico.")
+    return {"removed": True, "domain": _norm_domain(url)}
+
+
 # --- sites do usuário ------------------------------------------------------- #
 
 async def _email_owns_target(email: str, target_id: int) -> bool:
@@ -1844,14 +1855,15 @@ def _sector_label(sector: str) -> str:
 
 
 def _score_badge(score: Optional[int]) -> Optional[dict]:
-    """Selo derivado do score (KL-42) — sem campo novo no banco. ≥90 Verified,
-    ≥80 Approved, <80 sem selo."""
+    """Selo FACTUAL derivado do score (KL-42). Regra inviolável: NUNCA "Approved"/
+    "Verified" (endosso) — sempre "Monitorado por Klarim". O ícone marca a faixa:
+    ≥90 ⭐ · ≥80 ✅ · <80 sem selo."""
     if score is None:
         return None
     if score >= 90:
-        return {"level": "verified", "label": "Klarim Verified", "icon": "⭐"}
+        return {"level": "high", "label": "Monitorado por Klarim", "icon": "⭐"}
     if score >= 80:
-        return {"level": "approved", "label": "Klarim Approved", "icon": "✅"}
+        return {"level": "mid", "label": "Monitorado por Klarim", "icon": "✅"}
     return None
 
 
