@@ -689,8 +689,32 @@ class TargetStore:
         confidence: float = 0.0, classification_source: str = "auto",
     ) -> int:
         def _fn(cur):
-            # No conflito, a classificação MANUAL é preservada (o automático nunca
-            # sobrescreve setor/tier/confiança de um alvo corrigido pelo operador).
+            # Fix dedup (2026-07-18): **1 target por domínio**. Antes, URLs variantes do
+            # mesmo site (`https://foo`, `https://www.foo`, `http://foo`) criavam linhas
+            # distintas (o ON CONFLICT era só por `url`) → duplicatas nos rankings/contagens.
+            # Agora, se o domínio já existe, atualiza a linha existente e devolve o id —
+            # nunca cria duplicata. A classificação MANUAL continua preservada.
+            cur.execute("SELECT id FROM targets WHERE domain = %s ORDER BY id LIMIT 1",
+                        (domain,))
+            row = cur.fetchone()
+            if row:
+                tid = row[0]
+                cur.execute(
+                    "UPDATE targets SET platform = %s, "
+                    "  sector = CASE WHEN classification_source = 'manual' "
+                    "                THEN sector ELSE %s END, "
+                    "  price_tier = CASE WHEN classification_source = 'manual' "
+                    "                    THEN price_tier ELSE %s END, "
+                    "  classification_confidence = CASE WHEN classification_source = 'manual' "
+                    "                    THEN classification_confidence ELSE %s END, "
+                    "  classification_source = CASE WHEN classification_source = 'manual' "
+                    "                    THEN 'manual' ELSE %s END, "
+                    "  contact_email = COALESCE(%s, contact_email) "
+                    "WHERE id = %s",
+                    (platform, sector, price_tier, confidence, classification_source,
+                     contact_email, tid))
+                return tid
+            # Domínio novo → INSERT (ON CONFLICT (url) ainda cobre corrida de URL idêntica).
             cur.execute(
                 """
                 INSERT INTO targets (url, domain, platform, sector, price_tier,
@@ -715,6 +739,100 @@ class TargetStore:
                  source, confidence, classification_source),
             )
             return cur.fetchone()[0]
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- dedup de domínios duplicados (fix 2026-07-18) --------------------- #
+    # Tabelas com FK sem CASCADE (RESTRICT — bloqueiam o DELETE do target se não forem
+    # reapontadas): scans, alert_log, rescan_log, monitored_sites. As demais têm
+    # ON DELETE CASCADE, mas reapontamos as que guardam dado do usuário (posse, técnico,
+    # laudo, boletim) para não perder nada; o resto o CASCADE limpa.
+
+    async def find_duplicate_domains(self, limit: int = 500) -> List[Dict[str, Any]]:
+        """Domínios com >1 registro em `targets` (diagnóstico). `ids` do mais recente
+        p/ o mais antigo (o 1º é o sobrevivente natural)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT domain, COUNT(*) AS count, "
+                "  array_agg(id ORDER BY last_scan_at DESC NULLS LAST, id ASC) AS target_ids "
+                "FROM targets WHERE domain IS NOT NULL AND domain <> '' "
+                "GROUP BY domain HAVING COUNT(*) > 1 "
+                "ORDER BY COUNT(*) DESC, domain ASC LIMIT %s", (limit,))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def dedup_targets(self, apply: bool = False,
+                            add_constraint: bool = True) -> Dict[str, Any]:
+        """Mergeia domínios duplicados em `targets` num único registro. `apply=False`
+        (dry-run) só reporta a extensão. `apply=True` reaponta as FKs para o sobrevivente
+        (o mais recentemente escaneado), deleta os duplicados e — se `add_constraint` —
+        cria o índice UNIQUE(domain) que impede novas duplicatas. Tudo numa transação
+        (o `_run` faz commit/rollback atômico)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT domain, array_agg(id ORDER BY last_scan_at DESC NULLS LAST, id ASC) "
+                "FROM targets WHERE domain IS NOT NULL AND domain <> '' "
+                "GROUP BY domain HAVING COUNT(*) > 1 ORDER BY domain ASC")
+            groups = cur.fetchall()
+            domains = [g[0] for g in groups]
+            merged = 0
+            if apply:
+                for _domain, ids in groups:
+                    survivor, losers = ids[0], ids[1:]
+                    if not losers:
+                        continue
+                    # 1) tabelas SEM unique em target (reaponta direto):
+                    for table in ("scans", "alert_log", "rescan_log", "monitored_sites",
+                                  "site_events", "email_log", "shared_reports", "bulletins",
+                                  "ownership_verifications"):
+                        cur.execute(f"UPDATE {table} SET target_id = %s "
+                                    f"WHERE target_id = ANY(%s)", (survivor, losers))
+                    # 2) tabelas COM unique envolvendo target_id (remove colisão, reaponta):
+                    for table, keep in (("user_sites", ("user_id",)),
+                                        ("target_classifications", ("cnae_code",)),
+                                        ("typosquat_alerts", ("suspicious_domain",)),
+                                        ("technician_links", ("owner_user_id",
+                                                              "technician_email"))):
+                        cols = ", ".join(keep)
+                        cur.execute(
+                            f"DELETE FROM {table} WHERE target_id = ANY(%s) "
+                            f"AND ({cols}) IN (SELECT {cols} FROM {table} "
+                            f"                 WHERE target_id = %s)",
+                            (losers, survivor))
+                        cur.execute(f"UPDATE {table} SET target_id = %s "
+                                    f"WHERE target_id = ANY(%s)", (survivor, losers))
+                    # 3) site_profile (UNIQUE target_id): adota o perfil de um loser só se o
+                    #    sobrevivente não tiver; depois remove os perfis restantes dos losers.
+                    cur.execute(
+                        "UPDATE site_profile SET target_id = %s WHERE id = ("
+                        "  SELECT id FROM site_profile WHERE target_id = ANY(%s) "
+                        "  ORDER BY edited_by_admin DESC NULLS LAST, id DESC LIMIT 1) "
+                        "AND NOT EXISTS (SELECT 1 FROM site_profile WHERE target_id = %s)",
+                        (survivor, losers, survivor))
+                    cur.execute("DELETE FROM site_profile WHERE target_id = ANY(%s)",
+                                (losers,))
+                    # 4) recomputa o último scan do sobrevivente (herdou os scans) e apaga
+                    #    os duplicados.
+                    cur.execute(
+                        "UPDATE targets t SET last_scan_id = s.id, last_scan_score = s.score, "
+                        "  last_scan_at = s.scanned_at FROM ("
+                        "  SELECT id, score, scanned_at FROM scans WHERE target_id = %s "
+                        "  ORDER BY scanned_at DESC LIMIT 1) s WHERE t.id = %s",
+                        (survivor, survivor))
+                    cur.execute("DELETE FROM targets WHERE id = ANY(%s)", (losers,))
+                    merged += len(losers)
+                if add_constraint:
+                    # backstop: impede novas duplicatas de domínio (parcial: ignora vazios).
+                    cur.execute(
+                        "CREATE UNIQUE INDEX IF NOT EXISTS idx_targets_domain_unique "
+                        "ON targets(domain) WHERE domain IS NOT NULL AND domain <> ''")
+            return {"duplicates_found": len(groups),
+                    "domains_affected": domains[:200],
+                    "domains_affected_total": len(domains),
+                    "records_merged": merged,
+                    "records_deleted": merged,
+                    "constraint_added": bool(apply and add_constraint)}
 
         return await asyncio.to_thread(self._run, _fn)
 
@@ -3802,14 +3920,17 @@ class TargetStore:
         """Top sites de um setor por score (KL-42) — só sites com scan público e
         landing ligada (`public_visible`, KL-56). Ordena por score DESC, domínio."""
         def _fn(cur):
+            # Dedup por domínio (fix): 1 linha por domínio antes de ranquear por score.
             cur.execute(
-                "SELECT t.domain, t.last_scan_score, t.last_scan_at "
-                "FROM targets t JOIN site_profile sp ON sp.target_id = t.id "
-                "WHERE t.sector = %s AND t.status IN ('scanned', 'alerted') "
-                "  AND t.last_scan_score IS NOT NULL "
-                "  AND t.domain IS NOT NULL AND t.domain <> '' "
-                "  AND COALESCE(sp.public_visible, TRUE) = TRUE "
-                "ORDER BY t.last_scan_score DESC, t.domain ASC LIMIT %s", (sector, limit))
+                "SELECT * FROM ("
+                "  SELECT DISTINCT ON (t.domain) t.domain, t.last_scan_score, t.last_scan_at "
+                "  FROM targets t JOIN site_profile sp ON sp.target_id = t.id "
+                "  WHERE t.sector = %s AND t.status IN ('scanned', 'alerted') "
+                "    AND t.last_scan_score IS NOT NULL "
+                "    AND t.domain IS NOT NULL AND t.domain <> '' "
+                "    AND COALESCE(sp.public_visible, TRUE) = TRUE "
+                "  ORDER BY t.domain, t.last_scan_score DESC) d "
+                "ORDER BY last_scan_score DESC, domain ASC LIMIT %s", (sector, limit))
             return self._rows_to_dicts(cur)
 
         return await asyncio.to_thread(self._run, _fn)
@@ -3818,14 +3939,18 @@ class TargetStore:
         """Setores com ranking público (≥ `min_count` sites com scan público): contagem,
         score médio e o domínio top de cada um (KL-42). Exclui `outro`."""
         def _fn(cur):
+            # Dedup por domínio (fix): count/avg sobre 1 linha por domínio.
             cur.execute(
-                "SELECT t.sector, COUNT(*) AS count, "
-                "       COALESCE(ROUND(AVG(t.last_scan_score)), 0) AS avg_score "
-                "FROM targets t JOIN site_profile sp ON sp.target_id = t.id "
-                "WHERE t.status IN ('scanned', 'alerted') AND t.last_scan_score IS NOT NULL "
-                "  AND t.sector IS NOT NULL AND t.sector <> '' AND t.sector <> 'outro' "
-                "  AND COALESCE(sp.public_visible, TRUE) = TRUE "
-                "GROUP BY t.sector HAVING COUNT(*) >= %s "
+                "SELECT sector, COUNT(*) AS count, COALESCE(ROUND(AVG(score)), 0) AS avg_score "
+                "FROM ("
+                "  SELECT DISTINCT ON (t.domain) t.sector AS sector, "
+                "    t.last_scan_score AS score "
+                "  FROM targets t JOIN site_profile sp ON sp.target_id = t.id "
+                "  WHERE t.status IN ('scanned', 'alerted') AND t.last_scan_score IS NOT NULL "
+                "    AND t.sector IS NOT NULL AND t.sector <> '' AND t.sector <> 'outro' "
+                "    AND COALESCE(sp.public_visible, TRUE) = TRUE "
+                "  ORDER BY t.domain, t.last_scan_score DESC) d "
+                "GROUP BY sector HAVING COUNT(*) >= %s "
                 "ORDER BY COUNT(*) DESC", (min_count,))
             rows = self._rows_to_dicts(cur)
             for r in rows:  # top site por setor (poucos setores → N+1 aceitável, 1 conexão)
@@ -3869,21 +3994,25 @@ class TargetStore:
         contagem, média, mediana, distribuição por semáforo e nº de scores 100. Exclui
         'outro'. Ordena por contagem desc (setor mais populoso primeiro)."""
         def _fn(cur):
+            # Dedup por domínio (fix): 1 linha por domínio (maior score) antes de agregar.
             cur.execute(
-                "SELECT t.sector, COUNT(*) AS count, "
-                "  COALESCE(ROUND(AVG(t.last_scan_score)), 0) AS avg_score, "
+                "SELECT sector, COUNT(*) AS count, "
+                "  COALESCE(ROUND(AVG(score)), 0) AS avg_score, "
                 "  COALESCE(ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP "
-                "    (ORDER BY t.last_scan_score)), 0) AS median_score, "
-                "  COUNT(*) FILTER (WHERE t.last_scan_score >= 90) AS verde, "
-                "  COUNT(*) FILTER (WHERE t.last_scan_score >= 50 "
-                "                   AND t.last_scan_score < 90) AS amarelo, "
-                "  COUNT(*) FILTER (WHERE t.last_scan_score < 50) AS vermelho, "
-                "  COUNT(*) FILTER (WHERE t.last_scan_score = 100) AS score_100 "
-                "FROM targets t JOIN site_profile sp ON sp.target_id = t.id "
-                "WHERE t.status IN ('scanned', 'alerted') AND t.last_scan_score IS NOT NULL "
-                "  AND t.sector IS NOT NULL AND t.sector <> '' AND t.sector <> 'outro' "
-                "  AND COALESCE(sp.public_visible, TRUE) = TRUE "
-                "GROUP BY t.sector HAVING COUNT(*) >= %s "
+                "    (ORDER BY score)), 0) AS median_score, "
+                "  COUNT(*) FILTER (WHERE score >= 90) AS verde, "
+                "  COUNT(*) FILTER (WHERE score >= 50 AND score < 90) AS amarelo, "
+                "  COUNT(*) FILTER (WHERE score < 50) AS vermelho, "
+                "  COUNT(*) FILTER (WHERE score = 100) AS score_100 "
+                "FROM ("
+                "  SELECT DISTINCT ON (t.domain) t.sector AS sector, "
+                "    t.last_scan_score AS score "
+                "  FROM targets t JOIN site_profile sp ON sp.target_id = t.id "
+                "  WHERE t.status IN ('scanned', 'alerted') AND t.last_scan_score IS NOT NULL "
+                "    AND t.sector IS NOT NULL AND t.sector <> '' AND t.sector <> 'outro' "
+                "    AND COALESCE(sp.public_visible, TRUE) = TRUE "
+                "  ORDER BY t.domain, t.last_scan_score DESC) d "
+                "GROUP BY sector HAVING COUNT(*) >= %s "
                 "ORDER BY COUNT(*) DESC", (min_count,))
             return self._rows_to_dicts(cur)
 
@@ -3894,19 +4023,21 @@ class TargetStore:
         mediana, distribuição por semáforo + nº de score 100). Sem corte mínimo — a
         página decide se indexa."""
         def _fn(cur):
+            # Dedup por domínio (fix): agrega sobre 1 linha por domínio (maior score).
             cur.execute(
-                "SELECT COUNT(*), COALESCE(ROUND(AVG(t.last_scan_score)), 0), "
-                "  COALESCE(ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP "
-                "    (ORDER BY t.last_scan_score)), 0), "
-                "  COUNT(*) FILTER (WHERE t.last_scan_score >= 90), "
-                "  COUNT(*) FILTER (WHERE t.last_scan_score >= 50 "
-                "                   AND t.last_scan_score < 90), "
-                "  COUNT(*) FILTER (WHERE t.last_scan_score < 50), "
-                "  COUNT(*) FILTER (WHERE t.last_scan_score = 100) "
-                "FROM targets t JOIN site_profile sp ON sp.target_id = t.id "
-                "WHERE t.sector = %s AND t.status IN ('scanned', 'alerted') "
-                "  AND t.last_scan_score IS NOT NULL "
-                "  AND COALESCE(sp.public_visible, TRUE) = TRUE", (sector,))
+                "SELECT COUNT(*), COALESCE(ROUND(AVG(score)), 0), "
+                "  COALESCE(ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY score)), 0), "
+                "  COUNT(*) FILTER (WHERE score >= 90), "
+                "  COUNT(*) FILTER (WHERE score >= 50 AND score < 90), "
+                "  COUNT(*) FILTER (WHERE score < 50), "
+                "  COUNT(*) FILTER (WHERE score = 100) "
+                "FROM ("
+                "  SELECT DISTINCT ON (t.domain) t.last_scan_score AS score "
+                "  FROM targets t JOIN site_profile sp ON sp.target_id = t.id "
+                "  WHERE t.sector = %s AND t.status IN ('scanned', 'alerted') "
+                "    AND t.last_scan_score IS NOT NULL "
+                "    AND COALESCE(sp.public_visible, TRUE) = TRUE "
+                "  ORDER BY t.domain, t.last_scan_score DESC) d", (sector,))
             r = cur.fetchone()
             count = int(r[0] or 0)
             green, yellow, red = int(r[3] or 0), int(r[4] or 0), int(r[5] or 0)
@@ -3920,32 +4051,36 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    # nomes de coluna da subquery deduplicada (fix dedup): `score`/`domain`, não `t.*`.
     _PUBLIC_SITE_SORTS = {
-        "score_desc": "t.last_scan_score DESC, t.domain ASC",
-        "score_asc": "t.last_scan_score ASC, t.domain ASC",
-        "domain_asc": "t.domain ASC",
+        "score_desc": "score DESC, domain ASC",
+        "score_asc": "score ASC, domain ASC",
+        "domain_asc": "domain ASC",
     }
 
     async def public_sector_sites(self, sector: str, limit: int = 20, offset: int = 0,
                                   sort: str = "score_desc") -> List[Dict[str, Any]]:
         """KL-74 — sites de um setor com perfil público, paginado. Traz semáforo real e
         privacy_score do último scan e se há dono verificado (sem expor quem). `sort` é
-        validado contra a allowlist (o valor entra na query por interpolação)."""
+        validado contra a allowlist (o valor entra na query por interpolação).
+        **Dedup por domínio** (`DISTINCT ON`): 1 linha por domínio (a de maior score)."""
         order = self._PUBLIC_SITE_SORTS.get(sort, self._PUBLIC_SITE_SORTS["score_desc"])
         def _fn(cur):
             cur.execute(
-                "SELECT t.domain, t.last_scan_score AS score, "
-                "  COALESCE(sc.semaphore, '') AS semaphore, "
-                "  sp.company_name, sp.description, t.last_scan_at, "
-                "  (sc.checks_json->'privacy'->>'score') AS privacy_score, "
-                "  EXISTS(SELECT 1 FROM user_sites us WHERE us.target_id = t.id "
-                "         AND us.is_owner = TRUE) AS owner_verified "
-                "FROM targets t JOIN site_profile sp ON sp.target_id = t.id "
-                "LEFT JOIN scans sc ON sc.id = t.last_scan_id "
-                "WHERE t.sector = %s AND t.status IN ('scanned', 'alerted') "
-                "  AND t.last_scan_score IS NOT NULL "
-                "  AND COALESCE(sp.public_visible, TRUE) = TRUE "
-                "ORDER BY " + order + " LIMIT %s OFFSET %s", (sector, limit, offset))
+                "SELECT * FROM ("
+                "  SELECT DISTINCT ON (t.domain) t.domain, t.last_scan_score AS score, "
+                "    COALESCE(sc.semaphore, '') AS semaphore, "
+                "    sp.company_name, sp.description, t.last_scan_at, "
+                "    (sc.checks_json->'privacy'->>'score') AS privacy_score, "
+                "    EXISTS(SELECT 1 FROM user_sites us WHERE us.target_id = t.id "
+                "           AND us.is_owner = TRUE) AS owner_verified "
+                "  FROM targets t JOIN site_profile sp ON sp.target_id = t.id "
+                "  LEFT JOIN scans sc ON sc.id = t.last_scan_id "
+                "  WHERE t.sector = %s AND t.status IN ('scanned', 'alerted') "
+                "    AND t.last_scan_score IS NOT NULL "
+                "    AND COALESCE(sp.public_visible, TRUE) = TRUE "
+                "  ORDER BY t.domain, t.last_scan_score DESC, t.last_scan_at DESC NULLS LAST"
+                ") d ORDER BY " + order + " LIMIT %s OFFSET %s", (sector, limit, offset))
             return self._rows_to_dicts(cur)
 
         return await asyncio.to_thread(self._run, _fn)
@@ -3957,13 +4092,14 @@ class TargetStore:
         fail_count, fail_pct, severity}]}."""
         def _fn(cur):
             cur.execute(
-                "SELECT sc.checks_json->'results' FROM targets t "
+                "SELECT DISTINCT ON (t.domain) sc.checks_json->'results' FROM targets t "
                 "JOIN site_profile sp ON sp.target_id = t.id "
                 "JOIN scans sc ON sc.id = t.last_scan_id "
                 "WHERE t.sector = %s AND t.status IN ('scanned', 'alerted') "
                 "  AND t.last_scan_score IS NOT NULL "
                 "  AND COALESCE(sp.public_visible, TRUE) = TRUE "
-                "  AND sc.checks_json ? 'results' LIMIT %s", (sector, sample))
+                "  AND sc.checks_json ? 'results' "
+                "ORDER BY t.domain, t.last_scan_score DESC LIMIT %s", (sector, sample))
             by_name: Dict[str, Dict[str, Any]] = {}
             scanned = 0
             for (results,) in cur.fetchall():
@@ -3995,15 +4131,18 @@ class TargetStore:
         cross-linking. Completa com sites públicos de outros setores se faltar."""
         def _fn(cur):
             def _q(where_sector, params):
+                # Dedup por domínio (fix): 1 linha por domínio antes de ordenar por score.
                 cur.execute(
-                    "SELECT t.domain, t.last_scan_score AS score, "
-                    "  COALESCE(sc.semaphore, '') AS semaphore, sp.company_name, t.sector "
-                    "FROM targets t JOIN site_profile sp ON sp.target_id = t.id "
-                    "LEFT JOIN scans sc ON sc.id = t.last_scan_id "
-                    "WHERE " + where_sector + " AND t.status IN ('scanned', 'alerted') "
-                    "  AND t.last_scan_score IS NOT NULL "
-                    "  AND COALESCE(sp.public_visible, TRUE) = TRUE "
-                    "ORDER BY t.last_scan_score DESC, t.domain ASC LIMIT %s", params)
+                    "SELECT * FROM ("
+                    "  SELECT DISTINCT ON (t.domain) t.domain, t.last_scan_score AS score, "
+                    "    COALESCE(sc.semaphore, '') AS semaphore, sp.company_name, t.sector "
+                    "  FROM targets t JOIN site_profile sp ON sp.target_id = t.id "
+                    "  LEFT JOIN scans sc ON sc.id = t.last_scan_id "
+                    "  WHERE " + where_sector + " AND t.status IN ('scanned', 'alerted') "
+                    "    AND t.last_scan_score IS NOT NULL "
+                    "    AND COALESCE(sp.public_visible, TRUE) = TRUE "
+                    "  ORDER BY t.domain, t.last_scan_score DESC) d "
+                    "ORDER BY score DESC, domain ASC LIMIT %s", params)
                 return self._rows_to_dicts(cur)
 
             rows = _q("t.sector = %s AND t.domain <> %s", (sector, exclude_domain, limit))
@@ -4025,18 +4164,22 @@ class TargetStore:
         """KL-74 — sites com score perfeito (100), públicos. Opcionalmente de um setor.
         Serve a vitrine /melhores (agrupada por setor) e o destaque na página de setor."""
         def _fn(cur):
-            base = (
-                "SELECT t.domain, t.sector, sp.company_name, "
+            # Dedup por domínio (fix): 1 linha por domínio (DISTINCT ON) antes de ordenar.
+            inner = (
+                "SELECT DISTINCT ON (t.domain) t.domain, t.sector, sp.company_name, "
                 "  EXISTS(SELECT 1 FROM user_sites us WHERE us.target_id = t.id "
                 "         AND us.is_owner = TRUE) AS owner_verified "
                 "FROM targets t JOIN site_profile sp ON sp.target_id = t.id "
                 "WHERE t.last_scan_score = 100 AND t.status IN ('scanned', 'alerted') "
                 "  AND COALESCE(sp.public_visible, TRUE) = TRUE ")
             if sector:
-                cur.execute(base + "AND t.sector = %s ORDER BY t.domain ASC LIMIT %s",
-                            (sector, limit))
+                cur.execute(
+                    "SELECT * FROM (" + inner + "AND t.sector = %s ORDER BY t.domain) d "
+                    "ORDER BY domain ASC LIMIT %s", (sector, limit))
             else:
-                cur.execute(base + "ORDER BY t.sector ASC, t.domain ASC LIMIT %s", (limit,))
+                cur.execute(
+                    "SELECT * FROM (" + inner + "ORDER BY t.domain) d "
+                    "ORDER BY sector ASC, domain ASC LIMIT %s", (limit,))
             return self._rows_to_dicts(cur)
 
         return await asyncio.to_thread(self._run, _fn)
@@ -4045,17 +4188,23 @@ class TargetStore:
         """KL-74 — números públicos da plataforma: total de alvos, scans, sites
         escaneados, scores 100 e distribuição por semáforo (sobre alvos com score)."""
         def _fn(cur):
-            cur.execute("SELECT COUNT(*) FROM targets")
+            # Contagens por DOMÍNIO distinto (fix): "N sites" = domínios únicos, não linhas.
+            cur.execute("SELECT COUNT(DISTINCT domain) FROM targets "
+                        "WHERE domain IS NOT NULL AND domain <> ''")
             total_targets = int(cur.fetchone()[0] or 0)
             cur.execute("SELECT COUNT(*) FROM scans")
             total_scans = int(cur.fetchone()[0] or 0)
             cur.execute(
                 "SELECT COUNT(*), "
-                "  COUNT(*) FILTER (WHERE last_scan_score >= 90), "
-                "  COUNT(*) FILTER (WHERE last_scan_score >= 50 AND last_scan_score < 90), "
-                "  COUNT(*) FILTER (WHERE last_scan_score < 50), "
-                "  COUNT(*) FILTER (WHERE last_scan_score = 100) "
-                "FROM targets WHERE last_scan_score IS NOT NULL")
+                "  COUNT(*) FILTER (WHERE score >= 90), "
+                "  COUNT(*) FILTER (WHERE score >= 50 AND score < 90), "
+                "  COUNT(*) FILTER (WHERE score < 50), "
+                "  COUNT(*) FILTER (WHERE score = 100) "
+                "FROM ("
+                "  SELECT DISTINCT ON (t.domain) t.last_scan_score AS score FROM targets t "
+                "  WHERE t.last_scan_score IS NOT NULL AND t.domain IS NOT NULL "
+                "    AND t.domain <> '' "
+                "  ORDER BY t.domain, t.last_scan_score DESC) d")
             r = cur.fetchone()
             scanned = int(r[0] or 0)
             green, yellow, red = int(r[1] or 0), int(r[2] or 0), int(r[3] or 0)

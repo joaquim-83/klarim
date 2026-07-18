@@ -3882,6 +3882,26 @@ async def api_dashboard_stats() -> dict:
     return summary
 
 
+# --- fix integridade: dedup de domínios duplicados em targets (2026-07-18) ---- #
+@app.get("/admin/duplicate-domains")
+async def api_duplicate_domains() -> dict:
+    """Diagnóstico: domínios com mais de 1 registro em `targets` (não altera nada).
+    Protegido pelo JWT admin (prefixo `/admin`)."""
+    rows = await get_target_store().find_duplicate_domains()
+    return {"count": len(rows), "duplicates": rows}
+
+
+@app.post("/admin/dedup-targets")
+async def api_dedup_targets(dry_run: bool = Query(True),
+                            add_constraint: bool = Query(True)) -> dict:
+    """Mergeia domínios duplicados em `targets`. **`dry_run=true` (default)** só reporta a
+    extensão; `dry_run=false` reaponta as FKs para o sobrevivente (o mais recentemente
+    escaneado), deleta os duplicados e — se `add_constraint` — cria o índice UNIQUE(domain)
+    que impede novas duplicatas. Atômico (uma transação). Protegido pelo JWT admin."""
+    return await get_target_store().dedup_targets(apply=not dry_run,
+                                                  add_constraint=add_constraint)
+
+
 # --------------------------------------------------------------------------- #
 # Leads (KL-61) — gestão de leads PQL. Prefixo /leads (admin JWT). classification e
 # lead_score são SEMPRE calculados (nunca editados à mão).

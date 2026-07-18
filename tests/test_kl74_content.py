@@ -103,9 +103,21 @@ class FakeStore:
     async def get_sector_position(self, sector, tid):
         return {"position": 3, "total": 40}
 
+    # --- fix dedup de domínios duplicados ------------------------------------ #
+    async def find_duplicate_domains(self, limit=500):
+        return [{"domain": "klarim.net", "count": 4, "target_ids": [10, 7, 3, 1]}]
+
+    async def dedup_targets(self, apply=False, add_constraint=True):
+        return {"duplicates_found": 1, "domains_affected": ["klarim.net"],
+                "domains_affected_total": 1,
+                "records_merged": 3 if apply else 0,
+                "records_deleted": 3 if apply else 0,
+                "constraint_added": bool(apply and add_constraint)}
+
 
 @pytest.fixture
 def store(monkeypatch):
+    monkeypatch.setenv("JWT_SECRET", "k" * 64)  # p/ gerar token admin nos testes de dedup
     s = FakeStore()
     monkeypatch.setattr(m, "get_target_store", lambda: s)
     monkeypatch.setattr("discovery.store.get_target_store", lambda: s)
@@ -256,3 +268,42 @@ def test_rate_limit_external_ip(client):
             hit_429 = True
             break
     assert hit_429
+
+
+# --------------------------------------------------------------------------- #
+# FIX — dedup de domínios duplicados (admin, protegido por JWT)
+# --------------------------------------------------------------------------- #
+def _admin(client):
+    return {"Authorization": f"Bearer {m._create_token('op')}"}
+
+
+def test_dedup_requires_admin(client):
+    # sem token → 401 (middleware do prefixo /admin)
+    assert client.post("/admin/dedup-targets").status_code == 401
+    assert client.get("/admin/duplicate-domains").status_code == 401
+
+
+def test_duplicate_domains_diagnostic(client):
+    r = client.get("/admin/duplicate-domains", headers=_admin(client))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["count"] == 1
+    assert body["duplicates"][0]["domain"] == "klarim.net"
+
+
+def test_dedup_dry_run_changes_nothing(client):
+    r = client.post("/admin/dedup-targets?dry_run=true", headers=_admin(client))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["duplicates_found"] == 1
+    assert body["records_merged"] == 0        # dry-run não altera
+    assert body["constraint_added"] is False
+
+
+def test_dedup_apply(client):
+    r = client.post("/admin/dedup-targets?dry_run=false", headers=_admin(client))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["records_merged"] == 3
+    assert body["records_deleted"] == 3
+    assert body["constraint_added"] is True
