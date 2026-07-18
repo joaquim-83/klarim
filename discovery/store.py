@@ -788,18 +788,22 @@ class TargetStore:
                                   "ownership_verifications"):
                         cur.execute(f"UPDATE {table} SET target_id = %s "
                                     f"WHERE target_id = ANY(%s)", (survivor, losers))
-                    # 2) tabelas COM unique envolvendo target_id (remove colisão, reaponta):
+                    # 2) tabelas COM unique envolvendo target_id: mantém 1 linha por valor
+                    #    de chave que vai parar no sobrevivente. Remove a linha do duplicado
+                    #    quando já existe a MESMA chave no sobrevivente (loser↔survivor) OU
+                    #    noutro duplicado de id menor (loser↔loser) — só então reaponta.
                     for table, keep in (("user_sites", ("user_id",)),
                                         ("target_classifications", ("cnae_code",)),
                                         ("typosquat_alerts", ("suspicious_domain",)),
                                         ("technician_links", ("owner_user_id",
                                                               "technician_email"))):
-                        cols = ", ".join(keep)
+                        eq = " AND ".join(f"b.{c} = a.{c}" for c in keep)
                         cur.execute(
-                            f"DELETE FROM {table} WHERE target_id = ANY(%s) "
-                            f"AND ({cols}) IN (SELECT {cols} FROM {table} "
-                            f"                 WHERE target_id = %s)",
-                            (losers, survivor))
+                            f"DELETE FROM {table} a WHERE a.target_id = ANY(%s) "
+                            f"AND EXISTS (SELECT 1 FROM {table} b WHERE {eq} AND "
+                            f"  (b.target_id = %s OR "
+                            f"   (b.target_id = ANY(%s) AND b.id < a.id)))",
+                            (losers, survivor, losers))
                         cur.execute(f"UPDATE {table} SET target_id = %s "
                                     f"WHERE target_id = ANY(%s)", (survivor, losers))
                     # 3) site_profile (UNIQUE target_id): adota o perfil de um loser só se o
