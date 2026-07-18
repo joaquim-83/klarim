@@ -5,6 +5,7 @@ import Base from '../../layouts/Base.astro';
 import Header from '../../components/Header.astro';
 import Footer from '../../components/Footer.astro';
 import ClaimSite from '../../components/account/ClaimSite.jsx';
+import PrivacyPanel from '../../components/PrivacyPanel.jsx';
 
 const SITE = 'https://klarim.net';
 const API = process.env.KLARIM_API_URL || 'http://api:8000';
@@ -45,8 +46,7 @@ const t = data?.target || {};
 const p = data?.profile || {};
 const cls = data?.classifications || [];
 const bench = data?.benchmark || null;
-const privacy = data?.privacy || null;  // KL-44 P5: indicadores técnicos de privacidade
-const PRIVACY_DISCLAIMER = 'Este é um diagnóstico técnico automatizado baseado em verificações passivas. Não constitui assessoria jurídica e não substitui a avaliação de um advogado ou Encarregado de Proteção de Dados (DPO). Para conformidade completa com a LGPD, consulte um profissional qualificado.';
+const privacy = data?.privacy || null;  // KL-44 P5: indicadores técnicos (público = só score/total)
 const sema = SEMA[t.semaphore] || SEMA.amarelo;
 const scoreN = t.score ?? null;
 const lastScan = t.last_scan_at ? new Date(t.last_scan_at).toLocaleDateString('pt-BR') : '—';
@@ -210,22 +210,12 @@ if (hasContact) {
           </div>
         )}
 
-        {/* KL-44 P5 — Indicadores técnicos de privacidade (score SEPARADO do de segurança). */}
-        {privacy && Array.isArray(privacy.checks) && (
-          <div class={card}>
-            <h2 class="text-lg font-bold text-white">Indicadores de privacidade: {privacy.score}/{privacy.total}</h2>
-            <p class="mt-1 text-sm text-slate-400">Fatos técnicos observáveis por varredura passiva. Referência LGPD por indicador.</p>
-            <ul class="mt-4 space-y-2">
-              {privacy.checks.map((c) => (
-                <li class="flex items-start gap-2 text-sm">
-                  <span aria-hidden="true">{c.status === 'PASS' ? '✅' : '❌'}</span>
-                  <span class="text-slate-200">{c.name}</span>
-                  <span class="ml-auto shrink-0 text-xs text-slate-500">{c.lgpd_ref}</span>
-                </li>
-              ))}
-            </ul>
-            <p class="mt-4 border-t border-slate-800 pt-3 text-xs leading-relaxed text-slate-500">⚖️ {PRIVACY_DISCLAIMER}</p>
-          </div>
+        {/* KL-44 P5 — Indicadores técnicos de privacidade (score SEPARADO do de segurança).
+            Fix compliance: o perfil PÚBLICO só recebe score/total da API. A ilha revela os
+            detalhes (✅/❌ + ref LGPD) apenas a visitantes LOGADOS, via endpoint autenticado.
+            Nada de detalhe vai para o HTML do SSR (nem no view-source deslogado). */}
+        {privacy && privacy.score != null && (
+          <PrivacyPanel client:load domain={domain} score={privacy.score} total={privacy.total} />
         )}
 
         {bench && bench.count > 0 && (

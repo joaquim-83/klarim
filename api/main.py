@@ -1681,6 +1681,18 @@ def _norm_domain(domain: str) -> str:
     return d.replace("www.", "", 1) if d.startswith("www.") else d
 
 
+def _privacy_summary(privacy):
+    """Fix compliance urgente — resumo PÚBLICO dos indicadores de privacidade: só
+    `score`/`total`. NUNCA os `checks` por indicador (PASS/FAIL + referência LGPD) nem o
+    disclaimer detalhado. Expor as falhas de compliance de um site a qualquer visitante
+    prejudica a empresa e vira vetor de engenharia social. Os detalhes só saem em
+    superfícies autenticadas (dashboard, `/account/*`) ou no laudo compartilhável (o dono
+    compartilhou de propósito)."""
+    if not isinstance(privacy, dict) or privacy.get("score") is None:
+        return None
+    return {"score": privacy.get("score"), "total": privacy.get("total")}
+
+
 @app.get("/public/profile/{domain}")
 async def public_profile(domain: str) -> dict:
     """Perfil público agregado de um site (1 chamada para o Astro): dados do alvo
@@ -1745,12 +1757,43 @@ async def public_profile(domain: str) -> dict:
         "profile": {k: profile.get(k) for k in _PUBLIC_PROFILE_FIELDS},
         "classifications": classifications,
         "benchmark": benchmark,
-        "privacy": privacy,   # KL-44 P5: indicadores técnicos (score separado + disclaimer)
+        # Fix compliance: só score/total no perfil PÚBLICO. Os checks por indicador
+        # (PASS/FAIL + ref LGPD) só em `/account/privacy/{domain}` (logado) e no laudo.
+        "privacy": _privacy_summary(privacy),
         # KL-68 — reivindicação/propriedade (nunca expõe e-mail/quem é o dono):
         "owner_verified": owner_verified,
         "claimable": not blocked,
         "block_message": domain_guard.get_block_message(block_reason) if blocked else None,
     }
+
+
+@app.get("/account/privacy/{domain}")
+async def account_privacy(domain: str, request: Request) -> dict:
+    """Indicadores DETALHADOS de privacidade (checks por indicador + referência LGPD +
+    disclaimer) de um domínio. Exige usuário logado (JWT) — os detalhes NUNCA são
+    públicos (fix compliance). A ilha do perfil público (`/site/{domain}`) chama este
+    endpoint só quando há sessão válida para revelar os detalhes ao visitante logado.
+    Respeita a mesma visibilidade do perfil público (descartado/oculto → not_found)."""
+    await auth_users.require_user(request)
+    domain = _norm_domain(domain)
+    store = get_target_store()
+    target = await store.get_target_by_domain(domain)
+    if not target or target.get("status") == "descartado":
+        return {"status": "not_found", "domain": domain}
+    tid = target["id"]
+    profile = (await store.get_site_profile(tid)) or {}
+    if profile.get("public_visible") is False:
+        return {"status": "not_found", "domain": domain}
+    privacy = None
+    try:
+        latest = await store.get_latest_scan_full(tid)
+        if latest and isinstance(latest.get("checks_json"), dict):
+            privacy = latest["checks_json"].get("privacy")
+    except Exception:  # noqa: BLE001
+        pass
+    if not privacy:
+        return {"status": "no_data", "domain": domain}
+    return {"status": "ok", "domain": domain, "privacy": privacy}
 
 
 @app.get("/public/sitemap-domains")
@@ -2676,7 +2719,11 @@ def _summary_payload(report: ScanReport, full: bool = False) -> dict:
         "free_count": len(_FREE_META),
         "paid_count": len(_PAID_META),
         "total_checks": len(_FREE_META) + len(_PAID_META),
-        "privacy": getattr(report, "privacy", None),  # KL-44 P5: indicadores (score separado)
+        # Fix compliance: no resumo GRATUITO/anônimo, só score/total dos indicadores de
+        # privacidade — os checks por indicador (PASS/FAIL + ref LGPD) só no resultado
+        # completo (`full=True`, pós-pagamento/verificação), como os demais checks pagos.
+        "privacy": (getattr(report, "privacy", None) if full
+                    else _privacy_summary(getattr(report, "privacy", None))),
         "is_full": full,
         "price": PRICE_AMOUNT,
         "price_display": PRICE_DISPLAY,
