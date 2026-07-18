@@ -41,19 +41,20 @@ export default function OwnershipVerification({ targetId, onVerified }) {
         <p className="text-sm text-slate-300">
           Enviamos um código de 6 dígitos para <b className="text-white">{hint}</b>. Verifique a caixa de entrada.
         </p>
-        <div className="flex flex-wrap items-center gap-2">
+        {/* KL-80: input ≥16px (sem zoom iOS) + alturas ≥44px; empilha no mobile. */}
+        <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
           <input
             value={code}
             onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
             inputMode="numeric" placeholder="000000"
-            className="w-32 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-center font-mono tracking-[0.4em] text-white"
+            className="h-12 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 text-center font-mono text-base tracking-[0.4em] text-white sm:w-40"
           />
           <button
             disabled={busy || code.length !== 6} onClick={verify}
-            className="rounded-lg bg-brand-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-brand-400 disabled:opacity-50">
+            className="inline-flex min-h-[44px] items-center justify-center rounded-lg bg-brand-500 px-4 text-sm font-semibold text-slate-950 transition-colors hover:bg-brand-400 active:scale-95 disabled:opacity-50">
             Verificar
           </button>
-          <button onClick={request} disabled={busy} className="text-xs text-slate-400 hover:text-white">Reenviar código</button>
+          <button onClick={request} disabled={busy} className="inline-flex min-h-[44px] items-center self-start px-1 text-sm text-slate-400 transition-colors hover:text-white">Reenviar código</button>
         </div>
         {msg && <p className="text-sm text-red-400">{msg}</p>}
       </div>

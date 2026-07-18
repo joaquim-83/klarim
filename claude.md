@@ -96,6 +96,11 @@ standalone) + **React** (islands) + **Tailwind v4** (CSS-first, sem config) +
 - **`parseUTC`** para timestamps naive do Postgres (adicionar `Z` antes de `new Date`).
 - **CSP relaxada no `/painel`** (decisão KL-51: `script-src 'unsafe-inline'`, painel é
   noindex/operator-only). O **público** usa CSP estrita (scripts inline por hash SHA-256).
+- **Responsivo (KL-80, 68% mobile):** alvos de toque **≥44px** (`min-h-[44px]`/`py-3`; links-texto
+  pequenos → `inline-flex min-h-[44px] items-center px-1`); **inputs `text-base`** (16px, nunca
+  `text-sm` — evita zoom iOS) + `h-12`; botões `w-full sm:w-auto` (empilham no mobile); **nada de
+  largura fixa que estoure 375px** (dropdowns `w-full sm:w-64`); grades `grid-cols-1` → `md:`/`lg:`;
+  `active:scale-95`/`[0.98]` p/ feedback tátil. Breakpoints Tailwind padrão (sm640/md768/lg1024/xl1280).
 
 ### E-mail (isolamento de reputação — nunca misturar)
 - **Alertas proativos:** `alerta@klarimscan.com` (domínio isolado, em warmup,

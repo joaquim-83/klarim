@@ -211,7 +211,8 @@ export default function Dashboard({ user = {} }) {
           <p className="mt-1 text-sm text-slate-400">Monitore um site para acompanhar a evolução do score todo mês.</p>
         </div>
       ) : (
-        <div className="space-y-4">
+        // KL-80: lista vertical no mobile, grade 2-col no desktop (densidade).
+        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 lg:items-start">
           {sites.map((s) => <SiteCard key={s.target_id} site={s} onRemoved={load} />)}
         </div>
       )}
@@ -261,13 +262,13 @@ function HistoryRow({ scan, onRemove }) {
         <p className="truncate font-medium text-white">{domain}</p>
         <p className="text-xs text-slate-500">{fmtDate(scan.scanned_at)}</p>
       </div>
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-2">
         <span className="text-slate-300">{HSEMA[scan.semaphore] || '⚪'} {scan.score ?? '—'}</span>
-        {/* "Ver" abre o perfil público existente (não re-escaneia). */}
+        {/* "Ver" abre o perfil público existente (não re-escaneia). KL-80: alvos de toque ≥44px. */}
         <a href={`/site/${domain}`} target="_blank" rel="noopener noreferrer"
-          className="text-brand-400 hover:text-brand-300">Ver</a>
+          className="inline-flex min-h-[44px] items-center px-2 text-brand-400 transition-colors hover:text-brand-300">Ver</a>
         <button onClick={() => onRemove && onRemove(scan.id, domain)} title="Remover do histórico"
-          className="text-slate-500 hover:text-red-400" aria-label={`Remover ${domain} do histórico`}>✕</button>
+          className="inline-flex min-h-[44px] min-w-[44px] items-center justify-center text-slate-500 transition-colors hover:text-red-400" aria-label={`Remover ${domain} do histórico`}>✕</button>
       </div>
     </li>
   );
@@ -317,21 +318,21 @@ function SiteCard({ site, onRemoved }) {
       </div>
       <div className="mt-5 flex flex-wrap gap-3">
         <a href={`/dashboard/site/${site.target_id}`}
-          className="rounded-lg bg-slate-800 px-4 py-2 text-sm font-medium text-white hover:bg-slate-700">Ver detalhes</a>
+          className="rounded-lg bg-slate-800 inline-flex min-h-[44px] items-center px-4 py-2 text-sm font-medium text-white hover:bg-slate-700">Ver detalhes</a>
         <button onClick={() => setShowTech((v) => !v)}
-          className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">
+          className="rounded-lg border border-slate-700 inline-flex min-h-[44px] items-center px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">
           🔧 Técnico e laudo {showTech ? '▾' : '▸'}
         </button>
         {site.domain && (
           <a href={`/site/${site.domain}`} target="_blank" rel="noopener noreferrer"
-            className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">
+            className="rounded-lg border border-slate-700 inline-flex min-h-[44px] items-center px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">
             🌐 Perfil público
           </a>
         )}
         <a href="/dashboard/widget"
-          className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">&lt;/&gt; Widget</a>
+          className="rounded-lg border border-slate-700 inline-flex min-h-[44px] items-center px-4 py-2 text-sm text-slate-300 hover:bg-slate-800">&lt;/&gt; Widget</a>
         <button onClick={() => setConfirmRemove(true)}
-          className="rounded-lg border border-slate-700 px-4 py-2 text-sm text-slate-400 hover:bg-slate-800 hover:text-red-300">
+          className="rounded-lg border border-slate-700 inline-flex min-h-[44px] items-center px-4 py-2 text-sm text-slate-400 hover:bg-slate-800 hover:text-red-300">
           Remover
         </button>
       </div>

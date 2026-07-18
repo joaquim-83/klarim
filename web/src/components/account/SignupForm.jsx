@@ -95,7 +95,7 @@ export default function SignupForm({ email: initialEmail = '', url = '', redirec
         </form>
         <p className="mt-6 text-sm text-slate-400">
           Não recebeu?{' '}
-          <button type="button" onClick={resend} disabled={busy} className="text-brand-400 hover:text-brand-300 disabled:opacity-50">Reenviar código</button>
+          <button type="button" onClick={resend} disabled={busy} className="inline-flex min-h-[44px] items-center px-1 text-brand-400 transition-colors hover:text-brand-300 disabled:opacity-50">Reenviar código</button>
         </p>
       </div>
     );

@@ -61,12 +61,13 @@ export default function TechnicianSection({ targetId }) {
         </ul>
       )}
 
+      {/* KL-80: input text-base (sem zoom iOS) + h-12; botão ≥44px; empilha no mobile. */}
       <form onSubmit={invite} className="mt-3 flex flex-col gap-2 sm:flex-row">
         <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)}
           placeholder="tecnico@empresa.com.br"
-          className="flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-white" />
+          className="h-12 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 text-base text-white outline-none transition-colors focus:border-brand-500" />
         <button type="submit" disabled={busy}
-          className="rounded-lg bg-brand-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-brand-400 disabled:opacity-50">
+          className="inline-flex min-h-[44px] items-center justify-center rounded-lg bg-brand-500 px-4 text-sm font-semibold text-slate-950 transition-colors hover:bg-brand-400 active:scale-95 disabled:opacity-50">
           Convidar técnico
         </button>
       </form>

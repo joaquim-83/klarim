@@ -87,7 +87,7 @@ export default function ForgotForm({ url = '', email: initialEmail = '' }) {
               onChange={(e) => setConfirm(e.target.value)} autoComplete="new-password" className={field} />
           </div>
           <button type="submit" disabled={busy} className={btn}>{busy ? 'Salvando…' : 'Redefinir senha'}</button>
-          <button type="button" onClick={() => setStep('email')} className="text-sm text-slate-400 hover:text-white">← Trocar e-mail</button>
+          <button type="button" onClick={() => setStep('email')} className="inline-flex min-h-[44px] items-center self-start px-1 text-sm text-slate-400 transition-colors hover:text-white">← Trocar e-mail</button>
         </form>
       )}
     </div>

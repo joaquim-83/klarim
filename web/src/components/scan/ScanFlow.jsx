@@ -215,12 +215,12 @@ function CodeStep({ email, code, setCode, busy, submitCode, resendCode, setStep 
           {busy ? 'Verificando…' : 'Verificar →'}
         </button>
       </form>
-      <div className="mt-4 flex items-center justify-between text-sm">
-        <button onClick={() => setStep('email')} className="text-slate-400 hover:text-white">← Trocar e-mail</button>
+      <div className="mt-2 flex items-center justify-between text-sm">
+        <button onClick={() => setStep('email')} className="inline-flex min-h-[44px] items-center px-1 text-slate-400 transition-colors hover:text-white">← Trocar e-mail</button>
         {cooldown > 0 ? (
-          <span className="text-slate-500">Reenviar em {cooldown}s</span>
+          <span className="inline-flex min-h-[44px] items-center px-1 text-slate-500">Reenviar em {cooldown}s</span>
         ) : (
-          <button onClick={() => { resendCode(); setCooldown(45); }} className="text-brand-400 hover:text-brand-300">
+          <button onClick={() => { resendCode(); setCooldown(45); }} className="inline-flex min-h-[44px] items-center px-1 text-brand-400 transition-colors hover:text-brand-300">
             Reenviar código
           </button>
         )}
@@ -497,12 +497,13 @@ function PdfControls({ exec, tech, url, email, user, hasProfile, profileDomain }
     <div className="space-y-3">
       <div className="flex flex-col gap-3 sm:flex-row">
         {(exec || tech) && (
-          <div className="relative">
+          <div className="relative w-full sm:w-auto">
             <button type="button" onClick={() => setOpen((o) => !o)} className={`${btn} w-full sm:w-auto`}>
               📄 Baixar PDF <span className="text-sm">▾</span>
             </button>
             {open && (
-              <div className="absolute z-10 mt-2 w-64 overflow-hidden rounded-xl border border-slate-700 bg-slate-900 shadow-xl">
+              // KL-80: largura responsiva (full no mobile, 16rem no desktop) — w-64 fixo estourava 375px.
+              <div className="absolute z-10 mt-2 w-full overflow-hidden rounded-xl border border-slate-700 bg-slate-900 shadow-xl sm:w-64">
                 {exec && (
                   <a href={exec} className="block px-4 py-3 text-sm text-slate-200 hover:bg-slate-800" onClick={() => setOpen(false)}>
                     📋 Relatório Executivo<br /><span className="text-xs text-slate-500">linguagem acessível</span>
@@ -517,14 +518,15 @@ function PdfControls({ exec, tech, url, email, user, hasProfile, profileDomain }
             )}
           </div>
         )}
+        {/* KL-80: botões secundários full-width no mobile (empilham), auto no desktop. */}
         <button type="button" onClick={onSendClick} disabled={busy}
-          className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-700 px-6 py-3.5 text-base font-semibold text-slate-200 transition-colors hover:bg-slate-800 disabled:opacity-60">
+          className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-slate-700 px-6 py-3.5 text-base font-semibold text-slate-200 transition-colors hover:bg-slate-800 active:scale-[0.98] disabled:opacity-60 sm:w-auto">
           {busy ? 'Enviando…' : '📧 Enviar por e-mail'}
         </button>
         {hasProfile && (
           <a href={`/site/${profileDomain}`} target="_blank" rel="noopener"
             onClick={() => window.klarimTrack?.('profile_link_clicked', { domain: profileDomain }, url)}
-            className="inline-flex items-center justify-center gap-2 rounded-xl border border-slate-700 px-6 py-3.5 text-base font-semibold text-slate-200 transition-colors hover:bg-slate-800">
+            className="inline-flex w-full items-center justify-center gap-2 rounded-xl border border-slate-700 px-6 py-3.5 text-base font-semibold text-slate-200 transition-colors hover:bg-slate-800 active:scale-[0.98] sm:w-auto">
             🔗 Ver perfil público
           </a>
         )}
