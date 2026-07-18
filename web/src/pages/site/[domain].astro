@@ -37,6 +37,17 @@ if (status === 'ok') {
   } catch { /* nunca bloqueia o perfil */ }
 }
 
+// KL-74 — sites relacionados (mesmo setor) para cross-linking. SSR (melhor p/ SEO).
+let related = [];
+if (status === 'ok') {
+  try {
+    const r = await fetch(`${API}/public/related?domain=${encodeURIComponent(domain)}&limit=8`, {
+      signal: AbortSignal.timeout(4000),
+    });
+    if (r.ok) related = (await r.json()).sites || [];
+  } catch { /* cross-linking é complementar */ }
+}
+
 const SEMA = {
   verde: { dot: '🟢', label: 'Verde', ring: 'ring-green-500/50', text: 'text-green-400' },
   amarelo: { dot: '🟡', label: 'Amarelo', ring: 'ring-yellow-500/50', text: 'text-yellow-400' },
@@ -47,6 +58,9 @@ const p = data?.profile || {};
 const cls = data?.classifications || [];
 const bench = data?.benchmark || null;
 const privacy = data?.privacy || null;  // KL-44 P5: indicadores técnicos (público = só score/total)
+const ranking = data?.ranking || null;  // KL-74: posição no ranking do setor
+const sectorSlug = t.sector && t.sector !== 'outro' ? t.sector : null;
+const sectorLabel = ranking?.sector_label || bench?.sector_label || t.sector;
 const sema = SEMA[t.semaphore] || SEMA.amarelo;
 const scoreN = t.score ?? null;
 const lastScan = t.last_scan_at ? new Date(t.last_scan_at).toLocaleDateString('pt-BR') : '—';
@@ -62,7 +76,17 @@ const ogImage = status === 'ok' ? `${SITE}/api/og/${encodeURIComponent(domain)}.
 // Fix Schema.org (2026-07-17): o Review/`itemReviewed: WebSite` era INVÁLIDO (Google
 // Search Console reprova WebSite como itemReviewed). Removido — o Organization + WebSite
 // (site-wide, no Base) seguem válidos, e o score já é capturado pelo <title>/description/OG.
-const jsonLd = undefined;
+// KL-74 — BreadcrumbList (Início → Setores → {Setor} → {domínio}) reforça a navegação
+// hierárquica para o Google. Só quando há setor real (senão a trilha fica incompleta).
+const jsonLd = status === 'ok' && sectorSlug ? {
+  '@context': 'https://schema.org', '@type': 'BreadcrumbList',
+  itemListElement: [
+    { '@type': 'ListItem', position: 1, name: 'Início', item: SITE },
+    { '@type': 'ListItem', position: 2, name: 'Setores', item: `${SITE}/setores` },
+    { '@type': 'ListItem', position: 3, name: sectorLabel, item: `${SITE}/setor/${sectorSlug}` },
+    { '@type': 'ListItem', position: 4, name: domain, item: `${SITE}/site/${domain}` },
+  ],
+} : undefined;
 
 const card = 'rounded-2xl border border-slate-800 bg-slate-900/60 p-6';
 
@@ -147,6 +171,19 @@ if (hasContact) {
 
     {status === 'ok' && (
       <div class="space-y-6">
+        {/* KL-74 — trilha de navegação (Início → Setores → Setor → domínio). */}
+        <nav aria-label="Trilha" class="flex flex-wrap items-center gap-x-1.5 text-sm text-slate-500">
+          <a href="/" class="hover:text-brand-300">Início</a> <span class="text-slate-700">→</span>
+          <a href="/setores" class="hover:text-brand-300">Setores</a>
+          {sectorSlug && (
+            <>
+              <span class="text-slate-700">→</span>
+              <a href={`/setor/${sectorSlug}`} class="hover:text-brand-300">{sectorLabel}</a>
+            </>
+          )}
+          <span class="text-slate-700">→</span>
+          <span class="truncate text-slate-400">{domain}</span>
+        </nav>
         <div class="flex items-center gap-4">
           <div class="flex h-14 w-14 shrink-0 items-center justify-center rounded-2xl bg-brand-500/15 text-2xl font-bold text-brand-400 ring-1 ring-brand-500/30">{monogram}</div>
           <div class="min-w-0">
@@ -223,6 +260,12 @@ if (hasContact) {
             <p class="text-sm font-medium uppercase tracking-wide text-brand-400/80">Benchmark{bench.sector_label ? ` — ${bench.sector_label}` : ''}</p>
             <p class="mt-2 text-slate-300">Score deste site: <span class="font-bold text-white">{scoreN}</span> · Média{bench.scope === 'sector' ? ' do setor' : ' nacional'}: <span class="font-bold text-white">{bench.avg_score}</span>{bench.median != null ? <span class="text-slate-500"> · mediana {bench.median}</span> : null}</p>
             <p class="mt-1 text-sm text-slate-400">{scoreN >= bench.avg_score ? 'Acima da média ↑' : 'Abaixo da média ↓ — há espaço para melhorar.'}</p>
+            {ranking && ranking.total > 0 && (
+              <p class="mt-3 text-sm text-slate-300">
+                Posição <span class="font-bold text-white">{ranking.position}</span> de {ranking.total}
+                {sectorSlug ? <> no setor <a href={`/setor/${sectorSlug}`} class="text-brand-400 hover:text-brand-300">{sectorLabel}</a></> : ' no setor'}
+              </p>
+            )}
             {bench.distribution && (
               <div class="mt-4 space-y-1 text-sm">
                 <p class="text-xs uppercase tracking-wide text-slate-500">Distribuição do setor ({bench.count} sites)</p>
@@ -231,6 +274,32 @@ if (hasContact) {
                 <p class="text-slate-300">🔴 Crítico (&lt;50): <span class="font-semibold text-white">{bench.distribution.red_pct}%</span></p>
               </div>
             )}
+          </div>
+        )}
+
+        {/* KL-74 — cross-linking: outros sites do setor. Mobile: scroll horizontal
+            (swipe); md+: grade. Card inteiro clicável (≥44px). */}
+        {related.length > 0 && (
+          <div>
+            <div class="flex items-baseline justify-between gap-3">
+              <h2 class="text-lg font-bold text-white">Outros sites{sectorLabel ? ` de ${sectorLabel}` : ''}</h2>
+              {sectorSlug && (
+                <a href={`/setor/${sectorSlug}`} class="shrink-0 text-sm text-brand-400 hover:text-brand-300">Ver todos →</a>
+              )}
+            </div>
+            <div class="mt-4 flex snap-x gap-3 overflow-x-auto pb-2 md:grid md:grid-cols-2 md:overflow-visible lg:grid-cols-4">
+              {related.map((r) => (
+                <a href={`/site/${r.domain}`}
+                  class="flex min-h-[44px] w-52 shrink-0 snap-start items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/60 p-3 hover:border-brand-500/40 md:w-auto">
+                  <span class="text-lg">{(SEMA[r.semaphore] || sema).dot}</span>
+                  <span class="min-w-0 flex-1">
+                    <span class="block truncate text-sm font-medium text-brand-300">{r.domain}</span>
+                    {r.company_name && <span class="block truncate text-xs text-slate-500">{r.company_name}</span>}
+                  </span>
+                  <span class="shrink-0 text-sm font-bold text-white">{r.score}</span>
+                </a>
+              ))}
+            </div>
           </div>
         )}
 

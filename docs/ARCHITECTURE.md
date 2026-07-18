@@ -68,6 +68,32 @@ mantém o build Vite em `/painel*`. O painel admin não mudou.
 - **CSP:** público estrito (scripts inline por hash SHA-256); `/painel` relaxado
   (`script-src 'unsafe-inline'`, painel é noindex/operator-only). Ver `docs/SECURITY.md`.
 
+### Arquitetura de conteúdo navegável (KL-74)
+
+Transforma os perfis-ilha (`/site/{domain}`) num ecossistema **mobile-first** (68% do
+tráfego) que conduz ao scanner. Camadas:
+
+1. **APIs públicas** (`api/main.py`, prefixo `/public/*`): `sectors` (índice),
+   `sector/{slug}` (benchmark + ranking paginado + top fails + score-100), `top-fails`,
+   `related` (cross-linking), `best` (vitrine score 100), `stats` (números da
+   plataforma). Consultam `discovery/store.py` (`public_sector_*`, `public_related_sites`,
+   `public_score_100_sites`, `public_platform_stats`) — **mesma visibilidade dos rankings
+   KL-42** (`site_profile.public_visible` ≠ FALSE, `status IN ('scanned','alerted')`);
+   nunca `contact_email`/CNPJ. **Cache Redis** 1h (setores/detalhe/related/best/stats) e
+   24h (top-fails), com `Cache-Control public, max-age`. Rate limit **30/min/IP real**;
+   SSR interno (sem `X-Forwarded-For`) isento.
+2. **Páginas SSR** (`web/src/pages/`): `setores.astro`, `setor/[slug].astro`,
+   `melhores.astro`, `estatisticas.astro` — todas `prerender=false`, sem ilhas (HTML puro:
+   LCP baixo + zero risco de CSP). Contadores **estáticos** (a CSP pública proíbe script
+   inline não-hasheado). SEO: `ItemList` + `BreadcrumbList`.
+3. **Navegação contextual** no perfil: breadcrumb + `BreadcrumbList`, posição no ranking
+   do setor (`get_sector_position`), seção "Outros sites do setor" (`/public/related`, SSR).
+4. **`ScanCTA.astro`** reutilizável (input+botão empilham no mobile, inline em `sm:`,
+   alturas ≥48px, texto ≥16px p/ não dar zoom no iOS).
+5. **SEO/infra**: allowlist Nginx (`setores|setor|melhores|estatisticas`) — **antes** das
+   páginas (senão caem no fallback SPA Vite); `sitemap.xml` inclui `/setor/{slug}` por
+   setor ≥10 sites; footer com Setores/Melhores/Estatísticas.
+
 ## 5. Scanner engine (`scanner/`)
 
 - **`runner.py`** roda os 48 checks em **paralelo** (`asyncio.gather` +

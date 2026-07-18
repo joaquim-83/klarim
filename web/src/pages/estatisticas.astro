@@ -1,0 +1,115 @@
+---
+export const prerender = false; // SSR: números da plataforma + SEO
+
+import Base from '../layouts/Base.astro';
+import Header from '../components/Header.astro';
+import Footer from '../components/Footer.astro';
+import ScanCTA from '../components/ScanCTA.astro';
+
+const API = process.env.KLARIM_API_URL || 'http://api:8000';
+
+let stats = null;
+try {
+  const res = await fetch(`${API}/public/stats`, { signal: AbortSignal.timeout(6000) });
+  if (res.ok) stats = await res.json();
+} catch { /* backend fora → só o CTA */ }
+
+const s = stats || {};
+const dist = s.distribution || {};
+const safest = s.safest_sectors || [];
+const opportunity = s.opportunity_sectors || [];
+// Contadores estáticos (renderizados no SSR). A CSP pública proíbe script inline não
+// hasheado — nada de animação por JS aqui; os números já vêm prontos e o LCP fica baixo.
+const nf = (n) => Number(n || 0).toLocaleString('pt-BR');
+const counters = [
+  { value: nf(s.total_targets), label: 'sites analisados' },
+  { value: nf(s.total_scans), label: 'varreduras realizadas' },
+  { value: nf(s.score_100_count), label: 'sites com score perfeito' },
+  { value: s.checks_per_site || 48, label: 'verificações por site' },
+  { value: nf(s.sectors_count), label: 'setores monitorados' },
+];
+
+const title = 'Segurança web no Brasil em números';
+const desc = stats
+  ? `${nf(s.total_targets)} sites analisados, ${nf(s.total_scans)} varreduras e ${nf(s.score_100_count)} sites com score perfeito. Os números da segurança web brasileira.`
+  : 'Os números da segurança web no Brasil, medidos pelo Klarim.';
+
+const card = 'rounded-2xl border border-slate-800 bg-slate-900/60 p-5 sm:p-6';
+const semaFor = (v) => (v >= 90 ? '🟢' : v >= 50 ? '🟡' : '🔴');
+---
+
+<Base title={title} fullTitleOverride={`${title} | Klarim`} description={desc} path="/estatisticas">
+  <Header />
+  <main class="mx-auto max-w-4xl px-5 pt-28 pb-20 sm:pt-32">
+    <nav aria-label="Trilha" class="text-sm text-slate-500">
+      <a href="/" class="hover:text-brand-300">Início</a> <span class="text-slate-700">→</span>
+      <span class="text-slate-400">Estatísticas</span>
+    </nav>
+    <h1 class="mt-3 text-2xl font-bold tracking-tight text-white sm:text-3xl">Klarim em números</h1>
+    <p class="mt-2 max-w-2xl text-slate-400">O panorama da segurança web brasileira, medido por análise passiva.</p>
+
+    <div class="mt-8 grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-5">
+      {counters.map((c) => (
+        <div class={`${card} text-center`}>
+          <p class="text-2xl font-extrabold text-brand-300 sm:text-3xl">{c.value}</p>
+          <p class="mt-1 text-xs text-slate-400 sm:text-sm">{c.label}</p>
+        </div>
+      ))}
+    </div>
+
+    {(dist.verde_pct != null) && (
+      <div class={`${card} mt-8`}>
+        <h2 class="text-lg font-bold text-white">Distribuição de scores</h2>
+        <div class="mt-4 space-y-3 text-sm">
+          <div>
+            <div class="flex justify-between"><span class="text-slate-300">🟢 Excelente (≥90)</span><span class="font-semibold text-white">{dist.verde_pct}%</span></div>
+            <div class="mt-1 h-2 overflow-hidden rounded-full bg-slate-800"><div class="h-full bg-green-500" style={`width:${dist.verde_pct}%`}></div></div>
+          </div>
+          <div>
+            <div class="flex justify-between"><span class="text-slate-300">🟡 Adequado (50–89)</span><span class="font-semibold text-white">{dist.amarelo_pct}%</span></div>
+            <div class="mt-1 h-2 overflow-hidden rounded-full bg-slate-800"><div class="h-full bg-yellow-500" style={`width:${dist.amarelo_pct}%`}></div></div>
+          </div>
+          <div>
+            <div class="flex justify-between"><span class="text-slate-300">🔴 Crítico (&lt;50)</span><span class="font-semibold text-white">{dist.vermelho_pct}%</span></div>
+            <div class="mt-1 h-2 overflow-hidden rounded-full bg-slate-800"><div class="h-full bg-red-500" style={`width:${dist.vermelho_pct}%`}></div></div>
+          </div>
+        </div>
+      </div>
+    )}
+
+    {(safest.length > 0 || opportunity.length > 0) && (
+      <div class="mt-8 grid grid-cols-1 gap-4 md:grid-cols-2">
+        {safest.length > 0 && (
+          <div class={card}>
+            <h2 class="text-lg font-bold text-white">Setores mais seguros</h2>
+            <ul class="mt-3 space-y-2 text-sm">
+              {safest.map((x) => (
+                <li class="flex items-center justify-between gap-3">
+                  <a href={`/setor/${x.slug}`} class="text-brand-400 hover:text-brand-300">{semaFor(x.avg_score)} {x.name}</a>
+                  <span class="shrink-0 font-semibold text-white">{x.avg_score}/100</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+        {opportunity.length > 0 && (
+          <div class={card}>
+            <h2 class="text-lg font-bold text-white">Setores com mais oportunidade</h2>
+            <ul class="mt-3 space-y-2 text-sm">
+              {opportunity.map((x) => (
+                <li class="flex items-center justify-between gap-3">
+                  <a href={`/setor/${x.slug}`} class="text-brand-400 hover:text-brand-300">{semaFor(x.avg_score)} {x.name}</a>
+                  <span class="shrink-0 font-semibold text-white">{x.avg_score}/100</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
+    )}
+
+    <ScanCTA class="mt-10" title="Descubra onde seu site se encaixa"
+      subtitle="Verifique grátis e compare com a média do seu setor." id="scan-estat" />
+  </main>
+  <Footer />
+</Base>

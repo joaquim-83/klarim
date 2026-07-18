@@ -139,9 +139,10 @@ server {
         add_header Cache-Control "no-store" always;
     }
     # Perfis públicos SEO (KL-51 f4): /site/{dominio}, /score/{dominio} (redirect), os
-    # rankings por setor (KL-42) e o sitemap. Cacheáveis (sem form) — cache curto para
+    # rankings por setor (KL-42), a arquitetura de conteúdo (KL-74: /setores, /setor/{slug},
+    # /melhores, /estatisticas) e o sitemap. Cacheáveis (sem form) — cache curto para
     # aguentar tráfego orgânico.
-    location ~ ^/(site|score|ranking|sitemap\.xml)(/|$) {
+    location ~ ^/(site|score|ranking|setores|setor|melhores|estatisticas|sitemap\.xml)(/|$) {
         resolver 127.0.0.11 valid=10s ipv6=off;
         set $klarim_astro astro:4321;
         proxy_pass http://$klarim_astro;

@@ -264,12 +264,12 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
 
 ---
 
-## 7. Estado atual (atualizado em 2026-07-16)
+## 7. Estado atual (atualizado em 2026-07-18)
 
 - Alvos: ~25.400 · Scans: ~8.100 · Perfis públicos: ~7.200
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **814+ passed** · MCP tools: **49+**
+- Testes: **985+ passed** · MCP tools: **49+**
 - Workers: **5/5 ativos** (discovery, alert, scan, vigília, rescan)
 - Planos: 8 contas Pro trial · Vigílias: 35 (30 ok, 5 error)
 - E-mail: `klarimscan.com` verificado, warmup ativo
@@ -349,6 +349,19 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   `has_other_owner` + badge de técnico + link "Perfil público" + remover site self-service
   (`DELETE /account/sites/{id}` revoga posse + desativa vigílias); painel Usuários com coluna
   Perfil (owner/technician/both))
+- **KL-74** — Arquitetura de conteúdo navegável ✅ (transforma os perfis-ilha em ecossistema
+  mobile-first que conduz ao scanner). **5 endpoints públicos** `/public/{sectors,sector/{slug},
+  top-fails,related,best,stats}` (só sites `public_visible`; nunca `contact_email`; rate limit
+  30/min/IP real, SSR interno isento; cache Redis 1–24h). **4 páginas Astro SSR**: `/setores`
+  (índice + ItemList), `/setor/{slug}` (benchmark + ranking paginado + top fails + score-100 +
+  Breadcrumb/ItemList), `/melhores` (vitrine score 100 por setor), `/estatisticas` (contadores
+  estáticos — CSP proíbe script inline não-hasheado). Navegação contextual no perfil
+  (`/site/{domain}`): breadcrumb + `BreadcrumbList`, **posição no ranking** do setor, seção
+  "Outros sites do setor" (cross-linking via `/public/related`, SSR). `ScanCTA.astro`
+  reutilizável (input+botão empilham no mobile, inline em `sm:`, alturas ≥48px). Rotas na
+  allowlist Nginx (`setores|setor|melhores|estatisticas`) + sitemap (`/setor/{slug}` por setor)
+  + footer (Setores/Melhores/Estatísticas). **Mobile-first** (68% do tráfego): 375px primeiro,
+  toque ≥44px, sem hover-only, body ≥16px.
 - **KL-64** — Analytics tracker (pendente)
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos

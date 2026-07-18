@@ -21,17 +21,33 @@ export async function GET() {
     if (res.ok) sectors = (await res.json()).sectors || [];
   } catch { /* backend fora → sem rankings no sitemap */ }
 
+  // KL-74 — setores da arquitetura de conteúdo (≥ 10 sites públicos): /setor/{slug}.
+  let contentSectors = [];
+  try {
+    const res = await fetch(`${API}/public/sectors`, { signal: AbortSignal.timeout(8000) });
+    if (res.ok) contentSectors = (await res.json()).sectors || [];
+  } catch { /* backend fora → sem páginas de setor no sitemap */ }
+
   const staticUrls = [
     `<url><loc>${SITE}/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>`,
     `<url><loc>${SITE}/sobre</loc><changefreq>monthly</changefreq><priority>0.5</priority></url>`,
     `<url><loc>${SITE}/scan</loc><changefreq>weekly</changefreq><priority>0.6</priority></url>`,
     `<url><loc>${SITE}/ranking</loc><changefreq>daily</changefreq><priority>0.8</priority></url>`,
+    // KL-74 — arquitetura de conteúdo navegável.
+    `<url><loc>${SITE}/setores</loc><changefreq>daily</changefreq><priority>0.8</priority></url>`,
+    `<url><loc>${SITE}/melhores</loc><changefreq>daily</changefreq><priority>0.7</priority></url>`,
+    `<url><loc>${SITE}/estatisticas</loc><changefreq>daily</changefreq><priority>0.6</priority></url>`,
   ];
   const rankingUrls = sectors
     .filter((s) => s && s.sector)
     .map((s) =>
       `<url><loc>${SITE}/ranking/${esc(s.sector)}</loc>` +
       `<changefreq>weekly</changefreq><priority>0.6</priority></url>`);
+  const sectorUrls = contentSectors
+    .filter((s) => s && s.slug)
+    .map((s) =>
+      `<url><loc>${SITE}/setor/${esc(s.slug)}</loc>` +
+      `<changefreq>weekly</changefreq><priority>0.7</priority></url>`);
   const profileUrls = domains
     .filter((d) => d && d.domain)
     .map((d) =>
@@ -42,7 +58,7 @@ export async function GET() {
   const xml =
     `<?xml version="1.0" encoding="UTF-8"?>\n` +
     `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
-    [...staticUrls, ...rankingUrls, ...profileUrls].join('\n') +
+    [...staticUrls, ...rankingUrls, ...sectorUrls, ...profileUrls].join('\n') +
     `\n</urlset>\n`;
 
   return new Response(xml, {

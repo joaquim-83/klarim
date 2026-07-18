@@ -3859,6 +3859,216 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    # --- KL-74: arquitetura de conteúdo navegável -------------------------- #
+    # Visibilidade dos listados = a MESMA dos rankings KL-42: só sites escaneados
+    # (`status IN ('scanned','alerted')`, `last_scan_score IS NOT NULL`) COM landing
+    # pública (`site_profile.public_visible` != FALSE). Nada expõe contact_email/cnpj.
+
+    async def public_sector_index(self, min_count: int = 10) -> List[Dict[str, Any]]:
+        """KL-74 — índice de setores com perfil público (≥ `min_count` sites visíveis):
+        contagem, média, mediana, distribuição por semáforo e nº de scores 100. Exclui
+        'outro'. Ordena por contagem desc (setor mais populoso primeiro)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT t.sector, COUNT(*) AS count, "
+                "  COALESCE(ROUND(AVG(t.last_scan_score)), 0) AS avg_score, "
+                "  COALESCE(ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP "
+                "    (ORDER BY t.last_scan_score)), 0) AS median_score, "
+                "  COUNT(*) FILTER (WHERE t.last_scan_score >= 90) AS verde, "
+                "  COUNT(*) FILTER (WHERE t.last_scan_score >= 50 "
+                "                   AND t.last_scan_score < 90) AS amarelo, "
+                "  COUNT(*) FILTER (WHERE t.last_scan_score < 50) AS vermelho, "
+                "  COUNT(*) FILTER (WHERE t.last_scan_score = 100) AS score_100 "
+                "FROM targets t JOIN site_profile sp ON sp.target_id = t.id "
+                "WHERE t.status IN ('scanned', 'alerted') AND t.last_scan_score IS NOT NULL "
+                "  AND t.sector IS NOT NULL AND t.sector <> '' AND t.sector <> 'outro' "
+                "  AND COALESCE(sp.public_visible, TRUE) = TRUE "
+                "GROUP BY t.sector HAVING COUNT(*) >= %s "
+                "ORDER BY COUNT(*) DESC", (min_count,))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def public_sector_stats(self, sector: str) -> Dict[str, Any]:
+        """KL-74 — agregado de um setor sobre os sites com perfil público (count, média,
+        mediana, distribuição por semáforo + nº de score 100). Sem corte mínimo — a
+        página decide se indexa."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT COUNT(*), COALESCE(ROUND(AVG(t.last_scan_score)), 0), "
+                "  COALESCE(ROUND(PERCENTILE_CONT(0.5) WITHIN GROUP "
+                "    (ORDER BY t.last_scan_score)), 0), "
+                "  COUNT(*) FILTER (WHERE t.last_scan_score >= 90), "
+                "  COUNT(*) FILTER (WHERE t.last_scan_score >= 50 "
+                "                   AND t.last_scan_score < 90), "
+                "  COUNT(*) FILTER (WHERE t.last_scan_score < 50), "
+                "  COUNT(*) FILTER (WHERE t.last_scan_score = 100) "
+                "FROM targets t JOIN site_profile sp ON sp.target_id = t.id "
+                "WHERE t.sector = %s AND t.status IN ('scanned', 'alerted') "
+                "  AND t.last_scan_score IS NOT NULL "
+                "  AND COALESCE(sp.public_visible, TRUE) = TRUE", (sector,))
+            r = cur.fetchone()
+            count = int(r[0] or 0)
+            green, yellow, red = int(r[3] or 0), int(r[4] or 0), int(r[5] or 0)
+            def _pct(n):
+                return round(100 * n / count) if count else 0
+            return {"count": count, "avg_score": int(r[1] or 0),
+                    "median_score": int(r[2] or 0), "score_100_count": int(r[6] or 0),
+                    "distribution": {"verde": green, "amarelo": yellow, "vermelho": red,
+                                     "verde_pct": _pct(green), "amarelo_pct": _pct(yellow),
+                                     "vermelho_pct": _pct(red)}}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    _PUBLIC_SITE_SORTS = {
+        "score_desc": "t.last_scan_score DESC, t.domain ASC",
+        "score_asc": "t.last_scan_score ASC, t.domain ASC",
+        "domain_asc": "t.domain ASC",
+    }
+
+    async def public_sector_sites(self, sector: str, limit: int = 20, offset: int = 0,
+                                  sort: str = "score_desc") -> List[Dict[str, Any]]:
+        """KL-74 — sites de um setor com perfil público, paginado. Traz semáforo real e
+        privacy_score do último scan e se há dono verificado (sem expor quem). `sort` é
+        validado contra a allowlist (o valor entra na query por interpolação)."""
+        order = self._PUBLIC_SITE_SORTS.get(sort, self._PUBLIC_SITE_SORTS["score_desc"])
+        def _fn(cur):
+            cur.execute(
+                "SELECT t.domain, t.last_scan_score AS score, "
+                "  COALESCE(sc.semaphore, '') AS semaphore, "
+                "  sp.company_name, sp.description, t.last_scan_at, "
+                "  (sc.checks_json->'privacy'->>'score') AS privacy_score, "
+                "  EXISTS(SELECT 1 FROM user_sites us WHERE us.target_id = t.id "
+                "         AND us.is_owner = TRUE) AS owner_verified "
+                "FROM targets t JOIN site_profile sp ON sp.target_id = t.id "
+                "LEFT JOIN scans sc ON sc.id = t.last_scan_id "
+                "WHERE t.sector = %s AND t.status IN ('scanned', 'alerted') "
+                "  AND t.last_scan_score IS NOT NULL "
+                "  AND COALESCE(sp.public_visible, TRUE) = TRUE "
+                "ORDER BY " + order + " LIMIT %s OFFSET %s", (sector, limit, offset))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def public_sector_top_fails(self, sector: str, limit: int = 5,
+                                      sample: int = 3000) -> Dict[str, Any]:
+        """KL-74 — checks que mais FALHAM num setor, a partir do `checks_json->'results'`
+        do último scan de cada site público. Retorna {scanned, fails:[{check_name,
+        fail_count, fail_pct, severity}]}."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT sc.checks_json->'results' FROM targets t "
+                "JOIN site_profile sp ON sp.target_id = t.id "
+                "JOIN scans sc ON sc.id = t.last_scan_id "
+                "WHERE t.sector = %s AND t.status IN ('scanned', 'alerted') "
+                "  AND t.last_scan_score IS NOT NULL "
+                "  AND COALESCE(sp.public_visible, TRUE) = TRUE "
+                "  AND sc.checks_json ? 'results' LIMIT %s", (sector, sample))
+            by_name: Dict[str, Dict[str, Any]] = {}
+            scanned = 0
+            for (results,) in cur.fetchall():
+                if not isinstance(results, list):
+                    continue
+                scanned += 1
+                for c in results:
+                    if not isinstance(c, dict) or c.get("status") != "FAIL":
+                        continue
+                    name = c.get("name")
+                    if not name:
+                        continue
+                    d = by_name.setdefault(name, {"check_name": name, "fail_count": 0,
+                                                  "severity": c.get("severity") or "MEDIA"})
+                    d["fail_count"] += 1
+            return {"scanned": scanned, "by_name": by_name}
+
+        raw = await asyncio.to_thread(self._run, _fn)
+        scanned = raw["scanned"]
+        fails = sorted(raw["by_name"].values(),
+                       key=lambda d: d["fail_count"], reverse=True)[:limit]
+        for f in fails:
+            f["fail_pct"] = round(100 * f["fail_count"] / scanned) if scanned else 0
+        return {"scanned": scanned, "fails": fails}
+
+    async def public_related_sites(self, sector: str, exclude_domain: str,
+                                   limit: int = 8) -> List[Dict[str, Any]]:
+        """KL-74 — sites do mesmo setor (exceto o atual) por score desc, para
+        cross-linking. Completa com sites públicos de outros setores se faltar."""
+        def _fn(cur):
+            def _q(where_sector, params):
+                cur.execute(
+                    "SELECT t.domain, t.last_scan_score AS score, "
+                    "  COALESCE(sc.semaphore, '') AS semaphore, sp.company_name, t.sector "
+                    "FROM targets t JOIN site_profile sp ON sp.target_id = t.id "
+                    "LEFT JOIN scans sc ON sc.id = t.last_scan_id "
+                    "WHERE " + where_sector + " AND t.status IN ('scanned', 'alerted') "
+                    "  AND t.last_scan_score IS NOT NULL "
+                    "  AND COALESCE(sp.public_visible, TRUE) = TRUE "
+                    "ORDER BY t.last_scan_score DESC, t.domain ASC LIMIT %s", params)
+                return self._rows_to_dicts(cur)
+
+            rows = _q("t.sector = %s AND t.domain <> %s", (sector, exclude_domain, limit))
+            if len(rows) < limit:  # completa com quaisquer sites públicos
+                have = {r["domain"] for r in rows} | {exclude_domain}
+                for r in _q("TRUE", (limit * 3,)):
+                    if len(rows) >= limit:
+                        break
+                    if r["domain"] in have:
+                        continue
+                    have.add(r["domain"])
+                    rows.append(r)
+            return rows
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def public_score_100_sites(self, sector: Optional[str] = None,
+                                     limit: int = 200) -> List[Dict[str, Any]]:
+        """KL-74 — sites com score perfeito (100), públicos. Opcionalmente de um setor.
+        Serve a vitrine /melhores (agrupada por setor) e o destaque na página de setor."""
+        def _fn(cur):
+            base = (
+                "SELECT t.domain, t.sector, sp.company_name, "
+                "  EXISTS(SELECT 1 FROM user_sites us WHERE us.target_id = t.id "
+                "         AND us.is_owner = TRUE) AS owner_verified "
+                "FROM targets t JOIN site_profile sp ON sp.target_id = t.id "
+                "WHERE t.last_scan_score = 100 AND t.status IN ('scanned', 'alerted') "
+                "  AND COALESCE(sp.public_visible, TRUE) = TRUE ")
+            if sector:
+                cur.execute(base + "AND t.sector = %s ORDER BY t.domain ASC LIMIT %s",
+                            (sector, limit))
+            else:
+                cur.execute(base + "ORDER BY t.sector ASC, t.domain ASC LIMIT %s", (limit,))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def public_platform_stats(self) -> Dict[str, Any]:
+        """KL-74 — números públicos da plataforma: total de alvos, scans, sites
+        escaneados, scores 100 e distribuição por semáforo (sobre alvos com score)."""
+        def _fn(cur):
+            cur.execute("SELECT COUNT(*) FROM targets")
+            total_targets = int(cur.fetchone()[0] or 0)
+            cur.execute("SELECT COUNT(*) FROM scans")
+            total_scans = int(cur.fetchone()[0] or 0)
+            cur.execute(
+                "SELECT COUNT(*), "
+                "  COUNT(*) FILTER (WHERE last_scan_score >= 90), "
+                "  COUNT(*) FILTER (WHERE last_scan_score >= 50 AND last_scan_score < 90), "
+                "  COUNT(*) FILTER (WHERE last_scan_score < 50), "
+                "  COUNT(*) FILTER (WHERE last_scan_score = 100) "
+                "FROM targets WHERE last_scan_score IS NOT NULL")
+            r = cur.fetchone()
+            scanned = int(r[0] or 0)
+            green, yellow, red = int(r[1] or 0), int(r[2] or 0), int(r[3] or 0)
+            def _pct(n):
+                return round(100 * n / scanned) if scanned else 0
+            return {"total_targets": total_targets, "total_scans": total_scans,
+                    "scanned": scanned, "score_100_count": int(r[4] or 0),
+                    "distribution": {"verde": green, "amarelo": yellow, "vermelho": red,
+                                     "verde_pct": _pct(green), "amarelo_pct": _pct(yellow),
+                                     "vermelho_pct": _pct(red)}}
+
+        return await asyncio.to_thread(self._run, _fn)
+
     # --- métricas operacionais (KL-16) ------------------------------------- #
 
     async def scan_today_stats(self) -> Dict[str, Any]:

@@ -1,0 +1,55 @@
+---
+// KL-74 — CTA de scan contextual, reutilizável em todas as páginas de exploração.
+// Mobile-first: input + botão empilham (full-width) no celular e ficam lado a lado a
+// partir de `sm:` (640px). Alturas ≥ 48px (thumb-friendly) e texto ≥ 16px (evita o
+// zoom automático do iOS). Funciona sem JS (GET /scan?url=...) — form-action 'self'.
+interface Props {
+  /** Frase de destaque acima do formulário (contextual por página). */
+  title?: string;
+  /** Subtítulo opcional. */
+  subtitle?: string;
+  /** id único do input (evita colisão quando o CTA aparece mais de uma vez). */
+  id?: string;
+  /** Valor pré-preenchido da URL (ex.: domínio do perfil atual). */
+  url?: string;
+  class?: string;
+}
+const {
+  title = 'Verifique o score de segurança do seu site',
+  subtitle = 'Grátis, em 30 segundos. Sem cadastro para ver o resultado.',
+  id = 'scan-cta',
+  url = '',
+  class: cls = '',
+} = Astro.props;
+---
+
+<section class={`rounded-2xl border border-brand-500/30 bg-brand-500/5 p-5 text-center sm:p-6 ${cls}`}>
+  <p class="text-lg font-bold text-white">🔍 {title}</p>
+  {subtitle && <p class="mt-1 text-sm text-slate-300">{subtitle}</p>}
+  <form action="/scan" method="get" class="mx-auto mt-4 flex max-w-xl flex-col gap-2 sm:flex-row">
+    <label for={id} class="sr-only">URL do site</label>
+    <input
+      id={id}
+      name="url"
+      type="text"
+      inputmode="url"
+      autocomplete="url"
+      autocapitalize="none"
+      autocorrect="off"
+      spellcheck="false"
+      required
+      value={url}
+      placeholder="seusite.com.br"
+      class="h-12 w-full rounded-xl border border-slate-700 bg-slate-800/80 px-4 text-base text-white placeholder:text-slate-500 outline-none transition-colors focus:border-brand-500 focus:ring-2 focus:ring-brand-500/30 sm:flex-1"
+    />
+    <button
+      type="submit"
+      class="inline-flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-brand-500 px-6 text-base font-semibold text-slate-950 transition-transform hover:bg-brand-400 active:scale-95 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-300 sm:w-auto"
+    >
+      Verificar
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+      </svg>
+    </button>
+  </form>
+</section>

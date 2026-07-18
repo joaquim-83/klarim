@@ -1743,6 +1743,16 @@ async def public_profile(domain: str) -> dict:
     # KL-68: há dono verificado? (não expõe QUEM). Domínio público não é reivindicável.
     owner_verified = await store.site_has_owner(tid)
     blocked, block_reason = domain_guard.is_blocked_domain(domain)
+    # KL-74: posição do site no ranking do setor (para a navegação contextual do perfil).
+    ranking = None
+    if sector and sector != "outro":
+        try:
+            pos = await store.get_sector_position(sector, tid)
+            if pos:
+                ranking = {"position": pos["position"], "total": pos["total"],
+                           "sector": sector, "sector_label": _sector_label(sector)}
+        except Exception:  # noqa: BLE001 - ranking é complementar
+            ranking = None
     return {
         "status": "ok",
         "domain": domain,
@@ -1764,6 +1774,8 @@ async def public_profile(domain: str) -> dict:
         "owner_verified": owner_verified,
         "claimable": not blocked,
         "block_message": domain_guard.get_block_message(block_reason) if blocked else None,
+        # KL-74 — posição no ranking do setor (navegação contextual).
+        "ranking": ranking,
     }
 
 
@@ -2133,6 +2145,256 @@ async def api_ranking_sector(sector: str,
     return {"sector": sector, "label": _sector_label(sector),
             "avg_score": int(avg.get("avg_score") or 0),
             "count": int(avg.get("count") or 0), "sites": sites}
+
+
+# --------------------------------------------------------------------------- #
+# KL-74 — arquitetura de conteúdo navegável: endpoints públicos de setores,
+# vitrine e estatísticas (o Astro SSR os consome em /setores, /setor/{slug},
+# /melhores, /estatisticas). NUNCA expõem contact_email/cnpj; só sites com perfil
+# público (mesma visibilidade dos rankings KL-42). Cache Redis agressivo (1–24h).
+# --------------------------------------------------------------------------- #
+
+_PUBLIC_CONTENT_RL_MAX, _PUBLIC_CONTENT_RL_WIN = 30, 60  # 30/min por IP real
+_public_content_attempts: dict = {}   # fallback in-memory do _redis_allow
+
+
+async def _public_content_guard(request: Request, namespace: str) -> None:
+    """Rate limit dos endpoints públicos de conteúdo (KL-74): 30/min por IP real.
+    Chamadas SSR internas (container→container, sem X-Forwarded-For) NÃO são limitadas —
+    senão o IP único do container Astro estouraria o teto sob carga orgânica."""
+    if not request.headers.get("x-forwarded-for"):
+        return  # tráfego interno (SSR) — não conta
+    allowed, retry = await _redis_allow(namespace, _client_ip(request),
+                                        _PUBLIC_CONTENT_RL_MAX, _PUBLIC_CONTENT_RL_WIN,
+                                        _public_content_attempts)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Muitos acessos. Aguarde um instante.",
+                            headers={"Retry-After": str(retry)})
+
+
+def _short(text: Optional[str], n: int = 120) -> Optional[str]:
+    """Trunca a descrição para o resumo público (sem cortar no meio de palavra)."""
+    t = (text or "").strip()
+    if len(t) <= n:
+        return t or None
+    return t[:n].rsplit(" ", 1)[0].rstrip(" ,.;:") + "…"
+
+
+def _pub_int(v) -> Optional[int]:
+    try:
+        return int(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+@app.get("/public/sectors")
+async def public_sectors(request: Request) -> dict:
+    """KL-74 — índice de setores com perfil público (≥ 10 sites): contagem, média,
+    mediana, distribuição por semáforo e nº de scores 100. Cache Redis 1h."""
+    await _public_content_guard(request, "pub_sectors")
+    cached = await _cache_get("public:sectors")
+    if cached is not None:
+        return JSONResponse(cached, headers={"Cache-Control": "public, max-age=3600"})
+    try:
+        rows = await get_target_store().public_sector_index(min_count=10)
+    except Exception:  # noqa: BLE001
+        rows = []
+    sectors = [{
+        "slug": r["sector"], "name": _sector_label(r["sector"]),
+        "count": int(r["count"]), "avg_score": int(r["avg_score"]),
+        "median_score": int(r["median_score"]),
+        "semaphore_distribution": {"verde": int(r["verde"]), "amarelo": int(r["amarelo"]),
+                                   "vermelho": int(r["vermelho"])},
+        "score_100_count": int(r["score_100"]),
+    } for r in rows]
+    out = {"sectors": sectors, "count": len(sectors)}
+    await _cache_set("public:sectors", out, ttl=3600)
+    return JSONResponse(out, headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.get("/public/sector/{slug}")
+async def public_sector_detail(slug: str, request: Request,
+                               page: int = Query(1, ge=1, le=500),
+                               limit: int = Query(20, ge=1, le=50),
+                               sort: str = Query("score_desc")) -> dict:
+    """KL-74 — detalhe de um setor: benchmark, ranking paginado de sites públicos, top
+    fails e sites com score perfeito. Cache Redis 1h por (slug, página, sort)."""
+    await _public_content_guard(request, "pub_sector")
+    slug = (slug or "").lower().strip()
+    if sort not in ("score_desc", "score_asc", "domain_asc"):
+        sort = "score_desc"
+    ckey = f"public:sector:{slug}:{page}:{limit}:{sort}"
+    cached = await _cache_get(ckey)
+    if cached is not None:
+        return JSONResponse(cached, headers={"Cache-Control": "public, max-age=3600"})
+    store = get_target_store()
+    try:
+        stats = await store.public_sector_stats(slug)
+    except Exception:  # noqa: BLE001
+        stats = {"count": 0, "avg_score": 0, "median_score": 0, "score_100_count": 0,
+                 "distribution": {}}
+    total = int(stats.get("count") or 0)
+    offset = (page - 1) * limit
+    sites, top_fails, perfect = [], [], []
+    if total:
+        try:
+            rows = await store.public_sector_sites(slug, limit=limit, offset=offset, sort=sort)
+        except Exception:  # noqa: BLE001
+            rows = []
+        for r in rows:
+            sc = int(r["score"])
+            last = r.get("last_scan_at")
+            sites.append({
+                "domain": r["domain"], "score": sc,
+                "semaphore": r.get("semaphore") or _semaphore_from_score(sc),
+                "company_name": r.get("company_name"),
+                "description_short": _short(r.get("description")),
+                "owner_verified": bool(r.get("owner_verified")),
+                "privacy_score": _pub_int(r.get("privacy_score")),
+                "last_scan_date": last.date().isoformat() if last else None,
+            })
+        try:
+            tf = await store.public_sector_top_fails(slug, limit=5)
+            top_fails = tf.get("fails", [])
+        except Exception:  # noqa: BLE001
+            top_fails = []
+        if page == 1 and int(stats.get("score_100_count") or 0):
+            try:
+                perfect = [{"domain": r["domain"], "company_name": r.get("company_name"),
+                            "owner_verified": bool(r.get("owner_verified"))}
+                           for r in await store.public_score_100_sites(slug, limit=12)]
+            except Exception:  # noqa: BLE001
+                perfect = []
+    pages = (total + limit - 1) // limit if total else 0
+    out = {
+        "sector": {"slug": slug, "name": _sector_label(slug), "count": total,
+                   "avg_score": int(stats.get("avg_score") or 0),
+                   "median_score": int(stats.get("median_score") or 0),
+                   "distribution": stats.get("distribution") or {}},
+        "sites": sites, "top_fails": top_fails,
+        "score_100_count": int(stats.get("score_100_count") or 0),
+        "score_100_sites": perfect,
+        "pagination": {"page": page, "limit": limit, "total": total, "pages": pages},
+    }
+    await _cache_set(ckey, out, ttl=3600)
+    return JSONResponse(out, headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.get("/public/top-fails")
+async def public_top_fails(request: Request, sector: str = Query(...),
+                           limit: int = Query(5, ge=1, le=15)) -> dict:
+    """KL-74 — checks que mais falham num setor (a partir dos últimos scans públicos).
+    Cache Redis 24h."""
+    await _public_content_guard(request, "pub_topfails")
+    sector = (sector or "").lower().strip()
+    ckey = f"public:topfails:{sector}:{limit}"
+    cached = await _cache_get(ckey)
+    if cached is not None:
+        return JSONResponse(cached, headers={"Cache-Control": "public, max-age=86400"})
+    try:
+        tf = await get_target_store().public_sector_top_fails(sector, limit=limit)
+    except Exception:  # noqa: BLE001
+        tf = {"scanned": 0, "fails": []}
+    out = {"sector": sector, "scanned": int(tf.get("scanned") or 0),
+           "top_fails": tf.get("fails", [])}
+    await _cache_set(ckey, out, ttl=86400)
+    return JSONResponse(out, headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.get("/public/related")
+async def public_related(request: Request, domain: str = Query(...),
+                         limit: int = Query(8, ge=1, le=20)) -> dict:
+    """KL-74 — sites relacionados (mesmo setor) para cross-linking nos perfis. Completa
+    com sites de outros setores se faltar. Cache Redis 1h."""
+    await _public_content_guard(request, "pub_related")
+    domain = _norm_domain(domain)
+    ckey = f"public:related:{domain}:{limit}"
+    cached = await _cache_get(ckey)
+    if cached is not None:
+        return JSONResponse(cached, headers={"Cache-Control": "public, max-age=3600"})
+    store = get_target_store()
+    sites: list = []
+    try:
+        target = await store.get_target_by_domain(domain)
+        sector = (target or {}).get("sector") or ""
+        rows = await store.public_related_sites(sector, domain, limit=limit)
+        for r in rows:
+            sc = int(r["score"])
+            sites.append({"domain": r["domain"], "score": sc,
+                          "semaphore": r.get("semaphore") or _semaphore_from_score(sc),
+                          "company_name": r.get("company_name"),
+                          "sector": r.get("sector"),
+                          "sector_label": _sector_label(r.get("sector"))})
+    except Exception:  # noqa: BLE001
+        sites = []
+    out = {"domain": domain, "sites": sites}
+    await _cache_set(ckey, out, ttl=3600)
+    return JSONResponse(out, headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.get("/public/best")
+async def public_best(request: Request) -> dict:
+    """KL-74 — vitrine dos sites com score perfeito (100), agrupados por setor. Cache
+    Redis 1h. Alimenta a página /melhores."""
+    await _public_content_guard(request, "pub_best")
+    cached = await _cache_get("public:best")
+    if cached is not None:
+        return JSONResponse(cached, headers={"Cache-Control": "public, max-age=3600"})
+    try:
+        rows = await get_target_store().public_score_100_sites(limit=300)
+    except Exception:  # noqa: BLE001
+        rows = []
+    groups: dict = {}
+    for r in rows:
+        sector = r.get("sector") or "outro"
+        g = groups.setdefault(sector, {"slug": sector, "name": _sector_label(sector),
+                                       "sites": []})
+        g["sites"].append({"domain": r["domain"], "company_name": r.get("company_name"),
+                           "owner_verified": bool(r.get("owner_verified"))})
+    sectors = sorted(groups.values(), key=lambda g: len(g["sites"]), reverse=True)
+    out = {"sectors": sectors, "total": len(rows)}
+    await _cache_set("public:best", out, ttl=3600)
+    return JSONResponse(out, headers={"Cache-Control": "public, max-age=3600"})
+
+
+@app.get("/public/stats")
+async def public_stats(request: Request) -> dict:
+    """KL-74 — números públicos da plataforma para a página /estatisticas: total de
+    sites, scans, scores 100, verificações por site, setores e distribuição de scores.
+    Cache Redis 1h."""
+    await _public_content_guard(request, "pub_stats")
+    cached = await _cache_get("public:stats")
+    if cached is not None:
+        return JSONResponse(cached, headers={"Cache-Control": "public, max-age=3600"})
+    store = get_target_store()
+    try:
+        base = await store.public_platform_stats()
+    except Exception:  # noqa: BLE001
+        base = {"total_targets": 0, "total_scans": 0, "scanned": 0,
+                "score_100_count": 0, "distribution": {}}
+    sectors: list = []
+    try:
+        sectors = await store.all_sector_benchmarks(min_count=10)
+    except Exception:  # noqa: BLE001
+        sectors = []
+    labeled = [{"slug": s["sector"], "name": _sector_label(s["sector"]),
+                "count": int(s["count"]), "avg_score": int(s["avg_score"]),
+                "median": int(s.get("median") or 0)} for s in sectors]
+    by_avg = sorted(labeled, key=lambda s: s["avg_score"], reverse=True)
+    out = {
+        "total_targets": int(base.get("total_targets") or 0),
+        "total_scans": int(base.get("total_scans") or 0),
+        "scanned": int(base.get("scanned") or 0),
+        "score_100_count": int(base.get("score_100_count") or 0),
+        "checks_per_site": 48,
+        "sectors_count": len(labeled),
+        "distribution": base.get("distribution") or {},
+        "safest_sectors": by_avg[:5],
+        # piores setores primeiro (com muitos setores não há sobreposição com os mais seguros).
+        "opportunity_sectors": by_avg[::-1][:5],
+    }
+    await _cache_set("public:stats", out, ttl=3600)
+    return JSONResponse(out, headers={"Cache-Control": "public, max-age=3600"})
 
 
 # --- notificação ao dono (perfil consultado) — rate limit 1/domínio/24h ------ #

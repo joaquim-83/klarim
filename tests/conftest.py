@@ -26,6 +26,7 @@ def _reset_api_rate_limits():
         m._config_attempts.clear()   # KL-44 config
         m._password_attempts.clear()
         m._rotate_attempts.clear()
+        m._public_content_attempts.clear()   # KL-74 endpoints públicos de conteúdo
     except Exception:  # noqa: BLE001 - testes que não tocam a API seguem normais
         pass
     yield

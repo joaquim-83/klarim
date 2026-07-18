@@ -1,0 +1,223 @@
+---
+export const prerender = false; // SSR: detalhe do setor + SEO
+
+import Base from '../../layouts/Base.astro';
+import Header from '../../components/Header.astro';
+import Footer from '../../components/Footer.astro';
+import ScanCTA from '../../components/ScanCTA.astro';
+import { badgeFor } from '../../lib/badge.js';
+
+const SITE = 'https://klarim.net';
+const API = process.env.KLARIM_API_URL || 'http://api:8000';
+const slug = (Astro.params.slug || '').toLowerCase();
+
+const page = Math.max(1, parseInt(Astro.url.searchParams.get('page') || '1', 10) || 1);
+const sortParam = Astro.url.searchParams.get('sort') || 'score_desc';
+const sort = ['score_desc', 'score_asc', 'domain_asc'].includes(sortParam) ? sortParam : 'score_desc';
+const LIMIT = 20;
+
+let data = null;
+try {
+  const res = await fetch(`${API}/public/sector/${encodeURIComponent(slug)}?page=${page}&limit=${LIMIT}&sort=${sort}`, {
+    signal: AbortSignal.timeout(6000),
+  });
+  if (res.ok) data = await res.json();
+} catch { /* backend fora → trata como vazio */ }
+
+const sector = data?.sector || { slug, name: slug, count: 0, avg_score: 0, median_score: 0, distribution: {} };
+const sites = data?.sites || [];
+const topFails = data?.top_fails || [];
+const perfect = data?.score_100_sites || [];
+const pg = data?.pagination || { page, limit: LIMIT, total: 0, pages: 0 };
+const label = sector.name || slug;
+const count = sector.count || 0;
+const indexable = count >= 10;
+
+const SEMA = { verde: '🟢', amarelo: '🟡', vermelho: '🔴' };
+const semaFor = (s) => (s >= 90 ? '🟢' : s >= 50 ? '🟡' : '🔴');
+const SEV = {
+  CRITICA: { label: 'Crítica', cls: 'text-red-400' },
+  ALTA: { label: 'Alta', cls: 'text-red-400' },
+  MEDIA: { label: 'Média', cls: 'text-yellow-400' },
+  BAIXA: { label: 'Baixa', cls: 'text-slate-400' },
+};
+
+const title = `Segurança web no setor ${label} — ${count} sites analisados`;
+const desc = `Score médio de ${sector.avg_score}/100 em ${count} sites do setor ${label}. `
+  + 'Veja os problemas mais comuns e compare com o seu site.';
+const jsonLd = indexable ? [
+  {
+    '@context': 'https://schema.org', '@type': 'BreadcrumbList',
+    itemListElement: [
+      { '@type': 'ListItem', position: 1, name: 'Início', item: SITE },
+      { '@type': 'ListItem', position: 2, name: 'Setores', item: `${SITE}/setores` },
+      { '@type': 'ListItem', position: 3, name: label, item: `${SITE}/setor/${slug}` },
+    ],
+  },
+  {
+    '@context': 'https://schema.org', '@type': 'ItemList',
+    name: title,
+    itemListElement: sites.map((s, i) => ({
+      '@type': 'ListItem', position: (page - 1) * LIMIT + i + 1, name: s.domain,
+      url: `${SITE}/site/${s.domain}`,
+    })),
+  },
+] : undefined;
+
+const pageUrl = (n) => `/setor/${slug}?page=${n}${sort !== 'score_desc' ? `&sort=${sort}` : ''}`;
+const card = 'rounded-2xl border border-slate-800 bg-slate-900/60 p-5 sm:p-6';
+---
+
+<Base title={title} fullTitleOverride={`${title} | Klarim`} description={desc}
+  path={`/setor/${slug}`} jsonLd={jsonLd} noindex={!indexable}>
+  <Header />
+  <main class="mx-auto max-w-3xl px-5 pt-28 pb-20 sm:pt-32">
+    <nav aria-label="Trilha" class="text-sm text-slate-500">
+      <a href="/" class="hover:text-brand-300">Início</a> <span class="text-slate-700">→</span>
+      <a href="/setores" class="hover:text-brand-300">Setores</a> <span class="text-slate-700">→</span>
+      <span class="text-slate-400">{label}</span>
+    </nav>
+    <h1 class="mt-3 text-2xl font-bold tracking-tight text-white sm:text-3xl">
+      Segurança web no setor {label}
+    </h1>
+
+    {count === 0 ? (
+      <div class={`${card} mt-8`}>
+        <p class="text-slate-300">Ainda não há sites suficientes neste setor para montar um panorama.</p>
+        <a href="/setores" class="mt-4 inline-flex text-brand-400 hover:text-brand-300">← Ver todos os setores</a>
+      </div>
+    ) : (
+      <>
+        {/* Benchmark do setor */}
+        <div class={`${card} mt-6`}>
+          <p class="text-sm font-medium uppercase tracking-wide text-brand-400/80">Benchmark do setor</p>
+          <div class="mt-3 grid grid-cols-2 gap-4 sm:grid-cols-4">
+            <div><p class="text-2xl font-bold text-white">{sector.avg_score}<span class="text-base text-slate-500">/100</span></p><p class="text-xs text-slate-500">Score médio</p></div>
+            <div><p class="text-2xl font-bold text-white">{sector.median_score}</p><p class="text-xs text-slate-500">Mediana</p></div>
+            <div><p class="text-2xl font-bold text-white">{count}</p><p class="text-xs text-slate-500">Sites analisados</p></div>
+            <div><p class="text-2xl font-bold text-brand-300">{sector.score_100_count ?? data?.score_100_count ?? 0}</p><p class="text-xs text-slate-500">Score perfeito</p></div>
+          </div>
+        </div>
+
+        {/* Top problemas mais comuns */}
+        {topFails.length > 0 && (
+          <div class={`${card} mt-6`}>
+            <h2 class="text-lg font-bold text-white">Problemas mais comuns</h2>
+            <ul class="mt-4 space-y-3">
+              {topFails.map((f, i) => (
+                <li>
+                  <div class="flex items-baseline justify-between gap-3 text-sm">
+                    <span class="text-slate-200">{i + 1}. {f.check_name}</span>
+                    <span class="shrink-0 font-semibold text-white">{f.fail_pct}%</span>
+                  </div>
+                  <div class="mt-1 h-2 overflow-hidden rounded-full bg-slate-800" aria-hidden="true">
+                    <div class="h-full bg-brand-500" style={`width:${f.fail_pct}%`}></div>
+                  </div>
+                  <p class={`mt-1 text-xs ${(SEV[f.severity] || SEV.MEDIA).cls}`}>
+                    Severidade {(SEV[f.severity] || { label: f.severity }).label} · {f.fail_count} sites afetados
+                  </p>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+
+        {/* Ranking do setor — cards no mobile, tabela no desktop */}
+        <div class="mt-8">
+          <div class="flex items-center justify-between">
+            <h2 class="text-lg font-bold text-white">Ranking do setor</h2>
+            <div class="flex gap-2 text-xs">
+              <a href={pageUrl(1)} class={`rounded-lg px-2.5 py-1 ${sort === 'score_desc' ? 'bg-brand-500/20 text-brand-300' : 'text-slate-400 hover:text-white'}`}>Maior score</a>
+              <a href={`/setor/${slug}?sort=score_asc`} class={`rounded-lg px-2.5 py-1 ${sort === 'score_asc' ? 'bg-brand-500/20 text-brand-300' : 'text-slate-400 hover:text-white'}`}>Menor score</a>
+            </div>
+          </div>
+
+          {/* Mobile: cards empilhados (card inteiro clicável, ≥44px) */}
+          <div class="mt-4 space-y-2 md:hidden">
+            {sites.map((s, i) => (
+              <a href={`/site/${s.domain}`} class="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/60 p-3 active:scale-[0.99]">
+                <span class="w-6 shrink-0 text-center text-sm text-slate-500">{(page - 1) * LIMIT + i + 1}</span>
+                <span class="text-lg">{SEMA[s.semaphore] || semaFor(s.score)}</span>
+                <span class="min-w-0 flex-1">
+                  <span class="block truncate text-sm font-medium text-brand-300">{s.domain}</span>
+                  {s.company_name && <span class="block truncate text-xs text-slate-500">{s.company_name}</span>}
+                </span>
+                <span class="shrink-0 text-lg font-bold text-white">{s.score}</span>
+                {s.owner_verified && <span class="shrink-0 text-xs text-green-400" title="Dono verificado">✓</span>}
+              </a>
+            ))}
+          </div>
+
+          {/* Desktop: tabela */}
+          <div class={`${card} mt-4 hidden md:block`}>
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="text-left text-xs uppercase tracking-wide text-slate-500">
+                  <th class="pb-3 pr-3">#</th>
+                  <th class="pb-3 pr-4">Site</th>
+                  <th class="pb-3 pr-4">Empresa</th>
+                  <th class="pb-3 pr-4 text-right">Score</th>
+                  <th class="pb-3">Selo</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sites.map((s, i) => (
+                  <tr class="border-t border-slate-800">
+                    <td class="py-3 pr-3 text-slate-500">{(page - 1) * LIMIT + i + 1}</td>
+                    <td class="py-3 pr-4">
+                      <a href={`/site/${s.domain}`} class="text-brand-400 hover:text-brand-300">{s.domain}</a>
+                      {s.owner_verified && <span class="ml-1.5 text-xs text-green-400" title="Dono verificado">✓</span>}
+                    </td>
+                    <td class="py-3 pr-4 text-slate-400">{s.company_name || '—'}</td>
+                    <td class="py-3 pr-4 text-right font-semibold text-white">{SEMA[s.semaphore] || semaFor(s.score)} {s.score}</td>
+                    <td class="py-3 text-slate-300">{badgeFor(s.score) ? `${badgeFor(s.score).icon} ${badgeFor(s.score).short}` : ''}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Paginação — botões grandes (≥44px), touch-friendly */}
+          {pg.pages > 1 && (
+            <div class="mt-5 flex items-center justify-between gap-3">
+              {page > 1 ? (
+                <a href={pageUrl(page - 1)} class="inline-flex h-11 items-center rounded-xl border border-slate-700 px-4 text-sm text-slate-200 hover:border-brand-500/40">← Anterior</a>
+              ) : <span></span>}
+              <span class="text-sm text-slate-500">Página {page} de {pg.pages}</span>
+              {page < pg.pages ? (
+                <a href={pageUrl(page + 1)} class="inline-flex h-11 items-center rounded-xl border border-slate-700 px-4 text-sm text-slate-200 hover:border-brand-500/40">Próxima →</a>
+              ) : <span></span>}
+            </div>
+          )}
+        </div>
+
+        {/* Sites com score perfeito */}
+        {perfect.length > 0 && (
+          <div class="mt-10">
+            <h2 class="text-lg font-bold text-white">Sites com score perfeito (100/100)</h2>
+            <div class="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-2">
+              {perfect.map((s) => (
+                <a href={`/site/${s.domain}`} class="flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/60 p-3 hover:border-brand-500/40">
+                  <span class="text-lg">⭐</span>
+                  <span class="min-w-0 flex-1">
+                    <span class="block truncate text-sm font-medium text-brand-300">{s.domain}</span>
+                    {s.company_name && <span class="block truncate text-xs text-slate-500">{s.company_name}</span>}
+                  </span>
+                  {s.owner_verified && <span class="shrink-0 text-xs text-green-400">✓ Dono verificado</span>}
+                </a>
+              ))}
+            </div>
+          </div>
+        )}
+      </>
+    )}
+
+    <ScanCTA class="mt-10" title={`Seu site é do setor ${label}? Descubra seu score`} id="scan-setor" />
+
+    <p class="mt-8 border-t border-slate-800 pt-6 text-xs leading-relaxed text-slate-600">
+      Os scores são baseados em análise passiva automatizada e não constituem auditoria de segurança.
+      O Klarim avalia a segurança do <strong>site</strong>, não do negócio.
+    </p>
+  </main>
+  <Footer />
+</Base>

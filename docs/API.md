@@ -121,6 +121,12 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 | GET | `/widget/event?e=&d=&s=` | beacon de impressão/clique (204) |
 | GET | `/score/{domain}` | score público (JSON, CORS `*`; `null` se oculto) |
 | GET | `/ranking` · `/ranking/{sector}` | rankings por setor (SEO) |
+| GET | `/public/sectors` | KL-74: índice de setores com perfil público (≥10 sites): count, média, mediana, distribuição por semáforo, nº score 100. Cache Redis 1h |
+| GET | `/public/sector/{slug}?page=&limit=&sort=` | KL-74: detalhe do setor — benchmark + ranking paginado (`sort`=score_desc\|score_asc\|domain_asc) + top fails + sites com score 100. Cache 1h |
+| GET | `/public/top-fails?sector=&limit=` | KL-74: checks que mais falham no setor (dos últimos scans públicos). Cache 24h |
+| GET | `/public/related?domain=&limit=` | KL-74: sites relacionados (mesmo setor, exclui o domínio; completa com outros). Cache 1h |
+| GET | `/public/best` | KL-74: vitrine dos sites com score 100, agrupados por setor. Cache 1h |
+| GET | `/public/stats` | KL-74: números da plataforma (total sites/scans/score 100, distribuição, setores mais seguros/oportunidade). Cache 1h |
 | POST | `/notify/profile-view` | notifica dono ("alguém consultou"; 1/domínio/24h) |
 | GET | `/sectors` | 48 setores + 13 macro-setores |
 | GET | `/cnaes/sections` · `/cnaes/divisions` | referência CNAE |
@@ -128,6 +134,12 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 | POST | `/contact` | formulário de contato → inbox + Resend (best-effort) |
 | POST | `/events` | tracking do funil (fire-and-forget, 100/min/sessão) |
 | GET/POST | `/unsubscribe?email=&token=` | descadastro (token HMAC constant-time). Params **opcionais**: ausentes → página HTML "Link incompleto" (nunca 422 JSON — evita ruído do pre-fetch de bots). **POST** = one-click RFC 8058 (`List-Unsubscribe-Post`) |
+
+> **KL-74 — endpoints `/public/*` de conteúdo:** rate limit **30/min por IP real**; chamadas SSR
+> internas (container Astro → API, sem `X-Forwarded-For`) **não** contam (senão o IP único do
+> container estouraria o teto). Só listam sites com perfil público (`site_profile.public_visible`
+> ≠ FALSE, `status IN ('scanned','alerted')`) — **nunca** `contact_email`/CNPJ. Badge ✓ só com
+> `owner_verified`. Cache Redis agressivo (1–24h) + `Cache-Control public, max-age`.
 
 ## Admin — gestão de alvos
 

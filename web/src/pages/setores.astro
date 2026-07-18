@@ -1,0 +1,91 @@
+---
+export const prerender = false; // SSR: índice de setores + SEO
+
+import Base from '../layouts/Base.astro';
+import Header from '../components/Header.astro';
+import Footer from '../components/Footer.astro';
+import ScanCTA from '../components/ScanCTA.astro';
+
+const SITE = 'https://klarim.net';
+const API = process.env.KLARIM_API_URL || 'http://api:8000';
+
+let sectors = [];
+try {
+  const res = await fetch(`${API}/public/sectors`, { signal: AbortSignal.timeout(6000) });
+  if (res.ok) sectors = (await res.json()).sectors || [];
+} catch { /* backend fora → página ainda renderiza (só o CTA) */ }
+
+const semaFor = (s) => (s >= 90 ? '🟢' : s >= 50 ? '🟡' : '🔴');
+const total = sectors.reduce((n, s) => n + s.count, 0);
+
+const title = 'Segurança web por setor no Brasil';
+const desc = sectors.length
+  ? `Análise de segurança web por setor. Veja como ${total} sites brasileiros se comparam em ${sectors.length} setores.`
+  : 'Análise de segurança web por setor no Brasil, setor a setor.';
+const jsonLd = sectors.length ? {
+  '@context': 'https://schema.org', '@type': 'ItemList',
+  name: title,
+  itemListElement: sectors.map((s, i) => ({
+    '@type': 'ListItem', position: i + 1, name: s.name,
+    url: `${SITE}/setor/${s.slug}`,
+  })),
+} : undefined;
+
+const card = 'rounded-2xl border border-slate-800 bg-slate-900/60 p-4 sm:p-5';
+---
+
+<Base title={title} fullTitleOverride={`${title} | Klarim`} description={desc}
+  path="/setores" jsonLd={jsonLd}>
+  <Header />
+  <main class="mx-auto max-w-6xl px-5 pt-28 pb-20 sm:pt-32">
+    <nav aria-label="Trilha" class="text-sm text-slate-500">
+      <a href="/" class="hover:text-brand-300">Início</a> <span class="text-slate-700">→</span>
+      <span class="text-slate-400">Setores</span>
+    </nav>
+    <h1 class="mt-3 text-2xl font-bold tracking-tight text-white sm:text-3xl">
+      Segurança web por setor no Brasil
+    </h1>
+    <p class="mt-2 max-w-2xl text-slate-400">
+      Compare a postura de segurança de sites brasileiros por setor. Cada setor mostra
+      o score médio, a distribuição de risco e os sites com nota perfeita.
+    </p>
+
+    {sectors.length === 0 ? (
+      <div class={`${card} mt-8`}>
+        <p class="text-slate-300">Ainda não há setores com sites suficientes para exibir. Volte em breve.</p>
+      </div>
+    ) : (
+      <div class="mt-8 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
+        {sectors.map((s) => {
+          const d = s.semaphore_distribution || { verde: 0, amarelo: 0, vermelho: 0 };
+          const tot = (d.verde + d.amarelo + d.vermelho) || 1;
+          return (
+            <a href={`/setor/${s.slug}`} class={`${card} group block transition-colors hover:border-brand-500/40`}>
+              <div class="flex items-start justify-between gap-3">
+                <h2 class="text-lg font-bold text-white group-hover:text-brand-300">{s.name}</h2>
+                <span class="shrink-0 text-xl">{semaFor(s.avg_score)}</span>
+              </div>
+              <p class="mt-1 text-sm text-slate-400">{s.count} sites analisados</p>
+              <p class="mt-3 text-sm text-slate-300">
+                Score médio: <span class="font-bold text-white">{s.avg_score}</span>/100
+                <span class="text-slate-500"> · mediana {s.median_score}</span>
+              </p>
+              {s.score_100_count > 0 && (
+                <p class="mt-1 text-sm text-brand-300">⭐ {s.score_100_count} com score perfeito</p>
+              )}
+              <div class="mt-3 flex h-2 overflow-hidden rounded-full bg-slate-800" aria-hidden="true">
+                <div class="bg-green-500" style={`width:${(d.verde / tot) * 100}%`}></div>
+                <div class="bg-yellow-500" style={`width:${(d.amarelo / tot) * 100}%`}></div>
+                <div class="bg-red-500" style={`width:${(d.vermelho / tot) * 100}%`}></div>
+              </div>
+              <p class="mt-4 text-sm font-semibold text-brand-400 group-hover:text-brand-300">Explorar setor →</p>
+            </a>
+          );
+        })}
+      </div>
+    )}
+
+    <ScanCTA class="mt-10" title="Verifique o score de segurança do seu site" id="scan-setores" />
+  </main>
+  <Footer />
+</Base>

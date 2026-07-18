@@ -1,0 +1,90 @@
+---
+export const prerender = false; // SSR: vitrine dos melhores + SEO
+
+import Base from '../layouts/Base.astro';
+import Header from '../components/Header.astro';
+import Footer from '../components/Footer.astro';
+import ScanCTA from '../components/ScanCTA.astro';
+
+const SITE = 'https://klarim.net';
+const API = process.env.KLARIM_API_URL || 'http://api:8000';
+
+let groups = [];
+let totalBest = 0;
+try {
+  const res = await fetch(`${API}/public/best`, { signal: AbortSignal.timeout(6000) });
+  if (res.ok) {
+    const j = await res.json();
+    groups = j.sectors || [];
+    totalBest = j.total || 0;
+  }
+} catch { /* backend fora → só o CTA */ }
+
+const title = 'Sites com score perfeito de segurança web';
+const desc = totalBest
+  ? `${totalBest} sites brasileiros alcançaram score 100/100 de segurança web no Klarim. Veja quem está no topo.`
+  : 'Sites brasileiros com score perfeito de segurança web.';
+const allSites = groups.flatMap((g) => g.sites);
+const jsonLd = allSites.length ? {
+  '@context': 'https://schema.org', '@type': 'ItemList',
+  name: title,
+  itemListElement: allSites.slice(0, 100).map((s, i) => ({
+    '@type': 'ListItem', position: i + 1, name: s.domain, url: `${SITE}/site/${s.domain}`,
+  })),
+} : undefined;
+
+const card = 'rounded-2xl border border-slate-800 bg-slate-900/60 p-5 sm:p-6';
+---
+
+<Base title={title} fullTitleOverride={`${title} | Klarim`} description={desc}
+  path="/melhores" jsonLd={jsonLd}>
+  <Header />
+  <main class="mx-auto max-w-4xl px-5 pt-28 pb-20 sm:pt-32">
+    <nav aria-label="Trilha" class="text-sm text-slate-500">
+      <a href="/" class="hover:text-brand-300">Início</a> <span class="text-slate-700">→</span>
+      <span class="text-slate-400">Melhores</span>
+    </nav>
+    <h1 class="mt-3 text-2xl font-bold tracking-tight text-white sm:text-3xl">
+      Sites com score perfeito (100/100)
+    </h1>
+    <p class="mt-2 max-w-2xl text-slate-400">
+      Estes sites brasileiros passaram em todas as verificações de segurança do Klarim.
+      {totalBest > 0 && <> São <span class="font-semibold text-white">{totalBest}</span> no total.</>}
+    </p>
+
+    {groups.length === 0 ? (
+      <div class={`${card} mt-8`}>
+        <p class="text-slate-300">Ainda não há sites com score perfeito publicados. Seu site pode ser o primeiro.</p>
+      </div>
+    ) : (
+      <div class="mt-8 space-y-8">
+        {groups.map((g) => (
+          <section>
+            <div class="flex items-baseline justify-between gap-3">
+              <h2 class="text-lg font-bold text-white">
+                <a href={`/setor/${g.slug}`} class="hover:text-brand-300">{g.name}</a>
+              </h2>
+              <span class="text-sm text-slate-500">{g.sites.length} com score perfeito</span>
+            </div>
+            <div class="mt-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {g.sites.map((s) => (
+                <a href={`/site/${s.domain}`} class="flex items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/60 p-3 hover:border-brand-500/40">
+                  <span class="text-lg">⭐</span>
+                  <span class="min-w-0 flex-1">
+                    <span class="block truncate text-sm font-medium text-brand-300">{s.domain}</span>
+                    {s.company_name && <span class="block truncate text-xs text-slate-500">{s.company_name}</span>}
+                  </span>
+                  {s.owner_verified && <span class="shrink-0 text-xs text-green-400" title="Dono verificado">✓</span>}
+                </a>
+              ))}
+            </div>
+          </section>
+        ))}
+      </div>
+    )}
+
+    <ScanCTA class="mt-10" title="Seu site pode ser o próximo score perfeito"
+      subtitle="Verifique grátis e descubra o que falta para chegar aos 100." id="scan-melhores" />
+  </main>
+  <Footer />
+</Base>
