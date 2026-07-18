@@ -65,3 +65,21 @@ posicionamento ("Pesquise a segurança de qualquer site…").
 - `pytest` → **1024 passed, 1 skipped** (mudança só de frontend).
 - Faltou (honesto): inspeção visual real em DevTools 375px/1440px — as classes são responsivas
   padrão e o build valida a compilação, mas uma passada visual fecharia 100%.
+
+---
+
+## Fix pós-deploy (2026-07-18) — footer limpo + hero centralizado
+
+**Problemas:** (1) o Footer compartilhado tem logo + tagline "Segurança web para o Brasil." +
+`min-h-[260px]` — pesado demais para a landing minimalista; (2) esse footer de 260px empurrava
+o hero visualmente para cima (gap entre a busca e o footer).
+
+**Fix (Opção A — footer inline só na landing):** a `index.astro` deixou de importar `Footer` e
+passou a renderizar um **footer mínimo inline** (só os links de navegação + `© 2026 Klarim.
+Scanner 100% passivo.`, `py-6`, sem logo/tagline/min-h). As demais páginas seguem com o `Footer`
+compartilhado **inalterado**. Como o footer ficou curto (~90px vs 260px), o `main flex-1
+items-center` passou a centralizar o hero de verdade.
+
+**Validação (HTML prerenderizado):** landing → tagline "…para o Brasil." **0 ocorrências**;
+`/sobre` → **1** (footer completo). Links da landing: Setores/Melhores/Estatísticas/Termos/
+Privacidade/Sobre/Contato + copyright. Build Astro verde.

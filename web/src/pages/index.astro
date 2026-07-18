@@ -3,7 +3,18 @@ export const prerender = true;
 
 import Base from '../layouts/Base.astro';
 import Header from '../components/Header.astro';
-import Footer from '../components/Footer.astro';
+
+// KL-81 fix — footer MÍNIMO só na landing (sem logo/tagline/min-h pesado) — o Footer
+// compartilhado (com logo + "Segurança web para o Brasil.") segue nas demais páginas.
+const footerLinks = [
+  { href: '/setores', label: 'Setores' },
+  { href: '/melhores', label: 'Melhores' },
+  { href: '/estatisticas', label: 'Estatísticas' },
+  { href: '/termos', label: 'Termos de Uso' },
+  { href: '/privacidade', label: 'Política de Privacidade' },
+  { href: '/sobre', label: 'Sobre' },
+  { href: '/contato', label: 'Contato' },
+];
 
 // KL-81 — landing minimalista tipo buscador: "Pesquise qualquer site". Hero + footer
 // apenas (removidas as seções Como funciona / checks / benchmark / Para quem). A busca
@@ -81,6 +92,16 @@ const softwareApplication = {
       </div>
     </main>
 
-    <Footer />
+    {/* KL-81 fix — footer mínimo (só links + copyright), leve, para o hero centralizar. */}
+    <footer class="border-t border-slate-800 bg-slate-950 px-5 py-6">
+      <div class="mx-auto flex max-w-6xl flex-col items-center gap-3 text-center">
+        <nav class="flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-sm">
+          {footerLinks.map((l) => (
+            <a href={l.href} class="text-slate-400 transition-colors hover:text-white">{l.label}</a>
+          ))}
+        </nav>
+        <p class="text-xs text-slate-600">© 2026 Klarim. Scanner 100% passivo.</p>
+      </div>
+    </footer>
   </div>
 </Base>
