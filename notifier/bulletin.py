@@ -65,8 +65,12 @@ def build_owner_bulletin(data: Dict[str, Any]) -> str:
 
     top = data.get("top_action")
     if top:
-        lines += ["", "--- Ação prioritária ---", "",
-                  f"{top.get('name')}: {top.get('evidence', '')}".strip(), "",
+        lines += ["", "--- Ação prioritária ---", ""]
+        # KL-20: consequência de negócio (linguagem do dono, setorizada) antes do técnico.
+        risk_line = data.get("risk_line")
+        if risk_line:
+            lines += [f"⚠ {risk_line}", ""]
+        lines += [f"{top.get('name')}: {top.get('evidence', '')}".strip(), "",
                   "O que fazer:", top.get("fix", "—")]
         if top.get("technical"):
             lines += ["", "Texto para enviar ao técnico:", f'"{top["technical"]}"']

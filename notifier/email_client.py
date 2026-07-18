@@ -169,6 +169,12 @@ def proactive_profile_link(domain: str, campaign: str) -> str:
             f"?utm_source=klarim&utm_medium=email&utm_campaign={campaign}")
 
 
+def proactive_sector_link(sector_slug: str, campaign: str) -> str:
+    """KL-20 — link para a página de setor `/setor/{slug}` com UTM (2º CTA do alerta)."""
+    return (f"{SITE_BASE}/setor/{sector_slug}"
+            f"?utm_source=klarim&utm_medium=email&utm_campaign={campaign}")
+
+
 def _unsub_line(unsubscribe_url: Optional[str], label: str) -> str:
     """Linha de descadastro no rodapé — omitida se não houver link (evita 'None')."""
     return f"\n\n{label} {unsubscribe_url}" if unsubscribe_url else ""
@@ -182,8 +188,14 @@ def alert_subject(domain: str, is_score100: bool = False) -> str:
 
 
 def build_alert_text(domain: str, score: int, unsubscribe_url: Optional[str],
-                     is_score100: bool = False) -> str:
-    """Corpo em texto puro do alerta proativo (KL-44)."""
+                     is_score100: bool = False, risk_summary: Optional[dict] = None,
+                     benchmark_line: str = "", sector_slug: str = "") -> str:
+    """Corpo em texto puro do alerta proativo (KL-44 + KL-20).
+
+    KL-20: com `risk_summary` (de `reporter.risk_messages.build_risk_summary`) o alerta
+    lista até 3 **consequências concretas para o negócio** (linguagem de dono, não jargão)
+    em vez do bloco genérico; `benchmark_line` compara com o setor; e há **CTA duplo**
+    (perfil + página de setor). Sem `risk_summary` → corpo genérico (retrocompatível)."""
     if is_score100:
         body = (
             "Olá,\n\n"
@@ -197,22 +209,35 @@ def build_alert_text(domain: str, score: int, unsubscribe_url: Optional[str],
             "e manter a nota máxima.\n\n"
             "--\nKlarim Scanner\nklarimscan.com"
         )
+        return body + _unsub_line(unsubscribe_url, "Não quer receber mais avisos?")
+
+    lines = ["Olá,", ""]
+    risks = (risk_summary or {}).get("risks") or []
+    if risks:
+        head = benchmark_line or f"O site {domain} recebeu nota {score}/100 em segurança."
+        lines += [head, "", "O que isso pode significar para o seu negócio:"]
+        lines += [f"⚠ {r['message']}" for r in risks]
+        remaining = (risk_summary or {}).get("remaining_count") or 0
+        if remaining > 0:
+            lines.append(f"E mais {remaining} {'item' if remaining == 1 else 'itens'} "
+                         "que podem ser melhorados.")
     else:
-        body = (
-            "Olá,\n\n"
-            f"O site {domain} foi verificado na plataforma Klarim e recebeu\n"
-            f"nota {score}/100 em segurança digital.\n\n"
-            "Veja o resultado completo em:\n"
-            f"{proactive_profile_link(domain, 'alerta')}\n\n"
-            "O Klarim é uma ferramenta gratuita que analisa a segurança de\n"
-            "sites brasileiros de forma passiva — sem acessar dados nem\n"
-            "instalar nada. A verificação avalia certificado SSL, headers\n"
-            "de proteção, configuração de email e mais 48 pontos.\n\n"
-            "Se este é o seu site, você pode criar uma conta gratuita para\n"
-            "monitorar o score e receber alertas quando algo mudar.\n\n"
-            "--\nKlarim Scanner\nklarimscan.com"
-        )
-    return body + _unsub_line(unsubscribe_url, "Não quer receber mais avisos?")
+        lines += [f"O site {domain} foi verificado na plataforma Klarim e recebeu",
+                  f"nota {score}/100 em segurança digital."]
+        if benchmark_line:
+            lines += ["", benchmark_line]
+    # CTA duplo (KL-20): perfil + página de setor (expõe o ecossistema KL-74).
+    lines += ["", "Veja seu resultado completo:", proactive_profile_link(domain, "alerta")]
+    if sector_slug and sector_slug != "outro":
+        plural = (risk_summary or {}).get("plural") or "sites"
+        lines += ["", f"Compare com o setor de {plural}:",
+                  proactive_sector_link(sector_slug, "alerta")]
+    lines += ["", "O Klarim é uma ferramenta gratuita que analisa a segurança de",
+              "sites brasileiros de forma passiva — sem acessar dados nem instalar nada.",
+              "A verificação cobre certificado SSL, headers de proteção, e-mail e mais 48 pontos.",
+              "", "Se este é o seu site, crie uma conta gratuita para monitorar o score",
+              "e receber alertas quando algo mudar.", "", "--\nKlarim Scanner\nklarimscan.com"]
+    return "\n".join(lines) + _unsub_line(unsubscribe_url, "Não quer receber mais avisos?")
 
 
 def build_profile_view_text(domain: str, score: int,
@@ -524,6 +549,9 @@ class KlarimMailer:
         risk_messages: Optional[list] = None,
         target_id=None,
         bonus_token: Optional[str] = None,
+        sector: str = "",
+        risk_summary: Optional[dict] = None,
+        benchmark_line: str = "",
     ) -> Dict[str, Any]:
         """Monta o payload Resend de um alerta em **texto puro** (from/to/subject/text).
 
@@ -548,7 +576,9 @@ class KlarimMailer:
             "from": self._proactive_from(),
             "to": [to_email],
             "subject": alert_subject(site, is_100),
-            "text": build_alert_text(site, score, unsubscribe_link, is_score100=is_100),
+            "text": build_alert_text(site, score, unsubscribe_link, is_score100=is_100,
+                                     risk_summary=risk_summary, benchmark_line=benchmark_line,
+                                     sector_slug=sector),
         }
         hdrs = list_unsubscribe_headers(unsubscribe_link)   # RFC 8058 one-click (proativo)
         if hdrs:
@@ -598,7 +628,9 @@ class KlarimMailer:
                 a.get("fail_count", 0), a.get("severity_counts") or {},
                 unsubscribe_link=a.get("unsubscribe_link"),
                 risk_messages=a.get("risk_messages"), target_id=a.get("target_id"),
-                bonus_token=a.get("bonus_token"))
+                bonus_token=a.get("bonus_token"),
+                sector=a.get("sector") or "", risk_summary=a.get("risk_summary"),
+                benchmark_line=a.get("benchmark_line") or "")     # KL-20
             for a in batch
         ]
         # KL-62: email_type por item (score 100 verde → alert_score100).

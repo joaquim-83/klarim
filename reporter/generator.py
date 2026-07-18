@@ -454,7 +454,8 @@ def _lgpd_display(value: Optional[str]) -> str:
     return ", ".join(LGPD_LABELS.get(a, a) for a in arts)
 
 
-def _build_context(report: ScanReport, target_url: str) -> Dict[str, Any]:
+def _build_context(report: ScanReport, target_url: str,
+                   sector: Optional[str] = None) -> Dict[str, Any]:
     s = report.score
     sev = s.fails_by_severity if s else {}
     by_id = {r.check_id: r for r in report.results}
@@ -509,7 +510,16 @@ def _build_context(report: ScanReport, target_url: str) -> Dict[str, Any]:
         "headers": _collect_headers(report),
     }
 
-    risk_messages = get_risk_messages(report)
+    # KL-20: com o setor, as mensagens de risco ganham a variação setorial (linguagem de
+    # negócio específica). Sem setor → mensagens-base (comportamento anterior).
+    if sector and sector != "outro":
+        from .risk_messages import build_risk_summary
+        rs = build_risk_summary(report, sector, limit=5)
+        risk_messages = [{"icon": r["icon"], "headline": r["headline"], "risk": r["message"],
+                          "check_id": r["check_id"], "severity": r["severity"]}
+                         for r in rs["risks"]]
+    else:
+        risk_messages = get_risk_messages(report)
     risk_summary = get_risk_summary(risk_messages)
 
     n = s.failed if s else 0
@@ -570,16 +580,19 @@ def _render_pdf(html_str: str) -> bytes:
 # API pública
 # --------------------------------------------------------------------------- #
 
-async def generate_executive_pdf(scan_report: ScanReport, target_url: str) -> bytes:
-    """Gera o PDF executivo (semáforo) a partir de um ScanReport."""
-    ctx = _build_context(scan_report, target_url)
+async def generate_executive_pdf(scan_report: ScanReport, target_url: str,
+                                 sector: Optional[str] = None) -> bytes:
+    """Gera o PDF executivo (semáforo) a partir de um ScanReport. `sector` (KL-20) ativa a
+    variação setorial das mensagens de risco."""
+    ctx = _build_context(scan_report, target_url, sector)
     html_str = _env.get_template("executive.html").render(**ctx)
     return await asyncio.to_thread(_render_pdf, html_str)
 
 
-async def generate_technical_pdf(scan_report: ScanReport, target_url: str) -> bytes:
+async def generate_technical_pdf(scan_report: ScanReport, target_url: str,
+                                 sector: Optional[str] = None) -> bytes:
     """Gera o PDF técnico (detalhado) a partir de um ScanReport."""
-    ctx = _build_context(scan_report, target_url)
+    ctx = _build_context(scan_report, target_url, sector)
     html_str = _env.get_template("technical.html").render(**ctx)
     return await asyncio.to_thread(_render_pdf, html_str)
 

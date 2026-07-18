@@ -191,19 +191,24 @@ class BulletinWorker:
         except Exception as exc:  # noqa: BLE001 - sem laudo o boletim ainda vai (só sem link)
             print(f"[bulletin] shared_report falhou: {exc!r}", flush=True)
 
-        # KL-44 P5: benchmark do setor (anônimo) para o boletim — best-effort.
-        benchmark = None
+        # KL-44 P5 / KL-20: benchmark do setor (anônimo) + risco setorizado — best-effort.
+        benchmark, risk_line = None, None
         try:
-            sector = row.get("sector") or (await self.store.get_target(tid) or {}).get("sector")
+            sector = (row.get("sector")
+                      or (await self.store.get_target(tid) or {}).get("sector") or "").strip().lower()
             if sector and sector != "outro":
                 benchmark = await self.store.sector_benchmark(sector, min_count=10)
+            if top:  # KL-20: consequência de negócio da ação prioritária (linguagem do dono)
+                from reporter.risk_messages import build_risk_summary
+                rs = build_risk_summary(checks, sector, limit=1)
+                risk_line = rs["risks"][0]["message"] if rs["risks"] else None
         except Exception as exc:  # noqa: BLE001
-            print(f"[bulletin] benchmark falhou: {exc!r}", flush=True)
+            print(f"[bulletin] benchmark/risco falhou: {exc!r}", flush=True)
 
         owner_text = _bl.build_owner_bulletin({
             "domain": domain, "score": score, "semaphore": semaphore, "trend": trend,
             "delta": delta, "vigilias": vig, "vigilia_alerts": vig_alerts,
-            "top_action": top_action, "code": code,
+            "top_action": top_action, "code": code, "risk_line": risk_line,   # KL-20
             "whatsapp_url": _whatsapp_url(domain, score, code),
             "technician_masked": _mask_email(tech_link["technician_email"]) if tech_link else None,
             "benchmark": benchmark, "privacy": privacy,   # KL-44 P5

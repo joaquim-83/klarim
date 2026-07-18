@@ -396,3 +396,159 @@ def get_risk_summary(risk_messages: List[Dict[str, str]]) -> str:
     if len(phrases) == 1:
         return f"Seu site apresenta risco de {phrases[0]}."
     return "Seu site apresenta riscos de " + ", ".join(phrases[:-1]) + " e " + phrases[-1] + "."
+
+
+# --------------------------------------------------------------------------- #
+# KL-20 (fase 2) — dimensão SETORIAL + benchmark. As PMEs reagem a consequências
+# concretas para o negócio delas, não a LGPD abstrata. Com o setor (KL-55) e o
+# benchmark (KL-74/P5), as mensagens ficam específicas. Módulo puro — o benchmark
+# é passado PELO chamador (sem tocar o banco aqui).
+# --------------------------------------------------------------------------- #
+
+# Contexto de risco por setor: `data_risk` (consequência), `audience` (quem é afetado),
+# `plural` (como chamar os pares do setor — usado no CTA "compare com outros …").
+DEFAULT_RISK = {
+    "data_risk": "Dados dos seus clientes e do seu negócio podem estar expostos.",
+    "audience": "clientes", "plural": "sites",
+}
+
+# Por MACRO-setor (fallback antes do DEFAULT) — cobre dezenas de slugs de uma vez.
+MACRO_RISK_MESSAGES: Dict[str, Dict[str, str]] = {
+    "saude": {"data_risk": "Dados de saúde dos seus pacientes podem ser interceptados — a LGPD "
+              "classifica isso como dado sensível.", "audience": "pacientes", "plural": "clínicas"},
+    "alimentacao": {"data_risk": "Dados de clientes que pedem delivery podem ser interceptados.",
+                    "audience": "clientes", "plural": "estabelecimentos"},
+    "comercio": {"data_risk": "Clientes que compram no seu site podem ter dados de pagamento capturados.",
+                 "audience": "clientes", "plural": "lojas"},
+    "educacao": {"data_risk": "Dados de alunos — incluindo menores — trafegam sem proteção adequada.",
+                 "audience": "alunos", "plural": "instituições"},
+    "servicos": {"data_risk": "Informações dos seus clientes e projetos podem ser acessadas por terceiros.",
+                 "audience": "clientes", "plural": "empresas"},
+    "imoveis": {"data_risk": "Documentos de locação/venda e dados pessoais dos seus clientes ficam expostos.",
+                "audience": "clientes", "plural": "imobiliárias"},
+    "turismo": {"data_risk": "Hóspedes que fazem reserva no seu site podem ter dados de pagamento expostos.",
+                "audience": "hóspedes", "plural": "hotéis"},
+    "beleza": {"data_risk": "Dados de agendamento e contato dos seus clientes podem ser expostos.",
+               "audience": "clientes", "plural": "estabelecimentos"},
+    "automotivo": {"data_risk": "Dados de clientes e orçamentos podem ser interceptados.",
+                   "audience": "clientes", "plural": "empresas"},
+}
+
+# Por SLUG específico (mais preciso que o macro) — só onde vale a pena.
+SECTOR_RISK_MESSAGES: Dict[str, Dict[str, str]] = {
+    "hotel": {"data_risk": "Hóspedes que fazem reserva no seu site podem ter dados de pagamento expostos.",
+              "audience": "hóspedes", "plural": "hotéis"},
+    "juridico": {"data_risk": "Documentos e comunicações de clientes trafegam sem proteção pelo seu site.",
+                 "audience": "clientes", "plural": "escritórios"},
+    "ecommerce": {"data_risk": "Clientes que compram no seu site podem ter dados de pagamento capturados.",
+                  "audience": "clientes", "plural": "lojas"},
+    "contabilidade": {"data_risk": "Informações fiscais e contábeis dos seus clientes transitam sem proteção.",
+                      "audience": "clientes", "plural": "escritórios"},
+    "restaurante": {"data_risk": "Dados de clientes que pedem delivery podem ser interceptados.",
+                    "audience": "clientes", "plural": "restaurantes"},
+    "imobiliaria": {"data_risk": "Documentos de locação e dados pessoais dos seus clientes ficam expostos.",
+                    "audience": "clientes", "plural": "imobiliárias"},
+    "consultoria": {"data_risk": "Informações dos seus clientes e projetos podem ser acessadas por terceiros.",
+                    "audience": "clientes", "plural": "consultorias"},
+    "agencia": {"data_risk": "Dados dos seus clientes e acessos a plataformas podem ser comprometidos.",
+                "audience": "clientes", "plural": "agências"},
+    "clinica": {"data_risk": "Dados de saúde dos seus pacientes podem ser interceptados — a LGPD "
+                "classifica isso como dado sensível.", "audience": "pacientes", "plural": "clínicas"},
+}
+
+# Variação SETORIAL da mensagem de um check — só onde o contexto muda a consequência.
+# Chave interna = slug real OU macro-setor. Lookup em `build_risk_summary`: slug > macro
+# > mensagem-base de `RISK_MESSAGES`.
+CHECK_SECTOR_RISK: Dict[str, Dict[str, str]] = {
+    "check_01_https": {
+        "comercio": "Clientes que compram no seu site enviam dados de pagamento sem criptografia.",
+        "ecommerce": "Clientes que compram no seu site enviam dados de pagamento sem criptografia.",
+        "saude": "Dados de saúde dos seus pacientes trafegam sem proteção.",
+        "turismo": "Dados de reserva e pagamento dos seus hóspedes podem ser capturados.",
+        "juridico": "Documentos e dados dos seus clientes trafegam sem criptografia.",
+        "educacao": "Dados dos seus alunos trafegam sem criptografia.",
+    },
+    "check_25_form_security": {
+        "comercio": "O formulário de compra do seu site envia dados de pagamento sem criptografia.",
+        "saude": "O formulário de agendamento envia dados de saúde dos pacientes sem criptografia.",
+        "educacao": "O formulário de matrícula envia dados de alunos sem criptografia.",
+    },
+    "check_28_hibp": {
+        "saude": "Credenciais ligadas à sua clínica aparecem em vazamentos — risco de acesso "
+                 "a dados de pacientes.",
+    },
+    "check_23_dmarc": {
+        "juridico": "Golpistas podem enviar e-mails como se fossem do seu escritório aos seus clientes.",
+        "contabilidade": "Golpistas podem enviar e-mails como se fossem do seu escritório aos seus clientes.",
+        "comercio": "Golpistas podem enviar e-mails como se fossem da sua loja aos seus clientes.",
+    },
+}
+
+
+def _macro_of(sector: str) -> str:
+    try:
+        from discovery.sector_taxonomy import get_macro
+        return get_macro((sector or "").strip().lower())
+    except Exception:  # noqa: BLE001 - taxonomia é best-effort
+        return ""
+
+
+def sector_risk_info(sector: Optional[str]) -> Dict[str, str]:
+    """{data_risk, audience, plural} de um setor: slug > macro > default."""
+    s = (sector or "").strip().lower()
+    if s in SECTOR_RISK_MESSAGES:
+        return SECTOR_RISK_MESSAGES[s]
+    macro = _macro_of(s)
+    if macro in MACRO_RISK_MESSAGES:
+        return MACRO_RISK_MESSAGES[macro]
+    return DEFAULT_RISK
+
+
+def build_risk_summary(report_or_results: Any, sector: Optional[str] = None,
+                       limit: int = 3) -> Dict[str, Any]:
+    """KL-20 — resumo de riscos **setorizado** para e-mail/boletim/dashboard/PDF.
+
+    Retorna ``{"risks": [{check_id, message, severity, headline, icon}],
+    "remaining_count": int, "sector_context": str, "audience": str, "plural": str}``.
+    A `message` de cada risco usa a variação setorial (`CHECK_SECTOR_RISK`) quando existe
+    (slug > macro), senão a mensagem-base de `RISK_MESSAGES`. Sem FAILs → `risks` vazio.
+    """
+    results = _extract_results(report_or_results)
+    fails = [r for r in results if _get(r, "status") == "FAIL" and RISK_MESSAGES.get(_get(r, "check_id"))]
+    fails.sort(key=lambda r: _SEV_ORDER.get(_get(r, "severity"), 99))
+    slug = (sector or "").strip().lower()
+    macro = _macro_of(slug)
+    risks: List[Dict[str, str]] = []
+    for r in fails[:limit]:
+        cid = _get(r, "check_id")
+        base = RISK_MESSAGES[cid]
+        overrides = CHECK_SECTOR_RISK.get(cid, {})
+        message = overrides.get(slug) or overrides.get(macro) or base["risk"]
+        risks.append({"check_id": cid, "message": message, "severity": _get(r, "severity"),
+                      "headline": base["headline"], "icon": base["icon"]})
+    info = sector_risk_info(sector)
+    return {"risks": risks, "remaining_count": max(0, len(fails) - len(risks)),
+            "sector_context": info["data_risk"], "audience": info["audience"],
+            "plural": info["plural"]}
+
+
+def build_benchmark_line(score: Any, sector: Optional[str] = None,
+                         benchmark: Optional[Dict[str, Any]] = None) -> str:
+    """KL-20 — linha de benchmark comparativo (usa o `sector_benchmark` do KL-74/P5).
+
+    `benchmark` é o dict de `store.sector_benchmark` (ou None) — função **pura**, o
+    chamador busca o benchmark. Score 100 → mensagem de destaque; sem benchmark → só o
+    score; acima/abaixo da média → comparação com o setor.
+    """
+    score = int(score or 0)
+    if score >= 100:
+        return "Score: 100/100 — nota máxima! Seu site está entre os melhores do Brasil."
+    if not benchmark or benchmark.get("avg_score") is None:
+        return f"Score: {score}/100"
+    avg = int(benchmark.get("avg_score") or 0)
+    count = int(benchmark.get("count") or 0)
+    plural = sector_risk_info(sector)["plural"]
+    if score >= avg:
+        tail = f" Com base em {count} {plural}." if count else ""
+        return f"Score: {score}/100 — acima da média do setor ({avg})." + tail
+    return f"Score: {score}/100 — abaixo da média do setor ({avg}). Há espaço para melhorar."

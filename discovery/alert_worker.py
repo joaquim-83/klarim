@@ -118,15 +118,29 @@ async def build_alert_payload(store, target: Dict[str, Any]) -> Dict[str, Any]:
         fail_count = scan.get("fail_count") if fail_count is None else fail_count
         score = scan.get("score") if score is None else score
 
-    # KL-27: o e-mail não mostra mais riscos/severidade — só score + contagem + CTA.
     secret = os.environ.get("UNSUBSCRIBE_SECRET")
     unsub = build_unsubscribe_link(email, secret) if secret else None
     # KL-31: score 100 verde → token de bônus (análise completa gratuita) no link.
     bonus = bonus_scan_token(email, target["url"]) if _is_score100(score, semaphore) else None
+    # KL-20: risco setorizado + benchmark (linguagem de negócio + CTA de setor). O alerta
+    # deixa de ser genérico e cita consequências concretas para o setor do alvo. Best-effort.
+    sector = (target.get("sector") or "").strip().lower()
+    risk_summary, benchmark_line = None, ""
+    if not _is_score100(score, semaphore):
+        try:
+            from reporter.risk_messages import build_risk_summary, build_benchmark_line
+            benchmark = None
+            if sector and sector != "outro":
+                benchmark = await store.sector_benchmark(sector, min_count=10)
+            risk_summary = build_risk_summary(checks, sector, limit=3)
+            benchmark_line = build_benchmark_line(score, sector, benchmark)
+        except Exception as exc:  # noqa: BLE001 - risco/benchmark nunca derruba o alerta
+            print(f"[alert] risco/benchmark falhou t={target.get('id')}: {exc!r}", flush=True)
     return {
         "target_id": target["id"], "to_email": email, "target_url": target["url"],
         "score": score or 0, "semaphore": semaphore or "", "fail_count": fail_count or 0,
         "unsubscribe_link": unsub, "bonus_token": bonus,
+        "sector": sector, "risk_summary": risk_summary, "benchmark_line": benchmark_line,  # KL-20
     }
 
 

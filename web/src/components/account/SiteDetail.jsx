@@ -278,6 +278,30 @@ export default function SiteDetail({ targetId }) {
         <p className="mt-3 text-sm text-slate-400">Último scan: {fmtDate(t.last_scan_at)}</p>
       </div>
 
+      {/* KL-20 — riscos em linguagem de negócio (não jargão) + benchmark do setor */}
+      {data.risk_summary?.risks?.length > 0 && (
+        <div className={`${card} border-yellow-500/30`}>
+          <h2 className="text-lg font-bold text-white">Riscos para o seu negócio</h2>
+          {data.benchmark_line && <p className="mt-1 text-sm text-slate-400">{data.benchmark_line}</p>}
+          <ul className="mt-4 space-y-3">
+            {data.risk_summary.risks.map((r) => (
+              <li key={r.check_id} className="flex gap-3">
+                <span className="shrink-0 text-lg">{r.icon || '⚠️'}</span>
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold text-white">{r.headline}</p>
+                  <p className="mt-0.5 break-words text-sm text-slate-300">{r.message}</p>
+                </div>
+              </li>
+            ))}
+          </ul>
+          {data.risk_summary.remaining_count > 0 && (
+            <p className="mt-3 text-sm text-slate-400">
+              E mais {data.risk_summary.remaining_count} {data.risk_summary.remaining_count === 1 ? 'item' : 'itens'} nas verificações abaixo.
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Evolução */}
       <div className={card}>
         <h2 className="text-lg font-bold text-white">Evolução</h2>

@@ -1001,6 +1001,18 @@ async def account_site_detail(target_id: int, request: Request) -> dict:
                            "percentile": pct}
         except Exception:  # noqa: BLE001 - ranking é complementar
             ranking = None
+    # KL-20: riscos setorizados (linguagem de negócio) + benchmark para o dashboard do dono.
+    risk_summary, benchmark, benchmark_line = None, None, ""
+    try:
+        from reporter.risk_messages import build_risk_summary, build_benchmark_line
+        risk_summary = build_risk_summary(checks, sector, limit=5)
+        if sector and sector != "outro":
+            benchmark = await store.sector_benchmark(sector, min_count=10)
+            if benchmark:
+                benchmark["sector_label"] = _sector_label(sector)
+        benchmark_line = build_benchmark_line(score, sector, benchmark)
+    except Exception:  # noqa: BLE001 - complementar, nunca derruba o detalhe
+        pass
     return {
         "target": {
             "id": target_id, "url": target.get("url"), "domain": target.get("domain"),
@@ -1014,6 +1026,8 @@ async def account_site_detail(target_id: int, request: Request) -> dict:
         "history": history, "checks": checks,
         "privacy": privacy,   # KL-44 P5
         "profile": profile, "classifications": classifications,
+        # KL-20: mensagens de risco por setor + benchmark (linguagem de negócio).
+        "risk_summary": risk_summary, "benchmark": benchmark, "benchmark_line": benchmark_line,
     }
 
 
@@ -3347,7 +3361,7 @@ async def report_executive(
     if not _has_full_scan_token(url, scan_token):
         await _require_paid(charge_id)
     report = await _safe_scan(url, full=True)
-    pdf = await _safe_pdf(generate_executive_pdf, report, url)
+    pdf = await _safe_pdf(generate_executive_pdf, report, url, await _sector_for_url(url))
     return _pdf_response(pdf, pdf_filename("executive", url, report.started_at))
 
 
@@ -3360,7 +3374,7 @@ async def report_technical(
     if not _has_full_scan_token(url, scan_token):
         await _require_paid(charge_id)
     report = await _safe_scan(url, full=True)
-    pdf = await _safe_pdf(generate_technical_pdf, report, url)
+    pdf = await _safe_pdf(generate_technical_pdf, report, url, await _sector_for_url(url))
     return _pdf_response(pdf, pdf_filename("technical", url, report.started_at))
 
 
@@ -6384,11 +6398,20 @@ async def _safe_scan(url: str, full: bool = True, ingest_source: Optional[str] =
         raise HTTPException(status_code=502, detail=f"Falha na varredura: {exc!r}") from exc
 
 
-async def _safe_pdf(fn, report, url: str) -> bytes:
+async def _safe_pdf(fn, report, url: str, sector: Optional[str] = None) -> bytes:
     try:
-        return await fn(report, url)
+        return await fn(report, url, sector)   # KL-20: sector ativa a variação setorial
     except Exception as exc:  # noqa: BLE001
         raise HTTPException(status_code=500, detail=f"Falha ao gerar PDF: {exc!r}") from exc
+
+
+async def _sector_for_url(url: str) -> Optional[str]:
+    """KL-20 — setor do alvo por URL, para o PDF setorizado. Best-effort (None se falhar)."""
+    try:
+        target = await get_target_store().get_target_by_domain(_norm_domain(url))
+        return (target or {}).get("sector")
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # --------------------------------------------------------------------------- #

@@ -371,6 +371,13 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   allowlist Nginx (`setores|setor|melhores|estatisticas`) + sitemap (`/setor/{slug}` por setor)
   + footer (Setores/Melhores/Estatísticas). **Mobile-first** (68% do tráfego): 375px primeiro,
   toque ≥44px, sem hover-only, body ≥16px.
+- **KL-20** — Mensagens de risco dinâmicas por falha e setor ✅ (estende `reporter/risk_messages.py`
+  — base de 48 checks já existia — com dimensão **setorial** (`SECTOR_RISK_MESSAGES`/`MACRO_RISK_MESSAGES`/
+  `CHECK_SECTOR_RISK`, lookup slug>macro>default), `build_risk_summary`/`build_benchmark_line` (puras;
+  benchmark do KL-74 vem do chamador). Integra: e-mail de alerta (riscos setorizados + benchmark +
+  **CTA duplo** perfil+`/setor/{slug}`), boletim (linha de negócio na ação prioritária), PDF exec/téc
+  (`sector` opcional em `generate_*_pdf`), dashboard (`/account/sites/{id}` → `risk_summary`/`benchmark`
+  + seção "Riscos para o seu negócio" no `SiteDetail`). Linguagem de negócio, sem multa, plain text, máx 3)
 - **KL-64** — Analytics tracker (pendente)
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
