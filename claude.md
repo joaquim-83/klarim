@@ -327,6 +327,10 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   `/payments/subscription-stats` + MCP `get_subscription_payment_stats`. **NUNCA guarda
   dado de cartão/PIX** — só o id da cobrança
 - **KL-51** — Plataforma Astro (fases 1–5 ✅)
+- **KL-52** — site_profile visível internamente ✅ (MCP `get_site_profile` + `get_target` já
+  anexam o perfil; `GET /targets/{id}` inclui `profile`/`classifications`/`owner`; painel:
+  seção "Perfil comercial" no detalhe do alvo (`AlvoDetalhePage`) + botão "Editar perfil"
+  (`ProfileEditModal`). `contact_email` NUNCA no response — o perfil vem de `site_profile`)
 - **KL-61** — Gestão de Leads / PQL ✅ · **KL-62** — email_log unificado ✅
 - **KL-63** — MCP OAuth 2.1 ✅ · **KL-65** — SEO/Schema.org ✅ · **KL-66** — contato nos perfis ✅
 - **KL-68** — Reivindicação de site + verificação de propriedade em tiers ✅ (auto por

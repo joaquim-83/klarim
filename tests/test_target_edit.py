@@ -41,6 +41,23 @@ class FakeStore:
             {"id": 3, "contact_email": "lixo sem arroba"},           # irrecuperável -> descarta
         ]
 
+    # KL-52 — GET /targets/{id} anexa o perfil comercial.
+    async def get_target(self, target_id):
+        if target_id == 999:
+            return None
+        return {"id": target_id, "url": "https://x.com.br", "domain": "x.com.br",
+                "contact_email": "c@x.com.br", "platform": "wordpress"}
+
+    async def get_site_profile(self, target_id):
+        return ({"target_id": target_id, "company_name": "Empresa X", "maturity_score": 7,
+                 "phone": "1199", "cnpj": "00.000.000/0001-00"} if target_id == 5 else None)
+
+    async def get_target_classifications(self, target_id):
+        return []
+
+    async def get_target_owner(self, target_id):
+        return None
+
 
 @pytest.fixture
 def client(monkeypatch):
@@ -57,6 +74,23 @@ def client(monkeypatch):
 def _auth(client):
     token = client.post("/auth/login", json={"username": "admin", "password": "s3nha-forte"}).json()["token"]
     return {"Authorization": f"Bearer {token}"}
+
+
+# --- KL-52: GET /targets/{id} anexa o perfil comercial ---------------------- #
+
+def test_get_target_includes_profile(client):
+    r = client.get("/targets/5", headers=_auth(client))
+    assert r.status_code == 200
+    body = r.json()
+    assert body["profile"]["company_name"] == "Empresa X"
+    assert body["profile"]["maturity_score"] == 7
+    assert "classifications" in body
+
+
+def test_get_target_profile_null_when_missing(client):
+    r = client.get("/targets/7", headers=_auth(client))
+    assert r.status_code == 200
+    assert r.json()["profile"] is None
 
 
 # --- proteção JWT ---------------------------------------------------------- #

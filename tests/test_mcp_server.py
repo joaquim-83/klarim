@@ -25,6 +25,7 @@ import mcp_server.tools.leads as leads_tools
 READ_TOOLS = [
     "get_system_status", "get_email_health", "get_discovery_status", "get_config",
     "list_targets", "get_target", "get_target_stats", "search_targets",
+    "get_site_profile",   # KL-52: perfil comercial extraído (site_profile)
     "list_scans", "get_scan", "get_scan_stats", "list_alerts", "get_alert_stats",
     "list_payments", "get_payment_stats", "get_funnel", "get_rescan_stats",
     # fix MCP: novas tools de dados
@@ -180,7 +181,10 @@ class FakeStore:
         return None if target_id == 999 else {"id": target_id, "url": "https://x.com.br"}
 
     async def get_site_profile(self, target_id):
-        return None
+        if target_id == 999:
+            return None
+        return {"target_id": target_id, "company_name": "Empresa X",
+                "maturity_score": 7, "phone": "11999999999"}
 
     async def get_target_classifications(self, target_id):
         return []
@@ -279,6 +283,17 @@ def test_get_target_tool_aggregates(fake_store):
 
 def test_get_target_tool_not_found(fake_store):
     assert asyncio.run(targets_tools.get_target(999)).get("error")
+
+
+def test_get_site_profile_tool(fake_store):
+    # KL-52: perfil comercial completo para um target com profile.
+    res = asyncio.run(targets_tools.get_site_profile(3))
+    assert res["company_name"] == "Empresa X" and res["maturity_score"] == 7
+
+
+def test_get_site_profile_tool_not_found(fake_store):
+    # KL-52: erro quando o target não tem profile.
+    assert asyncio.run(targets_tools.get_site_profile(999)).get("error")
 
 
 def test_get_target_stats_tool(fake_store):

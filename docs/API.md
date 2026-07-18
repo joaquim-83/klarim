@@ -145,7 +145,7 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 
 | Método | Path | Descrição |
 |---|---|---|
-| GET | `/targets` · `/targets/{id}` · `/targets/stats` | lista/detalhe/stats (filtros + `search`) |
+| GET | `/targets` · `/targets/{id}` · `/targets/stats` | lista/detalhe/stats (filtros + `search`). O detalhe anexa `profile` (site_profile, KL-52), `classifications` (CNAE) e `owner` |
 | POST | `/targets/add` | adiciona alvo (source=manual) + enfileira scan |
 | POST | `/targets/{id}/scan` | `?sync=1` → varredura **síncrona** (devolve `score`/`semaphore`); sem `sync` → enfileira |
 | POST | `/targets/{id}/rescan` · `/alert` · `/discard` | ações |

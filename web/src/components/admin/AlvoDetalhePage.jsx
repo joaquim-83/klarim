@@ -7,6 +7,7 @@ import {
 } from './ui'
 import { SectorEditor } from './SectorEditor'
 import { StatusEditor, EmailEditor } from './TargetEditors'
+import { ProfileEditModal } from './ProfileEditor'
 import AdminShell from './AdminShell'
 
 // Portado de frontend/src/pages/admin/AlvoDetalhe.jsx (KL-51 fase 2). useParams → pathname;
@@ -26,6 +27,7 @@ export default function AlvoDetalhePage() {
   const id = window.location.pathname.split('/').filter(Boolean).pop()
   const [msg, setMsg] = useState('')
   const [busy, setBusy] = useState('')
+  const [editProfile, setEditProfile] = useState(false)  // KL-52: modal de edição do perfil
 
   const { data, loading, error, reload } = useAsync(
     () => Promise.all([
@@ -133,6 +135,9 @@ export default function AlvoDetalhePage() {
           </div>
         </Card>
 
+        {/* KL-52 — Perfil comercial extraído (site_profile). contact_email nunca aqui. */}
+        <ProfileCard profile={t.profile} platform={t.platform} onEdit={() => setEditProfile(true)} />
+
         {/* Histórico de scans */}
         <Card title={`Scans (${data.scans.length})`}>
           <HistTable rows={data.scans} cols={['Score', 'PASS/FAIL', 'Data', '']} render={(s) => (
@@ -210,11 +215,70 @@ export default function AlvoDetalhePage() {
             )
           }} empty="Nenhum re-scan." />
         </Card>
+
+        {editProfile && (
+          <ProfileEditModal target={t} onClose={() => setEditProfile(false)}
+            onSaved={(note) => { setMsg(note); reload() }} />
+        )}
       </div>
     )
   }
 
   return <AdminShell active="alvos">{body}</AdminShell>
+}
+
+// KL-52 — perfil comercial (site_profile) no detalhe do alvo. Só leitura + botão de edição
+// (a edição abre o ProfileEditModal do KL-67). NUNCA mostra contact_email (regra inviolável).
+function ProfileCard({ profile, platform, onEdit }) {
+  const p = profile || {}
+  const socials = [
+    ['Instagram', p.instagram && `@${p.instagram}`], ['Facebook', p.facebook],
+    ['LinkedIn', p.linkedin], ['YouTube', p.youtube], ['TikTok', p.tiktok && `@${p.tiktok}`],
+  ].filter(([, v]) => v)
+  const tech = p.technologies && typeof p.technologies === 'object'
+    ? Object.entries(p.technologies).filter(([, v]) => v).map(([k, v]) => `${k}: ${v}`)
+    : []
+  const sources = Array.isArray(p.extraction_sources) ? p.extraction_sources : []
+  const lowConf = Array.isArray(p.low_confidence_fields) ? p.low_confidence_fields : []
+  const hasData = profile && (p.company_name || p.description || p.phone || p.whatsapp
+    || p.address || p.cnpj || socials.length || p.business_type)
+
+  return (
+    <Card title="Perfil comercial (KL-50)">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <Button onClick={onEdit}>✏️ Editar perfil</Button>
+        {p.edited_by_admin && <span className="text-xs text-klarim-muted">✏️ Editado à mão (o enrich não sobrescreve)</span>}
+      </div>
+      {lowConf.length > 0 && (
+        <div className="mb-3 rounded-lg border border-yellow-500/40 bg-yellow-500/10 px-3 py-2 text-xs text-yellow-300">
+          ⚠️ Campos com baixa confiança (podem pertencer a outro site): {lowConf.join(', ')}
+        </div>
+      )}
+      {!hasData ? (
+        <p className="text-sm text-klarim-muted">Nenhum perfil comercial extraído ainda.</p>
+      ) : (
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+          {p.company_name && <Field label="Empresa">{p.company_name}</Field>}
+          {p.business_type && <Field label="Tipo">{p.business_type}</Field>}
+          {p.phone && <Field label="Telefone">{p.phone}</Field>}
+          {p.whatsapp && <Field label="WhatsApp">{p.whatsapp}</Field>}
+          {p.address && <Field label="Endereço">{p.address}</Field>}
+          {p.cnpj && <Field label="CNPJ">{p.cnpj}</Field>}
+          {socials.map(([label, v]) => <Field key={label} label={label}>{v}</Field>)}
+          {platform && <Field label="Plataforma">{platform}</Field>}
+          <Field label="Maturidade digital">{p.maturity_score ?? 0}/10</Field>
+          {tech.length > 0 && <Field label="Tecnologias">{tech.join(' · ')}</Field>}
+          {sources.length > 0 && <Field label="Fontes de extração">{sources.join(', ')}</Field>}
+          {p.description && (
+            <div className="col-span-2 sm:col-span-3">
+              <div className="text-xs uppercase text-klarim-muted">Descrição</div>
+              <div className="mt-0.5 text-sm">{p.description}</div>
+            </div>
+          )}
+        </div>
+      )}
+    </Card>
+  )
 }
 
 function HistTable({ rows, cols, render, empty }) {
