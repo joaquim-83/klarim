@@ -83,3 +83,21 @@ items-center` passou a centralizar o hero de verdade.
 **Validação (HTML prerenderizado):** landing → tagline "…para o Brasil." **0 ocorrências**;
 `/sobre` → **1** (footer completo). Links da landing: Setores/Melhores/Estatísticas/Termos/
 Privacidade/Sobre/Contato + copyright. Build Astro verde.
+
+## Polish final (2026-07-18) — 4 ajustes
+
+1. **Botão embutido no campo** (estilo buscador): container único `flex items-center` com a
+   borda + `focus-within:border-brand-500`/`ring`; input transparente `border-none bg-transparent
+   min-w-0 flex-1`; botão `m-1.5 h-11 shrink-0` **inline** (não empilha, nem no mobile — `px-4
+   sm:px-8`). Container `max-w-2xl`.
+2. **Título menor** — `text-3xl sm:text-4xl lg:text-5xl` (cabe em 1 linha no desktop; ~2 no
+   mobile é aceitável).
+3. **Copyright completo** restaurado: "© 2026 Klarim. Scanner 100% passivo — analisa apenas o
+   que o site já entrega publicamente. Nenhum dado privado é coletado."
+4. **Centralização com `100dvh`** — o wrapper virou `min-h-[100dvh]` (compensa a barra de URL
+   dinâmica do Safari iOS), mantendo `main flex-1 items-center`. Confirmado que o Tailwind v4
+   compila `100dvh` no CSS. (Preferi `min-h-[100dvh]` no wrapper ao `calc(100dvh - nav - footer)`
+   do card: não exige medir/hardcodar alturas de nav/footer e adapta sozinho.)
+
+Verificado no HTML prerenderizado: `focus-within`, `m-1.5 h-11`, título `text-3xl…lg:text-5xl`,
+copyright completo e `min-h-[100dvh]` (+ `100dvh` no CSS) presentes. Build verde.
