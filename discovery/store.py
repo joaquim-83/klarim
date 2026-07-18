@@ -2541,6 +2541,10 @@ class TargetStore:
                 "JOIN users u ON u.id = vg.user_id AND u.is_active = TRUE "
                 "WHERE vg.enabled = TRUE AND vg.tipo <> 'uptime' "
                 "  AND (vg.next_check_at IS NULL OR vg.next_check_at <= NOW()) "
+                # KL-78 item 9: só vigia sites AINDA em user_sites (monitoramento explícito).
+                # Vigília órfã (site removido/nunca monitorado) NÃO dispara alerta.
+                "  AND EXISTS (SELECT 1 FROM user_sites us JOIN targets t ON t.id = us.target_id "
+                "              WHERE us.user_id = vg.user_id AND t.domain = vg.site_domain) "
                 "ORDER BY vg.next_check_at ASC NULLS FIRST LIMIT %s", (limit,))
             return self._rows_to_dicts(cur)
 
@@ -2559,6 +2563,9 @@ class TargetStore:
                 "LEFT JOIN plans p ON p.id = COALESCE(sub.plan_id, u.plan) "
                 "WHERE vg.enabled = TRUE AND vg.tipo = 'uptime' "
                 "  AND (vg.next_check_at IS NULL OR vg.next_check_at <= NOW()) "
+                # KL-78 item 9: só vigia sites AINDA em user_sites (monitoramento explícito).
+                "  AND EXISTS (SELECT 1 FROM user_sites us JOIN targets t ON t.id = us.target_id "
+                "              WHERE us.user_id = vg.user_id AND t.domain = vg.site_domain) "
                 "ORDER BY vg.next_check_at ASC NULLS FIRST LIMIT %s", (limit,))
             return self._rows_to_dicts(cur)
 

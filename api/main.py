@@ -6088,6 +6088,13 @@ async def admin_remove_user_site(user_id: int, body: RemoveSiteBody, request: Re
     domain = (target or {}).get("domain") or _norm_domain((target or {}).get("url") or "")
     if link.get("is_owner"):
         await store.mark_ownership_revoked(user_id, body.target_id)
+    # KL-78 item 9: desativa as vigílias do site (como o remove self-service) — senão
+    # ficam órfãs e continuam disparando alertas mesmo sem o vínculo.
+    if domain:
+        try:
+            await store.disable_user_site_vigilias(user_id, domain)
+        except Exception as exc:  # noqa: BLE001 - best-effort
+            print(f"[admin] disable vigilias falhou u={user_id} d={domain}: {exc!r}", flush=True)
     await store.unlink_user_site(user_id, body.target_id)
     notified = await _notify_site_removed(user, domain) if body.notify else False
     return {"removed": True, "domain": domain, "notified": notified}

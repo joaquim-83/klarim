@@ -38,10 +38,22 @@ Ambos alimentam `_sync_user_vigilias`/`_create_site_vigilias`, que criam vigíli
   usuário. Assim o PME dono-com-gmail (que não auto-verifica) monitora clicando "Monitorar";
   o operador que só consultou o catho **não** monitora nada.
 
-**Limpeza de dados:** removido `catho.com.br` (+ 6 vigílias) do jscidinei. Os outros 5
-`user_sites` não-donos são **donos-PME com gmail** (radiogermanica, versatilsc, poll360,
-ventosulnet) monitorando o **próprio** site — legítimos, mantidos (o fix impede novas
-poluições; eles podem verificar a posse pelo código enviado ao contato do site).
+**Reforço no worker (defesa em profundidade):** `get_due_vigilias` e `get_due_uptime_vigilias`
+passaram a exigir que a vigília ainda tenha o site em `user_sites` (`EXISTS user_sites JOIN
+targets`). Assim, vigília **órfã** (site removido, ou que nunca deveria monitorar) **não
+dispara** — mesmo que a linha continue na tabela `vigilias`. É a implementação direta da regra
+do card ("vigílias/alertas APENAS para sites em user_sites") e não depende de cada caminho de
+remoção lembrar de desativar as vigílias. Também corrigido: `admin_remove_user_site` (KL-69)
+agora **desativa as vigílias** do site removido (antes só o self-service fazia — deixava órfãs).
+
+**Limpeza de dados:** removido `catho.com.br` do `user_sites` do jscidinei (via a MCP tool
+sancionada `admin_remove_user_site`, `notify=false`). As 6 vigílias de catho ficaram órfãs mas
+**inertes** (o filtro `user_sites` no worker as ignora). Os outros 5 `user_sites` não-donos são
+**donos-PME com gmail** (radiogermanica, versatilsc, poll360, ventosulnet) monitorando o
+**próprio** site — legítimos, mantidos.
+
+> Validado contra Postgres real: vigília de site fora de `user_sites` não é retornada por
+> `get_due_vigilias`.
 
 ---
 
