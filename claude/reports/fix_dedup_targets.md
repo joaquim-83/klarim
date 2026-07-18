@@ -84,14 +84,24 @@ com scans/perfis/CNAEs/posse de usuário num duplicado):
 
 ---
 
-## Execução em produção
+## Execução em produção (2026-07-18)
 
 | Passo | Resultado |
 |---|---|
-| Deploy do código (Nível 1 + fix `register_target` + endpoints) | _(preenchido após deploy)_ |
-| `GET /admin/duplicate-domains` (diagnóstico) | _(domínios duplicados encontrados)_ |
-| `POST /admin/dedup-targets?dry_run=false` (merge + constraint) | _(registros mergeados)_ |
-| Verificação: `klarim.net` 1× no ranking | _(confirmar)_ |
+| Deploy do código (Nível 1 + fix `register_target` + endpoints) | ✅ CI verde (Test + Build + Nginx + Deploy) |
+| Diagnóstico (`find_duplicate_domains`) | **16 domínios duplicados · 20 linhas extras** (klarim.net ×4, 2 domínios ×3, o resto ×2) |
+| `dedup_targets(apply=True, add_constraint=True)` | **16 mergeados · 20 linhas deletadas · constraint criada** |
+| Pós-merge: `find_duplicate_domains` | **0 duplicatas restantes** |
+| Índice `idx_targets_domain_unique` | ✅ presente |
+| Ranking `/setor/tecnologia`: domínios distintos | ✅ `sites` sem domínio repetido (`len == len(set)`); `klarim.net` 1× |
+
+> **Nota:** a 1ª tentativa de `apply` abortou (rollback atômico, DB intacto) por colisão
+> **loser↔loser** em `target_classifications` (dois duplicados com o mesmo `cnae_code` que
+> o sobrevivente não tinha). Corrigido (commit `aec09a2`, `EXISTS` que mantém 1 linha por
+> chave) e re-validado contra Postgres real antes do re-apply. Caches `public:*`/`benchmark:*`
+> foram limpos no Redis (db0) pós-merge; a 1ª verificação por `grep` deu "2" — falso alarme:
+> `klarim.net` (score 100) aparece **1× no ranking + 1× na vitrine score-100** da mesma
+> resposta (seções distintas), não é duplicata.
 
 ---
 
