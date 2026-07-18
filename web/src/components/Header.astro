@@ -17,10 +17,11 @@ import Logo from './Logo.astro';
       <a href="/cadastrar" class="rounded-lg bg-brand-500 px-3.5 py-2 text-sm font-semibold text-slate-950 transition-colors hover:bg-brand-400">Cadastrar</a>
     </div>
 
-    <!-- Estado logado (revelado pelo script). "Planos" aponta para a seção de plano do
-         dashboard (contexto do usuário logado, não a página pública). Nav curto no mobile. -->
+    <!-- Estado logado (revelado pelo script). KL-78 item 7: "Planos" aponta para a página
+         pública /planos (3 cards comparativos) — o usuário logado precisa ver as opções, não
+         só o plano atual. O CTA de upgrade fica na PlanSection do dashboard. Nav curto no mobile. -->
     <div data-auth="in" class="hidden items-center gap-1">
-      <a href="/dashboard#plano" class="rounded-lg px-3.5 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Planos</a>
+      <a href="/planos" class="rounded-lg px-3.5 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Planos</a>
       <a href="/dashboard" class="rounded-lg px-3.5 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Home</a>
       <a href="/dashboard/conta" class="rounded-lg px-3.5 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Conta</a>
       <button type="button" data-logout class="rounded-lg px-3.5 py-2 text-sm font-medium text-slate-400 transition-colors hover:text-white">Sair</button>

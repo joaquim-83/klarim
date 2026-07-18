@@ -29,9 +29,11 @@ const sites = data?.sites || [];
 const topFails = data?.top_fails || [];
 const perfect = data?.score_100_sites || [];
 const pg = data?.pagination || { page, limit: LIMIT, total: 0, pages: 0 };
-const label = sector.name || slug;
+// KL-78 item 2: 'outro' = catch-all → "Não classificados" e NÃO indexável (não é setor real).
+const isUnclassified = slug === 'outro';
+const label = isUnclassified ? 'Não classificados' : (sector.name || slug);
 const count = sector.count || 0;
-const indexable = count >= 10;
+const indexable = count >= 10 && !isUnclassified;
 
 const SEMA = { verde: '🟢', amarelo: '🟡', vermelho: '🔴' };
 const semaFor = (s) => (s >= 90 ? '🟢' : s >= 50 ? '🟡' : '🔴');
@@ -166,11 +168,13 @@ const card = 'rounded-2xl border border-slate-800 bg-slate-900/60 p-5 sm:p-6';
                     <td class="py-3 pr-3 text-slate-500">{(page - 1) * LIMIT + i + 1}</td>
                     <td class="py-3 pr-4">
                       <a href={`/site/${s.domain}`} class="text-brand-400 hover:text-brand-300">{s.domain}</a>
+                      {/* KL-78 item 4: link para o site real (nova aba, nofollow). */}
+                      <a href={`https://${s.domain}`} target="_blank" rel="noopener nofollow" title="Visitar site" class="ml-1 text-slate-500 hover:text-brand-300">↗</a>
                       {s.owner_verified && <span class="ml-1.5 text-xs text-green-400" title="Dono verificado">✓</span>}
                     </td>
                     <td class="py-3 pr-4 text-slate-400">{s.company_name || '—'}</td>
                     <td class="py-3 pr-4 text-right font-semibold text-white">{SEMA[s.semaphore] || semaFor(s.score)} {s.score}</td>
-                    <td class="py-3 text-slate-300">{badgeFor(s.score) ? `${badgeFor(s.score).icon} ${badgeFor(s.score).short}` : ''}</td>
+                    <td class="py-3 text-slate-300">{badgeFor(s.score, s.has_account) ? `${badgeFor(s.score, s.has_account).icon} ${badgeFor(s.score, s.has_account).short}` : ''}</td>
                   </tr>
                 ))}
               </tbody>

@@ -27,6 +27,7 @@ class FakeStore:
         self.user_sites = {}    # (user_id, target_id) -> link
         self.targets_by_id = {}  # id -> target
         self.classifications = {}
+        self.accounts = set()   # KL-78 item 3: target_ids com conta atribuída (selo)
 
     # --- público ---
     async def get_target_by_domain(self, domain):
@@ -69,6 +70,9 @@ class FakeStore:
     async def get_user_site(self, uid, tid):
         return self.user_sites.get((uid, tid))
 
+    async def site_has_account(self, tid):   # KL-78 item 3
+        return tid in self.accounts
+
     async def get_target(self, tid):
         return self.targets_by_id.get(tid)
 
@@ -105,34 +109,49 @@ def _target(**kw):
 
 # --- selo/badge (puro) ------------------------------------------------------ #
 
-def test_badge_high():
-    b = m._score_badge(95)
+def test_badge_score_100_with_account():
+    # KL-78 item 3: selo só com score 100 E conta atribuída.
+    b = m._score_badge(100, has_account=True)
     assert b["level"] == "high" and b["icon"] == "⭐" and b["label"] == "Monitorado por Klarim"
 
 
-def test_badge_mid():
-    b = m._score_badge(82)
-    assert b["level"] == "mid" and b["icon"] == "✅" and "Monitorado" in b["label"]
+def test_badge_100_without_account_none():
+    assert m._score_badge(100, has_account=False) is None
+
+
+def test_badge_below_100_none():
+    # score < 100 nunca tem selo, mesmo com conta.
+    assert m._score_badge(95, has_account=True) is None
+    assert m._score_badge(82, has_account=True) is None
 
 
 def test_badge_none():
-    assert m._score_badge(65) is None
-    assert m._score_badge(None) is None
+    assert m._score_badge(65, has_account=True) is None
+    assert m._score_badge(None, has_account=True) is None
 
 
 # --- /score/{domain} -------------------------------------------------------- #
 
 def test_score_json(client, store):
-    store.targets["poll360.com.br"] = _target()
+    # KL-78 item 3: selo só com score 100 + conta.
+    store.targets["poll360.com.br"] = _target(last_scan_score=100)
     store.profiles[1] = {"public_visible": True}
-    store.scans[1] = [{"semaphore": "amarelo"}]
+    store.scans[1] = [{"semaphore": "verde"}]
+    store.accounts.add(1)
     r = client.get("/score/poll360.com.br")
     assert r.status_code == 200
     body = r.json()
-    assert body["domain"] == "poll360.com.br" and body["score"] == 82
-    assert body["semaphore"] == "amarelo"
-    assert body["badge"]["level"] == "mid"
+    assert body["domain"] == "poll360.com.br" and body["score"] == 100
+    assert body["semaphore"] == "verde"
+    assert body["badge"]["level"] == "high"
     assert body["profile_url"].endswith("/site/poll360.com.br")
+
+
+def test_score_badge_null_without_account(client, store):
+    # score 100 mas sem conta → sem selo.
+    store.targets["poll360.com.br"] = _target(last_scan_score=100)
+    store.profiles[1] = {"public_visible": True}
+    assert client.get("/score/poll360.com.br").json()["badge"] is None
 
 
 def test_score_cors_and_cache(client, store):
@@ -210,19 +229,20 @@ def test_ranking_index(client, store):
 
 
 def test_ranking_sector(client, store):
+    # KL-78 item 3: selo só com score 100 + conta.
     store.sector_ranking["hotel"] = [
-        {"domain": "hotelparaiso.com.br", "last_scan_score": 95},
-        {"domain": "pousadamar.com.br", "last_scan_score": 82},
-        {"domain": "hotelsul.com.br", "last_scan_score": 60},
+        {"domain": "hotelperfeito.com.br", "last_scan_score": 100, "has_account": True},
+        {"domain": "hotelparaiso.com.br", "last_scan_score": 100, "has_account": False},
+        {"domain": "pousadamar.com.br", "last_scan_score": 82, "has_account": True},
     ]
     body = client.get("/ranking/hotel").json()
     assert body["sector"] == "hotel"
     sites = body["sites"]
     assert len(sites) == 3
-    assert sites[0]["position"] == 1 and sites[0]["domain"] == "hotelparaiso.com.br"
-    assert sites[0]["badge"]["level"] == "high"   # 95 → Verified
-    assert sites[1]["badge"]["level"] == "mid"   # 82 → Approved
-    assert sites[2]["badge"] is None                  # 60 → sem selo
+    assert sites[0]["position"] == 1 and sites[0]["domain"] == "hotelperfeito.com.br"
+    assert sites[0]["badge"]["level"] == "high"   # 100 + conta → selo
+    assert sites[1]["badge"] is None                  # 100 sem conta → sem selo
+    assert sites[2]["badge"] is None                  # 82 → sem selo
 
 
 # --- posição no ranking no /account/sites/{id} ------------------------------ #
@@ -231,16 +251,17 @@ def test_account_site_detail_ranking(client, store):
     store.users[7] = {"id": 7, "email": "u@x.com.br", "plan": "free",
                       "max_sites": 1, "is_active": True}
     store.user_sites[(7, 1)] = {"is_owner": True}
-    store.targets_by_id[1] = _target()
-    store.scans[1] = [{"id": 10, "score": 82, "semaphore": "amarelo",
-                       "fail_count": 3, "scanned_at": datetime(2026, 7, 14, tzinfo=timezone.utc)}]
+    store.accounts.add(1)   # KL-78 item 3: site monitorado → tem conta
+    store.targets_by_id[1] = _target(last_scan_score=100)
+    store.scans[1] = [{"id": 10, "score": 100, "semaphore": "verde",
+                       "fail_count": 0, "scanned_at": datetime(2026, 7, 14, tzinfo=timezone.utc)}]
     store.profiles[1] = {"public_visible": True}
     store.positions[("tecnologia", 1)] = {"position": 12, "total": 471}
     tok = auth_users.create_user_token({"id": 7, "email": "u@x.com.br", "plan": "free"})
     r = client.get("/account/sites/1", headers={"Authorization": f"Bearer {tok}"})
     assert r.status_code == 200
     body = r.json()
-    assert body["badge"]["level"] == "mid"
+    assert body["badge"]["level"] == "high"
     assert body["ranking"]["position"] == 12 and body["ranking"]["total"] == 471
     # acima de (471-12)/471 ≈ 97%
     assert body["ranking"]["percentile"] == 97

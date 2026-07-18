@@ -162,7 +162,7 @@ export default function PlanSection({ initialUpgrade = '', showUpgradedToast = f
       {toast && <div className="mb-4 rounded-lg border border-brand-500/40 bg-brand-500/10 px-4 py-2.5 text-sm text-brand-200">{toast}</div>}
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <p className="text-sm text-slate-400">Plano</p>
+          <p className="text-sm text-slate-400">Plano atual</p>
           <p className="mt-1 text-lg font-semibold text-white">
             {PLAN_LABEL[plan] || plan}
             {isTrial && <span className="ml-2 rounded bg-yellow-500/15 px-1.5 py-0.5 text-xs text-yellow-300">trial</span>}

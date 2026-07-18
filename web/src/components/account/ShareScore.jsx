@@ -14,7 +14,7 @@ const ghost =
 
 export default function ShareScore({ domain, score, badge, ranking }) {
   const [copied, setCopied] = useState(false);
-  const b = badge || badgeFor(score);
+  const b = badge || badgeFor(score, true); // card do próprio site monitorado → tem conta
   const profileUrl = `${SITE}/site/${domain}`;
   const text = `Nosso site tem score ${score}/100 de segurança no Klarim. E o seu?`;
 

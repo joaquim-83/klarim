@@ -1896,6 +1896,15 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    async def site_has_account(self, target_id: int) -> bool:
+        """KL-78 item 3 — True se ALGUM usuário tem o alvo em `user_sites` (dono verificado
+        ou não). Usado pela regra do selo "Monitorado por Klarim" (score 100 + conta)."""
+        def _fn(cur):
+            cur.execute("SELECT 1 FROM user_sites WHERE target_id = %s LIMIT 1", (target_id,))
+            return cur.fetchone() is not None
+
+        return await asyncio.to_thread(self._run, _fn)
+
     async def mark_site_verified(self, user_id: int, target_id: int, method: str) -> bool:
         """Marca o vínculo como dono verificado (KL-68): `is_owner=TRUE`, `verified_at=NOW()`
         e registra o método (`auto_email` | `code_verification`). Retorna True se afetou."""
@@ -3927,7 +3936,8 @@ class TargetStore:
             # Dedup por domínio (fix): 1 linha por domínio antes de ranquear por score.
             cur.execute(
                 "SELECT * FROM ("
-                "  SELECT DISTINCT ON (t.domain) t.domain, t.last_scan_score, t.last_scan_at "
+                "  SELECT DISTINCT ON (t.domain) t.domain, t.last_scan_score, t.last_scan_at, "
+                "    EXISTS(SELECT 1 FROM user_sites us WHERE us.target_id = t.id) AS has_account "
                 "  FROM targets t JOIN site_profile sp ON sp.target_id = t.id "
                 "  WHERE t.sector = %s AND t.status IN ('scanned', 'alerted') "
                 "    AND t.last_scan_score IS NOT NULL "
@@ -4013,11 +4023,12 @@ class TargetStore:
                 "    t.last_scan_score AS score "
                 "  FROM targets t JOIN site_profile sp ON sp.target_id = t.id "
                 "  WHERE t.status IN ('scanned', 'alerted') AND t.last_scan_score IS NOT NULL "
-                "    AND t.sector IS NOT NULL AND t.sector <> '' AND t.sector <> 'outro' "
+                "    AND t.sector IS NOT NULL AND t.sector <> '' "
                 "    AND COALESCE(sp.public_visible, TRUE) = TRUE "
                 "  ORDER BY t.domain, t.last_scan_score DESC) d "
                 "GROUP BY sector HAVING COUNT(*) >= %s "
-                "ORDER BY COUNT(*) DESC", (min_count,))
+                # KL-78 item 2: 'outro' (não classificados) sempre por ÚLTIMO, não primeiro.
+                "ORDER BY (sector = 'outro'), COUNT(*) DESC", (min_count,))
             return self._rows_to_dicts(cur)
 
         return await asyncio.to_thread(self._run, _fn)
@@ -4077,7 +4088,8 @@ class TargetStore:
                 "    sp.company_name, sp.description, t.last_scan_at, "
                 "    (sc.checks_json->'privacy'->>'score') AS privacy_score, "
                 "    EXISTS(SELECT 1 FROM user_sites us WHERE us.target_id = t.id "
-                "           AND us.is_owner = TRUE) AS owner_verified "
+                "           AND us.is_owner = TRUE) AS owner_verified, "
+                "    EXISTS(SELECT 1 FROM user_sites us WHERE us.target_id = t.id) AS has_account "
                 "  FROM targets t JOIN site_profile sp ON sp.target_id = t.id "
                 "  LEFT JOIN scans sc ON sc.id = t.last_scan_id "
                 "  WHERE t.sector = %s AND t.status IN ('scanned', 'alerted') "

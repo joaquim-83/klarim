@@ -17,6 +17,10 @@ try {
 
 const semaFor = (s) => (s >= 90 ? '🟢' : s >= 50 ? '🟡' : '🔴');
 const total = sectors.reduce((n, s) => n + s.count, 0);
+// KL-78 item 2: setores classificados no grid; "Não classificados" (outro) por último,
+// separado e de menor destaque (não confunde o visitante).
+const classified = sectors.filter((s) => !s.unclassified);
+const unclassified = sectors.find((s) => s.unclassified);
 
 const title = 'Segurança web por setor no Brasil';
 const desc = sectors.length
@@ -56,7 +60,7 @@ const card = 'rounded-2xl border border-slate-800 bg-slate-900/60 p-4 sm:p-5';
       </div>
     ) : (
       <div class="mt-8 grid grid-cols-1 gap-4 md:grid-cols-2 lg:grid-cols-3">
-        {sectors.map((s) => {
+        {classified.map((s) => {
           const d = s.semaphore_distribution || { verde: 0, amarelo: 0, vermelho: 0 };
           const tot = (d.verde + d.amarelo + d.vermelho) || 1;
           return (
@@ -83,6 +87,16 @@ const card = 'rounded-2xl border border-slate-800 bg-slate-900/60 p-4 sm:p-5';
           );
         })}
       </div>
+    )}
+
+    {unclassified && unclassified.count > 0 && (
+      <a href="/setor/outro" class="mt-4 flex items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-900/40 p-4 text-slate-400 transition-colors hover:border-slate-700">
+        <span>
+          <span class="font-semibold text-slate-300">Não classificados</span>
+          <span class="ml-2 text-sm">{unclassified.count} sites ainda sem setor definido</span>
+        </span>
+        <span class="shrink-0 text-sm text-slate-500">Ver →</span>
+      </a>
     )}
 
     <ScanCTA class="mt-10" title="Verifique o score de segurança do seu site" id="scan-setores" />

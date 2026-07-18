@@ -739,21 +739,32 @@ def test_mask_email():
     assert "***" in m._mask_email("joao@empresa.com.br")
 
 
-def test_signup_links_previous_scans(client, store):
-    # e-mail já escaneou o target 55 antes de criar conta → vincula ao dashboard
+def test_signup_links_owned_previous_scans(client, store):
+    # KL-78 item 9: só vincula scans anteriores de sites que o usuário COMPROVADAMENTE
+    # possui (contact_email == e-mail do signup). Scan avulso ≠ monitoramento.
     store.targets[55] = {"id": 55, "url": "https://old.com.br", "domain": "old.com.br",
-                         "contact_email": None}
+                         "contact_email": "hist@x.com.br"}  # e-mail == contact → é dono
     store.scanned_by["hist@x.com.br"] = [55]
     u = client.post("/account/signup", json={"email": "hist@x.com.br", "password": "segredo123"}).json()["user"]
     assert (u["id"], 55) in store.sites
 
 
+def test_signup_does_not_link_unowned_previous_scans(client, store):
+    # KL-78 item 9 (bug catho): site apenas escaneado (não possuído) NÃO vira monitoramento.
+    store.targets[55] = {"id": 55, "url": "https://catho.com.br", "domain": "catho.com.br",
+                         "contact_email": None}  # não é dono
+    store.scanned_by["visitante@x.com.br"] = [55]
+    u = client.post("/account/signup", json={"email": "visitante@x.com.br", "password": "segredo123"}).json()["user"]
+    assert (u["id"], 55) not in store.sites
+    assert not store.sites
+
+
 def test_signup_history_respects_plan_limit(client, store):
-    # free = 1 site: url do signup ocupa a vaga, o histórico não excede o limite
+    # free = 1 site: url do signup (site próprio) ocupa a vaga; o histórico próprio não excede.
     store.targets[60] = {"id": 60, "url": m._norm_scan_url("https://novo.com.br"),
-                         "domain": "novo.com.br", "contact_email": None}
+                         "domain": "novo.com.br", "contact_email": "cap@x.com.br"}
     store.targets[61] = {"id": 61, "url": "https://antigo.com.br", "domain": "antigo.com.br",
-                         "contact_email": None}
+                         "contact_email": "cap@x.com.br"}
     store.scanned_by["cap@x.com.br"] = [61]
     u = client.post("/account/signup", json={
         "email": "cap@x.com.br", "password": "segredo123", "url": "https://novo.com.br"}).json()["user"]
@@ -839,14 +850,17 @@ def test_signup_claim_auto_verifies_when_email_matches(client, store):
     assert store.sites[(uid, 10)]["verification_method"] == "auto_email"
 
 
-def test_signup_claim_no_autoverify_when_email_differs(client, store):
+def test_signup_claim_unowned_not_monitored(client, store):
+    # KL-78 item 9: reivindicar (signup com url) um site que NÃO é do usuário não o
+    # auto-monitora — só sinaliza que pode monitorar explicitamente (botão "Monitorar").
     store.targets[11] = {"id": 11, "url": "https://loja.com.br", "domain": "loja.com.br",
                          "contact_email": "dono@loja.com.br"}
     r = client.post("/account/signup", json={"email": "visitante@x.com.br",
                                              "password": "segredo123", "url": "https://loja.com.br"})
     claim = r.json().get("claim") or {}
-    assert claim.get("site_added") is True and claim.get("is_owner") is False
-    assert claim.get("ownership_verification_available") is True
+    assert claim.get("site_added") is False and claim.get("is_owner") is not True
+    assert claim.get("can_monitor") is True
+    assert not store.sites  # não vinculou (não é dono)
 
 
 def test_signup_blocked_domain_not_added(client, store):

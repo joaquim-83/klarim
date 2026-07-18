@@ -67,7 +67,7 @@ function OwnershipSection({ targetId }) {
         <p className="text-sm font-semibold text-slate-200">ℹ️ Este site já tem um dono verificado.</p>
         <p className="mt-1 text-sm text-slate-400">
           Você pode continuar monitorando o score. Se você é o proprietário legítimo, entre em
-          contato com <a href="mailto:seguranca@klarim.net" className="text-brand-400 hover:text-brand-300">seguranca@klarim.net</a>.
+          contato com <a href="mailto:scan@klarim.net" className="text-brand-400 hover:text-brand-300">scan@klarim.net</a>.
         </p>
       </div>
     );

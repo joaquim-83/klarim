@@ -334,6 +334,7 @@ _laudo_attempts: dict = {}         # KL-44 P3: acesso ao laudo público
 _seal_attempts: dict = {}          # KL-44 P5: selo "Monitorado por Klarim"
 _upgrade_attempts: dict = {}       # KL-44 P6: checkout de upgrade de plano
 _sub_webhook_attempts: dict = {}   # KL-44 P6: webhook de pagamento de assinatura
+_scan_get_attempts: dict = {}      # KL-78 item 8: rate limit do GET /scan (anti-abuso)
 
 
 def _mask_email(email: str) -> str:
@@ -545,12 +546,21 @@ async def _process_claim(store, user: dict, email: str, url: Optional[str]) -> d
         method = await _ownership_method(email, tid)
         owns = method is not None
         existing = await store.get_user_site(user["id"], tid)
-        if existing is None:  # ainda não monitora → respeita o limite do plano
+        if existing is None:
+            # Fix KL-78 item 9: **scan ≠ monitoramento**. Só auto-vincula (auto-monitora)
+            # quando a propriedade é AUTO-verificada (e-mail == contact_email OU domínio do
+            # e-mail == domínio do site). Sites apenas escaneados/não-possuídos NÃO entram
+            # em `user_sites` automaticamente — senão o usuário recebe alertas de vigília de
+            # um site que só consultou (bug catho.com.br). O monitoramento explícito é o
+            # botão "Monitorar este site" (POST /account/sites).
+            can_own = owns and not await store.site_has_owner(tid)  # first-come-first-served
+            if not can_own:
+                info["can_monitor"] = True  # frontend oferece "Monitorar" (ação explícita)
+                return info
             if await store.count_user_sites(user["id"]) >= int(user.get("max_sites", 1)):
                 info["limit_reached"] = True
                 return info
-            can_own = owns and not await store.site_has_owner(tid)  # first-come-first-served
-            await store.link_user_site(user["id"], tid, is_owner=can_own)
+            await store.link_user_site(user["id"], tid, is_owner=True)
         else:
             info["already_monitored"] = True
             can_own = (not existing.get("is_owner") and owns
@@ -559,7 +569,8 @@ async def _process_claim(store, user: dict, email: str, url: Optional[str]) -> d
         if can_own:  # auto-verificação Tier 1 (e-mail == contact_email OU domínio do e-mail)
             await store.mark_site_verified(user["id"], tid, method or "auto_email")
             info["verification_method"] = method
-        info.update({"site_added": True, "is_owner": is_owner})
+        # site_added só quando de fato há vínculo (já existia OU acabamos de auto-vincular dono).
+        info.update({"site_added": (existing is not None) or can_own, "is_owner": is_owner})
         if not is_owner:  # tem contato público e ninguém é dono → verificação por código
             t = await store.get_target(tid)
             if ((t or {}).get("contact_email")
@@ -597,9 +608,13 @@ async def _create_account_record(store, email: str, password_hash: str,
                     break
                 method = await _ownership_method(email, tid)
                 owns = method is not None and not await store.site_has_owner(tid)
-                if await store.link_user_site(user["id"], tid, is_owner=owns):
-                    if owns:
-                        await store.mark_site_verified(user["id"], tid, method)
+                # Fix KL-78 item 9: só auto-vincula sites que o usuário COMPROVADAMENTE possui
+                # (auto-verificados). Scans avulsos de sites não-possuídos ficam só no
+                # histórico de consultas (scanned_by_email), NUNCA viram monitoramento.
+                if not owns:
+                    continue
+                if await store.link_user_site(user["id"], tid, is_owner=True):
+                    await store.mark_site_verified(user["id"], tid, method)
                     used += 1
     except Exception as exc:  # noqa: BLE001 - histórico é best-effort
         print(f"[account] vínculo de histórico falhou {email}: {exc!r}", flush=True)
@@ -722,7 +737,7 @@ async def account_login(body: AccountLoginBody, request: Request) -> JSONRespons
     if not user.get("is_active", True):   # KL-69: enforcement de conta desativada
         raise HTTPException(
             status_code=403,
-            detail="Sua conta foi desativada. Entre em contato com seguranca@klarim.net.")
+            detail="Sua conta foi desativada. Entre em contato com scan@klarim.net.")
     await store.touch_user_login(user["id"])
     claim = await _process_claim(store, user, email, body.url) if body.url else None  # KL-68
     return _account_session_response(user, claim)
@@ -974,7 +989,7 @@ async def account_site_detail(target_id: int, request: Request) -> dict:
     classifications = await store.get_target_classifications(target_id)
     # Selo + posição no ranking do setor (KL-42) — best-effort.
     sector = target.get("sector")
-    badge = _score_badge(score)
+    badge = _score_badge(score, await store.site_has_account(target_id))
     ranking = None
     if sector and sector != "outro" and score is not None:
         try:
@@ -1505,7 +1520,14 @@ async def list_sectors() -> dict:
 # --------------------------------------------------------------------------- #
 
 @app.get("/scan")
-async def scan_full(url: str = Query(..., description="URL alvo (http/https).")) -> JSONResponse:
+async def scan_full(request: Request,
+                    url: str = Query(..., description="URL alvo (http/https).")) -> JSONResponse:
+    # KL-78 item 8: rate limit por IP (anti-enumeração/abuso) — o scan é caro (fetch + checks).
+    allowed, retry = await _redis_allow("scan_get", _client_ip(request), 10, 600,
+                                        _scan_get_attempts)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Muitos scans. Aguarde um pouco.",
+                            headers={"Retry-After": str(retry)})
     report = await _safe_scan(url)
     return JSONResponse(report.to_dict())
 
@@ -1909,17 +1931,15 @@ def _sector_label(sector: str) -> str:
         return sector or "outro"
 
 
-def _score_badge(score: Optional[int]) -> Optional[dict]:
-    """Selo FACTUAL derivado do score (KL-42). Regra inviolável: NUNCA "Approved"/
-    "Verified" (endosso) — sempre "Monitorado por Klarim". O ícone marca a faixa:
-    ≥90 ⭐ · ≥80 ✅ · <80 sem selo."""
-    if score is None:
+def _score_badge(score: Optional[int], has_account: bool = False) -> Optional[dict]:
+    """Selo FACTUAL "Monitorado por Klarim" (KL-42; regra KL-78 item 3). Só aparece quando
+    o site tem **score perfeito (100)** E **conta atribuída** (algum usuário o monitora —
+    dono verificado ou não). Regra inviolável: NUNCA "Approved"/"Verified" (endosso). Sem
+    selo para score < 100 ou site sem conta: o selo é conquista real, não participação
+    (removida a distinção ⭐≥90/✅≥80 — selo único)."""
+    if score is None or int(score) < 100 or not has_account:
         return None
-    if score >= 90:
-        return {"level": "high", "label": "Monitorado por Klarim", "icon": "⭐"}
-    if score >= 80:
-        return {"level": "mid", "label": "Monitorado por Klarim", "icon": "✅"}
-    return None
+    return {"level": "high", "label": "Monitorado por Klarim", "icon": "⭐"}
 
 
 async def _public_score_data(domain: str) -> Optional[dict]:
@@ -1946,7 +1966,7 @@ async def _public_score_data(domain: str) -> Optional[dict]:
     last_at = target.get("last_scan_at")
     return {
         "domain": domain, "score": int(score), "semaphore": semaphore,
-        "badge": _score_badge(int(score)),
+        "badge": _score_badge(int(score), await store.site_has_account(target["id"])),
         "last_scan": last_at.date().isoformat() if hasattr(last_at, "date") else None,
         "profile_url": f"{_site_base()}/site/{domain}",
     }
@@ -2140,8 +2160,10 @@ async def api_ranking_sector(sector: str,
     sites = []
     for i, r in enumerate(rows, 1):
         sc = int(r["last_scan_score"])
+        has_acc = bool(r.get("has_account"))
         sites.append({"position": i, "domain": r["domain"], "score": sc,
-                      "semaphore": _semaphore_from_score(sc), "badge": _score_badge(sc)})
+                      "semaphore": _semaphore_from_score(sc), "has_account": has_acc,
+                      "badge": _score_badge(sc, has_acc)})
     return {"sector": sector, "label": _sector_label(sector),
             "avg_score": int(avg.get("avg_score") or 0),
             "count": int(avg.get("count") or 0), "sites": sites}
@@ -2200,7 +2222,10 @@ async def public_sectors(request: Request) -> dict:
     except Exception:  # noqa: BLE001
         rows = []
     sectors = [{
-        "slug": r["sector"], "name": _sector_label(r["sector"]),
+        "slug": r["sector"],
+        # KL-78 item 2: 'outro' = catch-all → rotula "Não classificados" (vem por último).
+        "name": "Não classificados" if r["sector"] == "outro" else _sector_label(r["sector"]),
+        "unclassified": r["sector"] == "outro",
         "count": int(r["count"]), "avg_score": int(r["avg_score"]),
         "median_score": int(r["median_score"]),
         "semaphore_distribution": {"verde": int(r["verde"]), "amarelo": int(r["amarelo"]),
@@ -2250,6 +2275,7 @@ async def public_sector_detail(slug: str, request: Request,
                 "company_name": r.get("company_name"),
                 "description_short": _short(r.get("description")),
                 "owner_verified": bool(r.get("owner_verified")),
+                "has_account": bool(r.get("has_account")),  # KL-78 item 3: selo score 100 + conta
                 "privacy_score": _pub_int(r.get("privacy_score")),
                 "last_scan_date": last.date().isoformat() if last else None,
             })
@@ -3763,7 +3789,9 @@ class RecoveryRequestBody(BaseModel):
 async def recovery_request(body: RecoveryRequestBody) -> dict:
     """Gera token + envia link — sempre resposta genérica (não revela e-mails)."""
     email = (body.email or "").strip().lower()
-    if email and "@" in email and _email_enabled():
+    # KL-78 item 8: valida o formato do e-mail (mesma regra do signup) — não envia link
+    # de recuperação para endereços malformados. Resposta segue genérica (não vaza nada).
+    if _ACCOUNT_EMAIL_RE.match(email) and _email_enabled():
         # Rate limit e envio em background para manter a resposta rápida/uniforme.
         _spawn(_recovery_request_task(email))
     return {"message": _GENERIC_RECOVERY_MSG}
@@ -6298,8 +6326,49 @@ async def _ingest_scan_bg(url: str, report: ScanReport, source: str,
         print(f"[ingest] falha ao registrar {url} ({exc!r})", flush=True)
 
 
+# --- SSRF guard (KL-78 item 8) — barra scans contra hosts internos/privados ---------- #
+_SSRF_BLOCKED_HOSTS = {"localhost", "metadata", "metadata.google.internal"}
+_SSRF_BLOCKED_SUFFIXES = (".localhost", ".local", ".internal", ".lan")
+
+
+def _ip_is_internal(ipstr: str) -> bool:
+    import ipaddress
+    try:
+        ip = ipaddress.ip_address(ipstr)
+    except ValueError:
+        return False
+    return bool(ip.is_private or ip.is_loopback or ip.is_link_local
+                or ip.is_reserved or ip.is_multicast or ip.is_unspecified)
+
+
+def _scan_host_is_safe(hostname: str) -> bool:
+    """Recusa hosts internos/privados: localhost, nomes internos (.local/.internal/…), IPs
+    literais privados/loopback/link-local (inclui 169.254.169.254 = metadata de nuvem) e
+    nomes que RESOLVEM para IP interno (best-effort; getaddrinfo roda numa thread). Falha de
+    resolução → deixa o fetch tentar (timeout curto) — não é vetor de host interno."""
+    h = (hostname or "").strip().lower().rstrip(".")
+    if not h or h in _SSRF_BLOCKED_HOSTS or any(h.endswith(s) for s in _SSRF_BLOCKED_SUFFIXES):
+        return False
+    if _ip_is_internal(h):   # IP literal (ex.: 127.0.0.1, 169.254.169.254, 10.x.x.x)
+        return False
+    import socket
+    try:
+        for info in socket.getaddrinfo(h, None):
+            if _ip_is_internal(info[4][0]):
+                return False
+    except Exception:  # noqa: BLE001 - resolução falhou → não bloqueia (não vaza host interno)
+        pass
+    return True
+
+
 async def _safe_scan(url: str, full: bool = True, ingest_source: Optional[str] = None,
                      scanned_by_email: Optional[str] = None):
+    # KL-78 item 8: SSRF guard antes de qualquer fetch — o alvo é sempre controlado pelo
+    # usuário. getaddrinfo bloqueia → roda numa thread.
+    host = urlparse(_norm_scan_url(url) or "").hostname or ""
+    if not await asyncio.to_thread(_scan_host_is_safe, host):
+        raise HTTPException(status_code=400,
+                            detail="URL aponta para um host interno/privado (bloqueado).")
     try:
         return await get_or_scan(url, full, ingest_source, scanned_by_email)
     except ValueError as exc:

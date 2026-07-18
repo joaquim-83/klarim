@@ -121,7 +121,7 @@ export default function ClaimSite({ url, domain, ownerVerified = false, claimabl
         {editInfo && (
           <p className="mt-3 text-sm text-slate-400">
             A edição do perfil público está em desenvolvimento. Por enquanto, entre em contato com{' '}
-            <a href="mailto:seguranca@klarim.net" className="text-brand-400 hover:text-brand-300">seguranca@klarim.net</a>{' '}
+            <a href="mailto:scan@klarim.net" className="text-brand-400 hover:text-brand-300">scan@klarim.net</a>{' '}
             para solicitar alterações.
           </p>
         )}

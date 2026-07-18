@@ -1,11 +1,10 @@
-// Selo FACTUAL derivado do score (KL-42) — espelha `_score_badge` do backend.
-// Regra inviolável: NUNCA "Approved"/"Certificado"/"Verified" (endosso) — sempre
-// "Monitorado por Klarim". O ícone diferencia a faixa: ≥90 ⭐ · ≥80 ✅ · <80 sem selo.
-export function badgeFor(score) {
-  if (score == null) return null;
-  if (score >= 90) return { level: 'high', label: 'Monitorado por Klarim', icon: '⭐', short: 'Monitorado' };
-  if (score >= 80) return { level: 'mid', label: 'Monitorado por Klarim', icon: '✅', short: 'Monitorado' };
-  return null;
+// Selo FACTUAL "Monitorado por Klarim" (KL-42; regra KL-78 item 3) — espelha
+// `_score_badge` do backend. Só aparece com **score perfeito (100)** E **conta atribuída**
+// (`hasAccount`). Regra inviolável: NUNCA "Approved"/"Certificado"/"Verified" (endosso).
+// Selo único (removida a distinção ⭐≥90/✅≥80) — o selo é conquista real, não participação.
+export function badgeFor(score, hasAccount = false) {
+  if (score == null || score < 100 || !hasAccount) return null;
+  return { level: 'high', label: 'Monitorado por Klarim', icon: '⭐', short: 'Monitorado' };
 }
 
 export const SEMA_TEXT = {

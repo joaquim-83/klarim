@@ -276,7 +276,7 @@ function HistoryRow({ scan, onRemove }) {
 function SiteCard({ site, onRemoved }) {
   const sema = SEMA[site.last_semaphore] || SEMA.amarelo;
   const nextDays = daysUntilNext(site.last_scan_at);
-  const badge = badgeFor(site.last_scan_score);
+  const badge = badgeFor(site.last_scan_score, true); // site monitorado pelo próprio usuário → tem conta
   // FIX técnico no dashboard: painel expansível com Técnico responsável + compartilhar
   // laudo direto no card (antes só existia no detalhe do site, via "Ver detalhes").
   const [showTech, setShowTech] = useState(false);

@@ -44,7 +44,7 @@ export async function GET() {
       `<url><loc>${SITE}/ranking/${esc(s.sector)}</loc>` +
       `<changefreq>weekly</changefreq><priority>0.6</priority></url>`);
   const sectorUrls = contentSectors
-    .filter((s) => s && s.slug)
+    .filter((s) => s && s.slug && s.slug !== 'outro')  // KL-78 item 2: não indexa "Não classificados"
     .map((s) =>
       `<url><loc>${SITE}/setor/${esc(s.slug)}</loc>` +
       `<changefreq>weekly</changefreq><priority>0.7</priority></url>`);

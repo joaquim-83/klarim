@@ -78,9 +78,11 @@ const card = 'rounded-2xl border border-slate-800 bg-slate-900/60 p-6';
                   <td class="py-3 pr-3 text-slate-500">{s.position}</td>
                   <td class="py-3 pr-4">
                     <a href={`/site/${s.domain}`} class="text-brand-400 hover:text-brand-300">{s.domain}</a>
+                    {/* KL-78 item 4: link para o site real (nova aba, nofollow). */}
+                    <a href={`https://${s.domain}`} target="_blank" rel="noopener nofollow" title="Visitar site" class="ml-1 text-slate-500 hover:text-brand-300">↗</a>
                   </td>
                   <td class="py-3 pr-4 text-right font-semibold text-white">{s.score}</td>
-                  <td class="py-3 text-slate-300">{badgeFor(s.score) ? `${badgeFor(s.score).icon} ${badgeFor(s.score).short}` : ''}</td>
+                  <td class="py-3 text-slate-300">{badgeFor(s.score, s.has_account) ? `${badgeFor(s.score, s.has_account).icon} ${badgeFor(s.score, s.has_account).short}` : ''}</td>
                 </tr>
               ))}
             </tbody>

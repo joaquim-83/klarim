@@ -189,6 +189,12 @@ if (hasContact) {
           <div class="min-w-0">
             <h1 class="truncate text-2xl font-bold tracking-tight text-white sm:text-3xl">{domain}</h1>
             <p class="mt-1 truncate text-sm text-slate-500">{p.company_name || 'Análise passiva de segurança do site'}</p>
+            {/* KL-78 item 4: link clicável para o site real (nova aba, nofollow). */}
+            <a href={siteUrl} target="_blank" rel="noopener nofollow"
+              class="mt-1 inline-flex items-center gap-1 text-sm text-brand-400 hover:text-brand-300">
+              Visitar site
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14 21 3" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+            </a>
           </div>
         </div>
 
@@ -219,11 +225,13 @@ if (hasContact) {
             <p class="mt-1 text-sm text-slate-400">Dados que o Klarim encontrou publicados no site.</p>
             <ul class="mt-4 grid gap-3 sm:grid-cols-2">
               {contacts.map((c) => (
-                <li class="flex items-center gap-3">
+                <li class="flex items-start gap-3">
                   <span class="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-slate-800 text-brand-400" set:html={c.icon} />
+                  {/* KL-78 item 1: break-words + min-w-0 evita que endereços longos escapem
+                      o card no mobile (375px). */}
                   {c.href
-                    ? <a href={c.href} target={c.ext ? '_blank' : undefined} rel={c.ext ? 'noopener noreferrer' : undefined} class="truncate text-slate-200 hover:text-brand-300">{c.label}</a>
-                    : <span class="truncate text-slate-200">{c.label}</span>}
+                    ? <a href={c.href} target={c.ext ? '_blank' : undefined} rel={c.ext ? 'noopener noreferrer' : undefined} class="min-w-0 break-words text-slate-200 hover:text-brand-300">{c.label}</a>
+                    : <span class="min-w-0 break-words text-slate-200">{c.label}</span>}
                 </li>
               ))}
             </ul>
@@ -233,7 +241,7 @@ if (hasContact) {
         {(p.description || p.business_type || cls.length > 0 || (p.tags && p.tags.length > 0) || p.maturity_score != null || t.platform) && (
           <div class={card}>
             <h2 class="text-lg font-bold text-white">Sobre este site</h2>
-            {p.description && <p class="mt-2 text-slate-300">{p.description}</p>}
+            {p.description && <p class="mt-2 break-words text-slate-300">{p.description}</p>}
             <dl class="mt-4 space-y-1.5 text-sm">
               {p.business_type && <div class="flex gap-2"><dt class="w-32 shrink-0 text-slate-500">Tipo</dt><dd class="text-slate-200">{p.business_type}</dd></div>}
               {cls.length > 0 && (
