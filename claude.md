@@ -194,6 +194,11 @@ Resend (2 domínios), AbacatePay (PIX), OpenAI (GPT-4o mini), APIs públicas de 
 (crt.sh, HIBP, Google Safe Browsing, IBGE CNAE, BrasilAPI/ReceitaWS, RDAP) — todas
 best-effort/fail-open (degradam para INCONCLUSO, nunca derrubam o scan).
 
+**Google Safe Browsing API ativa (KL-59, `check_29` funcional):** `GOOGLE_SAFE_BROWSING_KEY`
+configurada no `.env` da VM (2026-07-18) — `check_29_safe_browsing` retorna PASS/FAIL em vez de
+INCONCLUSO. A key vive só no `.env` (gitignored), nunca no código. Scans em cache anteriores
+seguem INCONCLUSO até o rescan; scans novos já pontuam o check.
+
 ---
 
 ## 5. Estrutura de diretórios
