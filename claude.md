@@ -383,6 +383,11 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   **CTA duplo** perfil+`/setor/{slug}`), boletim (linha de negócio na ação prioritária), PDF exec/téc
   (`sector` opcional em `generate_*_pdf`), dashboard (`/account/sites/{id}` → `risk_summary`/`benchmark`
   + seção "Riscos para o seu negócio" no `SiteDetail`). Linguagem de negócio, sem multa, plain text, máx 3)
+- **KL-81** — Redesign da landing como buscador ✅ (`index.astro` minimalista: hero
+  "**Pesquise qualquer site.** / Descubra em 30 segundos." + input com lupa + botão "Pesquisar →"
+  + "Relatório completo. 100% gratuito.", centralizado verticalmente `flex min-h-screen flex-col`
+  → hero + footer apenas; removidas Como funciona/checks/benchmark/Para quem. Posicionamento:
+  buscador de segurança "pesquise qualquer site", não "seu site é seguro?". Busca segue `GET /scan?url=`)
 - **KL-64** — Analytics tracker (pendente)
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
