@@ -150,7 +150,16 @@ async def _worker_loop() -> None:
                     s.inconclusive, report.to_dict(), source=source)
                 await store.update_scan_result(target_id, scan_id, s.score)
                 # KL-50: extrai o perfil comercial (best-effort, não afeta o scan).
-                await enrich_profile(store, target_id, url, s.score if s else None)
+                # KL-77 (Fase 2): capture_raw devolve o response bruto (headers/html/dns/ssl)
+                # já buscado no enrich — sem request extra — para arquivarmos no GCS.
+                raw = await enrich_profile(store, target_id, url, s.score if s else None,
+                                           capture_raw=True)
+                if scan_id is not None and raw is not None:
+                    # Fire-and-forget: o upload nunca trava nem derruba o scan (já persistido).
+                    from scanner.gcs_archive import archive_scan_response
+                    from scanner.checks.base import domain_of
+                    await archive_scan_response(
+                        scan_id, target_id, url, domain_of(url), raw, redis=client)
             last_scan_at = datetime.now(timezone.utc).isoformat()
             print(f"[klarim-worker] {url} -> score {s.score if s else 'n/a'}"
                   f"{' (target ' + str(target_id) + ')' if target_id else ''}", flush=True)

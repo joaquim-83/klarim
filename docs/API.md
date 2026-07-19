@@ -208,6 +208,7 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 | GET | `/admin/typosquat-alerts` | KL-44 P4: domínios suspeitos (typosquat/phishing) + stats |
 | GET | `/admin/privacy-stats` | KL-44 P5: distribuição PASS/FAIL por indicador de privacidade |
 | GET/POST | `/admin/workers/control` · `/pause` · `/resume` | controle de workers |
+| GET | `/admin/gcs-archive/stats` | KL-77: saúde do arquivamento de responses brutos no GCS (arquivos/bytes hoje, último upload, erros) |
 | GET | `/monitoring/admin/list` · `/stats` · POST `/{id}/status` | sites monitorados |
 | GET | `/system/status` · `/system/activity` · `/system/email-health` | operação em tempo real |
 | GET | `/discovery/status` | estado do CT poller |
@@ -268,8 +269,9 @@ Wrapper fino sobre a API/store; auth própria (OAuth 2.1/PKCE + `MCP_API_KEY`). 
 passam por `_guard` (nunca derrubam a sessão).
 
 - **system.py** — `get_system_status`, `get_email_health`, `get_discovery_status`,
-  `get_config`, `get_dashboard_stats`, `get_enrichment_status`, `get_user_accounts`,
-  `get_email_log`, `get_ownership_stats` (KL-68), `admin_remove_user_site` (KL-69, write),
+  `get_config`, `get_gcs_archive_stats` (KL-77), `get_dashboard_stats`,
+  `get_enrichment_status`, `get_user_accounts`, `get_email_log`,
+  `get_ownership_stats` (KL-68), `admin_remove_user_site` (KL-69, write),
   `get_bulletin_stats` + `list_technician_links` (KL-44 P3)
 - **targets.py** — `list_targets`, `get_target`, `get_target_stats`, `search_targets`,
   `add_target`, `update_target_email`, `update_target_status`, `update_target_sector`,

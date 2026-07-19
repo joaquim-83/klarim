@@ -187,9 +187,20 @@ Valide com `nginx -t` (há job de CI); config inválida **derruba o site**.
   antes e, no vencimento, faz **downgrade silencioso para Free** (desativa vigílias, dados
   preservados) + e-mail. Flag `TRIAL_EXPIRATION_ENABLED`. (Também há expiração *lazy* na
   leitura de `plans.get_subscription`.)
-- **Scan worker** — consome a fila Redis, `WORKER_MAX_SCANS_PER_HOUR` (subir p/ 100 na
-  VM), enriquece perfil + IA inline (~US$0,001/site).
+- **Scan worker** — consome a fila Redis, `WORKER_MAX_SCANS_PER_HOUR` (**KL-77: 200 na
+  VM**), enriquece perfil + IA inline (~US$0,001/site) e **arquiva o response bruto no GCS**
+  (KL-77 Fase 2, ver abaixo).
 - Heartbeat no Redis (TTL 600s) + watchdog `os._exit(1)` + `restart:unless-stopped`.
+
+### Arquivamento de responses brutos (KL-77 Fase 2)
+Cada scan comprime (gzip) o **response bruto** já em memória do enrich (headers, html,
+dns, ssl, status, tempo — **sem request extra**) e sobe para `gs://klarim-raw/YYYY/MM/DD/
+{scan_id}.json.gz` (bucket Nearline, privado). Dado que o Postgres descarta e o KL-75 vai
+reprocessar. **Fire-and-forget:** `scanner/gcs_archive.py` (client lazy, upload em thread);
+`GCS_ENABLED=false` = bypass; erro é logado e engolido — **o scan nunca trava**. Captura:
+`enrich_profile(..., capture_raw=True)` devolve o response ao worker (SSL vem do cache do
+`tls_analyzer`); o caminho público passa `capture_raw=False` (nada muda). Contadores no
+Redis (`klarim:gcs:*`, TTL 48h) → MCP `get_gcs_archive_stats` / `GET /admin/gcs-archive/stats`.
 
 ### Planos (KL-44 P1) — freemium
 `PAYWALL_ENABLED` (default **`false`**): todo scan autorizado vê os **48 checks** com
@@ -289,15 +300,16 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
 
 ---
 
-## 7. Estado atual (atualizado em 2026-07-18)
+## 7. Estado atual (atualizado em 2026-07-19)
 
 - Alvos: ~25.400 · Scans: ~8.100 · Perfis públicos: ~7.200
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1126+ passed** · MCP tools: **52+**
+- Testes: **1181+ passed** · MCP tools: **55+**
 - Workers: **5/5 ativos** (discovery, alert, scan, vigília, rescan)
 - Planos: 8 contas Pro trial · Vigílias: 35 (30 ok, 5 error)
 - E-mail: `klarimscan.com` verificado, warmup ativo
+- Scan rate: **200/h** (KL-77 Fase 3) · Responses brutos arquivados no GCS `gs://klarim-raw` (KL-77 Fase 2)
 
 > **Atualize este bloco a cada tarefa** que mude números relevantes.
 
@@ -479,6 +491,34 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   500 + histograma). Endpoint `GET /admin/analytics/alert-quality` + MCP `get_lead_scoring_stats`.
   Admin: coluna "Alert" na lista de alvos (badge colorido) + breakdown dos sinais no detalhe.
   24 testes backend + testes de worker/endpoint.
+- **KL-84** — Taxonomia ABERTA de setores ✅ (troca os 48 setores fixos do KL-54 por taxonomia
+  dinâmica: a IA propõe setores novos, o admin cura, o 'outro' cai). Tabela **`sectors`**
+  (slug/label/macro/status ∈ official·proposed·approved·rejected·merged/merged_into/site_count),
+  seed idempotente dos 48 oficiais no `ensure_schema` (`store.seed_sectors`, site_count via
+  GROUP BY). **`discovery/sector_synonyms.py`** resolve sinônimos ANTES da tabela (advocacia→
+  juridico, pousada→hotel…). **`discovery/sector_classification.py::process_classification`**
+  (pura, testável): resolve sinônimo → tabela (segue `merged_into`, rejeitado→'outro') → cria
+  proposta se `is_new_sector` → fallback 'outro'; slug sanitizado ([a-z0-9_], máx 50), macro
+  validada. Prompt da IA (`ai_enrichment.build_system_prompt(known)`, lista dinâmica cache 1h)
+  ganha `is_new_sector`/`sector_label`/`macro_sector_suggestion`; setor novo **preserva** o slug
+  (não vira 'outro'). **5 endpoints admin** `/admin/sectors[/{slug}/{examples,approve,merge,
+  reject}]` (`api/admin_sectors.py`, admin-only): merge/reject reclassificam sites **preservando
+  `manual`/`receita`**. Público: `/public/sectors` e `/public/sector/{slug}` filtram por status
+  (só official/approved; proposto/rejeitado/merged → 404). Script **`scripts/reclassify_sectors.py`**
+  (`--scope outro|all --dry-run --limit --batch`, ≤500 IA/h, usa a descrição JÁ extraída — sem
+  re-scan, sem tocar score/checks; roda **manual na VM**). Página admin `/painel/setores`
+  (`SetoresPage.jsx`: emergentes com aprovar/merge/rejeitar + taxonomia viva). 2 MCP tools
+  (`get_sector_stats`, `classify_target_sector`). 37 testes offline.
+- **KL-77** — Escala da VM + arquivamento de scans. **Fase 1 ✅** (VM e2-small→e2-standard-4,
+  IP estático `34.135.194.208`, CI por instance-name). **Fase 2 ✅** — arquiva o response
+  bruto de cada scan no GCS (`gs://klarim-raw/YYYY/MM/DD/{scan_id}.json.gz`, Nearline privado)
+  para o KL-75 reprocessar sem re-escanear: `scanner/gcs_archive.py` (puro + testável, client
+  lazy, upload em thread, `GCS_ENABLED=false`=bypass, fire-and-forget); captura sem request
+  extra via `enrich_profile(capture_raw=True)` (headers/html/dns já buscados + SSL do cache do
+  `tls_analyzer`); SA com `objectCreator` apenas + ADC preferível; contadores Redis
+  (`klarim:gcs:*`, TTL 48h) → MCP `get_gcs_archive_stats` + `GET /admin/gcs-archive/stats` +
+  bloco `gcs_archive` no status. **Fase 3 ✅** — scan rate 50→**200/h** (`WORKER_MAX_SCANS_PER_HOUR`,
+  editável ao vivo); rate limit por-domínio 1 req/s inalterado. 18 testes offline.
 - **KL-64** — Analytics tracker (pendente)
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos

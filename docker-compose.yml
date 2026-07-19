@@ -125,8 +125,14 @@ services:
     command: ["python", "-m", "scanner.main", "--worker"]
     env_file: .env
     # KL-32: lê o worker_control.json (pausa/retoma o scan worker sem redeploy).
+    # KL-77 (Fase 2): arquiva o response bruto de cada scan no GCS. As vars GCS_ENABLED,
+    # GCS_BUCKET e (opcional) GOOGLE_APPLICATION_CREDENTIALS vêm do env_file (.env). O
+    # caminho PREFERÍVEL é ADC via SA da VM (sem key file) — nada a montar. Se usar key
+    # JSON, descomente o mount read-only abaixo e aponte GOOGLE_APPLICATION_CREDENTIALS
+    # para /app/gcs-key.json no .env.
     volumes:
       - ./:/klarim-control:ro
+      # - ./gcs-key.json:/app/gcs-key.json:ro   # KL-77: só se NÃO usar ADC
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-klarim}:${POSTGRES_PASSWORD:-change-me}@db:5432/${POSTGRES_DB:-klarim}
       REDIS_URL: redis://redis:6379/0

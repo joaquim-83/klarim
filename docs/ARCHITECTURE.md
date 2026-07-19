@@ -208,12 +208,33 @@ Auth própria (`MCPAuthMiddleware`, fail-closed, constant-time) — fora do JWT 
 1. **Discovery** lê CT logs → domínio `.com.br` → fetch + fingerprint + e-mail + setor
    → `register_target` (UPSERT) → enfileira scan.
 2. **Scan worker** escaneia (48 checks) → `scoring` → cacheia → salva em `scans` +
-   atualiza `targets` → **enriquece** perfil + IA + CNAE inline.
+   atualiza `targets` → **enriquece** perfil + IA + CNAE inline → **arquiva o response
+   bruto no GCS** (KL-77).
 3. **Alert worker** pega alvos escaneados com falhas (ou score 100) → alerta proativo.
 4. **Perfil público** `/site/{dominio}` fica indexável (sitemap, og:image, Schema.org).
 5. Visitante escaneia (verificação por e-mail, KL-25) → vira **lead** (PQL, fire-and-
    forget) → **conta** (signup vincula histórico) → **monitoramento** (vigílias por plano).
 6. Todo e-mail passa por `KlarimMailer._send` → `email_log` (rastreabilidade + blocklist).
+
+### Arquivamento de responses brutos no GCS (KL-77 Fase 2)
+
+O Postgres guarda o **veredito** de cada check + score, mas descarta o **response bruto**
+(HTML da homepage no momento do scan, headers crus, snapshot DNS/SSL) — dado
+irrecuperável que o KL-75 (enriquecimento expandido) vai reprocessar sem re-escanear.
+
+- **Captura sem request extra:** o `enrich_profile` (que roda logo após `save_scan`) já
+  busca a homepage (headers/html/status/tempo) e o DNS (MX/NS); com `capture_raw=True`
+  ele devolve esse response ao worker. O SSL vem do **cache do `tls_analyzer`** (warm logo
+  após os checks TLS; no tier gratuito, no máx. 1 handshake passivo). O caminho público/
+  anônimo (`/scan/summary`) passa `capture_raw=False` — nada muda lá.
+- **Upload:** `scanner/gcs_archive.py` comprime o payload (gzip) e sobe para
+  `gs://klarim-raw/YYYY/MM/DD/{scan_id}.json.gz` (bucket Nearline, privado). O upload roda
+  em thread (`asyncio.to_thread`) para não prender o event loop.
+- **Fire-and-forget:** client GCS **lazy** (import só no 1º upload); `GCS_ENABLED=false` faz
+  bypass total; qualquer erro (bucket ausente, sem permissão, rede) é logado e engolido — o
+  scan já está no Postgres. Contadores por dia no Redis (`klarim:gcs:*`, TTL 48h) alimentam
+  `get_gcs_archive_stats` (MCP) / `GET /admin/gcs-archive/stats` e o bloco `gcs_archive` do
+  status do sistema.
 
 ### Reivindicação de site + verificação de propriedade em tiers (KL-68)
 

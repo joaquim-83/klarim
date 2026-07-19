@@ -24,6 +24,7 @@ import mcp_server.tools.leads as leads_tools
 
 READ_TOOLS = [
     "get_system_status", "get_email_health", "get_discovery_status", "get_config",
+    "get_gcs_archive_stats",  # KL-77: saúde do arquivamento de responses brutos no GCS
     "list_targets", "get_target", "get_target_stats", "search_targets",
     "get_site_profile",   # KL-52: perfil comercial extraído (site_profile)
     "list_scans", "get_scan", "get_scan_stats", "list_alerts", "get_alert_stats",
@@ -325,6 +326,18 @@ def test_get_enrichment_status_tool(fake_store):
     res = asyncio.run(system_tools.get_enrichment_status())
     assert res["backlog"]["g1_no_profile"] == 10 and res["backlog"]["total"] == 100
     assert res["unscanned_sem_contato"] == 7400
+
+
+def test_get_gcs_archive_stats_tool(monkeypatch):
+    # KL-77: a tool encaminha para api_gcs_archive_stats → get_archive_stats (sem redis
+    # em teste → fallback em memória). Deve trazer o shape de saúde do arquivamento.
+    monkeypatch.setenv("GCS_ENABLED", "true")
+    monkeypatch.setenv("GCS_BUCKET", "klarim-raw")
+    res = asyncio.run(system_tools.get_gcs_archive_stats())
+    for key in ("enabled", "bucket", "files_today", "bytes_today", "avg_bytes",
+                "errors_today", "last_upload_at", "last_error"):
+        assert key in res, f"faltou {key}"
+    assert res["bucket"] == "klarim-raw"
 
 
 def test_get_user_accounts_tool(fake_store):

@@ -154,7 +154,7 @@ R$49 (4900). **Nenhum dado de cartão/PIX é armazenado.**
 ### Workers — Scan / Alert / Rescan / Vigília / Monitor
 | Var | Uso |
 |---|---|
-| `WORKER_MAX_SCANS_PER_HOUR` | vazão do scan worker (subir p/ 100 na VM) |
+| `WORKER_MAX_SCANS_PER_HOUR` | vazão do scan worker (**KL-77: 200 na VM `klarim-prod`**; editável ao vivo no painel/MCP `set_scan_config`) |
 | `WORKER_HEARTBEAT_TTL` / `WORKER_CONTROL_FILE` | heartbeat / pausa por worker (KL-32) |
 | `ALERT_DAILY_LIMIT` | teto diário de alertas proativos (warmup=30) |
 | `ALERT_MONTHLY_LIMIT` | cota mensal (45k dos 50k Resend Pro) |
@@ -164,6 +164,20 @@ R$49 (4900). **Nenhum dado de cartão/PIX é armazenado.**
 | `RESCAN_INTERVAL_HOURS` / `RESCAN_AGE_DAYS` / `RESCAN_BATCH_SIZE` | re-scan |
 | `MONITOR_INTERVAL_DAYS` | monitoramento (sites 100/contas) |
 | `VIGILIA_CYCLE_HOURS` / `VIGILIA_MAX_PER_CYCLE` / `VIGILIA_CHECK_TIMEOUT` / `VIGILIA_RDAP_PAUSE` / `VIGILIA_WARMUP_SECONDS` | vigílias (KL-44 P2) |
+
+### Arquivamento de responses brutos no GCS (KL-77 Fase 2)
+| Var | Uso |
+|---|---|
+| `GCS_ENABLED` | liga/desliga o arquivamento (default `true`; `false` = bypass total, sem tocar no client GCS) |
+| `GCS_BUCKET` | nome do bucket (default `klarim-raw`) |
+| `GOOGLE_APPLICATION_CREDENTIALS` | **vazio = ADC** (SA da VM, preferível). Só preencher se usar key JSON montada read-only (ver `docker-compose.yml`) |
+
+O scan worker comprime o response bruto de **cada scan** (headers, html, dns, ssl,
+status, tempo — tudo já em memória do enrich, sem request extra) e faz upload para
+`gs://klarim-raw/YYYY/MM/DD/{scan_id}.json.gz`. **Fire-and-forget:** falha de upload é
+logada e engolida, o scan (já persistido no Postgres) nunca trava. Saúde via MCP
+`get_gcs_archive_stats` / `GET /admin/gcs-archive/stats` (arquivos/bytes hoje, último
+upload, erros) — contadores no Redis (chaves `klarim:gcs:*`, TTL 48h).
 
 ### Inbox (Hostinger) / Demo / Site
 | Var | Uso |
@@ -190,4 +204,45 @@ docker compose exec -T api python scripts/seed_vigilias.py          # KL-44 P2
 # Drenar backlog de scans (nunca tudo de uma vez):
 docker compose exec -T worker python scripts/enqueue_unscanned.py --limit 500
 docker compose exec -T worker python scripts/enrich_all.py --limit 500   # perfil + IA + CNAE
+```
+
+## 7. GCS — bucket de responses brutos (KL-77 Fase 2, one-time)
+
+Setup único, na VM (conta `klarimscan@gmail.com`, Owner). Segurança: SA com
+`objectCreator` **apenas** (nunca admin, nunca leitura pública); bucket privado
+(uniform bucket-level access).
+
+```bash
+PROJECT=project-b08050df-fa4e-49ac-919
+
+# 1. Bucket Nearline na mesma região da VM (us-central1), privado.
+gcloud storage buckets create gs://klarim-raw \
+  --location=us-central1 --default-storage-class=NEARLINE \
+  --uniform-bucket-level-access --project=$PROJECT
+
+# 2. Auth — PREFERÍVEL: ADC via SA da VM (sem key file). Descubra a SA da VM:
+curl -s -H "Metadata-Flavor: Google" \
+  http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/email
+# Dê objectCreator a ESSA SA e pule os passos 3–4 (deixe GOOGLE_APPLICATION_CREDENTIALS vazio):
+gcloud storage buckets add-iam-policy-binding gs://klarim-raw \
+  --member="serviceAccount:<SA-DA-VM>" --role="roles/storage.objectCreator" --project=$PROJECT
+
+# 3. ALTERNATIVA (só se a VM não tiver SA utilizável): SA dedicada + key JSON.
+gcloud iam service-accounts create klarim-scan-archive \
+  --display-name="Klarim Scan Archive Writer" --project=$PROJECT
+gcloud storage buckets add-iam-policy-binding gs://klarim-raw \
+  --member="serviceAccount:klarim-scan-archive@$PROJECT.iam.gserviceaccount.com" \
+  --role="roles/storage.objectCreator" --project=$PROJECT
+# 4. Key JSON → /opt/klarim/gcs-key.json; no .env: GOOGLE_APPLICATION_CREDENTIALS=/app/gcs-key.json
+#    e descomente o volume `./gcs-key.json:/app/gcs-key.json:ro` no docker-compose.yml.
+gcloud iam service-accounts keys create /opt/klarim/gcs-key.json \
+  --iam-account=klarim-scan-archive@$PROJECT.iam.gserviceaccount.com
+
+# 5. .env da VM: GCS_ENABLED=true, GCS_BUCKET=klarim-raw. Suba o worker (recria, relê env):
+docker compose up -d worker
+
+# 6. Verifique (após alguns scans):
+docker compose exec worker python -c "from google.cloud import storage; c=storage.Client(); \
+b=c.bucket('klarim-raw'); print('exists:', b.exists()); \
+[print(' ', x.name, x.size) for x in list(b.list_blobs(max_results=5))]"
 ```

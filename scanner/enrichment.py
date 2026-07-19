@@ -32,18 +32,30 @@ async def _approved_sectors(store) -> list:
     return slugs
 
 
-async def enrich_profile(store, target_id: int, url: str, security_score=None) -> None:
+async def enrich_profile(store, target_id: int, url: str, security_score=None,
+                         capture_raw: bool = False):
     """Extrai o perfil comercial (crawl multi-page + parsers, KL-50), roda a IA
     (setor + CNAE + descrição + tags, KL-47A/55) e grava `site_profile` +
-    `target_classifications`. Best-effort."""
+    `target_classifications`. Best-effort.
+
+    KL-77 (Fase 2): quando ``capture_raw=True`` (só o scan worker pede), devolve o
+    **response bruto** já buscado aqui (headers, html, dns, ssl, status, tempo) para
+    o worker arquivar no GCS — sem request extra à homepage. O caminho público/anônimo
+    (API) passa ``capture_raw=False`` e recebe ``None``: nada muda no fluxo público
+    (nem a leitura TLS). Sem captura → retorna ``None``.
+    """
+    import time as _time
+    response_data = None
     try:
         from scanner import profiler
         from scanner.checks import dns_util
         from scanner.checks.base import fetch, base_url, registrable_domain, domain_of
 
-        headers, homepage_html, hp_status = {}, None, None
+        headers, homepage_html, hp_status, response_time_ms = {}, None, None, None
         try:
+            _t0 = _time.monotonic()
             hp = await fetch(base_url(url) + "/", method="GET", follow_redirects=True)
+            response_time_ms = int((_time.monotonic() - _t0) * 1000)
             headers = dict(hp.headers)
             hp_status = hp.status_code
             homepage_html = hp.text if hp.status_code == 200 else None
@@ -58,6 +70,30 @@ async def enrich_profile(store, target_id: int, url: str, security_score=None) -
         dom = registrable_domain(domain_of(url))
         mx = await asyncio.to_thread(dns_util.resolve_mx, dom)
         ns = await asyncio.to_thread(dns_util.resolve_ns, dom)
+
+        # KL-77 (Fase 2): captura o response bruto p/ arquivamento no GCS — só quando o
+        # worker pede (capture_raw). Reusa o fetch da homepage + o DNS já resolvidos; o
+        # SSL vem do cache do tls_analyzer (warm logo após o scan; no tier gratuito pode
+        # custar 1 handshake passivo — aceitável e ético). Montado ANTES do profiler/IA
+        # para sobreviver a falhas nessas etapas.
+        if capture_raw:
+            ssl_info: dict = {}
+            try:
+                from scanner import tls_analyzer
+                from scanner.checks.base import host_port
+                host, port = host_port(url)
+                ssl_info = await tls_analyzer.get_tls_info(host, port)
+            except Exception as exc:  # noqa: BLE001 - SSL é best-effort no arquivo
+                print(f"[archive] {url}: snapshot TLS indisponível ({exc!r})", flush=True)
+            response_data = {
+                "http_status": hp_status,
+                "response_time_ms": response_time_ms,
+                "headers": headers,
+                "html": homepage_html or "",
+                "dns": {"mx": mx or [], "ns": ns or []},
+                "ssl": ssl_info,
+            }
+
         profile = await profiler.build_profile(
             url, homepage_html=homepage_html, headers=headers,
             mx_records=mx, ns_records=ns, security_score=security_score)
@@ -74,6 +110,8 @@ async def enrich_profile(store, target_id: int, url: str, security_score=None) -
               f"({', '.join(found) or 'sem sinais'})", flush=True)
     except Exception as exc:  # noqa: BLE001 - enriquecimento nunca derruba nada
         print(f"[profile] falha em {url}: {exc!r}", flush=True)
+    # KL-77: devolve o response bruto capturado (ou None) para o worker arquivar.
+    return response_data
 
 
 async def _ai_enrich(store, target_id: int, domain: str, homepage_html, profile: dict) -> None:

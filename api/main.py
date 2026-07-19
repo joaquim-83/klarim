@@ -5149,7 +5149,26 @@ async def api_system_status() -> dict:
             "monthly_usage_pct": f"{usage_pct}%",
             "backlog": backlog,
         },
+        # KL-77 (Fase 2): saúde do arquivamento de responses brutos no GCS.
+        "gcs_archive": await _gcs_archive_stats_safe(redis),
     }
+
+
+async def _gcs_archive_stats_safe(redis) -> dict:
+    """Stats do arquivamento GCS (KL-77) — best-effort; erro nunca derruba o status."""
+    try:
+        from scanner.gcs_archive import get_archive_stats
+        return await get_archive_stats(redis)
+    except Exception:  # noqa: BLE001
+        return {"enabled": False, "error": "indisponível"}
+
+
+@app.get("/admin/gcs-archive/stats")
+async def api_gcs_archive_stats() -> dict:
+    """Saúde do arquivamento de responses brutos no GCS (KL-77 Fase 2): habilitado,
+    bucket, arquivos e bytes arquivados hoje, tamanho médio, último upload e erros."""
+    redis = _cache.redis if _cache is not None else None
+    return await _gcs_archive_stats_safe(redis)
 
 
 # --------------------------------------------------------------------------- #

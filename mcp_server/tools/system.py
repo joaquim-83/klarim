@@ -104,6 +104,15 @@ async def get_config() -> dict:
 
 
 @mcp.tool()
+async def get_gcs_archive_stats() -> dict:
+    """Saúde do arquivamento de responses brutos no GCS (KL-77 Fase 2): se está
+    habilitado, o bucket, arquivos e bytes arquivados hoje, tamanho médio comprimido,
+    último upload e erros de hoje (com o último erro). Vital para confirmar que o
+    dado bruto de cada scan — que o KL-75 vai reprocessar — está sendo preservado."""
+    return await _guard(lambda: _api().api_gcs_archive_stats())
+
+
+@mcp.tool()
 async def get_ownership_stats() -> dict:
     """Verificação de propriedade de sites (KL-68): total de donos verificados, por
     método (auto_email vs code_verification), funil de verificações por status

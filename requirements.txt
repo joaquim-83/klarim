@@ -19,6 +19,7 @@ sse-starlette>=1.6.1,<2.2   # transitivo do mcp; travado p/ Starlette < 0.42
 redis>=5.0,<6.0             # scan queue (worker) + report cache
 psycopg2-binary>=2.9,<3.0   # PostgreSQL driver (targets/scans/findings)
 dnspython>=2.4,<3.0        # MX (KL-24) + SPF/DKIM/DMARC/CNAME dos checks 21-23/27 (KL-22)
+google-cloud-storage>=2.14.0,<3.0  # KL-77: arquiva o response bruto de cada scan no GCS (bucket klarim-raw)
 
 # --- Reporting ---
 weasyprint>=62,<64          # server-side PDF generation (executive/technical)
