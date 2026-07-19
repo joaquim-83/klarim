@@ -63,14 +63,40 @@ SYSTEM_PROMPT = (
     '  - "description": descrição oficial da atividade CNAE\n'
     '  - "confidence": float 0.0 a 1.0\n'
     "  Uma empresa pode ter múltiplos CNAEs — liste todos os aplicáveis.\n"
-    '- "sector_legacy": setor da taxonomia antiga (retrocompatibilidade). Um dos valores '
-    "exatos: " + _SECTOR_LIST + ", outro. Use 'outro' se nenhum encaixar bem.\n"
+    '- "sector_legacy": setor do negócio. PREFIRA um destes valores exatos (taxonomia '
+    "conhecida): " + _SECTOR_LIST + ", outro.\n"
+    "  Se NENHUM encaixar bem mas o negócio tiver um setor claro e específico, PROPONHA um "
+    'novo setor: escolha um slug curto em snake_case (ex: "clinica_veterinaria", '
+    '"loja_pet", "estudio_tatuagem") e marque "is_new_sector": true. Use "outro" APENAS '
+    "quando o negócio for genérico/indefinido.\n"
     '- "sector_confidence": float 0.0 a 1.0 (confiança no sector_legacy).\n'
+    '- "is_new_sector": true SÓ quando sector_legacy NÃO está na lista conhecida acima '
+    "(setor novo proposto); false caso contrário.\n"
+    '- "sector_label": rótulo humano do setor em PT-BR (ex: "Clínica Veterinária"); '
+    "obrigatório quando is_new_sector=true.\n"
+    '- "macro_sector_suggestion": macro-categoria do setor novo, um de: alimentacao, '
+    "saude, beleza, comercio, servicos, imoveis, automotivo, educacao, turismo, eventos, "
+    "industria, transporte, tecnologia, financeiro, institucional, outro "
+    "(obrigatório quando is_new_sector=true).\n"
     '- "contacts_found": objeto com campos opcionais:\n'
     '  - "email": email comercial (null se não encontrado)\n'
     '  - "phone": telefone no formato (DD) XXXXX-XXXX (null se não encontrado)\n'
     '  - "whatsapp": número WhatsApp com DDI+DDD (null se não encontrado)'
 )
+
+
+def build_system_prompt(known_sectors: Optional[list] = None) -> str:
+    """Prompt do sistema com a lista de setores CONHECIDOS dinâmica (KL-84). `known_sectors`
+    (slugs official+approved vindos da tabela, cache 1h no chamador) é anexada à lista base
+    para a IA reusar setores já aprovados antes de propor novos. Sem lista → prompt base."""
+    if not known_sectors:
+        return SYSTEM_PROMPT
+    extra = sorted({str(s).strip().lower() for s in known_sectors if str(s).strip()}
+                   - VALID_SECTORS - {"outro"})
+    if not extra:
+        return SYSTEM_PROMPT
+    return SYSTEM_PROMPT + ("\n\nSetores adicionais já aprovados (reuse-os quando encaixarem, "
+                            "com is_new_sector=false): " + ", ".join(extra))
 
 # Remoção de script/style/tags para extrair texto limpo (alimenta a IA barato).
 _SCRIPT_RE = re.compile(r"<script[^>]*>.*?</script>", re.DOTALL | re.IGNORECASE)
@@ -152,21 +178,32 @@ def _normalize_cnaes(raw) -> list:
 
 
 async def ai_enrich(domain: str, html_text: str, current_profile: Optional[dict] = None,
-                    current_sector: str = "outro") -> Optional[dict]:
+                    current_sector: str = "outro", known_sectors: Optional[list] = None) -> Optional[dict]:
     """Enriquece os dados do site com IA numa única chamada. ``None`` se indisponível.
 
     Retorna ``{description, business_type, company_name, tags, cnaes, sector_legacy,
-    sector, sector_confidence, contacts_found}``. **Retrocompatibilidade:** `sector`
-    espelha `sector_legacy` normalizado (callers do KL-47A/54 leem `sector`)."""
+    sector, sector_confidence, is_new_sector, sector_label, macro_sector_suggestion,
+    contacts_found}``. **Retrocompatibilidade:** `sector` espelha `sector_legacy`
+    (KL-84: setor NOVO — is_new_sector=true — preserva o slug sanitizado em vez de virar
+    'outro'; o `process_classification` decide criar a proposta)."""
     if not OPENAI_API_KEY:
         return None
     text = extract_clean_text(html_text) if "<" in (html_text or "") else (html_text or "")
     prompt = build_user_prompt(domain, text, current_profile)
-    result = await call_openai(SYSTEM_PROMPT, prompt, max_tokens=900)  # KL-55: resposta maior
+    result = await call_openai(build_system_prompt(known_sectors), prompt, max_tokens=900)
     if not result:
         return None
-    # Retrocompat: sector_legacy → sector (normalizado; alias saude→clinica; inválido⇒outro).
-    legacy = normalize_sector(result.get("sector_legacy") or result.get("sector") or "outro")
+    # KL-84 — taxonomia aberta: setor conhecido → normaliza (alias/clamp). Setor NOVO
+    # (is_new_sector) → preserva o slug sanitizado (só [a-z0-9_], máx 50) p/ o process_classification.
+    is_new = bool(result.get("is_new_sector"))
+    raw = str(result.get("sector_legacy") or result.get("sector") or "outro").strip().lower()
+    if is_new and raw and raw != "outro" and raw not in VALID_SECTORS:
+        legacy = re.sub(r"[^a-z0-9_]", "", raw.replace(" ", "_").replace("-", "_"))[:50] or "outro"
+        result["is_new_sector"] = legacy != "outro"
+    else:
+        # setor conhecido (ou vazio): normaliza; alias saude→clinica; inválido⇒outro.
+        legacy = normalize_sector(raw)
+        result["is_new_sector"] = False
     result["sector_legacy"] = legacy
     result["sector"] = legacy
     try:

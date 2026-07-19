@@ -12,6 +12,24 @@ Imports são lazy para não pesar no boot e evitar ciclos.
 from __future__ import annotations
 
 import asyncio
+import time
+
+# KL-84 — cache 1h dos setores aprovados (official já estão no prompt base). Evita 1 query
+# por scan só para montar o prompt. Fail-open: erro → lista vazia (prompt base).
+_APPROVED_SECTORS_CACHE: dict = {"ts": 0.0, "slugs": []}
+
+
+async def _approved_sectors(store) -> list:
+    now = time.time()
+    if now - _APPROVED_SECTORS_CACHE["ts"] < 3600:
+        return _APPROVED_SECTORS_CACHE["slugs"]
+    try:
+        rows = await store.list_sectors(["approved"])
+        slugs = [r["slug"] for r in rows]
+    except Exception:  # noqa: BLE001
+        slugs = _APPROVED_SECTORS_CACHE["slugs"]  # mantém o anterior em erro
+    _APPROVED_SECTORS_CACHE.update(ts=now, slugs=slugs)
+    return slugs
 
 
 async def enrich_profile(store, target_id: int, url: str, security_score=None) -> None:
@@ -68,16 +86,26 @@ async def _ai_enrich(store, target_id: int, domain: str, homepage_html, profile:
     if not AI_ENRICHMENT_ENABLED or not homepage_html:
         return
     try:
-        ai = await ai_enrich(domain, homepage_html, current_profile=profile)
+        known = await _approved_sectors(store)
+        ai = await ai_enrich(domain, homepage_html, current_profile=profile, known_sectors=known)
         if not ai:
             return
         changed = merge_ai_into_profile(profile, ai)   # só campos vazios
         sector = ai.get("sector")
         conf = float(ai.get("sector_confidence") or 0.0)
-        if sector and sector != "outro" and conf > 0.7:
-            tier = PRICE_TIERS.get(sector, "standard")
-            # revê regex; preserva manual/ai (KL-54)
-            await store.ai_update_classification(target_id, sector, tier, conf)
+        if sector and conf > 0.7:
+            # KL-84 — taxonomia aberta: resolve sinônimo/merge, cria proposto se novo, e devolve
+            # o slug canônico (ou 'outro'). Best-effort — nunca derruba o enrich.
+            try:
+                from discovery.sector_classification import process_classification
+                decision = await process_classification(store, ai)
+                sector = decision["sector"]
+            except Exception as exc:  # noqa: BLE001
+                print(f"[ai] process_classification falhou {domain}: {exc!r}", flush=True)
+            if sector and sector != "outro":
+                tier = PRICE_TIERS.get(sector, "standard")
+                # revê regex; preserva manual/ai (KL-54)
+                await store.ai_update_classification(target_id, sector, tier, conf)
         # KL-51 f5: grava os CNAEs da IA (source='ai'; a Receita nunca é sobrescrita — KL-55).
         cnaes = ai.get("cnaes") or []
         if cnaes:

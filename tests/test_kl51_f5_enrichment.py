@@ -32,6 +32,20 @@ class FakeStore:
     async def ai_update_classification(self, tid, sector, tier, conf):
         self.sector = (sector, conf)
 
+    # KL-84 — métodos da taxonomia aberta usados por process_classification/_approved_sectors.
+    async def list_sectors(self, statuses):
+        return []
+
+    async def get_sector(self, slug):
+        from discovery.sector_taxonomy import VALID_SECTORS
+        return {"slug": slug, "status": "official"} if slug in VALID_SECTORS else None
+
+    async def increment_sector_count(self, slug):
+        pass
+
+    async def create_proposed_sector(self, slug, label, macro):
+        pass
+
 
 def _mock_pipeline(monkeypatch, ai_result):
     async def _fetch(url, **kw):
@@ -45,7 +59,7 @@ def _mock_pipeline(monkeypatch, ai_result):
     monkeypatch.setattr("scanner.profiler.build_profile", _build)
     monkeypatch.setattr("scanner.ai_enrichment.AI_ENRICHMENT_ENABLED", True)
 
-    async def _ai(domain, html, current_profile=None):
+    async def _ai(domain, html, current_profile=None, known_sectors=None):
         return ai_result
     monkeypatch.setattr("scanner.ai_enrichment.ai_enrich", _ai)
 

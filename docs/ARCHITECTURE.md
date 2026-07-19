@@ -129,6 +129,14 @@ tráfego) que conduz ao scanner. Camadas:
   multi-page → dados comerciais (contatos, JSON-LD, tecnologias, CNPJ) + IA (setor,
   descrição, tags, CNAEs). Best-effort, **fora do caminho síncrono** do scan, **não
   altera o score**.
+- **Taxonomia ABERTA de setores (KL-84):** a IA não fica mais presa aos 48 setores fixos —
+  quando um negócio não encaixa, propõe um setor novo (`is_new_sector`). O
+  `discovery/sector_classification.py::process_classification` (puro) resolve sinônimos
+  (`sector_synonyms.py`) → tabela **`sectors`** (official/proposed/approved/rejected/merged) →
+  segue `merged_into` / cria proposta / cai em 'outro'. O admin cura em `/painel/setores`
+  (aprovar publica em `/setores`; merge/reject reclassificam sites **preservando `manual`/
+  `receita`**). `scripts/reclassify_sectors.py` reclassifica retroativamente pela descrição já
+  extraída (sem re-scan). Os endpoints públicos de setor filtram por status (só official/approved).
 
 ## 6. Workers (container `discovery`)
 
@@ -156,7 +164,9 @@ Schema criado idempotente no `ensure_schema` (sem Alembic). Principais tabelas:
 
 - **Núcleo:** `targets` (alvos + setor + `last_scan_*`), `scans` (histórico, `source`,
   `scanned_by_email`), `site_profile` (perfil comercial, `public_visible`,
-  `edited_by_admin`), `target_classifications` (CNAE multi-setor).
+  `edited_by_admin`), `target_classifications` (CNAE multi-setor), `sectors` (KL-84:
+  taxonomia aberta — slug/label/macro/status/merged_into/site_count; seed idempotente dos
+  48 oficiais no `ensure_schema`).
 - **Funil/e-mail:** `payments`, `alert_log`, `rescan_log`, `email_log` (rastreabilidade
   unificada, KL-62), `email_blocklist`, `recovery_tokens`, `scan_verifications`,
   `scan_credits`, `site_events` (tracking), `scan_leads` (PQL).

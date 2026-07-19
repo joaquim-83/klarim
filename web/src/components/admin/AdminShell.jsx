@@ -57,6 +57,7 @@ const NAV = [
   { to: '/painel', label: 'Visão geral', icon: 'overview', key: 'overview' },
   { to: '/painel/usuarios', label: 'Usuários', icon: 'subscribers', key: 'usuarios' },
   { to: '/painel/alvos', label: 'Alvos', icon: 'targets', key: 'alvos' },
+  { to: '/painel/setores', label: 'Setores', icon: 'services', key: 'setores' },
   { to: '/painel/scans', label: 'Scans', icon: 'scans', key: 'scans' },
   { to: '/painel/alertas', label: 'Alertas', icon: 'alerts', key: 'alertas' },
   { to: '/painel/leads', label: 'Leads', icon: 'leads', key: 'leads' },

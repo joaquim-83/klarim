@@ -228,6 +228,18 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 | GET | `/admin/analytics/funnel-by-sector` | funil segmentado por `targets.sector` |
 | GET | `/admin/analytics/alert-quality` | **KL-85** — qualidade do lead scoring: distribuição do `alert_quality_score`, quanto seria filtrado (<20), médias, alertas enviados no período. `click_rate` por faixa / `top_disqualify_reasons` exigem log por-envio (não na Parte 1) → nulos |
 
+### Taxonomia aberta de setores (KL-84, `api/admin_sectors.py`) — admin-only (prefixo `/admin` → middleware JWT)
+
+| Método | Path | Descrição |
+|---|---|---|
+| GET | `/admin/sectors?status=all\|proposed\|official\|approved\|rejected\|merged` | contadores (`stats`: por status, total classificado, 'outro' + %), `emerging` (propostos) e `taxonomy` (official+approved, ou o status filtrado) |
+| GET | `/admin/sectors/{slug}/examples?limit=` | domínios de exemplo do setor (ajuda a curadoria); 404 se o setor não existe |
+| POST | `/admin/sectors/{slug}/approve` | aprova um setor proposto → `approved` (passa a aparecer em `/setores`). Body opcional `{label, macro_sector}`. 404 se não-proposto, 422 macro inválida |
+| POST | `/admin/sectors/{slug}/merge` | body `{merge_into}` — mescla o proposto num setor official/approved: reclassifica os sites (exceto `manual`) e devolve `reclassified_count`. 422 destino inválido / self |
+| POST | `/admin/sectors/{slug}/reject` | rejeita o proposto → `rejected`; os sites voltam para 'outro' (exceto `manual`) |
+
+> **Público (KL-84):** `/public/sectors` e `/public/sector/{slug}` passam a filtrar pela tabela `sectors` — só `official`/`approved` aparecem; setor `proposed`/`rejected`/`merged` → **404**. Os rótulos dos setores aprovados novos vêm da tabela (cache 1h em-processo).
+
 ## Monitoramento (público)
 
 | Método | Path | Descrição |
@@ -250,7 +262,7 @@ Svix), `POST /email/webhook` (Hostinger, token próprio fail-closed).
 
 ---
 
-## Tools MCP (49) — `mcp_server/tools/`
+## Tools MCP (51) — `mcp_server/tools/`
 
 Wrapper fino sobre a API/store; auth própria (OAuth 2.1/PKCE + `MCP_API_KEY`). Todas
 passam por `_guard` (nunca derrubam a sessão).
@@ -266,7 +278,10 @@ passam por `_guard` (nunca derrubam a sessão).
 - **scans.py** — `list_scans`, `get_scan`, `get_scan_stats`, `scan_url`
 - **alerts.py** — `list_alerts`, `get_alert_stats`, `send_alert_to_target`
 - **payments.py** — `list_payments`, `get_payment_stats`
-- **analytics.py** — `get_funnel`, `get_rescan_stats`, `send_report_to_email`
+- **analytics.py** — `get_funnel`, `get_rescan_stats`, `send_report_to_email`,
+  `get_analytics_metrics` + `get_analytics_funnel` (KL-83), `get_lead_scoring_stats` (KL-85),
+  `get_privacy_stats` (KL-44 P5), `get_sector_stats` (KL-84: saúde da taxonomia + emergentes),
+  `classify_target_sector` (KL-84, write: reclassifica 1 alvo por IA sem re-scan)
 - **workers.py** — `pause_worker`, `resume_worker`, `get_worker_control`,
   `set_alert_throttle`, `set_discovery_config`, `set_scan_config`
 - **monitoring.py** — `list_monitored_sites`, `offer_monitoring`

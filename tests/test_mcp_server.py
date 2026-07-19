@@ -30,6 +30,7 @@ READ_TOOLS = [
     "list_payments", "get_payment_stats", "get_funnel", "get_rescan_stats",
     "get_analytics_metrics", "get_analytics_funnel",  # KL-83
     "get_lead_scoring_stats",  # KL-85
+    "get_sector_stats",  # KL-84: taxonomia aberta de setores
     # fix MCP: novas tools de dados
     "get_dashboard_stats", "get_enrichment_status", "get_user_accounts", "search_inbox",
     # KL-61: leads
@@ -57,6 +58,8 @@ WRITE_TOOLS = [
     "classify_targets_batch",
     # KL-69: gestão de usuários
     "admin_remove_user_site",
+    # KL-84: reclassificação de setor por IA (sem re-scan)
+    "classify_target_sector",
 ]
 
 

@@ -256,4 +256,11 @@ export const admin = {
   sendReport: (targetId, emailTo) => post('/admin/send-report', { target_id: targetId, email_to: emailTo }),
   resendPayment: (chargeId) => post('/admin/resend-payment', { charge_id: chargeId }),
   targetPayments: (id) => get(`/targets/${id}/payments`),
+
+  // --- KL-84: taxonomia aberta de setores ---------------------------------- //
+  sectors: (status = 'all') => get(`/admin/sectors?status=${status}`),
+  sectorExamples: (slug, limit = 5) => get(`/admin/sectors/${slug}/examples?limit=${limit}`),
+  approveSector: (slug, body) => post(`/admin/sectors/${slug}/approve`, body || {}),
+  mergeSector: (slug, mergeInto) => post(`/admin/sectors/${slug}/merge`, { merge_into: mergeInto }),
+  rejectSector: (slug) => post(`/admin/sectors/${slug}/reject`),
 }

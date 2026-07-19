@@ -1,0 +1,9 @@
+---
+export const prerender = false;
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import SetoresPage from '../../components/admin/SetoresPage.jsx';
+---
+
+<AdminLayout>
+  <SetoresPage client:only="react" />
+</AdminLayout>

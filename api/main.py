@@ -2277,6 +2277,45 @@ def _sector_label(sector: str) -> str:
         return sector or "outro"
 
 
+# KL-84 — taxonomia aberta: mapa slug→{label,macro,status} da tabela `sectors`, cache 1h
+# em-processo. Alimenta o rótulo dos setores APROVADOS (não estão em SECTOR_TAXONOMY) e o
+# filtro de visibilidade pública (só official/approved aparecem em /setores).
+_TAXONOMY_CACHE: dict = {"ts": 0.0, "map": {}}
+
+
+async def _sector_taxonomy_map() -> dict:
+    import time as _time
+    now = _time.time()
+    if now - _TAXONOMY_CACHE["ts"] < 3600 and _TAXONOMY_CACHE["map"]:
+        return _TAXONOMY_CACHE["map"]
+    try:
+        rows = await get_target_store().list_sectors(
+            ["official", "approved", "proposed", "rejected", "merged"])
+        m = {r["slug"]: {"label": r["label"], "macro": r.get("macro_sector"),
+                         "status": r.get("status")} for r in rows}
+    except Exception:  # noqa: BLE001 - fail-open: sem tabela, tudo passa como antes
+        m = _TAXONOMY_CACHE["map"]
+    _TAXONOMY_CACHE.update(ts=now, map=m)
+    return m
+
+
+def _sector_public_label(slug: str, tax: dict) -> str:
+    """Rótulo do setor priorizando a tabela (cobre setores aprovados novos)."""
+    row = tax.get(slug)
+    if row and row.get("label"):
+        return row["label"]
+    return _sector_label(slug)
+
+
+def _sector_is_public(slug: str, tax: dict) -> bool:
+    """Um setor aparece publicamente só se official/approved (ou ainda não está na tabela —
+    legado). proposed/rejected/merged nunca vazam para /setores."""
+    row = tax.get(slug)
+    if not row:
+        return True
+    return row.get("status") in ("official", "approved")
+
+
 def _score_badge(score: Optional[int], has_account: bool = False) -> Optional[dict]:
     """Selo FACTUAL "Monitorado por Klarim" (KL-42; regra KL-78 item 3). Só aparece quando
     o site tem **score perfeito (100)** E **conta atribuída** (algum usuário o monitora —
@@ -2567,17 +2606,19 @@ async def public_sectors(request: Request) -> dict:
         rows = await get_target_store().public_sector_index(min_count=10)
     except Exception:  # noqa: BLE001
         rows = []
+    tax = await _sector_taxonomy_map()  # KL-84: filtra proposed/rejected/merged
     sectors = [{
         "slug": r["sector"],
         # KL-78 item 2: 'outro' = catch-all → rotula "Não classificados" (vem por último).
-        "name": "Não classificados" if r["sector"] == "outro" else _sector_label(r["sector"]),
+        "name": ("Não classificados" if r["sector"] == "outro"
+                 else _sector_public_label(r["sector"], tax)),
         "unclassified": r["sector"] == "outro",
         "count": int(r["count"]), "avg_score": int(r["avg_score"]),
         "median_score": int(r["median_score"]),
         "semaphore_distribution": {"verde": int(r["verde"]), "amarelo": int(r["amarelo"]),
                                    "vermelho": int(r["vermelho"])},
         "score_100_count": int(r["score_100"]),
-    } for r in rows]
+    } for r in rows if _sector_is_public(r["sector"], tax)]
     out = {"sectors": sectors, "count": len(sectors)}
     await _cache_set("public:sectors", out, ttl=3600)
     return JSONResponse(out, headers={"Cache-Control": "public, max-age=3600"})
@@ -2594,6 +2635,10 @@ async def public_sector_detail(slug: str, request: Request,
     slug = (slug or "").lower().strip()
     if sort not in ("score_desc", "score_asc", "domain_asc"):
         sort = "score_desc"
+    # KL-84: setor proposto/rejeitado/merged não tem página pública.
+    tax = await _sector_taxonomy_map()
+    if not _sector_is_public(slug, tax):
+        raise HTTPException(404, "Setor não disponível.")
     ckey = f"public:sector:{slug}:{page}:{limit}:{sort}"
     cached = await _cache_get(ckey)
     if cached is not None:
@@ -2639,7 +2684,7 @@ async def public_sector_detail(slug: str, request: Request,
                 perfect = []
     pages = (total + limit - 1) // limit if total else 0
     out = {
-        "sector": {"slug": slug, "name": _sector_label(slug), "count": total,
+        "sector": {"slug": slug, "name": _sector_public_label(slug, tax), "count": total,
                    "avg_score": int(stats.get("avg_score") or 0),
                    "median_score": int(stats.get("median_score") or 0),
                    "distribution": stats.get("distribution") or {}},
@@ -7183,6 +7228,9 @@ async def oauth_authorization_server() -> JSONResponse:
 # ficam sob o prefixo /admin → já protegidas pelo middleware admin (JWT).
 from api import admin_analytics as _admin_analytics  # noqa: E402
 app.include_router(_admin_analytics.router)
+
+from api import admin_sectors as _admin_sectors  # noqa: E402  (KL-84 — taxonomia aberta)
+app.include_router(_admin_sectors.router)
 
 try:
     from mcp_server.server import mcp_app

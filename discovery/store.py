@@ -43,6 +43,26 @@ ALTER TABLE targets ADD COLUMN IF NOT EXISTS alert_quality_score INTEGER;
 CREATE INDEX IF NOT EXISTS idx_targets_alert_quality ON targets(alert_quality_score)
     WHERE alert_quality_score IS NOT NULL;
 
+-- KL-84 — taxonomia ABERTA de setores. Os 48 setores fixos (KL-54) entram como 'official' via
+-- seed; a IA pode propor novos ('proposed') que o admin aprova/merge/rejeita. Só official/approved
+-- aparecem em /setores. `site_count` é incrementado (não COUNT(*) por request).
+CREATE TABLE IF NOT EXISTS sectors (
+    id SERIAL PRIMARY KEY,
+    slug VARCHAR(50) UNIQUE NOT NULL,
+    label VARCHAR(100) NOT NULL,
+    macro_sector VARCHAR(30) NOT NULL,
+    status VARCHAR(20) DEFAULT 'official'
+        CHECK (status IN ('official', 'proposed', 'approved', 'rejected', 'merged')),
+    merged_into VARCHAR(50) REFERENCES sectors(slug),
+    site_count INTEGER DEFAULT 0,
+    first_seen TIMESTAMP DEFAULT NOW(),
+    approved_at TIMESTAMP,
+    approved_by VARCHAR(100),
+    created_at TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_sectors_status ON sectors(status);
+CREATE INDEX IF NOT EXISTS idx_sectors_macro ON sectors(macro_sector);
+
 CREATE TABLE IF NOT EXISTS scans (
     id SERIAL PRIMARY KEY,
     target_id INTEGER REFERENCES targets(id),
@@ -700,6 +720,12 @@ class TargetStore:
 
     async def ensure_schema(self) -> None:
         await asyncio.to_thread(self._run, lambda cur: cur.execute(_SCHEMA))
+        # KL-84 — seed dos 48 setores oficiais (idempotente). Fail-open: um erro na seed
+        # não impede o boot (o schema já subiu).
+        try:
+            await self.seed_sectors()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[schema] seed_sectors falhou (seguindo): {exc!r}", flush=True)
 
     async def ping(self) -> bool:
         """SELECT 1 — health check do PostgreSQL (KL-16)."""
@@ -5189,6 +5215,188 @@ class TargetStore:
                 "FROM targets WHERE contact_email IS NOT NULL ORDER BY id LIMIT %s OFFSET %s",
                 (limit, offset))
             return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- KL-84: taxonomia aberta de setores ------------------------------- #
+
+    async def seed_sectors(self) -> None:
+        """Idempotente: insere os 48 setores fixos (KL-54) como 'official' e recalcula o
+        `site_count`. Roda no ensure_schema."""
+        from discovery.sector_taxonomy import SECTOR_TAXONOMY
+
+        def _fn(cur):
+            for slug, meta in SECTOR_TAXONOMY.items():
+                cur.execute(
+                    "INSERT INTO sectors (slug, label, macro_sector, status) "
+                    "VALUES (%s, %s, %s, 'official') ON CONFLICT (slug) DO NOTHING",
+                    (slug, meta["label"], meta["macro"]))
+            # site_count = COUNT de targets por setor (só na seed/recompute — não por request).
+            cur.execute(
+                "UPDATE sectors s SET site_count = COALESCE(c.n, 0) FROM "
+                "(SELECT sector, COUNT(*) n FROM targets GROUP BY sector) c "
+                "WHERE c.sector = s.slug")
+
+        await asyncio.to_thread(self._run, _fn)
+
+    async def recompute_sector_counts(self) -> None:
+        await asyncio.to_thread(self._run, lambda cur: cur.execute(
+            "UPDATE sectors s SET site_count = COALESCE(c.n, 0) FROM "
+            "(SELECT sector, COUNT(*) n FROM targets GROUP BY sector) c WHERE c.sector = s.slug"))
+
+    async def get_sector(self, slug: str) -> Optional[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute("SELECT * FROM sectors WHERE slug = %s", ((slug or "").strip().lower(),))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def create_proposed_sector(self, slug: str, label: str, macro_sector: str) -> None:
+        """Cria um setor proposto pela IA (status='proposed'). Idempotente."""
+        await asyncio.to_thread(self._run, lambda cur: cur.execute(
+            "INSERT INTO sectors (slug, label, macro_sector, status, site_count) "
+            "VALUES (%s, %s, %s, 'proposed', 0) ON CONFLICT (slug) DO NOTHING",
+            (slug, label or slug, macro_sector or "outro")))
+
+    async def increment_sector_count(self, slug: str) -> None:
+        await asyncio.to_thread(self._run, lambda cur: cur.execute(
+            "UPDATE sectors SET site_count = site_count + 1 WHERE slug = %s", (slug,)))
+
+    async def list_sectors(self, statuses: list) -> list:
+        def _fn(cur):
+            cur.execute("SELECT * FROM sectors WHERE status = ANY(%s) ORDER BY site_count DESC, slug",
+                        (list(statuses),))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def sector_examples(self, slug: str, limit: int = 3) -> list:
+        """Top domínios de um setor (para a tela de setores emergentes)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT domain FROM targets WHERE sector = %s AND domain IS NOT NULL "
+                "ORDER BY last_scan_score DESC NULLS LAST, id LIMIT %s",
+                ((slug or "").strip().lower(), limit))
+            return [r[0] for r in cur.fetchall()]
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def approve_sector(self, slug: str, label: Optional[str], macro_sector: Optional[str],
+                             approved_by: str) -> Optional[Dict[str, Any]]:
+        """Aprova um setor proposto → status='approved' (aparece em /setores)."""
+        def _fn(cur):
+            sets = ["status = 'approved'", "approved_at = NOW()", "approved_by = %s"]
+            params: list = [approved_by]
+            if label:
+                sets.append("label = %s")
+                params.append(label)
+            if macro_sector:
+                sets.append("macro_sector = %s")
+                params.append(macro_sector)
+            params.append((slug or "").strip().lower())
+            cur.execute(f"UPDATE sectors SET {', '.join(sets)} WHERE slug = %s AND status = 'proposed' "
+                        f"RETURNING *", params)
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def merge_sector(self, slug: str, merge_into: str) -> Optional[Dict[str, Any]]:
+        """Faz merge de um setor proposto num existente: status='merged' + reclassifica os
+        sites (exceto manual) para o destino. Retorna {sector, reclassified_count}."""
+        slug = (slug or "").strip().lower()
+        merge_into = (merge_into or "").strip().lower()
+
+        def _fn(cur):
+            cur.execute("SELECT 1 FROM sectors WHERE slug = %s AND status = 'proposed'", (slug,))
+            if not cur.fetchone():
+                return None
+            cur.execute("UPDATE targets SET sector = %s, classification_source = 'ai' "
+                        "WHERE sector = %s AND classification_source IS DISTINCT FROM 'manual' "
+                        "RETURNING id", (merge_into, slug))
+            n = len(cur.fetchall())
+            cur.execute("UPDATE sectors SET status = 'merged', merged_into = %s WHERE slug = %s "
+                        "RETURNING *", (merge_into, slug))
+            row = self._rows_to_dicts(cur)[0]
+            # atualiza counts dos dois setores
+            cur.execute("UPDATE sectors s SET site_count = COALESCE(c.n,0) FROM "
+                        "(SELECT sector, COUNT(*) n FROM targets GROUP BY sector) c "
+                        "WHERE c.sector = s.slug AND s.slug IN (%s, %s)", (slug, merge_into))
+            return {"sector": row, "reclassified_count": n}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def reject_sector(self, slug: str) -> Optional[Dict[str, Any]]:
+        """Rejeita um setor proposto: status='rejected' + reclassifica os sites (exceto
+        manual) para 'outro'. Retorna {sector, reclassified_count}."""
+        slug = (slug or "").strip().lower()
+
+        def _fn(cur):
+            cur.execute("SELECT 1 FROM sectors WHERE slug = %s AND status = 'proposed'", (slug,))
+            if not cur.fetchone():
+                return None
+            cur.execute("UPDATE targets SET sector = 'outro', classification_source = 'ai' "
+                        "WHERE sector = %s AND classification_source IS DISTINCT FROM 'manual' "
+                        "RETURNING id", (slug,))
+            n = len(cur.fetchall())
+            cur.execute("UPDATE sectors SET status = 'rejected', site_count = 0 WHERE slug = %s "
+                        "RETURNING *", (slug,))
+            row = self._rows_to_dicts(cur)[0]
+            return {"sector": row, "reclassified_count": n}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def reclassify_target_sector(self, target_id: int, sector: str, price_tier: str,
+                                       confidence: float) -> int:
+        """KL-84 — reclassificação retroativa: grava setor/tier/conf (source='ai') protegendo
+        SOMENTE `manual`/`receita`. Diferente de `ai_update_classification`, PERMITE rever um
+        alvo já `ai` (é o caso comum de 'outro'). Retorna 1 se atualizou, 0 se protegido."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE targets SET sector = %s, price_tier = %s, "
+                "classification_confidence = %s, classification_source = 'ai' "
+                "WHERE id = %s AND (classification_source IS NULL OR classification_source "
+                "NOT IN ('manual', 'receita')) RETURNING id",
+                (sector, price_tier, confidence, target_id))
+            return 1 if cur.fetchone() else 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def targets_for_reclassification(self, scope: str = "outro", limit: int = 1000,
+                                           after_id: int = 0) -> list:
+        """KL-84 — alvos candidatos à reclassificação retroativa (sem re-scan). Traz a
+        descrição/business_type/tags já extraídos. NUNCA inclui `manual`/`receita` (protegidos).
+        `scope='outro'` só os não classificados; `'all'` todos. Paginação por id (`after_id`)."""
+        def _fn(cur):
+            where = ["(t.classification_source IS NULL OR t.classification_source "
+                     "NOT IN ('manual', 'receita'))",
+                     "t.id > %s",
+                     "(p.description IS NOT NULL OR p.business_type IS NOT NULL)"]
+            params: list = [after_id]
+            if scope == "outro":
+                where.append("(t.sector IS NULL OR t.sector = 'outro')")
+            cur.execute(
+                "SELECT t.id, t.domain, t.sector, t.classification_source, "
+                "p.description, p.business_type, p.tags "
+                "FROM targets t LEFT JOIN site_profile p ON p.target_id = t.id "
+                "WHERE " + " AND ".join(where) + " ORDER BY t.id LIMIT %s",
+                params + [limit])
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def sector_taxonomy_stats(self) -> Dict[str, Any]:
+        """Contadores para a página admin + MCP: por status, total classificado, 'outro' + %."""
+        def _fn(cur):
+            cur.execute("SELECT status, COUNT(*) FROM sectors GROUP BY status")
+            by_status = {r[0]: int(r[1]) for r in cur.fetchall()}
+            cur.execute("SELECT COUNT(*) FROM targets WHERE sector IS NOT NULL")
+            classified = int(cur.fetchone()[0])
+            cur.execute("SELECT COUNT(*) FROM targets WHERE sector = 'outro'")
+            outro = int(cur.fetchone()[0])
+            return {"by_status": by_status, "total_classified": classified, "outro_count": outro,
+                    "outro_pct": round(outro / classified * 100, 1) if classified else 0}
 
         return await asyncio.to_thread(self._run, _fn)
 
