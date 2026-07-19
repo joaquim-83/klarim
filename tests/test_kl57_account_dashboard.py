@@ -33,12 +33,14 @@ class FakeStore:
         # então o signup cria a conta direto (sem exigir código).
         return True
 
-    async def create_user(self, email, password_hash, name=None, role="owner"):
+    async def create_user(self, email, password_hash, name=None, role="owner",
+                          email_confirmed=True):
         email = email.lower().strip()
         if email in self.users:
             return None
         u = {"id": self.next_id, "email": email, "name": name, "plan": "free",
-             "max_sites": 1, "is_active": True, "password_hash": password_hash, "role": role}
+             "max_sites": 1, "is_active": True, "password_hash": password_hash, "role": role,
+             "email_confirmed": email_confirmed}
         self.users[email] = u
         self.by_id[u["id"]] = u
         self.next_id += 1
@@ -123,7 +125,7 @@ def store(monkeypatch):
     monkeypatch.setattr("discovery.store.get_target_store", lambda: s)
     monkeypatch.setattr(auth_users, "_secret", lambda: "k" * 64)
     monkeypatch.setattr(m, "_email_enabled", lambda: False)  # sem e-mail nos testes
-    for bucket in (m._signup_attempts, m._reset_attempts):
+    for bucket in (m._signup_attempts, m._signup_daily_attempts, m._reset_attempts):
         bucket.clear()
     return s
 

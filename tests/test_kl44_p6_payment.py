@@ -118,6 +118,10 @@ class FakeStore:
         self.disabled.append((user_id, list(keep)))
         return 0
 
+    async def delete_unconfirmed_inactive_accounts(self, older_than_days=30):  # KL-82 Slice 2
+        self.cleanup_called = getattr(self, "cleanup_called", 0) + 1
+        return getattr(self, "cleanup_returns", 0)
+
     async def ensure_schema(self):
         pass
 
@@ -325,6 +329,20 @@ def test_trial_worker_warns_7d(store, monkeypatch):
     worker._mailer = lambda: _FakeMailer(sent)
     stats = _run(worker.run_cycle())
     assert stats["warned_7d"] == 1 and ("u@x.com.br", "trial_warning_7") in sent
+
+
+def test_trial_worker_cleans_unconfirmed(store, monkeypatch):
+    # KL-82 Slice 2: o ciclo do trial também limpa contas não confirmadas inativas.
+    from discovery import trial_worker as tw
+    store.cleanup_returns = 2
+    monkeypatch.setattr(tw, "get_target_store", lambda: store)
+    monkeypatch.setattr(tw.worker_control, "is_enabled", lambda w: True)
+    worker = tw.TrialWorker()
+    worker.hour_utc = datetime.now(timezone.utc).hour
+    worker._mailer = lambda: _FakeMailer([])
+    stats = _run(worker.run_cycle())
+    assert getattr(store, "cleanup_called", 0) == 1
+    assert stats["unconfirmed_cleaned"] == 2 and stats["errors"] == 0
 
 
 def test_trial_worker_disabled(store, monkeypatch):

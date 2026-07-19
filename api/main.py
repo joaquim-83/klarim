@@ -64,6 +64,7 @@ from api import health_checks
 from api import auth_users
 from api import plans
 from api import domain_guard
+from api.disposable_emails import is_disposable_email
 
 
 # --------------------------------------------------------------------------- #
@@ -329,6 +330,8 @@ _RESET_CODE_TTL = 3600
 # Buckets de fallback in-memory do `_redis_allow` (KL-44 auditoria F-02): o rate limit
 # é distribuído via Redis; estes dicts só entram em ação se o Redis estiver indisponível.
 _signup_attempts: dict = {}
+_signup_daily_attempts: dict = {}   # KL-85: teto diário de criação de conta por IP
+_resend_confirm_attempts: dict = {}  # KL-82 Slice 2: reenvio do link de confirmação
 _forgot_attempts: dict = {}
 _reset_attempts: dict = {}
 _send_report_attempts: dict = {}
@@ -412,6 +415,8 @@ def _user_public(user: dict) -> dict:
         "id": user["id"], "email": user["email"], "name": user.get("name"),
         "plan": user.get("plan", "free"), "max_sites": user.get("max_sites", 1),
         "role": user.get("role", "owner"),   # KL-44 P3: owner|technician|both
+        # KL-82 Slice 2: nível de confiança da conta. NULL (contas legadas) = confirmada.
+        "email_confirmed": user.get("email_confirmed") is not False,
         "created_at": created.isoformat() if hasattr(created, "isoformat") else created,
     }
 
@@ -595,11 +600,14 @@ async def _process_claim(store, user: dict, email: str, url: Optional[str]) -> d
 async def _create_account_record(store, email: str, password_hash: str,
                                  name: Optional[str], url: Optional[str],
                                  role: str = "owner", invite: Optional[str] = None,
-                                 plan: Optional[str] = None) -> tuple:
+                                 plan: Optional[str] = None,
+                                 email_confirmed: bool = True) -> tuple:
     """Cria a conta + reivindica o site (KL-68) + histórico + Pro trial + lead + vínculo de
     técnico (KL-44 P3). Retorna ``(user, claim_info)`` — `user` é None se o e-mail já existe.
-    Compartilhado pelo signup (e-mail já verificado) e pelo /account/verify."""
-    user = await store.create_user(email, password_hash, name=name, role=role)
+    `email_confirmed` (KL-82 Slice 2): False no signup sem código (confirma depois por link).
+    Compartilhado pelo signup e pelo /account/verify (fallback de código)."""
+    user = await store.create_user(email, password_hash, name=name, role=role,
+                                   email_confirmed=email_confirmed)
     if user is None:
         return None, {}
     # KL-44 P3: vincula convites de técnico pendentes deste e-mail + o convite explícito.
@@ -648,15 +656,25 @@ def _account_session_response(user: dict, claim: Optional[dict] = None) -> JSONR
 
 @app.post("/account/signup")
 async def account_signup(body: SignupBody, request: Request) -> JSONResponse:
-    """Cria conta. **KL-44 F-03b:** se o e-mail JÁ foi verificado no scan (KL-25), cria
-    direto (sem re-verificar — preserva o fluxo scan→cadastro). Se NÃO foi verificado
-    (signup direto via API ou claim de alerta), exige um código de 6 dígitos por e-mail —
-    fecha o gap de criar conta com e-mail de terceiro. Rate limit 5/IP/h (Redis, KL-44 F-02)."""
-    allowed, retry = await _redis_allow("signup", _client_ip(request), 5, 3600, _signup_attempts)
-    if not allowed:
-        raise HTTPException(status_code=429, detail="Muitas contas criadas. Tente mais tarde.",
-                            headers={"Retry-After": str(retry)})
+    """Cria a conta na hora (KL-82 Slice 2, confiança progressiva) — **sem código**: e-mail +
+    senha → conta com `email_confirmed=false` + e-mail de boas-vindas com LINK de confirmação
+    (30 dias). Se o e-mail JÁ foi verificado no scan (KL-25), nasce confirmada (não precisa
+    re-confirmar). O fluxo de código de 6 dígitos (`/account/verify`) fica DORMENTE como
+    fallback. Anti-abuso (KL-85): blocklist de descartáveis + rate limit 3/h & 5/dia por IP
+    (via `CF-Connecting-IP`, fix do Slice 1)."""
+    ip = _client_ip(request)
+    # (1) Blocklist de e-mail descartável (antes do rate limit — não gasta cota com lixo).
     email = (body.email or "").lower().strip()
+    if is_disposable_email(email):
+        raise HTTPException(status_code=400,
+                            detail="Por favor, use um e-mail permanente para criar sua conta.")
+    # (2) Rate limit de criação de conta (KL-85 Parte 2): 3/h + 5/dia por IP.
+    ok_h, retry_h = await _redis_allow("signup", ip, 3, 3600, _signup_attempts)
+    ok_d, retry_d = await _redis_allow("signup_daily", ip, 5, 86400, _signup_daily_attempts)
+    if not ok_h or not ok_d:
+        raise HTTPException(status_code=429,
+                            detail="Limite de cadastros atingido. Tente novamente mais tarde.",
+                            headers={"Retry-After": str(max(retry_h, retry_d))})
     if not _ACCOUNT_EMAIL_RE.match(email):
         raise HTTPException(status_code=400, detail="E-mail inválido.")
     if len(body.password or "") < _PW_MIN:
@@ -665,35 +683,21 @@ async def account_signup(body: SignupBody, request: Request) -> JSONResponse:
     if await store.get_user_by_email(email):
         raise HTTPException(status_code=409, detail="Já existe uma conta com este e-mail.")
     pw_hash = auth_users.hash_password(body.password)
-    # E-mail já verificado no scan (KL-25) → cria direto.
+    # E-mail já verificado no scan (KL-25) → nasce confirmada (não reenviamos link).
     try:
         already_verified = await store.email_has_verified_scan(email)
-    except Exception:  # noqa: BLE001 - na dúvida, exige verificação
+    except Exception:  # noqa: BLE001 - na dúvida, trata como não verificado (pede confirmação)
         already_verified = False
-    if already_verified:
-        user, claim = await _create_account_record(
-            store, email, pw_hash, body.name or None, body.url,
-            role=(body.role or "owner"), invite=body.invite, plan=body.plan)
-        if user is None:
-            raise HTTPException(status_code=409, detail="Já existe uma conta com este e-mail.")
-        return _account_session_response(user, claim)
-    # E-mail NÃO verificado → exige código (não cria a conta ainda).
-    if not _email_enabled():
-        raise HTTPException(status_code=503, detail="Verificação de e-mail indisponível no momento.")
-    code = f"{secrets.randbelow(900000) + 100000:06d}"  # CSPRNG, 6 dígitos
-    await _store_pending_signup(email, {
-        "code": code, "password_hash": pw_hash, "name": body.name or None,
-        "url": body.url or None, "attempts": 0,
-        "role": body.role or "owner", "invite": body.invite or None,
-        "plan": body.plan or None})
-    try:
-        await _mailer().send_signup_verification_code(email, code)
-    except Exception as exc:  # noqa: BLE001
-        print(f"[signup] falha ao enviar código {email}: {exc!r}", flush=True)
-        raise HTTPException(status_code=502, detail="Falha ao enviar o código de verificação.") from exc
-    return JSONResponse({"status": "verification_sent",
-                         "message": "Código de verificação enviado para seu e-mail.",
-                         "email": _mask_email(email)})
+    user, claim = await _create_account_record(
+        store, email, pw_hash, body.name or None, body.url,
+        role=(body.role or "owner"), invite=body.invite, plan=body.plan,
+        email_confirmed=already_verified)
+    if user is None:
+        raise HTTPException(status_code=409, detail="Já existe uma conta com este e-mail.")
+    if not already_verified:
+        # Conta não confirmada → e-mail de boas-vindas com link (fire-and-forget).
+        _spawn(_send_welcome_confirmation(user["id"], email))
+    return _account_session_response(user, claim)
 
 
 class VerifySignupBody(BaseModel):
@@ -731,6 +735,39 @@ async def account_verify(body: VerifySignupBody, request: Request) -> JSONRespon
     if user is None:
         raise HTTPException(status_code=409, detail="Já existe uma conta com este e-mail.")
     return _account_session_response(user, claim)
+
+
+@app.get("/account/confirm")
+async def account_confirm(token: str = Query(default="")) -> dict:
+    """KL-82 Slice 2 — confirma o e-mail pelo LINK do e-mail de boas-vindas. Chamado pela
+    página SSR `/confirmar`. Idempotente (uso único de fato: confirmar 2x não muda nada).
+    NUNCA loga o token — só o resultado. Retorna `{status: confirmed|already|invalid}`."""
+    payload = _verify_confirm_token(token)
+    if not payload:
+        return {"status": "invalid"}
+    store = get_target_store()
+    user = await store.get_user_by_id(int(payload["uid"]))
+    if not user or (user.get("email") or "").lower() != (payload.get("email") or "").lower():
+        return {"status": "invalid"}
+    confirmed_now = await store.confirm_user_email(user["id"], source="link")
+    return {"status": "confirmed" if confirmed_now else "already"}
+
+
+@app.post("/account/resend-confirmation")
+async def account_resend_confirmation(request: Request) -> dict:
+    """KL-82 Slice 2 — reenvia o link de confirmação para o usuário logado. Rate limit
+    3/h por conta (evita spam de confirmação). No-op se já confirmado."""
+    user = await auth_users.require_user(request)
+    if user.get("email_confirmed") is not False:
+        return {"status": "already_confirmed"}
+    allowed, retry = await _redis_allow("resend_confirm", str(user["id"]), 3, 3600,
+                                        _resend_confirm_attempts)
+    if not allowed:
+        raise HTTPException(status_code=429,
+                            detail="Aguarde alguns minutos para reenviar o link.",
+                            headers={"Retry-After": str(retry)})
+    await _send_welcome_confirmation(user["id"], user["email"])
+    return {"status": "sent", "email": _mask_email(user["email"])}
 
 
 @app.post("/account/login")
@@ -2596,6 +2633,49 @@ def _verify_scan_token(token: str) -> Optional[dict]:
         return payload
     except Exception:  # noqa: BLE001
         return None
+
+
+_CONFIRM_TOKEN_TTL = 30 * 86400  # KL-82 Slice 2: link de confirmação vale 30 dias
+
+
+def _make_confirm_token(user_id: int, email: str) -> str:
+    """KL-82 Slice 2 — token de confirmação de e-mail (mesmo esquema HMAC do scan token:
+    base64(json).hmac256[:32]). `typ='confirm'` impede reuso como scan token. Stateless +
+    idempotente: confirmar 2x não faz nada (a conta já está confirmada) → efeito de uso único."""
+    payload = {"typ": "confirm", "uid": int(user_id), "email": (email or "").lower().strip(),
+               "exp": int(time.time()) + _CONFIRM_TOKEN_TTL}
+    raw = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode()
+    sig = hmac.new(_scan_token_secret().encode(), raw.encode(), hashlib.sha256).hexdigest()[:32]
+    return f"{raw}.{sig}"
+
+
+def _verify_confirm_token(token: str) -> Optional[dict]:
+    """Valida assinatura + expiração + `typ`. Retorna o payload ou None. NUNCA logar o
+    token (regra de segurança do card): só o resultado."""
+    secret = _scan_token_secret()
+    if not token or not secret:
+        return None
+    try:
+        raw, sig = token.rsplit(".", 1)
+        expected = hmac.new(secret.encode(), raw.encode(), hashlib.sha256).hexdigest()[:32]
+        if not hmac.compare_digest(sig, expected):
+            return None
+        payload = json.loads(base64.urlsafe_b64decode(raw))
+        if payload.get("typ") != "confirm" or int(payload.get("exp", 0)) < int(time.time()):
+            return None
+        return payload
+    except Exception:  # noqa: BLE001
+        return None
+
+
+async def _send_welcome_confirmation(user_id: int, email: str) -> None:
+    """Envia o e-mail de boas-vindas com link de confirmação (fire-and-forget)."""
+    try:
+        token = _make_confirm_token(user_id, email)
+        confirm_url = f"{_SITE}/confirmar?token={token}"
+        await _mailer().send_welcome_confirmation(email, confirm_url)
+    except Exception as exc:  # noqa: BLE001 - nunca derruba o signup; o usuário pode reenviar
+        print(f"[signup] falha ao enviar boas-vindas ({email}): {exc!r}", flush=True)
 
 
 def _is_admin_request(request: Request) -> bool:

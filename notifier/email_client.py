@@ -240,6 +240,19 @@ def build_alert_text(domain: str, score: int, unsubscribe_url: Optional[str],
     return "\n".join(lines) + _unsub_line(unsubscribe_url, "Não quer receber mais avisos?")
 
 
+def build_welcome_confirmation_text(confirm_url: str) -> str:
+    """KL-82 Slice 2 — corpo em texto puro do e-mail de boas-vindas com LINK de
+    confirmação (transacional, não proativo; sem UTM/List-Unsubscribe)."""
+    return (
+        "Bem-vindo ao Klarim!\n\n"
+        "Sua conta foi criada com sucesso. Para desbloquear o relatório completo\n"
+        "(PDF, checks detalhados, monitoramento), confirme seu e-mail:\n\n"
+        f"{confirm_url}\n\n"
+        "O link é válido por 30 dias. Se não foi você que criou a conta, ignore este e-mail.\n\n"
+        "--\nKlarim · Segurança web para o Brasil\nhttps://klarim.net"
+    )
+
+
 def build_profile_view_text(domain: str, score: int,
                             unsubscribe_url: Optional[str]) -> str:
     """Corpo em texto puro da notificação 'alguém consultou seu perfil' (KL-44)."""
@@ -862,6 +875,17 @@ class KlarimMailer:
             "subject": f"🔐 Seu código de cadastro Klarim: {code}",
             "html": html,
         }, email_type="signup_verification", source="account", skip_blocklist=True)
+
+    async def send_welcome_confirmation(self, to_email: str, confirm_url: str) -> Dict[str, Any]:
+        """KL-82 Slice 2 — e-mail de boas-vindas com LINK de confirmação (signup sem código).
+        **Transacional** (o usuário criou a conta): remetente normal (`seguranca@klarim.net`),
+        Reply-To scan@ (via _send), TEXTO PURO, ignora blocklist mas é registrado (KL-62)."""
+        return await self._send({
+            "from": self.from_address,
+            "to": [to_email],
+            "subject": "Bem-vindo ao Klarim — confirme seu e-mail",
+            "text": build_welcome_confirmation_text(confirm_url),
+        }, email_type="welcome_confirmation", source="account", skip_blocklist=True)
 
     async def send_password_reset_code(self, to_email: str, code: str) -> Dict[str, Any]:
         """Envia o código de 6 dígitos para redefinir a senha da conta (KL-51 f3)."""

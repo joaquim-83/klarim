@@ -2,20 +2,17 @@ import { useState } from 'react';
 import { apiPost } from '../../lib/api.js';
 import { field, btn, card, label, errorBox } from './ui.js';
 
-// Cadastro (KL-51 f3 + KL-44 F-03b). Se o e-mail já foi verificado no scan (KL-25),
-// o backend cria a conta direto (chega pré-preenchido via query param). Se NÃO foi
-// verificado (cadastro direto), o backend responde `verification_sent` e a UI pede o
-// código de 6 dígitos enviado por e-mail (fecha o gap de cadastro com e-mail de terceiro).
+// Cadastro (KL-82 Slice 2 — confiança progressiva). Signup SEM código: e-mail + senha →
+// conta criada na hora (email_confirmed=false) + e-mail de boas-vindas com link p/ confirmar.
+// O usuário já entra logado e cai no dashboard (com banner de "confirme seu e-mail"). O fluxo
+// de código de 6 dígitos (KL-25/KL-44 F-03b) fica DORMENTE ao fim do arquivo (fallback).
 export default function SignupForm({ email: initialEmail = '', url = '', redirect = '/dashboard', role = '', invite = '', plan = '' }) {
   const emailFromScan = !!initialEmail;
   const isTech = role === 'technician';   // KL-44 P3: perfil de profissional de TI
   const planName = plan === 'agency' ? 'Agency' : (plan === 'pro' ? 'Pro' : '');   // KL-44 P6
-  const [step, setStep] = useState('form');   // 'form' | 'code'
   const [email, setEmail] = useState(initialEmail);
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
-  const [code, setCode] = useState('');
-  const [maskedEmail, setMaskedEmail] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -44,61 +41,13 @@ export default function SignupForm({ email: initialEmail = '', url = '', redirec
       email, password, url: url || undefined,
       role: role || undefined, invite: invite || undefined, plan: plan || undefined });
     setBusy(false);
-    if (ok && data?.status === 'verification_sent') {
-      setMaskedEmail(data.email || email);
-      setStep('code');
-      return;
-    }
     if (ok) { window.location.href = nextUrl(data); return; }
     if (status === 409) return setError('Já existe uma conta com este e-mail. Faça login.');
+    if (status === 400 && /descart|permanente/i.test(err || '')) {
+      return setError('Por favor, use um e-mail permanente para criar sua conta.');
+    }
+    if (status === 429) return setError('Limite de cadastros atingido. Tente novamente mais tarde.');
     setError(err || 'Não foi possível criar a conta.');
-  }
-
-  async function verify(e) {
-    e.preventDefault();
-    setError('');
-    if (!/^\d{6}$/.test(code.trim())) return setError('Digite o código de 6 dígitos.');
-    setBusy(true);
-    const { ok, status, data, error: err } = await apiPost('/account/verify', { email, code: code.trim() });
-    setBusy(false);
-    if (ok) { window.location.href = nextUrl(data); return; }
-    if (status === 409) { setError('Já existe uma conta com este e-mail. Faça login.'); return; }
-    if (status === 400 || status === 429) return setError(err || 'Código inválido ou expirado.');
-    setError(err || 'Não foi possível confirmar o código.');
-  }
-
-  async function resend() {
-    setError('');
-    setBusy(true);
-    const { ok, error: err } = await apiPost('/account/signup', {
-      email, password, url: url || undefined, role: role || undefined, invite: invite || undefined, plan: plan || undefined });
-    setBusy(false);
-    if (!ok) setError(err || 'Não foi possível reenviar o código.');
-  }
-
-  if (step === 'code') {
-    return (
-      <div className={card}>
-        <h1 className="text-2xl font-bold text-white">Confirme seu e-mail</h1>
-        <p className="mt-2 text-sm text-slate-400">
-          Enviamos um código de 6 dígitos para <strong className="text-slate-200">{maskedEmail}</strong>. Digite-o abaixo para criar sua conta.
-        </p>
-        {error && <p className={`mt-4 ${errorBox}`}>{error}</p>}
-        <form onSubmit={verify} className="mt-6 flex flex-col gap-4">
-          <div>
-            <label htmlFor="code" className={label}>Código de verificação</label>
-            <input id="code" inputMode="numeric" autoComplete="one-time-code" required
-              value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
-              placeholder="000000" className={`${field} tracking-[0.5em] text-center text-lg`} />
-          </div>
-          <button type="submit" disabled={busy} className={btn}>{busy ? 'Confirmando…' : 'Confirmar e criar conta →'}</button>
-        </form>
-        <p className="mt-6 text-sm text-slate-400">
-          Não recebeu?{' '}
-          <button type="button" onClick={resend} disabled={busy} className="inline-flex min-h-[44px] items-center px-1 text-brand-400 transition-colors hover:text-brand-300 disabled:opacity-50">Reenviar código</button>
-        </p>
-      </div>
-    );
   }
 
   return (

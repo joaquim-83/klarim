@@ -110,7 +110,19 @@ class TrialWorker:
                 stats["errors"] += 1
                 print(f"[trial] downgrade falhou user={uid}: {exc!r}", flush=True)
 
-        if any(stats[k] for k in ("warned_7d", "warned_1d", "expired")):
+        # KL-82 Slice 2 — limpeza de contas não confirmadas, criadas há +30 dias, sem
+        # atividade (sem site monitorado e sem re-login). Nunca deleta quem monitora um site
+        # ou voltou a logar. Roda 1x/dia junto com o trial (já dentro do gate de hora).
+        try:
+            deleted = await self.store.delete_unconfirmed_inactive_accounts(older_than_days=30)
+            stats["unconfirmed_cleaned"] = deleted
+            if deleted:
+                print(f"[trial] cleanup: {deleted} conta(s) não confirmada(s) removida(s)", flush=True)
+        except Exception as exc:  # noqa: BLE001 - cleanup nunca derruba o ciclo
+            stats["errors"] += 1
+            print(f"[trial] cleanup de contas não confirmadas falhou: {exc!r}", flush=True)
+
+        if any(stats.get(k) for k in ("warned_7d", "warned_1d", "expired", "unconfirmed_cleaned")):
             print(f"[trial] ciclo: {stats}", flush=True)
         return stats
 

@@ -284,7 +284,7 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
 - Alvos: ~25.400 · Scans: ~8.100 · Perfis públicos: ~7.200
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1035+ passed** · MCP tools: **49+**
+- Testes: **1049+ passed** · MCP tools: **49+**
 - Workers: **5/5 ativos** (discovery, alert, scan, vigília, rescan)
 - Planos: 8 contas Pro trial · Vigílias: 35 (30 ok, 5 error)
 - E-mail: `klarimscan.com` verificado, warmup ativo
@@ -403,8 +403,17 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   (`link`/`hmac`/`code`; sem DEFAULT → backfill idempotente `WHERE IS NULL`). Front: `ScanFlow.jsx`
   result-first + `ScanResultDetail.jsx` (`client:load`, CSP-safe: accordion `<details>`, blur CSS,
   share `<a>`/JS-ilha); fluxo de código KL-25 fica **dormente** (fallback). Linguagem neutra pública
-  ("Este site", não "Seu site"). **Deferido:** Bloco 2 (signup sem confirmação + `/confirmar` +
-  welcome link), Blocos 3+4 (Fluxo 2 do alerta), cleanup cron de contas não confirmadas.
+  ("Este site", não "Seu site").
+  **Slice 2 ✅** (+ KL-85 P2/P3): signup **sem código** — e-mail+senha → conta na hora
+  (`email_confirmed=false`) + e-mail de boas-vindas com **link** (`/confirmar?token=`, JWT-HMAC 30d,
+  `typ=confirm`, idempotente). `GET /account/confirm` (SSR `confirmar.astro` → redirect
+  `/dashboard?confirmed=1`), `POST /account/resend-confirmation` (3/h/conta), banner no dashboard
+  p/ conta não confirmada. Se o e-mail já foi verificado no scan (KL-25) nasce confirmada.
+  **KL-85:** blocklist de descartáveis (`api/disposable_emails.py`, só no signup) + rate limit
+  **3/h & 5/dia por IP** (via `CF-Connecting-IP`). Welcome = transacional `seguranca@klarim.net`
+  (NÃO o `alerta@` de warmup — regra de isolamento). Cleanup diário no `trial` worker
+  (`delete_unconfirmed_inactive_accounts`: não-confirmada +30d, sem site e sem re-login; FK CASCADE).
+  **Deferido:** Blocos 3+4 (Fluxo 2 do alerta — `_get_alert_session` já cabeado).
 - **KL-64** — Analytics tracker (pendente)
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos

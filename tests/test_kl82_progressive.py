@@ -64,12 +64,14 @@ class FakeStore:
     async def email_has_verified_scan(self, email):
         return True
 
-    async def create_user(self, email, password_hash, name=None, role="owner"):
+    async def create_user(self, email, password_hash, name=None, role="owner",
+                          email_confirmed=True):
         email = email.lower().strip()
         if email in self.users:
             return None
         u = {"id": self.next_id, "email": email, "name": name, "plan": "free",
-             "max_sites": 1, "is_active": True, "role": role, "password_hash": password_hash}
+             "max_sites": 1, "is_active": True, "role": role, "password_hash": password_hash,
+             "email_confirmed": email_confirmed}
         self.users[email] = u
         self.by_id[u["id"]] = u
         self.next_id += 1
@@ -113,6 +115,8 @@ def store(monkeypatch):
     # rate limit anônimo cai no fallback in-memory — zera entre testes
     m._scan_anon_hour.clear()
     m._scan_anon_day.clear()
+    m._signup_attempts.clear()
+    m._signup_daily_attempts.clear()
     return s
 
 

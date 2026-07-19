@@ -114,6 +114,12 @@ tráfego) que conduz ao scanner. Camadas:
   por `anonymous` (score + barras de categoria + 1 risco) < `unconfirmed` (benchmark + 2 riscos +
   nomes de checks sem evidência) < `confirmed`/`alert_session` (48 checks completos + PDF).
   Corte server-side (nunca vaza evidência aos níveis baixos); rate limit anônimo 5/h+20/dia por IP.
+- **Dois fluxos de conta (KL-82 Slice 2):** signup **sem código** — e-mail+senha → conta na hora
+  (`email_confirmed=false`) + e-mail de boas-vindas com link (`/account/confirm`, token 30d). Nasce
+  confirmada se o e-mail já foi verificado no scan (KL-25). `unconfirmed` vê o dashboard básico com
+  banner "confirme seu e-mail"; `confirmed` desbloqueia PDF/checks detalhados. O código de 6 dígitos
+  (`/account/verify`) fica como fallback dormente. Cleanup diário (worker `trial`) remove contas
+  não confirmadas +30d sem atividade.
 - **Enriquecimento** (`profiler.py` + `ai_enrichment.py` + `enrichment.py`): crawl
   multi-page → dados comerciais (contatos, JSON-LD, tecnologias, CNPJ) + IA (setor,
   descrição, tags, CNAEs). Best-effort, **fora do caminho síncrono** do scan, **não

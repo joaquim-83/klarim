@@ -1761,20 +1761,63 @@ class TargetStore:
 
     async def create_user(self, email: str, password_hash: str,
                           name: Optional[str] = None,
-                          role: str = "owner") -> Optional[Dict[str, Any]]:
-        """Cria um usuário. `role`: owner|technician|both (KL-44 P3). Retorna o dict do
-        user (sem hash) ou ``None`` se o e-mail já existe (violação da UNIQUE)."""
+                          role: str = "owner",
+                          email_confirmed: bool = True) -> Optional[Dict[str, Any]]:
+        """Cria um usuário. `role`: owner|technician|both (KL-44 P3). `email_confirmed`
+        (KL-82 Slice 2): `False` no signup sem código (confirma depois via link); `True`
+        no fluxo legado de código já validado. Retorna o dict do user (sem hash) ou
+        ``None`` se o e-mail já existe (violação da UNIQUE)."""
         r = role if role in ("owner", "technician", "both") else "owner"
+        # 'code' se já confirmado na criação (fluxo legado); NULL até confirmar por link.
+        src = "code" if email_confirmed else None
 
         def _fn(cur):
             try:
                 cur.execute(
-                    "INSERT INTO users (email, password_hash, name, role) VALUES (%s, %s, %s, %s) "
+                    "INSERT INTO users (email, password_hash, name, role, email_confirmed, "
+                    "email_confirmed_at, confirmation_source) "
+                    "VALUES (%s, %s, %s, %s, %s, "
+                    + ("NOW()" if email_confirmed else "NULL") + ", %s) "
                     "RETURNING " + ", ".join(self._USER_COLS),
-                    (email.lower().strip(), password_hash, name, r))
+                    (email.lower().strip(), password_hash, name, r, email_confirmed, src))
             except Exception:  # noqa: BLE001 - e-mail duplicado (UNIQUE) → None
                 return None
             return self._rows_to_dicts(cur)[0]
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def confirm_user_email(self, user_id: int, source: str = "link") -> bool:
+        """KL-82 Slice 2 — marca o e-mail como confirmado (idempotente: se já confirmado,
+        não sobrescreve o `confirmation_source`/`email_confirmed_at` originais). Retorna
+        True se ESTE chamado confirmou (era não-confirmado), False se já estava."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE users SET email_confirmed = true, email_confirmed_at = NOW(), "
+                "confirmation_source = %s "
+                "WHERE id = %s AND email_confirmed IS NOT TRUE",
+                (source, user_id))
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def delete_unconfirmed_inactive_accounts(self, older_than_days: int = 30) -> int:
+        """KL-82 Slice 2 — remove contas NÃO confirmadas, criadas há mais de N dias, SEM
+        atividade: sem site monitorado (`user_sites`) e que nunca voltaram a logar
+        (`last_login_at` só o toque do próprio signup, ≤ created_at + 1h). FK ON DELETE
+        CASCADE limpa as tabelas filhas. Retorna quantas foram removidas."""
+        days = int(older_than_days)
+
+        def _fn(cur):
+            cur.execute(
+                "DELETE FROM users u "
+                "WHERE u.email_confirmed IS NOT TRUE "
+                "  AND u.created_at < NOW() - (%s * INTERVAL '1 day') "
+                "  AND NOT EXISTS (SELECT 1 FROM user_sites s WHERE s.user_id = u.id) "
+                "  AND (u.last_login_at IS NULL "
+                "       OR u.last_login_at <= u.created_at + INTERVAL '1 hour') "
+                "RETURNING u.id",
+                (days,))
+            return len(cur.fetchall())
 
         return await asyncio.to_thread(self._run, _fn)
 

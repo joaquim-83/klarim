@@ -42,6 +42,13 @@ class FakeStore:
         self.next_link_id = 1
 
     # --- users ---
+    async def confirm_user_email(self, user_id, source="link"):   # KL-82 Slice 2
+        u = self.by_id.get(int(user_id))
+        if not u or u.get("email_confirmed") is True:
+            return False
+        u["email_confirmed"] = True
+        return True
+
     async def email_has_verified_scan(self, email):
         # KL-44 F-03b: por padrão todo e-mail conta como já verificado no scan (fluxo
         # scan→cadastro), então o signup cria direto. Para testar o caminho com código,
@@ -50,12 +57,14 @@ class FakeStore:
             return True
         return email.lower().strip() in self.verified_scan_emails
 
-    async def create_user(self, email, password_hash, name=None, role="owner"):
+    async def create_user(self, email, password_hash, name=None, role="owner",
+                          email_confirmed=True):
         email = email.lower().strip()
         if email in self.users:
             return None
         u = {"id": self.next_id, "email": email, "name": name, "plan": "free",
              "max_sites": 1, "is_active": True, "password_hash": password_hash,
+             "email_confirmed": email_confirmed,
              "role": role if role in ("owner", "technician", "both") else "owner"}
         self.users[email] = u
         self.by_id[u["id"]] = u
@@ -407,7 +416,8 @@ def store(monkeypatch):
     monkeypatch.setattr("discovery.store.get_target_store", lambda: s)
     monkeypatch.setattr(auth_users, "_secret", lambda: "k" * 64)
     # zera os rate limits in-memory entre testes
-    for bucket in (m._signup_attempts, m._forgot_attempts, m._reset_attempts,
+    for bucket in (m._signup_attempts, m._signup_daily_attempts, m._resend_confirm_attempts,
+                   m._forgot_attempts, m._reset_attempts,
                    m._send_report_attempts, m._ownership_attempts, m._admin_action_attempts,
                    m._technician_attempts, m._laudo_attempts):
         bucket.clear()
@@ -495,6 +505,10 @@ class _FakeMailer:
         self.sent.append((to_email, code))
         return {"ok": True}
 
+    async def send_welcome_confirmation(self, to_email, confirm_url):  # KL-82 Slice 2
+        self.sent.append((to_email, "welcome_confirmation"))
+        return {"ok": True}
+
     async def send_ownership_verification(self, to_email, domain, code):
         self.sent.append((to_email, code))
         return {"ok": True}
@@ -524,52 +538,58 @@ def mailer(monkeypatch):
     return fm
 
 
-def test_signup_unverified_requires_code(client, store, mailer):
+def test_signup_unverified_creates_unconfirmed(client, store, mailer, monkeypatch):
+    # KL-82 Slice 2: signup sem código → conta criada NA HORA (email_confirmed=false) +
+    # e-mail de boas-vindas com link (fire-and-forget). Não exige mais código.
+    monkeypatch.setattr(m, "_spawn", lambda coro: coro.close())
     store.verified_scan_emails = set()   # nenhum e-mail verificado no scan (KL-25)
     r = client.post("/account/signup", json={"email": "novo@x.com.br", "password": "segredo123"})
-    assert r.status_code == 200 and r.json()["status"] == "verification_sent"
-    assert "novo@x.com.br" not in store.users          # conta NÃO criada ainda
-    assert mailer.sent and mailer.sent[0][0] == "novo@x.com.br"   # código enviado
+    assert r.status_code == 200
+    assert r.json()["user"]["email"] == "novo@x.com.br"
+    assert r.json()["user"]["email_confirmed"] is False       # conta NÃO confirmada
+    assert "novo@x.com.br" in store.users                     # mas JÁ criada
 
 
-def test_signup_verify_creates_account(client, store, mailer):
+def test_confirm_link_confirms_email(client, store, mailer, monkeypatch):
+    # KL-82 Slice 2: signup unconfirmed → confirma pelo LINK (/account/confirm?token=).
+    monkeypatch.setattr(m, "_spawn", lambda coro: coro.close())
     store.verified_scan_emails = set()
-    client.post("/account/signup", json={"email": "novo@x.com.br", "password": "segredo123"})
-    code = mailer.sent[0][1]
-    r = client.post("/account/verify", json={"email": "novo@x.com.br", "code": code})
-    assert r.status_code == 200 and r.json()["user"]["email"] == "novo@x.com.br"
-    assert "novo@x.com.br" in store.users
-    assert "klarim_session" in r.cookies or "set-cookie" in {k.lower() for k in r.headers}
+    u = client.post("/account/signup", json={"email": "novo@x.com.br", "password": "segredo123"}).json()["user"]
+    assert u["email_confirmed"] is False
+    token = m._make_confirm_token(u["id"], "novo@x.com.br")
+    r = client.get(f"/account/confirm?token={token}")
+    assert r.status_code == 200 and r.json()["status"] == "confirmed"
+    assert store.by_id[u["id"]]["email_confirmed"] is True
+    # 2ª vez → idempotente ("already"), sem erro
+    r2 = client.get(f"/account/confirm?token={token}")
+    assert r2.json()["status"] == "already"
 
 
-def test_signup_verify_wrong_code(client, store, mailer):
-    store.verified_scan_emails = set()
-    client.post("/account/signup", json={"email": "novo@x.com.br", "password": "segredo123"})
-    r = client.post("/account/verify", json={"email": "novo@x.com.br", "code": "000000"})
-    assert r.status_code == 400
-    assert "novo@x.com.br" not in store.users          # código errado → não cria
+def test_confirm_invalid_token(client, store, mailer):
+    r = client.get("/account/confirm?token=garbage.sig")
+    assert r.status_code == 200 and r.json()["status"] == "invalid"
 
 
 def test_signup_verify_no_pending(client, store, mailer):
+    # Fallback dormente: /account/verify sem pending → 400 (o signup não gera mais pending).
     r = client.post("/account/verify", json={"email": "ninguem@x.com.br", "code": "123456"})
     assert r.status_code == 400
 
 
-def test_signup_verified_scan_skips_code(client, store, mailer):
-    # e-mail já verificado no scan → cria direto, mesmo com o mailer disponível.
+def test_signup_verified_scan_creates_confirmed(client, store, mailer, monkeypatch):
+    # e-mail já verificado no scan → nasce CONFIRMADA, sem e-mail de boas-vindas.
+    monkeypatch.setattr(m, "_spawn", lambda coro: coro.close())
     store.verified_scan_emails = {"javerificado@x.com.br"}
     r = client.post("/account/signup", json={"email": "javerificado@x.com.br", "password": "segredo123"})
-    assert r.status_code == 200 and "user" in r.json()
-    assert mailer.sent == []                            # nenhum código enviado
+    assert r.status_code == 200 and r.json()["user"]["email_confirmed"] is True
+    assert mailer.sent == []                            # nem código, nem boas-vindas
 
 
-def test_signup_unverified_no_email_service(client, store, monkeypatch):
-    # sem serviço de e-mail configurado, o caminho não-verificado degrada com 503
-    # (não cria conta silenciosamente).
-    store.verified_scan_emails = set()
-    monkeypatch.setattr(m, "_email_enabled", lambda: False)
-    r = client.post("/account/signup", json={"email": "novo@x.com.br", "password": "segredo123"})
-    assert r.status_code == 503 and "novo@x.com.br" not in store.users
+def test_signup_disposable_email_blocked(client, store):
+    # KL-85 Parte 3: e-mail descartável → 400, conta não criada.
+    r = client.post("/account/signup", json={"email": "x@mailinator.com", "password": "segredo123"})
+    assert r.status_code == 400 and "permanente" in r.json()["detail"].lower()
+    assert "x@mailinator.com" not in store.users
 
 
 # --- login ------------------------------------------------------------------ #

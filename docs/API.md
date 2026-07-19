@@ -39,8 +39,8 @@ Um middleware (`_admin_auth_mw`) protege os prefixos abaixo (`_PROTECTED_PREFIXE
 
 | Método | Path | Descrição |
 |---|---|---|
-| POST | `/account/signup` | cria conta (e-mail já verificado no scan + senha ≥8); vincula histórico; 5/IP/h |
-| POST | `/account/verify` | verifica e-mail |
+| POST | `/account/signup` | **KL-82 S2** — cria conta na hora (e-mail+senha≥8, `email_confirmed=false`) + welcome com link; nasce confirmada se o e-mail já foi verificado no scan. Blocklist de descartáveis (400) + rate limit **3/h & 5/dia por IP** (KL-85) |
+| POST | `/account/verify` | (fallback dormente) verifica e-mail por código de 6 dígitos |
 | POST | `/account/login` | login → cookie de sessão |
 | POST | `/account/logout` | encerra sessão |
 | POST | `/account/forgot` | código de reset por e-mail (resposta genérica; 3/e-mail/h) |
@@ -80,6 +80,8 @@ Um middleware (`_admin_auth_mw`) protege os prefixos abaixo (`_PROTECTED_PREFIXE
 | GET | `/scan/result` | **KL-82** — resultado result-first SEM e-mail; payload FILTRADO por nível de acesso (`anonymous`/`unconfirmed`/`confirmed`/`alert_session`). Rate limit anônimo **5/h + 20/dia por IP** (429 amigável); conta logada ilimitada. Scan ≠ monitoramento (KL-78). Filtro server-side nunca vaza evidência a anonymous/unconfirmed |
 | GET | `/scan/summary` | (legado) dispara/retorna o scan (exige `X-Scan-Token`, `charge_id` pago, ou sessão) |
 | POST | `/scan/send-report` | envia os 2 PDFs por e-mail (rate limit 3/e-mail/h) |
+| GET | `/account/confirm?token=` | **KL-82 S2** — confirma o e-mail pelo link (JWT-HMAC 30d, `typ=confirm`, idempotente); `{status: confirmed\|already\|invalid}`. Chamado pela SSR `/confirmar` |
+| POST | `/account/resend-confirmation` | **KL-82 S2** — reenvia o link (exige login; rate limit 3/h por conta; no-op se já confirmado) |
 | GET | `/scan` | (rota SSR do fluxo antigo) |
 | GET | `/benchmark` · `/benchmark/{sector}` · `/benchmark/all` · `/benchmark/cnae/{division}` | KL-44 P5: médias/mediana/min/max + distribuição anônima por semáforo (setor ≥10 scans; cache 24h) |
 | GET | `/seal/{domain}` | KL-44 P5: dados do selo "Monitorado por Klarim" (score + privacidade + link; público, CORS `*`, cache 1h, 60/h/IP; `seal_type=monitored`, nunca "certificado") |

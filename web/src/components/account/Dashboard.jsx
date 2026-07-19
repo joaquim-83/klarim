@@ -70,16 +70,30 @@ export default function Dashboard({ user = {} }) {
   const [upgradedFlag] = useState(() =>
     typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('upgraded') === '1');
 
+  // Confirmação de e-mail (KL-82 Slice 2): banner enquanto unconfirmed; some ao confirmar.
+  const [confirmed, setConfirmed] = useState(() => user.email_confirmed !== false);
+  const [resendState, setResendState] = useState(''); // '' | 'sending' | 'sent' | 'limit' | 'error'
+
+  async function resendConfirmation() {
+    setResendState('sending');
+    const { ok, status } = await apiPost('/account/resend-confirmation', {});
+    setResendState(ok ? 'sent' : status === 429 ? 'limit' : 'error');
+  }
+
   // KL-68: toast de reivindicação pós-autenticação, depois limpa a URL.
   useEffect(() => {
     const q = new URLSearchParams(window.location.search);
     const claimed = q.get('claimed');
     const added = q.get('added');
     const blocked = q.get('blocked');
+    const conf = q.get('confirmed');   // KL-82 Slice 2: ?confirmed=1 | already
     if (claimed) setToast(`✅ ${claimed} adicionado · ✓ Propriedade verificada automaticamente`);
     else if (added) setToast(`✅ ${added} adicionado ao monitoramento`);
     else if (blocked) setToast('✅ Conta criada! Adicione o domínio do seu site no painel para começar a monitorar.');
-    if (claimed || added || blocked || q.get('upgrade') || q.get('upgraded')) {
+    else if (conf === '1') setToast('✅ E-mail confirmado! Acesso completo desbloqueado.');
+    else if (conf === 'already') setToast('✅ Seu e-mail já estava confirmado.');
+    if (conf) setConfirmed(true);
+    if (claimed || added || blocked || conf || q.get('upgrade') || q.get('upgraded')) {
       window.history.replaceState({}, '', window.location.pathname);
     }
   }, []);
@@ -150,6 +164,29 @@ export default function Dashboard({ user = {} }) {
         <div className="flex items-center justify-between rounded-xl border border-green-500/40 bg-green-500/10 px-4 py-3 text-sm text-green-300">
           <span>{toast}</span>
           <button onClick={() => setToast('')} className="text-green-400/70 hover:text-green-300">✕</button>
+        </div>
+      )}
+
+      {/* KL-82 Slice 2 — banner de confirmação de e-mail (conta não confirmada). Gentil, não
+          intrusivo; o dashboard básico funciona, mas PDF/checks detalhados pedem confirmação. */}
+      {!confirmed && (
+        <div className="rounded-xl border border-brand-500/30 bg-brand-500/10 px-4 py-3 text-sm">
+          <p className="text-slate-200">
+            📧 Confirme seu e-mail para desbloquear o relatório completo (PDF, checks detalhados).
+            Enviamos um link para <strong className="text-white">{user.email}</strong>.
+          </p>
+          {resendState === 'sent' ? (
+            <p className="mt-1 text-brand-300">Link reenviado ✓ — confira sua caixa de entrada.</p>
+          ) : resendState === 'limit' ? (
+            <p className="mt-1 text-slate-400">Aguarde alguns minutos para reenviar.</p>
+          ) : resendState === 'error' ? (
+            <p className="mt-1 text-red-300">Não foi possível reenviar agora. Tente mais tarde.</p>
+          ) : (
+            <button onClick={resendConfirmation} disabled={resendState === 'sending'}
+              className="mt-1 inline-flex min-h-[44px] items-center text-brand-400 transition-colors hover:text-brand-300 disabled:opacity-60">
+              {resendState === 'sending' ? 'Reenviando…' : 'Reenviar link de confirmação →'}
+            </button>
+          )}
         </div>
       )}
 

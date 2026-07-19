@@ -46,6 +46,12 @@ Na dúvida, trate o alvo como site de terceiro que só autorizou olhar o que é 
   Cloudflare** (`klarim-allow-cf-https` v4/v6; sem 0.0.0.0/0) — impede bater direto no IP e
   **forjar** o `CF-Connecting-IP` p/ escapar do rate limit. Porta `80` aberta (ACME + redirect).
   SSH (`22`) inalterado. Ranges do CF mudam raramente → atualizar as 2 regras se necessário.
+- **Criação de conta (KL-82 S2 + KL-85):** `POST /account/signup` = **3/h & 5/dia por IP**
+  (`CF-Connecting-IP`) + **blocklist de e-mails descartáveis** (`api/disposable_emails.py`, 400;
+  só no signup, não afeta o scan anônimo). Conta nasce `email_confirmed=false`; confirma por
+  **link** (`/account/confirm`, token JWT-HMAC 30d, `typ=confirm`, idempotente — nunca logado).
+  Reenvio (`/account/resend-confirmation`) 3/h por conta. Contas não confirmadas +30d sem
+  atividade (sem site monitorado e sem re-login) são **removidas** pelo worker `trial` (1x/dia).
 - **Anti stored-XSS no `/events`:** `_sanitize_str`/`_sanitize_metadata` removem tags e
   esquemas (`javascript:`/`data:`), limitam tamanho/profundidade. React escapa `{}` (sem
   `dangerouslySetInnerHTML`).
