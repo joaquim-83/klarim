@@ -18,6 +18,7 @@ import mcp_server.tools.system as system_tools
 import mcp_server.tools.scans as scans_tools
 import mcp_server.tools.inbox as inbox_tools
 import mcp_server.tools.leads as leads_tools
+import mcp_server.tools.tech as tech_tools
 
 
 # --- registro das 25 tools ------------------------------------------------- #
@@ -52,6 +53,8 @@ READ_TOOLS = [
     "get_ownership_stats",
     # KL-44 P3: boletim + técnico
     "get_bulletin_stats", "list_technician_links",
+    # KL-75: tecnografia (tech stack, adoção, status do site)
+    "get_tech_adoption", "get_site_tech_stack", "get_site_status_history",
 ]
 WRITE_TOOLS = [
     "scan_url", "add_target", "update_target_email", "update_target_status",
@@ -260,6 +263,25 @@ class FakeStore:
                 "monitoring_added": 1, "conversion_rate_scan_to_account": 33.3,
                 "conversion_rate_account_to_monitoring": 50.0}
 
+    # --- KL-75: tecnografia ---
+    async def get_tech_adoption(self, tech_name, sector=None):
+        self.kw = {"tech": tech_name, "sector": sector}
+        return {"total_sites": 100, "sites_with_tech": 72, "adoption_rate": 0.72}
+
+    async def get_target_by_domain(self, domain):
+        if domain == "naoexiste.com.br":
+            return None
+        return {"id": 5, "domain": domain, "email_provider": "google_workspace",
+                "related_domains": ["www." + domain], "status": "scanned"}
+
+    async def get_tech_stack(self, target_id):
+        return [{"name": "nginx", "category": "hosting", "subcategory": "webserver",
+                 "version": "1.24", "source": "header", "confidence": 1.0}]
+
+    async def get_site_status_history(self, target_id, limit=10):
+        return [{"status": "ativo", "http_code": 200, "response_time_ms": 120,
+                 "detected_at": None}]
+
 
 @pytest.fixture
 def fake_store(monkeypatch):
@@ -379,3 +401,41 @@ def test_update_target_status_tool_invalid(fake_store, monkeypatch):
     # status inválido -> api_target_update_status levanta 422 -> _guard converte
     res = asyncio.run(targets_tools.update_target_status(5, "banana"))
     assert res.get("status_code") == 422
+
+
+# --- KL-75: tecnografia ---------------------------------------------------- #
+
+def test_get_tech_adoption_tool(fake_store):
+    res = asyncio.run(tech_tools.get_tech_adoption("google_analytics_4", sector="hotel"))
+    assert res["total_sites"] == 100 and res["sites_with_tech"] == 72
+    assert res["adoption_pct"] == "72.0%" and res["sector"] == "hotel"
+    assert fake_store.kw["tech"] == "google_analytics_4"
+
+
+def test_get_tech_adoption_tool_requires_tech(fake_store):
+    res = asyncio.run(tech_tools.get_tech_adoption(""))
+    assert res.get("status_code") == 400
+
+
+def test_get_site_tech_stack_tool(fake_store):
+    res = asyncio.run(tech_tools.get_site_tech_stack("hotel.com.br"))
+    assert res["email_provider"] == "google_workspace" and res["tech_count"] == 1
+    assert res["technologies"][0]["name"] == "nginx"
+    assert res["related_domains"] == ["www.hotel.com.br"]
+    assert res["site_status"] == "ativo"
+
+
+def test_get_site_tech_stack_tool_not_found(fake_store):
+    res = asyncio.run(tech_tools.get_site_tech_stack("naoexiste.com.br"))
+    assert res.get("status_code") == 404
+
+
+def test_get_site_status_history_tool(fake_store):
+    res = asyncio.run(tech_tools.get_site_status_history(domain="hotel.com.br", limit=5))
+    assert res["count"] == 1 and res["history"][0]["status"] == "ativo"
+    assert res["history"][0]["http_code"] == 200
+
+
+def test_get_site_status_history_tool_not_found(fake_store):
+    res = asyncio.run(tech_tools.get_site_status_history(domain="naoexiste.com.br"))
+    assert res.get("status_code") == 404

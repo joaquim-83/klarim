@@ -70,6 +70,9 @@ async def enrich_profile(store, target_id: int, url: str, security_score=None,
         dom = registrable_domain(domain_of(url))
         mx = await asyncio.to_thread(dns_util.resolve_mx, dom)
         ns = await asyncio.to_thread(dns_util.resolve_ns, dom)
+        # KL-75: TXT (SPF + verificações de plataforma google/facebook/…) só quando o
+        # worker vai arquivar/enriquecer — evita 1 query DNS extra no caminho público.
+        txt = await asyncio.to_thread(dns_util.resolve_txt, dom) if capture_raw else None
 
         # KL-77 (Fase 2): captura o response bruto p/ arquivamento no GCS — só quando o
         # worker pede (capture_raw). Reusa o fetch da homepage + o DNS já resolvidos; o
@@ -90,7 +93,7 @@ async def enrich_profile(store, target_id: int, url: str, security_score=None,
                 "response_time_ms": response_time_ms,
                 "headers": headers,
                 "html": homepage_html or "",
-                "dns": {"mx": mx or [], "ns": ns or []},
+                "dns": {"mx": mx or [], "ns": ns or [], "txt": txt or []},
                 "ssl": ssl_info,
             }
 

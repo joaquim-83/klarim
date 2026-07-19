@@ -138,6 +138,7 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 | GET | `/sectors` | 48 setores + 13 macro-setores |
 | GET | `/cnaes/sections` · `/cnaes/divisions` | referência CNAE |
 | GET | `/public/laudo/{code}` | KL-44 P3: laudo técnico público (checks + ação prioritária; sem PII; TTL 30d; 30/h/IP) |
+| GET | `/public/tech-summary/{domain}` | KL-75: resumo tecnográfico PÚBLICO — só badges booleanos (`has_analytics/cdn/payment/chat/captcha/ecommerce`, `email_provider`, `site_status`, `tech_count`). **Nunca** o stack detalhado (valor agregado). Rate limit 30/min/IP; respeita `public_visible`. Cache 1h |
 | POST | `/contact` | formulário de contato → inbox + Resend (best-effort) |
 | POST | `/events` | tracking do funil (fire-and-forget, 100/min/sessão) |
 | GET/POST | `/unsubscribe?email=&token=` | descadastro (token HMAC constant-time). Params **opcionais**: ausentes → página HTML "Link incompleto" (nunca 422 JSON — evita ruído do pre-fetch de bots). **POST** = one-click RFC 8058 (`List-Unsubscribe-Post`) |
@@ -157,6 +158,7 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 | POST | `/targets/{id}/scan` | `?sync=1` → varredura **síncrona** (devolve `score`/`semaphore`); sem `sync` → enfileira |
 | POST | `/targets/{id}/rescan` · `/alert` · `/discard` | ações |
 | GET | `/targets/{id}/profile` · `/classifications` · `/payments` | anexos |
+| GET | `/targets/{id}/tech-stack` | KL-75: stack DETALHADO (nomes/versões/fonte) + `email_provider` + `related_domains` + `status_history` |
 | PUT | `/targets/{id}/profile` | edita perfil — texto **+ contatos** (phone/whatsapp/address/socials) + `clear_fields` (KL-67); marca `edited_by_admin`, limpa `low_confidence_fields` |
 | POST | `/admin/revalidate-profiles?dry_run=` | KL-67: aplica os filtros de qualidade aos perfis existentes (sem re-scrape); dry-run conta o impacto |
 | PATCH | `/targets/{id}/classify` · `/email` · `/status` · `/profile/visibility` | edições inline |
@@ -263,7 +265,7 @@ Svix), `POST /email/webhook` (Hostinger, token próprio fail-closed).
 
 ---
 
-## Tools MCP (51) — `mcp_server/tools/`
+## Tools MCP (54) — `mcp_server/tools/`
 
 Wrapper fino sobre a API/store; auth própria (OAuth 2.1/PKCE + `MCP_API_KEY`). Todas
 passam por `_guard` (nunca derrubam a sessão).
@@ -291,3 +293,6 @@ passam por `_guard` (nunca derrubam a sessão).
 - **inbox.py** — `search_inbox`
 - **subscriptions.py** — `list_subscribers`, `get_subscription_stats`
 - **vigilia.py** — `get_vigilia_stats`, `list_vigilia_alerts`, `get_typosquat_alerts` (KL-44 P4)
+- **tech.py** (KL-75) — `get_tech_adoption` (adoção de uma tech, opc. por setor),
+  `get_site_tech_stack` (stack completo por domínio), `get_site_status_history`
+  (histórico ativo/parked/abandonado/fora_do_ar por site)

@@ -42,6 +42,13 @@ ALTER TABLE targets ADD COLUMN IF NOT EXISTS classification_source VARCHAR(20) D
 ALTER TABLE targets ADD COLUMN IF NOT EXISTS alert_quality_score INTEGER;
 CREATE INDEX IF NOT EXISTS idx_targets_alert_quality ON targets(alert_quality_score)
     WHERE alert_quality_score IS NOT NULL;
+-- KL-75 — enriquecimento tecnográfico. Provedor de e-mail (via MX) e domínios relacionados
+-- (via SAN do SSL) direto em `targets` para query rápida (o stack detalhado vai em
+-- `site_tech_stack`). `related_domains` é JSONB array; ambos são dado público.
+ALTER TABLE targets ADD COLUMN IF NOT EXISTS email_provider VARCHAR(50);
+ALTER TABLE targets ADD COLUMN IF NOT EXISTS related_domains JSONB DEFAULT '[]';
+CREATE INDEX IF NOT EXISTS idx_targets_email_provider ON targets(email_provider)
+    WHERE email_provider IS NOT NULL;
 
 -- KL-84 — taxonomia ABERTA de setores. Os 48 setores fixos (KL-54) entram como 'official' via
 -- seed; a IA pode propor novos ('proposed') que o admin aprova/merge/rejeita. Só official/approved
@@ -257,6 +264,39 @@ CREATE INDEX IF NOT EXISTS idx_tc_target ON target_classifications(target_id);
 CREATE INDEX IF NOT EXISTS idx_tc_cnae ON target_classifications(cnae_code);
 CREATE INDEX IF NOT EXISTS idx_tc_division ON target_classifications(cnae_division);
 CREATE INDEX IF NOT EXISTS idx_tc_section ON target_classifications(cnae_section);
+
+-- KL-75 — tech stack detectado por scan (headers/scripts/meta/dns/ssl/cookie). Uma linha
+-- por (tecnologia, scan). O UNIQUE (target_id, scan_id, name) + ON CONFLICT DO NOTHING
+-- torna a gravação idempotente (reprocessar o mesmo scan não duplica).
+CREATE TABLE IF NOT EXISTS site_tech_stack (
+    id SERIAL PRIMARY KEY,
+    target_id INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    scan_id INTEGER REFERENCES scans(id),
+    name VARCHAR(100) NOT NULL,
+    category VARCHAR(50) NOT NULL,
+    subcategory VARCHAR(50),
+    version VARCHAR(50),
+    source VARCHAR(20) NOT NULL,      -- header, script, meta, dns, ssl, cookie
+    confidence REAL DEFAULT 1.0,
+    detected_at TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_tech_stack_target ON site_tech_stack(target_id);
+CREATE INDEX IF NOT EXISTS idx_tech_stack_name ON site_tech_stack(name);
+CREATE INDEX IF NOT EXISTS idx_tech_stack_category ON site_tech_stack(category);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_tech_stack_dedup
+    ON site_tech_stack(target_id, scan_id, name);
+
+-- KL-75 — histórico de status do site (ativo/parked/abandonado/fora_do_ar/…). Uma linha
+-- por scan: rastreia sites que caem, viram parking ou são abandonados ao longo do tempo.
+CREATE TABLE IF NOT EXISTS site_status_log (
+    id SERIAL PRIMARY KEY,
+    target_id INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    status VARCHAR(20) NOT NULL,
+    http_code INTEGER,
+    response_time_ms INTEGER,
+    detected_at TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_status_log_target ON site_status_log(target_id);
 
 -- Contas de usuário (KL-51 f3). Separadas do operador/admin (que é único, via
 -- ADMIN_USER/ADMIN_PASSWORD). Senha com bcrypt; JWT de usuário no cookie.
@@ -1071,6 +1111,171 @@ class TargetStore:
             )
 
         await asyncio.to_thread(self._run, _fn)
+
+    # --- tech stack (KL-75) ------------------------------------------------ #
+
+    async def save_tech_stack(self, target_id: int, scan_id: Optional[int],
+                              technologies: List[Dict[str, Any]]) -> int:
+        """Batch INSERT das tecnologias detectadas num scan (KL-75). Idempotente:
+        ``ON CONFLICT (target_id, scan_id, name) DO NOTHING`` — reprocessar o mesmo scan
+        não duplica. Um único INSERT multi-linha (não N inserts). Retorna nº de linhas.
+
+        Deduplica por ``name`` na entrada (o UNIQUE index não cobre scan_id NULL) para o
+        backfill/caminhos sem scan_id não colidirem no banco."""
+        rows, seen = [], set()
+        for t in technologies or []:
+            name = (t.get("name") or "").strip()[:100]
+            if not name or name in seen:
+                continue
+            seen.add(name)
+            rows.append((
+                target_id, scan_id, name,
+                (t.get("category") or "outro")[:50],
+                (t.get("subcategory") or None),
+                (str(t["version"])[:50] if t.get("version") else None),
+                (t.get("source") or "unknown")[:20],
+                float(t.get("confidence") or 1.0),
+            ))
+        if not rows:
+            return 0
+
+        def _fn(cur):
+            from psycopg2.extras import execute_values
+            execute_values(
+                cur,
+                "INSERT INTO site_tech_stack "
+                "(target_id, scan_id, name, category, subcategory, version, source, confidence) "
+                "VALUES %s ON CONFLICT (target_id, scan_id, name) DO NOTHING",
+                rows,
+            )
+            return cur.rowcount
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def update_target_tech_fields(self, target_id: int, email_provider: Optional[str],
+                                        related_domains: Optional[List[str]]) -> None:
+        """Grava `email_provider` (via MX) e `related_domains` (via SSL SAN) em `targets`.
+        Só toca a coluna quando há valor novo (COALESCE) — nunca zera dado existente."""
+        rd = json.dumps(related_domains) if related_domains else None
+
+        def _fn(cur):
+            cur.execute(
+                "UPDATE targets SET "
+                "  email_provider = COALESCE(%s, email_provider), "
+                "  related_domains = CASE WHEN %s IS NULL THEN related_domains "
+                "                         ELSE %s::jsonb END "
+                "WHERE id = %s",
+                (email_provider, rd, rd, target_id))
+
+        await asyncio.to_thread(self._run, _fn)
+
+    async def fill_empty_company_name(self, target_id: int, company_name: str) -> bool:
+        """Grava o nome legal (organização do certificado OV/EV) em `site_profile`
+        **só se estiver vazio** — nunca sobrescreve regex/IA/manual (regra de ouro).
+        Retorna True se preencheu. Sem linha em site_profile → não cria (não força)."""
+        name = (company_name or "").strip()[:200]
+        if not name:
+            return False
+
+        def _fn(cur):
+            cur.execute(
+                "UPDATE site_profile SET company_name = %s "
+                "WHERE target_id = %s AND (company_name IS NULL OR company_name = '') "
+                "AND COALESCE(edited_by_admin, FALSE) = FALSE",
+                (name, target_id))
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def save_site_status(self, target_id: int, status: str,
+                               http_code: Optional[int] = None,
+                               response_time_ms: Optional[int] = None) -> None:
+        """Registra o status do site no histórico (`site_status_log`, KL-75)."""
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO site_status_log (target_id, status, http_code, response_time_ms) "
+                "VALUES (%s, %s, %s, %s)",
+                (target_id, (status or "ativo")[:20], http_code, response_time_ms))
+
+        await asyncio.to_thread(self._run, _fn)
+
+    async def get_tech_stack(self, target_id: int) -> List[Dict[str, Any]]:
+        """Tech stack do ÚLTIMO scan do alvo (KL-75). Se o último scan não tiver stack
+        (ex.: scan antigo), cai para o scan_id mais recente que tenha. Ordena por
+        categoria e nome."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT name, category, subcategory, version, source, confidence, detected_at "
+                "FROM site_tech_stack WHERE target_id = %s AND scan_id = ("
+                "  SELECT scan_id FROM site_tech_stack WHERE target_id = %s "
+                "  ORDER BY scan_id DESC NULLS LAST LIMIT 1) "
+                "ORDER BY category, name",
+                (target_id, target_id))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_site_status_history(self, target_id: int, limit: int = 10
+                                      ) -> List[Dict[str, Any]]:
+        """Últimos N status do site (mais recente primeiro) — KL-75."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT status, http_code, response_time_ms, detected_at "
+                "FROM site_status_log WHERE target_id = %s "
+                "ORDER BY detected_at DESC LIMIT %s",
+                (target_id, max(1, min(limit, 100))))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_tech_adoption(self, tech_name: str, sector: Optional[str] = None
+                                ) -> Dict[str, Any]:
+        """Taxa de adoção de uma tecnologia (KL-75): quantos alvos DISTINTOS a têm, sobre
+        o total de alvos escaneados (opcionalmente filtrado por setor). Conta 1 por alvo
+        (não por scan)."""
+        def _fn(cur):
+            if sector:
+                cur.execute("SELECT COUNT(*) FROM targets "
+                            "WHERE last_scan_id IS NOT NULL AND sector = %s", (sector,))
+                total = int(cur.fetchone()[0])
+                cur.execute(
+                    "SELECT COUNT(DISTINCT ts.target_id) FROM site_tech_stack ts "
+                    "JOIN targets t ON t.id = ts.target_id "
+                    "WHERE ts.name = %s AND t.sector = %s", (tech_name, sector))
+            else:
+                cur.execute("SELECT COUNT(*) FROM targets WHERE last_scan_id IS NOT NULL")
+                total = int(cur.fetchone()[0])
+                cur.execute("SELECT COUNT(DISTINCT target_id) FROM site_tech_stack "
+                            "WHERE name = %s", (tech_name,))
+            with_tech = int(cur.fetchone()[0])
+            return {"total_sites": total, "sites_with_tech": with_tech,
+                    "adoption_rate": round(with_tech / total, 4) if total else 0.0}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def tech_summary_by_domain(self, target_id: int) -> Dict[str, Any]:
+        """Resumo booleano do stack por categoria (KL-75, endpoint público). NÃO expõe
+        nomes/versões — só a presença de cada família + contagem total (nº de techs
+        distintas do último scan)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT DISTINCT category, name FROM site_tech_stack WHERE target_id = %s "
+                "AND scan_id = (SELECT scan_id FROM site_tech_stack WHERE target_id = %s "
+                "               ORDER BY scan_id DESC NULLS LAST LIMIT 1)",
+                (target_id, target_id))
+            return cur.fetchall()
+
+        rows = await asyncio.to_thread(self._run, _fn)
+        cset = {r[0] for r in rows}
+        return {
+            "has_analytics": "analytics" in cset,
+            "has_cdn": "cdn" in cset,
+            "has_payment": "pagamento" in cset,
+            "has_chat": "chat" in cset,
+            "has_captcha": "seguranca" in cset,
+            "has_ecommerce": "ecommerce" in cset,
+            "tech_count": len(rows),
+        }
 
     async def update_target_status(self, target_id: int, status: str) -> Optional[Dict[str, Any]]:
         """Atualiza o status de um alvo (edição manual no painel). Retorna o alvo

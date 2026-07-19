@@ -146,6 +146,15 @@ def _subject_cn(cert: x509.Certificate) -> Optional[str]:
         return None
 
 
+def _subject_o(cert: x509.Certificate) -> Optional[str]:
+    """Organização (O) do subject — presente em certificados OV/EV = nome legal da
+    empresa (KL-75 usa p/ preencher `company_name` vazio, nunca sobrescreve)."""
+    try:
+        return cert.subject.get_attributes_for_oid(x509.NameOID.ORGANIZATION_NAME)[0].value
+    except (IndexError, x509.ExtensionNotFound):
+        return None
+
+
 def _cert_info(der: bytes) -> Dict:
     cert = x509.load_der_x509_certificate(der)
     try:
@@ -156,6 +165,7 @@ def _cert_info(der: bytes) -> Dict:
         not_before = cert.not_valid_before
     return {
         "subject_cn": _subject_cn(cert),
+        "subject_o": _subject_o(cert),   # KL-75: organização (OV/EV) = nome legal
         "issuer_cn": _issuer_cn(cert),
         "not_before": not_before,
         "not_after": not_after,

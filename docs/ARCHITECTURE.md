@@ -184,6 +184,10 @@ Schema criado idempotente no `ensure_schema` (sem Alembic). Principais tabelas:
   0–8 separado do de segurança). Selo público `GET /seal/{domain}` (cache Redis 1h) +
   `web/public/seal/widget.js` (estático, CORS `*`, sem tracking). Benchmark setorial rico
   (mediana + distribuição anônima) cacheado em `benchmark:{sector}`/`benchmark:all` (24h).
+- **Tecnografia (KL-75):** `site_tech_stack` (tech detectada por scan — name/category/
+  subcategory/version/source/confidence; UNIQUE `(target_id, scan_id, name)`),
+  `site_status_log` (histórico de status do site); `targets.email_provider` +
+  `targets.related_domains` (JSONB) para query rápida.
 - **Operação:** `monitored_sites`, `inbox_messages`, `admin_settings` (config ao vivo).
 
 ## 8. Integrações externas
@@ -208,8 +212,8 @@ Auth própria (`MCPAuthMiddleware`, fail-closed, constant-time) — fora do JWT 
 1. **Discovery** lê CT logs → domínio `.com.br` → fetch + fingerprint + e-mail + setor
    → `register_target` (UPSERT) → enfileira scan.
 2. **Scan worker** escaneia (48 checks) → `scoring` → cacheia → salva em `scans` +
-   atualiza `targets` → **enriquece** perfil + IA + CNAE inline → **arquiva o response
-   bruto no GCS** (KL-77).
+   atualiza `targets` → **enriquece** perfil + IA + CNAE inline → **detecta o tech stack**
+   (KL-75) → **arquiva o response bruto no GCS** (KL-77).
 3. **Alert worker** pega alvos escaneados com falhas (ou score 100) → alerta proativo.
 4. **Perfil público** `/site/{dominio}` fica indexável (sitemap, og:image, Schema.org).
 5. Visitante escaneia (verificação por e-mail, KL-25) → vira **lead** (PQL, fire-and-
@@ -235,6 +239,31 @@ irrecuperável que o KL-75 (enriquecimento expandido) vai reprocessar sem re-esc
   scan já está no Postgres. Contadores por dia no Redis (`klarim:gcs:*`, TTL 48h) alimentam
   `get_gcs_archive_stats` (MCP) / `GET /admin/gcs-archive/stats` e o bloco `gcs_archive` do
   status do sistema.
+
+### Enriquecimento tecnográfico (KL-75, Prompt 1)
+
+O mesmo response bruto que vai para o GCS alimenta a **detecção de tech stack** — parse em
+memória (regex sobre strings já carregadas), **sem request HTTP extra** (< 500ms/scan).
+
+- **Função pura** `scanner/tech_detector.py::detect_tech_stack(headers, html, dns, ssl)` →
+  `{technologies, email_provider, dns_provider, related_domains, site_status,
+  verified_platforms, company_name, schema_types}`. 6 grupos de detecção: headers HTTP
+  (servidor/backend/CDN/plataforma) + cookies, ~50 scripts (analytics/marketing/pagamento/
+  chat/e-commerce/CMS/segurança/…), meta tags (OG/verificações/generator/RSS), DNS
+  (provedor de e-mail via MX, DNS via NS, plataformas verificadas via TXT), SSL SAN
+  (domínios relacionados) + issuer (CA) + organização (nome legal), e status do site
+  (`ativo`/`parked`/`abandonado`/`fora_do_ar`/`bloqueado`/`dominio_inativo`).
+- **Gravação** (`scanner/main.py::persist_tech_detection`, **resiliente** — nunca trava o
+  scan): batch INSERT em `site_tech_stack` (idempotente via UNIQUE `(target_id, scan_id,
+  name)` + `ON CONFLICT DO NOTHING`); `targets.email_provider`/`related_domains`; preenche
+  `site_profile.company_name` **só se vazio** (nunca sobrescreve regex/IA/manual); histórico
+  em `site_status_log`. O `enrich_profile` ganhou 1 lookup DNS TXT (só no `capture_raw`).
+- **Backfill** `scripts/backfill_tech_stack.py` reprocessa os responses já arquivados no GCS
+  (a partir de 2026-07-19) pela MESMA função — sem re-scan.
+- **Exposição:** stack detalhado só em API autenticada/admin (`GET /targets/{id}/tech-stack`)
+  e MCP (`get_tech_adoption`/`get_site_tech_stack`/`get_site_status_history`); o público vê
+  só badges booleanos (`GET /public/tech-summary/{domain}`, 30/min/IP). Dados técnicos são
+  públicos (headers/certificados); o **valor está na agregação** (market share por setor).
 
 ### Reivindicação de site + verificação de propriedade em tiers (KL-68)
 

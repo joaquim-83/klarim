@@ -31,6 +31,48 @@ SCAN_QUEUE = os.environ.get("KLARIM_SCAN_QUEUE", "klarim:scan_queue")
 REPORT_PREFIX = os.environ.get("KLARIM_REPORT_PREFIX", "klarim:report:")
 
 
+async def persist_tech_detection(store, target_id, scan_id, response_data: dict) -> dict:
+    """Detecta e grava o tech stack de um scan (KL-75) a partir do response bruto já em
+    memória (headers/html/dns/ssl — sem request extra). **Resiliente:** qualquer erro é
+    logado e engolido; o scan já está persistido. Retorna o resultado da detecção (ou {}).
+
+    Compartilhado pelo scan worker e pelo backfill (`scripts/backfill_tech_stack.py`) para
+    que os dois usem exatamente a mesma lógica de detecção/gravação.
+    """
+    if not response_data:
+        return {}
+    try:
+        from scanner.tech_detector import detect_tech_stack, classify_site_status
+        result = detect_tech_stack(
+            headers=response_data.get("headers") or {},
+            html=response_data.get("html") or "",
+            dns=response_data.get("dns") or {},
+            ssl=response_data.get("ssl") or {},
+        )
+        if result.get("technologies"):
+            await store.save_tech_stack(target_id, scan_id, result["technologies"])
+        if result.get("email_provider") or result.get("related_domains"):
+            await store.update_target_tech_fields(
+                target_id, result.get("email_provider"), result.get("related_domains"))
+        if result.get("company_name"):
+            await store.fill_empty_company_name(target_id, result["company_name"])
+        # Status autoritativo: usa o http_status REAL (o detector só vê conteúdo).
+        html = response_data.get("html") or ""
+        status = classify_site_status(
+            response_data.get("http_status"), html,
+            response_data.get("response_time_ms"), has_scripts="<script" in html.lower())
+        await store.save_site_status(
+            target_id, status, http_code=response_data.get("http_status"),
+            response_time_ms=response_data.get("response_time_ms"))
+        n = len(result.get("technologies") or [])
+        print(f"[tech] target {target_id}: {n} techs · email={result.get('email_provider')} "
+              f"status={status}", flush=True)
+        return result
+    except Exception as exc:  # noqa: BLE001 - enriquecimento nunca derruba o scan
+        print(f"[tech] falha em target {target_id}: {exc!r}", flush=True)
+        return {}
+
+
 async def _scan_and_print(url: str, as_json: bool, as_pdf: bool) -> int:
     report = await run_scan(url)
     if as_json:
@@ -155,6 +197,9 @@ async def _worker_loop() -> None:
                 raw = await enrich_profile(store, target_id, url, s.score if s else None,
                                            capture_raw=True)
                 if scan_id is not None and raw is not None:
+                    # KL-75: extrai o tech stack do MESMO response (após o enrich, antes do
+                    # GCS) — parse em memória, resiliente, não trava o scan.
+                    await persist_tech_detection(store, target_id, scan_id, raw)
                     # Fire-and-forget: o upload nunca trava nem derruba o scan (já persistido).
                     from scanner.gcs_archive import archive_scan_response
                     from scanner.checks.base import domain_of

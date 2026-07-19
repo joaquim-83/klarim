@@ -2814,6 +2814,137 @@ async def public_stats(request: Request) -> dict:
     return JSONResponse(out, headers={"Cache-Control": "public, max-age=3600"})
 
 
+# --------------------------------------------------------------------------- #
+# KL-75 — Tech stack: resumo público (badges) + stack detalhado (admin/MCP).
+# Dados técnicos são públicos (headers/certificados), mas o stack DETALHADO é valor
+# agregado → só o resumo booleano é público; nomes/versões só na API autenticada.
+# --------------------------------------------------------------------------- #
+
+def _as_str_list(value: Any) -> list:
+    """Normaliza um campo JSONB de lista (psycopg2 pode devolver list ou str)."""
+    if isinstance(value, list):
+        return [str(v) for v in value]
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+            return [str(v) for v in parsed] if isinstance(parsed, list) else []
+        except (ValueError, TypeError):
+            return []
+    return []
+
+
+async def api_tech_adoption(tech: str, sector: Optional[str] = None) -> dict:
+    """Taxa de adoção de uma tecnologia (KL-75), opcionalmente por setor. Usado pelo
+    MCP e pelo painel. `tech` é o nome canônico (ex.: 'google_analytics_4')."""
+    tech = (tech or "").strip()
+    if not tech:
+        return {"error": "tech obrigatório", "status_code": 400}
+    store = get_target_store()
+    data = await store.get_tech_adoption(tech, (sector or None))
+    return {"tech": tech, "sector": (sector or None), **data,
+            "adoption_pct": f"{round(data['adoption_rate'] * 100, 1)}%"}
+
+
+async def api_site_tech_stack(domain: str) -> dict:
+    """Tech stack completo de um domínio (KL-75, admin/MCP): tecnologias detectadas +
+    provedor de e-mail + domínios relacionados + status atual."""
+    store = get_target_store()
+    dom = _norm_domain(domain)
+    target = await store.get_target_by_domain(dom)
+    if not target:
+        return {"error": "site não encontrado", "status_code": 404}
+    tech = await store.get_tech_stack(target["id"])
+    hist = await store.get_site_status_history(target["id"], limit=1)
+    return {
+        "domain": target.get("domain") or dom,
+        "technologies": [{
+            "name": t["name"], "category": t["category"],
+            "subcategory": t.get("subcategory"), "version": t.get("version"),
+            "source": t.get("source"), "confidence": t.get("confidence"),
+        } for t in tech],
+        "email_provider": target.get("email_provider"),
+        "related_domains": _as_str_list(target.get("related_domains")),
+        "site_status": hist[0]["status"] if hist else None,
+        "tech_count": len(tech),
+    }
+
+
+async def api_site_status_history(domain: Optional[str] = None,
+                                  target_id: Optional[int] = None,
+                                  limit: int = 10) -> dict:
+    """Histórico de status de um site (KL-75, admin/MCP) por domínio OU target_id."""
+    store = get_target_store()
+    if target_id is None and domain:
+        t = await store.get_target_by_domain(_norm_domain(domain))
+        target_id = t["id"] if t else None
+    if target_id is None:
+        return {"error": "site não encontrado", "status_code": 404}
+    hist = await store.get_site_status_history(int(target_id), limit=max(1, min(limit, 100)))
+    return {"target_id": int(target_id), "count": len(hist), "history": [{
+        "status": h["status"], "http_code": h.get("http_code"),
+        "response_time_ms": h.get("response_time_ms"),
+        "detected_at": _iso(h.get("detected_at")),
+    } for h in hist]}
+
+
+_tech_summary_attempts: dict = {}   # fallback in-memory do rate limit público
+
+
+@app.get("/public/tech-summary/{domain}")
+async def public_tech_summary(domain: str, request: Request) -> JSONResponse:
+    """KL-75 — resumo tecnográfico PÚBLICO de um site: apenas badges booleanos
+    (`has_analytics`, `has_cdn`, `has_payment`, `has_chat`, `has_captcha`,
+    `email_provider`, `site_status`, `tech_count`). NUNCA o stack detalhado (esse é
+    valor agregado, reservado à API autenticada/admin). Rate limit 30/min por IP real;
+    mesma visibilidade dos demais endpoints públicos (site com scan e landing ligada)."""
+    await _public_content_guard(request, "pub_tech_summary")
+    dom = _norm_domain(domain)
+    store = get_target_store()
+    empty = {"has_analytics": False, "has_cdn": False, "has_payment": False,
+             "has_chat": False, "has_captcha": False, "has_ecommerce": False,
+             "email_provider": None, "site_status": None, "tech_count": 0}
+    headers = {"Cache-Control": "public, max-age=3600"}
+    target = await store.get_target_by_domain(dom)
+    if not target or target.get("status") == "descartado":
+        return JSONResponse({"domain": dom, **empty}, headers=headers)
+    # Respeita o desligamento da landing pública (KL-56), como os outros públicos.
+    profile = (await store.get_site_profile(target["id"])) or {}
+    if profile.get("public_visible") is False:
+        return JSONResponse({"domain": dom, **empty}, headers=headers)
+    try:
+        summary = await store.tech_summary_by_domain(target["id"])
+    except Exception:  # noqa: BLE001
+        summary = dict(empty)
+    hist = await store.get_site_status_history(target["id"], limit=1)
+    out = {
+        "domain": dom,
+        "has_analytics": bool(summary.get("has_analytics")),
+        "has_cdn": bool(summary.get("has_cdn")),
+        "has_payment": bool(summary.get("has_payment")),
+        "has_chat": bool(summary.get("has_chat")),
+        "has_captcha": bool(summary.get("has_captcha")),
+        "has_ecommerce": bool(summary.get("has_ecommerce")),
+        "email_provider": target.get("email_provider"),
+        "site_status": hist[0]["status"] if hist else None,
+        "tech_count": int(summary.get("tech_count") or 0),
+    }
+    return JSONResponse(out, headers=headers)
+
+
+@app.get("/targets/{target_id}/tech-stack")
+async def admin_target_tech_stack(target_id: int) -> dict:
+    """KL-75 — stack DETALHADO de um alvo (admin; prefixo /targets → JWT admin). Nomes,
+    versões, fonte de detecção, provedores e histórico de status."""
+    store = get_target_store()
+    target = await store.get_target(target_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Alvo não encontrado.")
+    stack = await api_site_tech_stack(target.get("domain") or "")
+    stack["status_history"] = (await api_site_status_history(
+        target_id=target_id, limit=10)).get("history", [])
+    return stack
+
+
 # --- notificação ao dono (perfil consultado) — rate limit 1/domínio/24h ------ #
 class ProfileViewBody(BaseModel):
     domain: str
