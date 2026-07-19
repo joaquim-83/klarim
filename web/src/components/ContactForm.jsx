@@ -90,7 +90,7 @@ export default function ContactForm() {
           className="absolute left-[-9999px] h-0 w-0 opacity-0" />
 
         <button type="submit" disabled={status === 'sending'}
-          className="inline-flex items-center justify-center rounded-xl bg-brand-500 px-6 py-3.5 text-base font-semibold text-slate-950 transition-colors hover:bg-brand-400 disabled:opacity-60 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-300">
+          className="inline-flex items-center justify-center rounded-xl bg-brand-500 px-6 py-3.5 text-base font-semibold text-[var(--accent-text)] transition-colors hover:bg-brand-400 disabled:opacity-60 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-300">
           {status === 'sending' ? 'Enviando…' : 'Enviar mensagem'}
         </button>
       </form>

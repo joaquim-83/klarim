@@ -73,14 +73,17 @@ const allJsonLd = [ORG_JSONLD, WEBSITE_JSONLD, ...extraLd];
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    {/* KL-87 — anti-FOUC: define o tema ANTES do paint (localStorage > prefers-color-scheme).
+        Light é o padrão. Inline obrigatório (externo carregaria tarde → flash). O hash SHA-256
+        deste script está na CSP (security_headers.conf). NÃO editar sem atualizar o hash. */}
+    <script is:inline>(function(){try{var t=localStorage.getItem('klarim-theme');if(t!=='light'&&t!=='dark'){t=window.matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';}document.documentElement.setAttribute('data-theme',t);}catch(e){document.documentElement.setAttribute('data-theme','light');}})();</script>
     <meta name="generator" content={Astro.generator} />
 
     <title>{fullTitle}</title>
     <meta name="description" content={description} />
     <meta name="author" content="Klarim" />
     <link rel="canonical" href={canonical} />
-    <meta name="theme-color" content="#020617" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="light dark" />
     <meta name="robots" content={noindex ? 'noindex, nofollow' : 'index, follow'} />
 
     <!-- Open Graph -->
@@ -108,6 +111,8 @@ const allJsonLd = [ORG_JSONLD, WEBSITE_JSONLD, ...extraLd];
     <slot />
     <!-- Tracking (KL-21): asset EXTERNO (não inline) → passa na CSP `script-src 'self'`. -->
     <script src="/track.js" is:inline></script>
+    <!-- KL-87: toggle de tema (sol/lua). Externo → CSP `script-src 'self'`. -->
+    <script src="/theme.js" is:inline></script>
     <!-- Cloudflare Web Analytics — só nas páginas Astro (públicas + conta), NUNCA no
          /painel (AdminLayout). Externo → coberto pela CSP (`script-src` inclui o host).
          `is:inline` = Astro renderiza verbatim (não processa/bundle). -->

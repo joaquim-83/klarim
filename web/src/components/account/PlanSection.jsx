@@ -75,7 +75,7 @@ function UpgradeModal({ plan, currentPlan = 'free', onClose, onActive }) {
               </ul>
             </div>
             <div className="flex gap-2">
-              <button onClick={confirmUpgrade} className="flex-1 rounded-xl bg-brand-500 px-4 py-3 text-sm font-semibold text-slate-950 hover:bg-brand-400">
+              <button onClick={confirmUpgrade} className="flex-1 rounded-xl bg-brand-500 px-4 py-3 text-sm font-semibold text-[var(--accent-text)] hover:bg-brand-400">
                 Confirmar upgrade → {PLAN_PRICE[plan]}
               </button>
               <button onClick={onClose} className="rounded-xl border border-slate-700 px-4 py-3 text-sm text-slate-300 hover:bg-slate-800">Cancelar</button>
@@ -87,7 +87,7 @@ function UpgradeModal({ plan, currentPlan = 'free', onClose, onActive }) {
         {status === 'pending' && charge && (
           <div className="mt-4">
             <p className="text-sm text-slate-300">Pague com PIX para ativar. A confirmação é automática.</p>
-            {qr && <img src={qr} alt="QR Code PIX" className="mx-auto mt-4 h-52 w-52 rounded-lg bg-white p-2" />}
+            {qr && <img src={qr} alt="QR Code PIX" className="mx-auto mt-4 h-52 w-52 rounded-lg bg-[#ffffff] p-2" />}
             {charge.br_code && (
               <div className="mt-4">
                 <p className="text-xs text-slate-500">PIX copia-e-cola:</p>
@@ -103,7 +103,7 @@ function UpgradeModal({ plan, currentPlan = 'free', onClose, onActive }) {
         {status === 'paid' && (
           <div className="mt-4 rounded-lg border border-green-500/40 bg-green-500/10 px-4 py-3 text-sm text-green-300">
             ✅ Pagamento confirmado! Plano {PLAN_LABEL[plan]} ativo.
-            <button onClick={onClose} className="mt-3 block rounded-lg bg-brand-500 px-4 py-2 font-semibold text-slate-950 hover:bg-brand-400">Fechar</button>
+            <button onClick={onClose} className="mt-3 block rounded-lg bg-brand-500 px-4 py-2 font-semibold text-[var(--accent-text)] hover:bg-brand-400">Fechar</button>
           </div>
         )}
       </div>
@@ -176,7 +176,7 @@ export default function PlanSection({ initialUpgrade = '', showUpgradedToast = f
         </div>
         <div className="flex flex-wrap gap-2">
           {RANK[plan] < RANK.pro && (
-            <button onClick={() => setModalPlan('pro')} className="rounded-lg bg-brand-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-brand-400">Upgrade Pro → R$19/mês</button>
+            <button onClick={() => setModalPlan('pro')} className="rounded-lg bg-brand-500 px-4 py-2 text-sm font-semibold text-[var(--accent-text)] hover:bg-brand-400">Upgrade Pro → R$19/mês</button>
           )}
           {RANK[plan] < RANK.agency && (
             <button onClick={() => setModalPlan('agency')} className="rounded-lg border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-slate-800">Upgrade Agency → R$49/mês</button>

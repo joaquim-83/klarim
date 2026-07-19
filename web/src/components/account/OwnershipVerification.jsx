@@ -51,7 +51,7 @@ export default function OwnershipVerification({ targetId, onVerified }) {
           />
           <button
             disabled={busy || code.length !== 6} onClick={verify}
-            className="inline-flex min-h-[44px] items-center justify-center rounded-lg bg-brand-500 px-4 text-sm font-semibold text-slate-950 transition-colors hover:bg-brand-400 active:scale-95 disabled:opacity-50">
+            className="inline-flex min-h-[44px] items-center justify-center rounded-lg bg-brand-500 px-4 text-sm font-semibold text-[var(--accent-text)] transition-colors hover:bg-brand-400 active:scale-95 disabled:opacity-50">
             Verificar
           </button>
           <button onClick={request} disabled={busy} className="inline-flex min-h-[44px] items-center self-start px-1 text-sm text-slate-400 transition-colors hover:text-white">Reenviar código</button>

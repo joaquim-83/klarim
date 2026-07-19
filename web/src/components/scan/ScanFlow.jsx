@@ -55,7 +55,7 @@ const field =
   'placeholder:text-slate-500 outline-none transition-colors focus:border-brand-500 focus:ring-2 focus:ring-brand-500/30';
 const btn =
   'inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-brand-500 px-6 py-3.5 text-base font-semibold ' +
-  'text-slate-950 transition-colors hover:bg-brand-400 disabled:opacity-60 disabled:cursor-not-allowed';
+  'text-[var(--accent-text)] transition-colors hover:bg-brand-400 disabled:opacity-60 disabled:cursor-not-allowed';
 const card = 'rounded-2xl border border-slate-800 bg-slate-900/60 p-6 sm:p-8';
 
 // --------------------------------------------------------------------------- #

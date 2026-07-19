@@ -156,11 +156,16 @@ function SiteDashboard({ data, user, onReload, planUpgrade, planUpgraded }) {
 
   return (
     <div>
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+      {/* KL-87 Parte 3 — fix do gap desktop: `auto-rows-min` + `items-start` (linhas justas) e
+          o Checklist ocupa 3 linhas (`lg:row-span-3`) alinhando com Saúde+Riscos+Evolução, sem
+          forçar altura na linha da Saúde. Categorias em largura total no fim. A ordem-fonte é a
+          ordem MOBILE (saúde→checklist→riscos→categorias→evolução→plano); no desktop os
+          `row-start`/`col-start` reposicionam. */}
+      <div className="grid grid-cols-1 gap-6 lg:grid-cols-3 lg:auto-rows-min lg:items-start">
         {/* mobile 1 · desktop col 1-2 / row 1 */}
         <div className="lg:col-span-2 lg:col-start-1 lg:row-start-1"><HealthBlock site={site} profile={data.profile} /></div>
-        {/* mobile 2 · desktop col 3 / row 1 */}
-        <div className="lg:col-start-3 lg:row-start-1">
+        {/* mobile 2 · desktop col 3 / rows 1-3 */}
+        <div className="lg:col-start-3 lg:row-start-1 lg:row-span-3">
           <ChecklistBlock items={data.checklist} onAction={onChecklistAction} resend={resend} />
           {shareOpen && <SharePanel domain={site.domain} score={site.score} />}
         </div>
@@ -170,10 +175,8 @@ function SiteDashboard({ data, user, onReload, planUpgrade, planUpgraded }) {
         <div className="lg:col-span-2 lg:col-start-1 lg:row-start-4"><CategoriesBlock cats={data.check_categories} siteId={siteId} /></div>
         {/* mobile 5 · desktop col 1-2 / row 3 */}
         <div className="lg:col-span-2 lg:col-start-1 lg:row-start-3"><EvolutionBlock history={data.score_history} score={site.score} /></div>
-        {/* mobile 6 · desktop col 3 / row 2 */}
-        <div id="plano" className="lg:col-start-3 lg:row-start-2">
-          <PlanSection initialUpgrade={planUpgrade} showUpgradedToast={planUpgraded} />
-        </div>
+        {/* mobile 6 · desktop col 3 / row 4 (ao lado das categorias — sem gap) */}
+        <div id="plano" className="lg:col-start-3 lg:row-start-4"><PlanSection initialUpgrade={planUpgrade} showUpgradedToast={planUpgraded} /></div>
       </div>
 
       <OtherSites data={data} addOpen={addOpen} setAddOpen={setAddOpen} onReload={onReload} />

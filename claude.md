@@ -101,6 +101,16 @@ standalone) + **React** (islands) + **Tailwind v4** (CSS-first, sem config) +
 - **`parseUTC`** para timestamps naive do Postgres (adicionar `Z` antes de `new Date`).
 - **CSP relaxada no `/painel`** (decisão KL-51: `script-src 'unsafe-inline'`, painel é
   noindex/operator-only). O **público** usa CSP estrita (scripts inline por hash SHA-256).
+  **Ao adicionar/alterar um script inline público, recompute o hash e atualize
+  `frontend/nginx/security_headers.conf`** (hoje: 3 do Astro + 1 anti-FOUC de tema do KL-87).
+- **Tema light/dark (KL-87):** **light é o padrão**. Mecanismo: os tokens `--color-slate-*` e
+  `--color-white` do Tailwind são **sobrescritos por tema** em `web/src/styles/global.css`
+  (`:root`=light com a escala slate INVERTIDA; `[data-theme='dark']`=defaults). Como todo
+  utilitário resolve `var(--color-slate-…)`, as páginas viram theme-aware **sem migrar classe**.
+  Botões usam `text-[var(--accent-text)]` (escuro constante sobre laranja); QR PIX `bg-[#ffffff]`.
+  Anti-FOUC inline no `<head>` (hash na CSP) + toggle `public/theme.js` (externo) no Header.
+  **Admin (`/painel`) força `data-theme=dark`** (sem toggle). Verde/amarelo/vermelho e o laranja
+  da marca (`#ff6b35`) são constantes nos 2 temas.
 - **Responsivo (KL-80, 68% mobile):** alvos de toque **≥44px** (`min-h-[44px]`/`py-3`; links-texto
   pequenos → `inline-flex min-h-[44px] items-center px-1`); **inputs `text-base`** (16px, nunca
   `text-sm` — evita zoom iOS) + `h-12`; botões `w-full sm:w-auto` (empilham no mobile); **nada de

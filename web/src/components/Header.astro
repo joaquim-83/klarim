@@ -10,11 +10,19 @@ import Logo from './Logo.astro';
       <Logo />
     </a>
 
+    <div class="flex items-center gap-1">
+    <!-- KL-87: alternar tema claro/escuro (sol/lua). O ícone é sincronizado por /theme.js. -->
+    <button id="theme-toggle" type="button" aria-label="Alternar tema claro/escuro"
+      class="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-slate-300 transition-colors hover:bg-slate-800 hover:text-white">
+      <span id="theme-icon-light" class="hidden text-lg" aria-hidden="true">🌙</span>
+      <span id="theme-icon-dark" class="hidden text-lg" aria-hidden="true">☀️</span>
+    </button>
+
     <!-- Estado deslogado (padrão) -->
     <div data-auth="out" class="flex items-center gap-1">
       <a href="/planos" class="inline-flex min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Planos</a>
       <a href="/entrar" class="inline-flex min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Entrar</a>
-      <a href="/cadastrar" class="inline-flex min-h-[44px] items-center rounded-lg bg-brand-500 px-3.5 py-2 text-sm font-semibold text-slate-950 transition-colors hover:bg-brand-400 active:scale-95">Cadastrar</a>
+      <a href="/cadastrar" class="inline-flex min-h-[44px] items-center rounded-lg bg-brand-500 px-3.5 py-2 text-sm font-semibold text-[var(--accent-text)] transition-colors hover:bg-brand-400 active:scale-95">Cadastrar</a>
     </div>
 
     <!-- Estado logado (revelado pelo script). KL-78 item 7: "Planos" aponta para a página
@@ -25,6 +33,7 @@ import Logo from './Logo.astro';
       <a href="/dashboard" class="inline-flex min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Home</a>
       <a href="/dashboard/conta" class="inline-flex min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Conta</a>
       <button type="button" data-logout class="inline-flex min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-400 transition-colors hover:text-white">Sair</button>
+    </div>
     </div>
   </nav>
 </header>

@@ -135,7 +135,7 @@ export default function WidgetGenerator() {
         <p className="mt-6 mb-2 text-sm text-slate-400">Copie e cole no HTML do seu site:</p>
         <pre className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950/60 p-4 text-xs text-slate-200"><code>{embed}</code></pre>
         <button type="button" onClick={copy}
-          className="mt-3 inline-flex items-center justify-center gap-2 rounded-xl bg-brand-500 px-6 py-3 text-sm font-semibold text-slate-950 transition-colors hover:bg-brand-400">
+          className="mt-3 inline-flex items-center justify-center gap-2 rounded-xl bg-brand-500 px-6 py-3 text-sm font-semibold text-[var(--accent-text)] transition-colors hover:bg-brand-400">
           {copied ? 'Código copiado ✓' : 'Copiar código'}
         </button>
 

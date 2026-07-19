@@ -8,7 +8,7 @@ import ShareScore from '../account/ShareScore.jsx';
 const card = 'rounded-2xl border border-slate-800 bg-slate-900/60 p-6 sm:p-8';
 const btn =
   'inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-brand-500 px-6 py-3.5 ' +
-  'text-base font-semibold text-slate-950 transition-colors hover:bg-brand-400 active:scale-[0.98] disabled:opacity-60';
+  'text-base font-semibold text-[var(--accent-text)] transition-colors hover:bg-brand-400 active:scale-[0.98] disabled:opacity-60';
 const btnGhost =
   'inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-slate-700 px-5 py-3 ' +
   'text-base font-semibold text-slate-200 transition-colors hover:bg-slate-800 active:scale-[0.98]';
@@ -124,12 +124,16 @@ function ShareRow({ domain, score, url }) {
     });
   }
   return (
-    <div className="flex w-full items-center justify-center gap-2 sm:w-auto">
-      <a href={wa} target="_blank" rel="noopener" className={btnGhost}
-        onClick={() => window.klarimTrack?.('share_clicked', { via: 'whatsapp', domain }, url)}>WhatsApp</a>
-      <a href={li} target="_blank" rel="noopener" className={btnGhost}
-        onClick={() => window.klarimTrack?.('share_clicked', { via: 'linkedin', domain }, url)}>LinkedIn</a>
-      <button type="button" onClick={copy} className={btnGhost}>{copied ? '✓ Copiado' : '🔗 Copiar'}</button>
+    <div className="w-full sm:w-auto">
+      {/* KL-87 2A: rótulo acima dos botões de compartilhar. */}
+      <p className="mb-2 text-center text-sm text-slate-500">Compartilhe este resultado</p>
+      <div className="flex items-center justify-center gap-2">
+        <a href={wa} target="_blank" rel="noopener" className={btnGhost}
+          onClick={() => window.klarimTrack?.('share_clicked', { via: 'whatsapp', domain }, url)}>WhatsApp</a>
+        <a href={li} target="_blank" rel="noopener" className={btnGhost}
+          onClick={() => window.klarimTrack?.('share_clicked', { via: 'linkedin', domain }, url)}>LinkedIn</a>
+        <button type="button" onClick={copy} className={btnGhost}>{copied ? '✓ Copiado' : '🔗 Copiar'}</button>
+      </div>
     </div>
   );
 }

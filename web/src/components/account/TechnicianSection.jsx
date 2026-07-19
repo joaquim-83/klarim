@@ -67,7 +67,7 @@ export default function TechnicianSection({ targetId }) {
           placeholder="tecnico@empresa.com.br"
           className="h-12 flex-1 rounded-lg border border-slate-700 bg-slate-950 px-3 text-base text-white outline-none transition-colors focus:border-brand-500" />
         <button type="submit" disabled={busy}
-          className="inline-flex min-h-[44px] items-center justify-center rounded-lg bg-brand-500 px-4 text-sm font-semibold text-slate-950 transition-colors hover:bg-brand-400 active:scale-95 disabled:opacity-50">
+          className="inline-flex min-h-[44px] items-center justify-center rounded-lg bg-brand-500 px-4 text-sm font-semibold text-[var(--accent-text)] transition-colors hover:bg-brand-400 active:scale-95 disabled:opacity-50">
           Convidar técnico
         </button>
       </form>

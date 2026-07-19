@@ -202,7 +202,7 @@ function SealSection({ domain }) {
         </label>
       </div>
       <pre className="mt-3 overflow-x-auto rounded-lg border border-slate-800 bg-slate-950 p-3 text-xs text-slate-300"><code>{snippet}</code></pre>
-      <button onClick={copy} className="mt-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-semibold text-slate-950 hover:bg-brand-400">
+      <button onClick={copy} className="mt-2 rounded-lg bg-brand-500 px-4 py-2 text-sm font-semibold text-[var(--accent-text)] hover:bg-brand-400">
         {copied ? 'Copiado ✓' : 'Copiar snippet'}
       </button>
       <p className="mt-2 text-xs text-slate-500">Sugestão: cole no rodapé do site. O selo abre o perfil público em nova aba.</p>
@@ -328,7 +328,7 @@ export default function SiteDetail({ targetId }) {
       {/* PDFs */}
       <div className="flex flex-wrap gap-3">
         <a href={`/api/report/executive?url=${encoded}`}
-          className="rounded-xl bg-brand-500 px-5 py-3 text-sm font-semibold text-slate-950 hover:bg-brand-400">📄 PDF Executivo</a>
+          className="rounded-xl bg-brand-500 px-5 py-3 text-sm font-semibold text-[var(--accent-text)] hover:bg-brand-400">📄 PDF Executivo</a>
         <a href={`/api/report/technical?url=${encoded}`}
           className="rounded-xl border border-slate-700 px-5 py-3 text-sm text-slate-200 hover:bg-slate-800">📑 PDF Técnico</a>
         <a href="/dashboard/widget"

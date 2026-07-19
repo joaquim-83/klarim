@@ -59,7 +59,7 @@ export default function ClaimSite({ url, domain, ownerVerified = false, claimabl
           <p className="text-sm font-semibold text-white">✓ Este site tem um dono verificado.</p>
           <p className="mt-1 text-sm text-slate-300">Você pode acompanhar o score de segurança criando uma conta.</p>
           <a href={`/cadastrar?url=${encodeURIComponent(url)}`}
-            className="mt-4 inline-flex rounded-xl bg-brand-500 px-6 py-3 text-sm font-semibold text-slate-950 hover:bg-brand-400">
+            className="mt-4 inline-flex rounded-xl bg-brand-500 px-6 py-3 text-sm font-semibold text-[var(--accent-text)] hover:bg-brand-400">
             Criar conta e monitorar →
           </a>
         </div>
@@ -72,7 +72,7 @@ export default function ClaimSite({ url, domain, ownerVerified = false, claimabl
           Gerencie gratuitamente: monitore o score, receba alertas e melhore a segurança.
         </p>
         <a href={`/cadastrar?url=${encodeURIComponent(url)}`}
-          className="mt-4 inline-flex rounded-xl bg-brand-500 px-6 py-3 text-sm font-semibold text-slate-950 hover:bg-brand-400">
+          className="mt-4 inline-flex rounded-xl bg-brand-500 px-6 py-3 text-sm font-semibold text-[var(--accent-text)] hover:bg-brand-400">
           Reivindicar este site →
         </a>
       </div>
@@ -98,7 +98,7 @@ export default function ClaimSite({ url, domain, ownerVerified = false, claimabl
             : 'Adicione ao monitoramento gratuito e acompanhe o score.'}
         </p>
         <button disabled={busy} onClick={monitor}
-          className="mt-4 inline-flex rounded-xl bg-brand-500 px-6 py-3 text-sm font-semibold text-slate-950 hover:bg-brand-400 disabled:opacity-50">
+          className="mt-4 inline-flex rounded-xl bg-brand-500 px-6 py-3 text-sm font-semibold text-[var(--accent-text)] hover:bg-brand-400 disabled:opacity-50">
           Monitorar este site →
         </button>
         {msg && <p className="mt-2 text-sm text-slate-300">{msg}</p>}
