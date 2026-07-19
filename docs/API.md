@@ -212,7 +212,20 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 | GET | `/system/status` · `/system/activity` · `/system/email-health` | operação em tempo real |
 | GET | `/discovery/status` | estado do CT poller |
 | GET | `/config` | params operacionais (sem segredos) |
-| GET | `/analytics/funnel\|abandoned\|campaigns\|pages\|events\|public-scans` | analytics |
+| GET | `/analytics/funnel\|abandoned\|campaigns\|pages\|events\|public-scans` | analytics (KL-21, legado) |
+
+### Analytics admin redesenhado (KL-83, `api/admin_analytics.py`) — todos admin-only, `period=today\|7d\|30d\|90d\|custom` (`start`/`end` ISO, ≤90d), rate limit 30/min/IP, cache Redis 5 min (exceto events/sessions)
+
+| Método | Path | Descrição |
+|---|---|---|
+| GET | `/admin/analytics/metrics` | 6 KPIs (visitors, scans, accounts, conversion, pv/sessão, alert_click_rate) com value/previous/change_pct/sparkline |
+| GET | `/admin/analytics/trend` | séries diárias (`?metrics=visitors,scans,accounts`) para o gráfico de tendência |
+| GET | `/admin/analytics/funnel` | funil de 7 etapas + `by_campaign` + `conversion_from_previous` + gargalo + comparação c/ período anterior |
+| GET | `/admin/analytics/events` | stream paginado com filtros AND (`type` multi, `domain`, `campaign`, `path`) + contadores; **não cacheado** |
+| GET | `/admin/analytics/sessions` | eventos agrupados por sessão (converted/duration); **não cacheado** |
+| GET | `/admin/analytics/pages` | páginas (views/sessions/bounce/next_page/conversion/delta) + grupos (Prompt 2 no front) |
+| GET | `/admin/analytics/journeys` | top caminhos normalizados (`/site/{domain}`, `/setor/{slug}`, `alerta`, `[saiu]`) |
+| GET | `/admin/analytics/funnel-by-sector` | funil segmentado por `targets.sector` |
 
 ## Monitoramento (público)
 

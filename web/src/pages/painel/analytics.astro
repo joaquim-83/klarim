@@ -1,9 +1,9 @@
 ---
 export const prerender = false;
 import AdminLayout from '../../layouts/AdminLayout.astro';
-import AnalyticsPage from '../../components/admin/AnalyticsPage.jsx';
+import AdminAnalytics from '../../components/admin/AdminAnalytics.jsx';
 ---
 
 <AdminLayout>
-  <AnalyticsPage client:only="react" />
+  <AdminAnalytics client:only="react" />
 </AdminLayout>

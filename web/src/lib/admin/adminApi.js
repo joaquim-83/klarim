@@ -197,6 +197,14 @@ export const admin = {
     get(`/analytics/events?limit=${limit}${eventType ? `&event_type=${eventType}` : ''}`),
   publicScans: () => get('/analytics/public-scans'),  // KL-25
 
+  // KL-83 — analytics admin redesenhado (8 endpoints /admin/analytics/*)
+  aaMetrics: (period = '7d') => get(`/admin/analytics/metrics?period=${period}`),
+  aaTrend: (period = '30d', metrics = 'visitors,scans,accounts') =>
+    get(`/admin/analytics/trend?period=${period}&metrics=${metrics}`),
+  aaFunnel: (period = '7d') => get(`/admin/analytics/funnel?period=${period}`),
+  aaEvents: (params) => get(`/admin/analytics/events${qs(params)}`),
+  aaSessions: (params) => get(`/admin/analytics/sessions${qs(params)}`),
+
   // reclassificação de setor (refino KL-11)
   reclassifyDomains: () => post('/admin/reclassify-domains'),
   reclassifyAll: () => post('/admin/reclassify-all'),

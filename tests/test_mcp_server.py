@@ -28,6 +28,7 @@ READ_TOOLS = [
     "get_site_profile",   # KL-52: perfil comercial extraído (site_profile)
     "list_scans", "get_scan", "get_scan_stats", "list_alerts", "get_alert_stats",
     "list_payments", "get_payment_stats", "get_funnel", "get_rescan_stats",
+    "get_analytics_metrics", "get_analytics_funnel",  # KL-83
     # fix MCP: novas tools de dados
     "get_dashboard_stats", "get_enrichment_status", "get_user_accounts", "search_inbox",
     # KL-61: leads

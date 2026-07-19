@@ -294,7 +294,7 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
 - Alvos: ~25.400 · Scans: ~8.100 · Perfis públicos: ~7.200
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1069+ passed** · MCP tools: **49+**
+- Testes: **1103+ passed** · MCP tools: **51+**
 - Workers: **5/5 ativos** (discovery, alert, scan, vigília, rescan)
 - Planos: 8 contas Pro trial · Vigílias: 35 (30 ok, 5 error)
 - E-mail: `klarimscan.com` verificado, warmup ativo
@@ -445,6 +445,20 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   evolução→plano (checklist sobe). Bloco 6 = `PlanSection` reusado. Onboarding do perfil
   (`PUT /account/profile-confirm`, dono edita company_name/phone → `edited_by_admin`). Linguagem
   "Pesquisar" (não "Verificar"), "Olá, {empresa}". Sem site → buscador + checklist reduzido.
+- **KL-83** — Redesign do Analytics admin (Prompt 1 de 2) ✅. Módulo dedicado
+  **`api/admin_analytics.py`** (não toca o analytics antigo do KL-21): **8 endpoints**
+  `/admin/analytics/{metrics,trend,funnel,events,sessions,pages,journeys,funnel-by-sector}`,
+  admin-only (prefixo `/admin` → middleware JWT), período `today/7d/30d/90d/custom`
+  (≤90d, sem futuro), rate limit 30/min/IP, cache Redis 5 min (events/sessions não cacheiam).
+  **Arquitetura testável:** agregações BRUTAS (SQL) em `discovery/store.py` (`aa_*`,
+  parametrizadas); **derivação PURA** (%, sparkline, conversão inter-etapa, normalização de
+  jornada, bounce/next_page) no módulo → 34 testes unitários (validação de período, cálculos,
+  shape, paginação, cache; SQL validado na VM). 3 índices novos em `site_events`. Front:
+  `AdminAnalytics.jsx` (abas #overview/#events completas + #pages/#journeys "Em breve"):
+  6 cards KPI+sparkline (Recharts), gráfico de tendência, funil por campanha com gargalo;
+  stream de eventos com filtros combináveis + contadores + toggle "por sessão" + export CSV.
+  2 MCP tools (`get_analytics_metrics` sem sparkline, `get_analytics_funnel`). **Prompt 2**:
+  frontend das abas Páginas/Jornadas (backend já pronto).
 - **KL-64** — Analytics tracker (pendente)
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos

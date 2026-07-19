@@ -7168,6 +7168,12 @@ async def oauth_authorization_server() -> JSONResponse:
 # fail-closed). O fluxo OAuth (/mcp/authorize|token|register) é isento de auth.
 # Opcional: se o pacote `mcp` faltar, a API sobe sem o MCP.
 # --------------------------------------------------------------------------- #
+# KL-83 — Analytics admin (8 endpoints /admin/analytics/*). Incluído no FIM (depois dos
+# helpers _cache_get/_redis_allow/_client_ip): o módulo os acessa de forma deferida. As rotas
+# ficam sob o prefixo /admin → já protegidas pelo middleware admin (JWT).
+from api import admin_analytics as _admin_analytics  # noqa: E402
+app.include_router(_admin_analytics.router)
+
 try:
     from mcp_server.server import mcp_app
     from mcp_server.auth import MCPAuthMiddleware
