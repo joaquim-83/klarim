@@ -11,10 +11,12 @@ import Logo from './Logo.astro';
     </a>
 
     <div class="flex items-center gap-1">
-    <!-- KL-87: alternar tema claro/escuro (sol/lua). O ícone é sincronizado por /theme.js. -->
+    <!-- KL-87: alternar tema claro/escuro (sol/lua). Ícone da lua VISÍVEL por default (light
+         é o padrão) — se o /theme.js atrasar/falhar, o botão nunca fica em branco. O theme.js
+         troca para o sol quando data-theme=dark. -->
     <button id="theme-toggle" type="button" aria-label="Alternar tema claro/escuro"
       class="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-slate-300 transition-colors hover:bg-slate-800 hover:text-white">
-      <span id="theme-icon-light" class="hidden text-lg" aria-hidden="true">🌙</span>
+      <span id="theme-icon-light" class="text-lg" aria-hidden="true">🌙</span>
       <span id="theme-icon-dark" class="hidden text-lg" aria-hidden="true">☀️</span>
     </button>
 
