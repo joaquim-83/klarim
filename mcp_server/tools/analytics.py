@@ -40,6 +40,18 @@ async def get_analytics_funnel(period: str = "7d") -> dict:
 
 
 @mcp.tool()
+async def get_lead_scoring_stats(period: str = "7d") -> dict:
+    """KL-85 — qualidade do lead scoring de alertas: distribuição do `alert_quality_score`,
+    quantos alvos passam do threshold (>=20), quantos seriam filtrados (0-19 / <0), score
+    médio e alertas enviados no período. Base para calibrar o threshold e estimar economia da
+    cota Resend. Períodos: today, 7d, 30d, 90d."""
+    async def _impl():
+        from api import admin_analytics as aa
+        return await aa.alert_quality(None, period=period, start=None, end=None)
+    return await _guard(_impl)
+
+
+@mcp.tool()
 async def get_rescan_stats() -> dict:
     """Estatísticas de re-scans: improved, worsened, unchanged, first_rescan."""
     return await _guard(lambda: _store().rescan_stats())

@@ -3,7 +3,7 @@ import { admin } from '../../lib/admin/adminApi'
 import { useAsync } from '../../lib/admin/useAsync'
 import {
   Card, Loading, ErrorBox, Button, Badge, PlatformBadge, SourceBadge,
-  SemaphoreDot, EVOLUTION_META, formatDate, relativeTime,
+  SemaphoreDot, EVOLUTION_META, formatDate, relativeTime, AlertScoreBadge,
 } from './ui'
 import { SectorEditor } from './SectorEditor'
 import { StatusEditor, EmailEditor } from './TargetEditors'
@@ -135,6 +135,9 @@ export default function AlvoDetalhePage() {
           </div>
         </Card>
 
+        {/* KL-85 — lead score de qualidade de alerta + breakdown dos sinais. */}
+        <AlertScoreCard score={t.alert_quality_score} signals={t.alert_signals} />
+
         {/* KL-52 — Perfil comercial extraído (site_profile). contact_email nunca aqui. */}
         <ProfileCard profile={t.profile} platform={t.platform} onEdit={() => setEditProfile(true)} />
 
@@ -225,6 +228,50 @@ export default function AlvoDetalhePage() {
   }
 
   return <AdminShell active="alvos">{body}</AdminShell>
+}
+
+// KL-85 — breakdown do lead score de alerta (quais sinais pontuaram + / -).
+const SIGNAL_LABEL = {
+  email_matches_domain: 'E-mail no domínio do site',
+  corporate_email: 'E-mail corporativo (domínio próprio)',
+  score_action_zone: 'Score na zona de ação (50–85)',
+  score_high_urgency: 'Score 40–49 (urgente)',
+  score_low_urgency: 'Score > 85 (pouca urgência)',
+  high_click_sector: 'Setor com click rate alto',
+  email_mismatch_free: 'E-mail genérico de terceiro',
+  role_based_prefix: 'Prefixo genérico (sac@, contato@…)',
+  abandoned_or_low_score: 'Descartado ou score < 40',
+  bounce_domain: 'Domínio com bounce anterior',
+}
+
+function AlertScoreCard({ score, signals }) {
+  return (
+    <Card title="Lead score de alerta (KL-85)">
+      <div className="flex items-center gap-3">
+        <AlertScoreBadge score={score} />
+        <span className="text-sm text-klarim-muted">
+          {score == null ? 'Ainda não avaliado pelo alert worker.'
+            : score >= 20 ? 'Passa do threshold — receberia alerta proativo.'
+            : 'Abaixo do threshold — alerta seria filtrado.'}
+        </span>
+      </div>
+      {signals && signals.length > 0 && (
+        <ul className="mt-3 space-y-1 text-sm">
+          {signals.map((s, i) => (
+            <li key={i} className="flex items-center justify-between border-b border-klarim-border py-1">
+              <span>{SIGNAL_LABEL[s.signal] || s.signal}</span>
+              <span className="font-mono" style={{ color: s.points >= 0 ? '#00D26A' : '#F85149' }}>
+                {s.points >= 0 ? `+${s.points}` : s.points}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <p className="mt-2 text-xs text-klarim-muted">
+        Score recalculado ao abrir; o valor oficial (no banco) é gravado a cada ciclo do alert worker.
+      </p>
+    </Card>
+  )
 }
 
 // KL-52 — perfil comercial (site_profile) no detalhe do alvo. Só leitura + botão de edição

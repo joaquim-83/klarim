@@ -129,6 +129,13 @@ class FakeStore:
     async def mark_target_alerted(self, target_id):
         self.alerted.append(target_id)
 
+    async def update_target_alert_score(self, target_id, score):  # KL-85
+        self.alert_scores = getattr(self, "alert_scores", {})
+        self.alert_scores[target_id] = score
+
+    async def domain_has_bounce(self, domain):  # KL-85
+        return False
+
     async def log_alert(self, target_id, contact_email, score, semaphore, fail_count,
                         email_id, status="sent"):
         self.logged.append({"target_id": target_id, "status": status, "email_id": email_id})
@@ -191,6 +198,7 @@ def _worker(store):
     w.batch_size, w.batches_per_cycle, w.batch_pause = 50, 4, 0
     w.monthly_limit = 45000
     w.validate_mx = False  # sem DNS nos testes de fluxo de batch
+    w.alert_score_threshold = -100000  # KL-85: não filtrar nos testes de fluxo de batch
     w.max_bounce_rate = 8.0
     w.bounce_min_sample = 20
     w._mailer = lambda: FakeMailer()  # noqa: E731

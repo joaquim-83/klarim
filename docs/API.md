@@ -226,6 +226,7 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 | GET | `/admin/analytics/pages` | páginas (views/sessions/bounce/next_page/conversion/delta) + grupos (Prompt 2 no front) |
 | GET | `/admin/analytics/journeys` | top caminhos normalizados (`/site/{domain}`, `/setor/{slug}`, `alerta`, `[saiu]`) |
 | GET | `/admin/analytics/funnel-by-sector` | funil segmentado por `targets.sector` |
+| GET | `/admin/analytics/alert-quality` | **KL-85** — qualidade do lead scoring: distribuição do `alert_quality_score`, quanto seria filtrado (<20), médias, alertas enviados no período. `click_rate` por faixa / `top_disqualify_reasons` exigem log por-envio (não na Parte 1) → nulos |
 
 ## Monitoramento (público)
 

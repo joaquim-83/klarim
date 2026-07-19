@@ -3,7 +3,7 @@ import { admin } from '../../lib/admin/adminApi'
 import { useAsync, useDebounce } from '../../lib/admin/useAsync'
 import {
   Card, Loading, ErrorBox, Button, PlatformBadge, SourceBadge,
-  SemaphoreDot, Pagination, relativeTime, STATUS_LABEL,
+  SemaphoreDot, Pagination, relativeTime, STATUS_LABEL, AlertScoreBadge,
 } from './ui'
 import { SectorEditor, SECTOR_OPTIONS } from './SectorEditor'
 import { StatusEditor, EmailEditor } from './TargetEditors'
@@ -208,6 +208,7 @@ export default function AlvosPage() {
                     <th className="py-2 pr-3">Plataforma</th>
                     <th className="py-2 pr-3">Setor</th>
                     <th className="py-2 pr-3">Score</th>
+                    <th className="py-2 pr-3" title="Lead score de qualidade do alerta (KL-85)">Alert</th>
                     <th className="py-2 pr-3">Status</th>
                     <th className="py-2 pr-3">Origem</th>
                     <th className="py-2 pr-3">E-mail</th>
@@ -244,6 +245,7 @@ export default function AlvosPage() {
                           ? <SemaphoreDot semaphore={t.last_semaphore} score={t.last_scan_score} />
                           : <span className="text-klarim-muted">—</span>}
                       </td>
+                      <td className="py-2 pr-3"><AlertScoreBadge score={t.alert_quality_score} /></td>
                       <td className="py-2 pr-3">
                         <StatusEditor target={t} onSaved={(_u, note) => { setMsg(note); reload() }} onError={(m) => setMsg(m)} />
                       </td>
@@ -270,7 +272,7 @@ export default function AlvosPage() {
                     </tr>
                   ))}
                   {rows.length === 0 && (
-                    <tr><td colSpan={10} className="py-8 text-center text-klarim-muted">Nenhum alvo.</td></tr>
+                    <tr><td colSpan={11} className="py-8 text-center text-klarim-muted">Nenhum alvo.</td></tr>
                   )}
                 </tbody>
               </table>

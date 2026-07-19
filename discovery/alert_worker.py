@@ -27,6 +27,7 @@ from notifier import KlarimMailer, KlarimMailerError, build_unsubscribe_link
 from .store import get_target_store
 from .heartbeat import publish_heartbeat
 from .contact import email_mx_status, _clean_email
+from .alert_scoring import calculate_alert_score
 from . import worker_control
 
 # Formato de e-mail aceito no batch. 1 e-mail malformado faz o Resend Batch API
@@ -192,7 +193,10 @@ class AlertWorker:
         if not interval_minutes:
             interval_minutes = int(os.environ.get("ALERT_INTERVAL_HOURS", "1")) * 60
         self.interval_minutes = interval_minutes or 30
+        # KL-85 Parte 1 — lead scoring: filtra alertas abaixo do threshold (conservador: 20).
+        self.alert_score_threshold = int(os.environ.get("ALERT_SCORE_THRESHOLD", "20"))
         self.store = get_target_store()
+        self._redis = None
         self._last_cycle_at = None
         self._next_cycle_at = None
         self._last_cycle_stats: dict = {}
@@ -209,6 +213,8 @@ class AlertWorker:
             im = int(await g("ALERT_INTERVAL_MINUTES", 0))
             if im:
                 self.interval_minutes = im
+            self.alert_score_threshold = int(
+                await g("ALERT_SCORE_THRESHOLD", self.alert_score_threshold))
         except Exception as exc:  # noqa: BLE001
             print(f"[alert] reload settings falhou (mantém atual): {exc!r}", flush=True)
 
@@ -280,6 +286,74 @@ class AlertWorker:
                 continue
             clean.append(t)
         return clean
+
+    async def _redis_client(self):
+        if self._redis is None:
+            try:
+                import redis.asyncio as aioredis
+                self._redis = aioredis.from_url(
+                    os.environ.get("REDIS_URL", "redis://redis:6379/0"), decode_responses=True)
+            except Exception:  # noqa: BLE001 - sem Redis o bounce cai no banco a cada ciclo
+                self._redis = False
+        return self._redis or None
+
+    async def _domain_bounced(self, domain: str, cache: dict) -> bool:
+        """Domínio com bounce anterior? Cache em memória (por ciclo) + Redis (24h). Fail-open:
+        qualquer erro → False (não penaliza por falha de infra)."""
+        dom = (domain or "").strip().lower()
+        if not dom:
+            return False
+        if dom in cache:
+            return cache[dom]
+        r = await self._redis_client()
+        key = f"bounce_domain:{dom}"
+        if r is not None:
+            try:
+                v = await r.get(key)
+                if v is not None:
+                    cache[dom] = v == "1"
+                    return cache[dom]
+            except Exception:  # noqa: BLE001
+                r = None
+        try:
+            bounced = await self.store.domain_has_bounce(dom)
+        except Exception:  # noqa: BLE001 - na dúvida, não penaliza
+            bounced = False
+        cache[dom] = bounced
+        if r is not None:
+            try:
+                await r.set(key, "1" if bounced else "0", ex=86400)
+            except Exception:  # noqa: BLE001
+                pass
+        return bounced
+
+    async def _apply_alert_scoring(self, targets: list) -> tuple:
+        """KL-85 — grava o `alert_quality_score` de TODOS os alvos e devolve só os que passam do
+        threshold. Fail-safe: se o scoring de um alvo estourar, o alvo é MANTIDO (nunca perde um
+        lead bom por bug de scoring). Retorna (kept, skipped_low_quality, avg_score_dos_kept)."""
+        kept, kept_scores, skipped = [], [], 0
+        bounce_cache: dict = {}
+        for t in targets:
+            try:
+                email = (t.get("contact_email") or "").strip().lower()
+                edomain = email.rsplit("@", 1)[1] if "@" in email else ""
+                bounced = await self._domain_bounced(edomain, bounce_cache) if edomain else False
+                result = calculate_alert_score(t, email, bounced)
+                score = result["score"]
+                t["_alert_score"] = score
+                try:
+                    await self.store.update_target_alert_score(t["id"], score)
+                except Exception as exc:  # noqa: BLE001 - gravar nunca bloqueia o envio
+                    print(f"[alert] falha ao gravar score (alvo {t.get('id')}): {exc!r}", flush=True)
+                if score < self.alert_score_threshold:
+                    skipped += 1
+                    continue
+            except Exception as exc:  # noqa: BLE001 - bug de scoring NÃO derruba o alvo
+                print(f"[alert] scoring falhou (alvo {t.get('id')}), mantendo: {exc!r}", flush=True)
+            kept.append(t)
+            kept_scores.append(t.get("_alert_score", 0))
+        avg = round(sum(kept_scores) / len(kept_scores), 1) if kept_scores else 0
+        return kept, skipped, avg
 
     async def _send_with_split(self, mailer, alerts: list):
         """Envia o batch; em 422 (e-mail inválido), divide ao meio e retenta para
@@ -364,6 +438,11 @@ class AlertWorker:
         # Validação pré-envio (KL-24): remove blocklist + domínios sem MX.
         targets = await self._validate_batch(raw_targets)
         stats["invalid"] = len(raw_targets) - len(targets)
+
+        # KL-85 Parte 1 — lead scoring: grava o score de TODOS e filtra abaixo do threshold.
+        targets, skipped_low, avg_score = await self._apply_alert_scoring(targets)
+        stats["skipped_low_quality"] = skipped_low
+        stats["avg_alert_score"] = avg_score
 
         for bi in range(self.batches_per_cycle):
             chunk = targets[bi * self.batch_size:(bi + 1) * self.batch_size]

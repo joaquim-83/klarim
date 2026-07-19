@@ -37,6 +37,11 @@ ALTER TABLE targets ADD COLUMN IF NOT EXISTS classification_confidence REAL DEFA
 -- Origem da classificação: auto (classificador) | domain (reclassify-domains) |
 -- manual (operador corrigiu no painel). Manual nunca é sobrescrito pelo automático.
 ALTER TABLE targets ADD COLUMN IF NOT EXISTS classification_source VARCHAR(20) DEFAULT 'auto';
+-- KL-85 Parte 1 — lead scoring de qualidade de alerta. Gravado para TODO alvo avaliado pelo
+-- alert worker (mesmo os filtrados), permitindo analytics/calibração. NÃO impede scan.
+ALTER TABLE targets ADD COLUMN IF NOT EXISTS alert_quality_score INTEGER;
+CREATE INDEX IF NOT EXISTS idx_targets_alert_quality ON targets(alert_quality_score)
+    WHERE alert_quality_score IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS scans (
     id SERIAL PRIMARY KEY,
@@ -5112,6 +5117,80 @@ class TargetStore:
     # Eventos que representam um scan público/manual (têm session_id; excluem o worker).
     _AA_SCAN_EVENTS = "('scan_started','scan_completed','scan_anonymous','scan_authenticated')"
     _AA_ACCOUNT_EVENTS = "('account_created','account_created_alert')"
+
+    # --- KL-85 Parte 1: lead scoring de qualidade de alerta ---------------- #
+
+    async def update_target_alert_score(self, target_id: int, score: int) -> None:
+        """Grava o `alert_quality_score` do alvo (para TODOS os avaliados, mesmo filtrados)."""
+        await asyncio.to_thread(self._run, lambda cur: cur.execute(
+            "UPDATE targets SET alert_quality_score = %s WHERE id = %s", (int(score), target_id)))
+
+    async def domain_has_bounce(self, domain: str) -> bool:
+        """True se algum e-mail PARA esse domínio já bouncou/falhou (histórico ruim). O worker
+        cacheia o resultado no Redis (24h) — aqui é só a query."""
+        dom = (domain or "").strip().lower()
+        if not dom:
+            return False
+
+        def _fn(cur):
+            cur.execute(
+                "SELECT EXISTS(SELECT 1 FROM email_log WHERE status IN ('bounced','failed') "
+                "AND to_email ILIKE %s)", (f"%@{dom}",))
+            return bool(cur.fetchone()[0])
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def alert_quality_stats(self) -> Dict[str, Any]:
+        """Distribuição do `alert_quality_score` (alvos com contact_email): faixas, contagens
+        por qualidade (>=20 / 0-19 / <0), média. Base do endpoint admin, do MCP e do backfill."""
+        def _fn(cur):
+            cur.execute("SELECT alert_quality_score FROM targets "
+                        "WHERE contact_email IS NOT NULL AND alert_quality_score IS NOT NULL")
+            scores = [int(r[0]) for r in cur.fetchall()]
+            cur.execute("SELECT COUNT(*) FROM targets WHERE contact_email IS NOT NULL")
+            total_with_email = int(cur.fetchone()[0])
+            bins = [(-40, -20), (-20, 0), (0, 20), (20, 40), (40, 60), (60, 80), (80, 200)]
+            dist = {f"[{lo},{hi})": sum(1 for s in scores if lo <= s < hi) for lo, hi in bins}
+            qualified = sum(1 for s in scores if s >= 20)
+            low = sum(1 for s in scores if 0 <= s < 20)
+            disq = sum(1 for s in scores if s < 0)
+            avg = round(sum(scores) / len(scores), 1) if scores else 0
+            return {"total_with_email": total_with_email, "total_scored": len(scores),
+                    "distribution": dist, "qualified": qualified, "low": low,
+                    "disqualified": disq, "avg_score": avg}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def alert_quality_sent_stats(self, start: Any, end: Any) -> Dict[str, Any]:
+        """Alertas enviados no período (alert_log) × o `alert_quality_score` atual do alvo:
+        contagem + médias por faixa. Best-effort (o score é o atual, não o do momento do envio)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT t.alert_quality_score FROM alert_log a JOIN targets t ON t.id = a.target_id "
+                "WHERE a.status='sent' AND a.sent_at >= %s AND a.sent_at < %s "
+                "AND t.alert_quality_score IS NOT NULL", (start, end))
+            sent = [int(r[0]) for r in cur.fetchall()]
+            cur.execute("SELECT COUNT(*) FROM alert_log WHERE status='sent' "
+                        "AND sent_at >= %s AND sent_at < %s", (start, end))
+            total_sent = int(cur.fetchone()[0])
+            return {"total_sent": total_sent, "scored_sent": len(sent),
+                    "avg_score_sent": round(sum(sent) / len(sent), 1) if sent else 0,
+                    "high": sum(1 for s in sent if s >= 40),
+                    "medium": sum(1 for s in sent if 20 <= s < 40),
+                    "low": sum(1 for s in sent if s < 20)}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def targets_with_email_for_scoring(self, offset: int, limit: int) -> list:
+        """Alvos com contact_email (para o backfill): campos que o scoring usa."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT id, domain, sector, status, last_scan_score, contact_email "
+                "FROM targets WHERE contact_email IS NOT NULL ORDER BY id LIMIT %s OFFSET %s",
+                (limit, offset))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
 
     async def aa_metrics_raw(self, start: Any, end: Any) -> Dict[str, Any]:
         """Séries diárias + totais das 6 métricas (visitors, pageviews, scans, accounts,

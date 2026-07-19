@@ -176,3 +176,23 @@ export function formatDate(iso) {
   if (isNaN(t)) return '—'
   return new Date(t).toLocaleString('pt-BR', { dateStyle: 'short', timeStyle: 'short' })
 }
+
+// KL-85 — cor do lead score de alerta: ≥40 verde · 20-39 amarelo · 0-19 laranja · <0 vermelho.
+export function alertScoreColor(score) {
+  if (score == null) return '#8B949E'
+  if (score >= 40) return '#00D26A'
+  if (score >= 20) return '#F0C000'
+  if (score >= 0) return '#FF6B35'
+  return '#F85149'
+}
+
+export function AlertScoreBadge({ score }) {
+  if (score == null) return <span className="text-klarim-muted">—</span>
+  const c = alertScoreColor(score)
+  return (
+    <span className="rounded px-1.5 py-0.5 text-xs font-semibold"
+      style={{ color: c, background: `${c}22` }} aria-label={`Lead score de alerta ${score}`}>
+      {score}
+    </span>
+  )
+}

@@ -294,7 +294,7 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
 - Alvos: ~25.400 · Scans: ~8.100 · Perfis públicos: ~7.200
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1103+ passed** · MCP tools: **51+**
+- Testes: **1126+ passed** · MCP tools: **52+**
 - Workers: **5/5 ativos** (discovery, alert, scan, vigília, rescan)
 - Planos: 8 contas Pro trial · Vigílias: 35 (30 ok, 5 error)
 - E-mail: `klarimscan.com` verificado, warmup ativo
@@ -466,6 +466,19 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   (`lib/admin/analyticsUtils.js`: sort/paginate/journeyStepKind/cores/parse-hash) com **15 testes
   `node --test`** (sem deps novas; `npm run test:unit` no CI antes do build). Navegação cruzada
   entre abas via hash. Nenhum "Em breve" restante.
+- **KL-85** — Lead scoring de qualidade de alerta (Parte 1 ✅; Partes 2/3 já no KL-82 S2).
+  `discovery/alert_scoring.py::calculate_alert_score(target, email, domain_bounced)` — função
+  **pura** (testável) → `{score, signals}`. Sinais: +30 e-mail no domínio · +10 corporativo ·
+  +20/+10/+5 por faixa de score (50-85/40-49/>85) · +15 setor de alto clique (vazio por ora) ·
+  -20 free de terceiro · -15 prefixo role-based · -10 descartado/score<40 · -40 domínio com
+  bounce. Coluna `targets.alert_quality_score` (gravada para TODOS os avaliados, mesmo filtrados;
+  NUNCA impede scan). Alert worker: `_apply_alert_scoring` grava o score + filtra abaixo do
+  threshold (`ALERT_SCORE_THRESHOLD`, default 20, editável no painel) — **fail-safe** (bug de
+  scoring mantém o alvo); bounce por domínio com cache Redis 24h; stats `skipped_low_quality`/
+  `avg_alert_score` (no `get_system_status`). Script `scripts/backfill_alert_scores.py` (batch
+  500 + histograma). Endpoint `GET /admin/analytics/alert-quality` + MCP `get_lead_scoring_stats`.
+  Admin: coluna "Alert" na lista de alvos (badge colorido) + breakdown dos sinais no detalhe.
+  24 testes backend + testes de worker/endpoint.
 - **KL-64** — Analytics tracker (pendente)
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos

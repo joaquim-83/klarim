@@ -4774,6 +4774,16 @@ async def api_get_target(target_id: int) -> dict:
         target["owner"] = await store.get_target_owner(target_id)
     except Exception:  # noqa: BLE001
         target["owner"] = None
+    # KL-85: breakdown do lead scoring (recomputa os sinais para o detalhe; o
+    # `alert_quality_score` no banco continua sendo o oficial gravado pelo worker).
+    try:
+        from discovery.alert_scoring import calculate_alert_score
+        email = target.get("contact_email") or ""
+        edom = email.rsplit("@", 1)[1] if "@" in email else ""
+        bounced = await store.domain_has_bounce(edom) if edom else False
+        target["alert_signals"] = calculate_alert_score(target, email, bounced)["signals"]
+    except Exception:  # noqa: BLE001 - breakdown é complementar
+        target["alert_signals"] = []
     return target
 
 

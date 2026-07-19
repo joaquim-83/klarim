@@ -449,6 +449,42 @@ async def journeys(request: Request, period: str = Query("7d"),
     return await _cached(f"journeys:{limit}", _period_key(period, start, end), build)
 
 
+@router.get("/alert-quality")
+async def alert_quality(request: Request, period: str = Query("7d"),
+                        start: Optional[str] = None, end: Optional[str] = None) -> dict:
+    """KL-85 — qualidade do lead scoring: distribuição do score, quanto seria filtrado,
+    médias, alertas enviados no período. `click_rate` por faixa e `top_disqualify_reasons`
+    exigem log por-envio (não no modelo da Parte 1) → omitidos/nulos por honestidade."""
+    await _rate_limit(request)
+    pr = resolve_period(period, start, end)
+
+    async def build():
+        store = get_target_store()
+        dist = await store.alert_quality_stats()
+        sent = await store.alert_quality_sent_stats(pr["start"], pr["end"])
+        d = dist["distribution"]
+        high = d["[40,60)"] + d["[60,80)"] + d["[80,200)"]
+        filtered = dist["low"] + dist["disqualified"]
+        total_eval = dist["total_scored"]
+        return {
+            "period": _period_meta(pr),
+            "total_evaluated": total_eval,
+            "total_sent": sent["total_sent"],
+            "total_filtered": filtered,
+            "filter_rate": round(filtered / total_eval * 100, 1) if total_eval else 0,
+            "avg_score_sent": sent["avg_score_sent"],
+            "by_score_range": {
+                "high_quality": {"range": ">=40", "count": high, "click_rate": None},
+                "medium_quality": {"range": "20-39", "count": d["[20,40)"], "click_rate": None},
+                "filtered": {"range": "<20", "count": filtered, "click_rate": None},
+            },
+            "distribution": d, "qualified": dist["qualified"],
+            "disqualified": dist["disqualified"], "avg_score_all": dist["avg_score"],
+        }
+
+    return await _cached("alert-quality", _period_key(period, start, end), build)
+
+
 @router.get("/funnel-by-sector")
 async def funnel_by_sector(request: Request, period: str = Query("7d"),
                            start: Optional[str] = None, end: Optional[str] = None) -> dict:
