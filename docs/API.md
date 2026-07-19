@@ -84,6 +84,8 @@ Um middleware (`_admin_auth_mw`) protege os prefixos abaixo (`_PROTECTED_PREFIXE
 | POST | `/account/resend-confirmation` | **KL-82 S2** — reenvia o link (exige login; rate limit 3/h por conta; no-op se já confirmado) |
 | GET | `/alert-access?token=` | **KL-82 S3** — link HMAC do alerta (Fluxo 2): valida o token, cria a sessão temporária (cookie `klarim_alert` 24h, escopada a 1 site) e redireciona ao `/scan?url=` com acesso completo. Token inválido → home. Rate limit 30/h/IP |
 | POST | `/account/signup-from-alert` | **KL-82 S3** — cria conta só com senha a partir do cookie de sessão do alerta (e-mail do cookie, `email_confirmed=true`/`source=hmac`, vincula+auto-verifica Tier 1). E-mail já existente → `{existing_account:true}`; sem sessão → 401 |
+| GET | `/account/dashboard-summary` | **KL-86** — agrega o dashboard num único request (site primário): saúde/tendência/rank, riscos KL-20, checklist priorizado, score_history, 6 categorias, plano, perfil, vigílias. `has_site:false` → checklist de onboarding. `contact_email` nunca exposto |
+| PUT | `/account/profile-confirm` | **KL-86** — o dono confirma/edita `company_name`/`phone` do perfil (marca `edited_by_admin`); só o dono do site (403 senão) |
 | GET | `/scan` | (rota SSR do fluxo antigo) |
 | GET | `/benchmark` · `/benchmark/{sector}` · `/benchmark/all` · `/benchmark/cnae/{division}` | KL-44 P5: médias/mediana/min/max + distribuição anônima por semáforo (setor ≥10 scans; cache 24h) |
 | GET | `/seal/{domain}` | KL-44 P5: dados do selo "Monitorado por Klarim" (score + privacidade + link; público, CORS `*`, cache 1h, 60/h/IP; `seal_type=monitored`, nunca "certificado") |

@@ -284,7 +284,7 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
 - Alvos: ~25.400 · Scans: ~8.100 · Perfis públicos: ~7.200
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1058+ passed** · MCP tools: **49+**
+- Testes: **1069+ passed** · MCP tools: **49+**
 - Workers: **5/5 ativos** (discovery, alert, scan, vigília, rescan)
 - Planos: 8 contas Pro trial · Vigílias: 35 (30 ok, 5 error)
 - E-mail: `klarimscan.com` verificado, warmup ativo
@@ -422,6 +422,19 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   senha** (e-mail do cookie, `email_confirmed=true` `source='hmac'`, vincula+auto-verifica Tier 1);
   e-mail já com conta → `{existing_account}`. Tabela `alert_sessions` (funil: created/converted),
   `contact_email` nunca em claro (só hint mascarado). Frontend: `AlertSignup` no `ScanResultDetail`.
+- **KL-86** — Redesign do dashboard (6 blocos de valor, zero espaço vazio) ✅. **1 request**
+  `GET /account/dashboard-summary` agrega tudo do site **primário** (1º monitorado): saúde
+  (score+tendência±2+rank no setor), riscos KL-20 (top 3), checklist priorizado
+  (`_build_checklist`: e-mail não confirmado/score caiu/vigília com erro/SSL≤30d/perfil
+  incompleto/corrigir top-risco/compartilhar; "Tudo em dia 👏" quando sem urgência),
+  evolução (score_history dos scans → `ScoreChart` SVG), 6 categorias (`_dashboard_categories`
+  reusa `_build_categories`), plano + perfil. Reusa build_risk_summary/sector_benchmark/
+  get_sector_position — **nenhuma feature nova, só exposição**. `contact_email` nunca no payload.
+  Frontend `Dashboard.jsx` reescrito: grid 2/3+1/3 no desktop com **placement explícito**
+  (`lg:col-start`/`lg:row-start`) → mobile empilha na ordem saúde→checklist→riscos→categorias→
+  evolução→plano (checklist sobe). Bloco 6 = `PlanSection` reusado. Onboarding do perfil
+  (`PUT /account/profile-confirm`, dono edita company_name/phone → `edited_by_admin`). Linguagem
+  "Pesquisar" (não "Verificar"), "Olá, {empresa}". Sem site → buscador + checklist reduzido.
 - **KL-64** — Analytics tracker (pendente)
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos

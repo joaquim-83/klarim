@@ -1084,6 +1084,285 @@ async def account_site_detail(target_id: int, request: Request) -> dict:
     }
 
 
+# --------------------------------------------------------------------------- #
+# KL-86 — Dashboard agregado (1 request → 6 blocos de valor)
+# --------------------------------------------------------------------------- #
+_CAT_SLUG = {"Transporte & TLS": "transport", "Headers de segurança": "headers",
+             "Supply chain": "supply_chain", "DNS & E-mail": "dns_email",
+             "Conteúdo": "content", "OSINT & Reputação": "osint"}
+_SCAN_INTERVAL_DAYS = {"free": 30, "pro": 7, "agency": 1}
+_PLAN_FEATURES = {
+    "free": ["1 site monitorado", "Re-scan mensal", "Alertas por e-mail"],
+    "pro": ["5 sites monitorados", "Re-scan semanal", "Vigílias 24/7", "Relatório PDF"],
+    "agency": ["15 sites monitorados", "Re-scan diário", "Vigílias avançadas", "Multi-cliente"],
+}
+_SSL_DAYS_RE = re.compile(r"(\d+)\s*dias?")
+
+
+def _iso(dt: Any) -> Optional[str]:
+    """datetime → ISO 8601 (ou None). Aceita valores já-string/None (passa direto)."""
+    if dt is None:
+        return None
+    return dt.isoformat() if hasattr(dt, "isoformat") else str(dt)
+
+
+def _dashboard_categories(checks: list) -> list:
+    """Bloco 5 — 6 categorias com contagem + status (ok/warning/critical). Reusa
+    `_build_categories` (KL-82) mapeando cada check_id às 6 categorias do front."""
+    enriched = [{"check_id": c.get("check_id"), "status": c.get("status"),
+                 "severity": c.get("severity"), "category": _check_category(c.get("check_id"))}
+                for c in checks]
+    out = []
+    for cat in _build_categories(enriched):
+        fc = cat["fail_count"]
+        status = "ok" if fc == 0 else ("warning" if fc <= 2 else "critical")
+        out.append({"id": _CAT_SLUG.get(cat["name"], "outros"), "name": cat["name"],
+                    "passed": cat["pass_count"], "total": cat["total"], "status": status,
+                    "has_high_fails": cat["has_high_fails"]})
+    return out
+
+
+def _ssl_expiry_days(checks: list) -> Optional[int]:
+    """Best-effort: dias até a expiração do certificado, lidos da EVIDÊNCIA do check de
+    cert/SSL (`check_42_cert_chain`/`check_03_ssl` gravam '(N dias)'). None se não achar."""
+    for c in checks:
+        cid = (c.get("check_id") or "").lower()
+        if "cert" in cid or "ssl" in cid:
+            m = _SSL_DAYS_RE.search(c.get("evidence") or "")
+            if m:
+                try:
+                    return int(m.group(1))
+                except ValueError:
+                    pass
+    return None
+
+
+def _score_trend(latest: Optional[dict], prev: Optional[dict]) -> tuple:
+    """(trend, diff) comparando o scan mais recente com o anterior. ±2 = estável."""
+    if not latest or not prev or latest.get("score") is None or prev.get("score") is None:
+        return "stable", 0
+    diff = int(latest["score"]) - int(prev["score"])
+    if diff >= 2:
+        return "up", diff
+    if diff <= -2:
+        return "down", diff
+    return "stable", diff
+
+
+def _vigilia_summary(vigilias: list, domain: Optional[str]) -> dict:
+    """Resumo das vigílias (do site primário se `domain`, senão todas): ativas + status."""
+    rel = [v for v in vigilias if (not domain or v.get("site_domain") == domain)] or vigilias
+    return {
+        "active": sum(1 for v in rel if v.get("enabled")),
+        "ok": sum(1 for v in rel if v.get("last_status") == "ok"),
+        "warning": sum(1 for v in rel if v.get("last_status") == "alert"),
+        "error": sum(1 for v in rel if v.get("last_status") == "error"),
+        "alerts": sum(int(v.get("alert_count") or 0) for v in rel),
+    }
+
+
+def _estimate_next_scan(last_scan_at: Any, plan_id: str) -> Optional[str]:
+    days = _SCAN_INTERVAL_DAYS.get(plan_id, 30)
+    if last_scan_at is None or not hasattr(last_scan_at, "isoformat"):
+        return None
+    return (last_scan_at + timedelta(days=days)).isoformat()
+
+
+def _new_user_checklist(user: dict) -> list:
+    """Checklist do usuário SEM site monitorado (KL-86 §8)."""
+    items = [{"id": "add_site", "label": "Adicione um site ao monitoramento",
+              "completed": False, "priority": 1, "action": "add_site", "type": "cta"}]
+    if user.get("email_confirmed") is False:
+        items.append({"id": "confirm_email", "label": "Confirme seu e-mail",
+                      "completed": False, "priority": 1,
+                      "action": "/account/resend-confirmation", "type": "cta"})
+    return sorted(items, key=lambda x: x["priority"])
+
+
+def _build_checklist(user: dict, target: dict, latest: Optional[dict], prev: Optional[dict],
+                     profile: Optional[dict], vig: dict, checks: list,
+                     top_risk: Optional[dict]) -> list:
+    """Bloco 3 — checklist priorizado (1=mais urgente). Só ações derivadas de dados reais."""
+    items: list = []
+    tid = target.get("id")
+    if user.get("email_confirmed") is False:
+        items.append({"id": "confirm_email", "label": "Confirme seu e-mail para acesso completo",
+                      "completed": False, "priority": 1,
+                      "action": "/account/resend-confirmation", "type": "cta"})
+    if latest and prev and latest.get("score") is not None and prev.get("score") is not None \
+            and int(latest["score"]) < int(prev["score"]) - 2:
+        d = int(latest["score"]) - int(prev["score"])
+        items.append({"id": "score_dropped",
+                      "label": f"Seu score caiu: {prev['score']} → {latest['score']} ({d})",
+                      "completed": False, "priority": 1,
+                      "action": f"/dashboard/site/{tid}", "type": "link"})
+    if vig and vig.get("error", 0) > 0:
+        items.append({"id": "vigilia_alert", "label": f"{vig['error']} vigília(s) com problema",
+                      "completed": False, "priority": 1,
+                      "action": f"/dashboard/site/{tid}", "type": "link"})
+    ssl_days = _ssl_expiry_days(checks)
+    if ssl_days is not None and ssl_days <= 30:
+        items.append({"id": "ssl_expiry",
+                      "label": f"Seu certificado SSL expira em {ssl_days} dias",
+                      "completed": False, "priority": 2 if ssl_days > 7 else 1,
+                      "action": f"/dashboard/site/{tid}", "type": "link"})
+    if not profile or not profile.get("company_name"):
+        items.append({"id": "complete_profile", "label": "Complete o perfil da sua empresa",
+                      "completed": False, "priority": 2,
+                      "action": "inline_profile_editor", "type": "modal"})
+    if top_risk:
+        items.append({"id": f"fix_{top_risk['check_id']}",
+                      "label": f"Corrija: {top_risk['message']}",
+                      "completed": False, "priority": 3,
+                      "action": f"/dashboard/site/{tid}", "type": "link"})
+    items.append({"id": "share_score", "label": "Compartilhe seu score",
+                  "completed": False, "priority": 5, "action": "share_modal", "type": "modal"})
+    # Nenhuma ação urgente (prioridade ≤3) → destaca "tudo em dia".
+    if not any(i for i in items if i["priority"] <= 3 and not i["completed"]):
+        items.insert(0, {"id": "all_good", "label": "Tudo em dia 👏",
+                         "completed": True, "priority": 0, "type": "info"})
+    return sorted(items, key=lambda x: x["priority"])
+
+
+@app.get("/account/dashboard-summary")
+async def account_dashboard_summary(request: Request) -> dict:
+    """KL-86 — agrega TUDO do dashboard num único request (6 blocos). Foca no site PRIMÁRIO
+    (1º monitorado). `contact_email`/cnpj/whatsapp NUNCA saem. Reusa os helpers já existentes
+    (build_risk_summary/KL-20, _build_categories/KL-82, sector_benchmark/get_sector_position)."""
+    user = await auth_users.require_user(request)
+    store = get_target_store()
+    subscription = await plans.get_subscription(user["id"])
+    plan_block = {"name": subscription.get("plan_name"), "plan_id": subscription.get("plan_id"),
+                  "status": subscription.get("status"),
+                  "expires_at": _iso(subscription.get("trial_ends_at")),
+                  "trial_days_left": subscription.get("trial_days_left"),
+                  "features": _PLAN_FEATURES.get(subscription.get("plan_id"), _PLAN_FEATURES["free"])}
+
+    sites = await store.list_user_sites(user["id"])
+    if not sites:
+        return {"has_site": False, "sites_count": 0, "plan": plan_block,
+                "checklist": _new_user_checklist(user)}
+
+    primary = sites[0]   # site primário = 1º monitorado
+    tid = primary["target_id"]
+    target = await store.get_target(tid) or {}
+    sector = target.get("sector")
+    scans = await store.list_scans(target_id=tid, limit=30)
+    latest = scans[0] if scans else None
+    prev = scans[1] if len(scans) > 1 else None
+
+    checks: list = []
+    score = target.get("last_scan_score")
+    semaphore = primary.get("last_semaphore")
+    if latest:
+        full = await store.get_scan(latest["id"])
+        cj = (full or {}).get("checks_json") or {}
+        if isinstance(cj, dict):
+            checks = cj.get("checks") or cj.get("results") or []
+            score = (cj.get("score") or {}).get("score", score)
+            semaphore = (cj.get("score") or {}).get("semaphore") or semaphore
+        score = latest.get("score", score)
+
+    profile = await store.get_site_profile(tid)
+    # KL-20 riscos setorizados + benchmark (linguagem de negócio).
+    risk_summary = {"risks": [], "remaining_count": 0}
+    benchmark = None
+    try:
+        from reporter.risk_messages import build_risk_summary
+        risk_summary = build_risk_summary(checks, sector, limit=3)
+        if sector and sector != "outro":
+            benchmark = await store.sector_benchmark(sector, min_count=10)
+    except Exception:  # noqa: BLE001 - riscos/benchmark são complementares
+        pass
+    if not benchmark:
+        try:
+            g = await store.global_avg_score()
+            benchmark = {"sector": "global", "avg_score": g["avg_score"], "count": g["count"]}
+        except Exception:  # noqa: BLE001
+            benchmark = None
+    elif sector:
+        benchmark["sector_label"] = _sector_label(sector)
+
+    ranking = None
+    if sector and sector != "outro" and score is not None:
+        try:
+            pos = await store.get_sector_position(sector, tid)
+            if pos and pos.get("total", 0) > 0:
+                ranking = {"position": pos["position"], "total": pos["total"]}
+        except Exception:  # noqa: BLE001
+            ranking = None
+
+    vigilias = await store.get_user_vigilias(user["id"])
+    vig = _vigilia_summary(vigilias, primary.get("domain"))
+    trend, diff = _score_trend(latest, prev)
+    top_risk = (risk_summary.get("risks") or [None])[0]
+    checklist = _build_checklist(user, target, latest, prev, profile, vig, checks, top_risk)
+    score_history = [{"date": _iso(s.get("scanned_at")), "score": s.get("score")}
+                     for s in reversed(scans) if s.get("score") is not None]
+
+    return {
+        "has_site": True,
+        "sites_count": len(sites),
+        "other_sites": [{"target_id": s["target_id"], "domain": s.get("domain"),
+                         "score": s.get("last_scan_score"), "semaphore": s.get("last_semaphore")}
+                        for s in sites[1:]],
+        "site": {
+            "target_id": tid, "domain": target.get("domain"),
+            "score": score, "semaphore": semaphore, "trend": trend, "trend_diff": diff,
+            "rank_position": (ranking or {}).get("position"),
+            "rank_total": (ranking or {}).get("total"),
+            "sector": sector, "sector_label": _sector_label(sector) if sector else None,
+            "last_scan": _iso(target.get("last_scan_at")) or (_iso(latest.get("scanned_at")) if latest else None),
+            "next_scan": _estimate_next_scan(target.get("last_scan_at"), subscription.get("plan_id")),
+            "is_owner": bool(primary.get("is_owner")),
+        },
+        "risks": risk_summary.get("risks", []),
+        "checklist": checklist,
+        "score_history": score_history,
+        "check_categories": _dashboard_categories(checks),
+        "benchmark": benchmark,
+        "plan": plan_block,
+        "profile": {
+            "company_name": (profile or {}).get("company_name"),
+            "phone": (profile or {}).get("phone"),
+            "sector": sector, "sector_label": _sector_label(sector) if sector else None,
+            "confirmed": bool((profile or {}).get("edited_by_admin")),
+        },
+        "vigilias": vig,
+    }
+
+
+class ProfileConfirmBody(BaseModel):
+    target_id: int
+    company_name: Optional[str] = None
+    phone: Optional[str] = None
+
+
+@app.put("/account/profile-confirm")
+async def account_profile_confirm(body: ProfileConfirmBody, request: Request) -> dict:
+    """KL-86 — o dono confirma/edita os dados do perfil (onboarding do checklist). Só o
+    dono do site (user_sites) pode; marca `edited_by_admin=TRUE` (o enrich preserva).
+    `contact_email`/cnpj/whatsapp não são editáveis por aqui."""
+    user = await auth_users.require_user(request)
+    store = get_target_store()
+    link = await store.get_user_site(user["id"], body.target_id)
+    if not link or not link.get("is_owner"):
+        raise HTTPException(status_code=403, detail="Você não é o dono deste site.")
+    fields: dict = {}
+    if body.company_name is not None:
+        fields["company_name"] = _sanitize_str(body.company_name, 120).strip()
+    if body.phone is not None:
+        fields["phone"] = _sanitize_str(body.phone, 40).strip()
+    if not fields:
+        raise HTTPException(status_code=400, detail="Nada para atualizar.")
+    updated = await store.update_site_profile_fields(body.target_id, fields)
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Perfil não encontrado.")
+    return {"ok": True, "profile": {"company_name": updated.get("company_name"),
+                                    "phone": updated.get("phone"),
+                                    "confirmed": bool(updated.get("edited_by_admin"))}}
+
+
 async def _effective_plan_limits(user: dict) -> dict:
     """Limites efetivos do plano da conta (KL-44). Usa a assinatura (subscriptions →
     plans) e faz **fallback** para `users.max_sites` se a assinatura não existir ou o
