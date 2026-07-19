@@ -84,6 +84,41 @@ SSH na `klarim-prod`. Validado por um push de teste (deploy verde na VM nova —
   sem mudança.
 - Fase 2 (GCS + aceleração do scan) só após 24h de estabilidade.
 
+## Pós-migração — diagnóstico + backfill do gap de cutover (2026-07-19)
+
+Após o cutover, o dono reportou (1) fila de scan vazia / worker ocioso e (2) alertas do
+Resend ausentes no frontend. Investigação:
+
+**(1) Fila de scan — falso alarme, curou sozinho.** O discovery reiniciou às 09:59:36
+(handoff) com o buffer de CT logs **vazio**. O ciclo 1 (10:01:55) tinha só 7 domínios →
+enfileirou 4 → o worker drenou às 10:03:41 (= 07:03 BRT) e ficou em `blpop`. O buffer
+reencheu (146) e o ciclo 2 (10:31:55) re-saturou o worker (`queue_size` 0→15, `last_scan`
+10:03→10:35, `discovered_today` 1397→1439). `queue_size: 0` é normal — ciclos de 30 min,
+worker drena em ~2 min e dorme barato. **Nenhuma ação.**
+
+**(2) Gap de cutover nos e-mails proativos — real, corrigido.** As tabelas `alert_log`/
+`email_log` da VM nova estavam **corretas e consistentes** (não "desatualizadas"). O
+problema: o **pg_dump foi tirado ~09:27 UTC** e a VM antiga continuou emitindo até eu parar
+os workers (~09:34) — esses envios foram para o Resend mas **nunca migraram**:
+- **12 alertas** (lote 09:28:27, targets 33827…33875) — nenhum na VM nova.
+- **4 profile_view** (09:28→09:34:43) — dos 61 candidatos da janela, 57 já estavam no dump
+  (09:00–09:27) e só 4 faltavam.
+- Agravante: a VM nova, subida do mesmo snapshot, **re-enviou 9 dos 12 alertas** no incidente
+  das 09:29:23 (duplicatas cold); 3 domínios (33873/74/75) ficaram **sem registro nenhum**.
+
+**Backfill (aprovado pelo dono, 2x):** copiei os 16 registros faltantes da VM antiga (ainda
+de pé) → `alert_log`+`email_log` da nova via `COPY`/temp table, **PKs novos**, **dedup por
+`email_id`** (`NOT EXISTS`), em transação com `ON_ERROR_STOP`. Resultado: `alert_log` 318→330,
+`email_log(alert)` 288→300, profile_view +4, os 3 órfãos agora têm registro (dedup não os
+re-alerta). Zero duplicatas (email_id garante). CSVs temporários com PII (`contact_email`/
+`to_email`) shredados; nunca expostos.
+
+**Lição p/ Fase 2:** o gap dump→cutover vaza log de proativos. Mitigar: pausar os workers
+proativos (`STOP_ALERTS` + discovery) na VM antiga **antes** do dump, ou dumpar imediatamente
+antes do cutover. **Redis não é migrado** — os guards de dedup `notify:*` (TTL) da VM antiga
+se perdem, então a VM nova pode re-notificar domínios recém-avisados até o TTL repopular
+(impacto limitado, reputação em warmup).
+
 ## Docs atualizados
 
 `claude.md` (§1), `docs/DEPLOY.md` (infra + runbook de migração + tempo de build).
