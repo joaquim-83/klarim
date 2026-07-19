@@ -27,12 +27,17 @@ públicos e monitora silenciosamente — só alerta o dono quando algo importa.
 - **Produção:** https://klarim.net · **Admin:** https://painel.klarim.net
 - **Repo:** https://github.com/joaquim-83/klarim.git
 - **Jira (board KL):** https://igoove.atlassian.net/jira/software/c/projects/KL/boards/265/backlog
-- **VM GCP:** `instance-20260706-112125` · zona `us-central1-a` · projeto
-  `project-b08050df-fa4e-49ac-919` · deploy em `/opt/klarim`
+- **VM GCP:** `klarim-prod` (**e2-standard-4**, 4 vCPU/16GB, disco **200GB pd-ssd**) · zona
+  `us-central1-a` · projeto `project-b08050df-fa4e-49ac-919` · deploy em `/opt/klarim` ·
+  **IP estático `34.135.194.208`** (reserva `klarim-static-ip`). Migração KL-77 Fase 1
+  (2026-07-19). CI/CD deploya por instance-name (secret `GCP_INSTANCE_NAME=klarim-prod`).
+  A VM antiga `instance-20260706-112125` (e2-medium, IP efêmero 35.238.72.10) fica em
+  standby 24h como fallback (reverter DNS no Cloudflare para 35.238.72.10 + reiniciar os
+  workers dela). **OS Login está DESABILITADO** (o SSH do CI usa injeção de chave por metadata).
 - **E-mail operacional:** klarimscan@gmail.com
 
 ```bash
-gcloud compute ssh --zone "us-central1-a" "instance-20260706-112125" \
+gcloud compute ssh --zone "us-central1-a" "klarim-prod" \
   --project "project-b08050df-fa4e-49ac-919"
 ```
 

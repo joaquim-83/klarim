@@ -7,18 +7,31 @@
 
 | Campo | Valor |
 |-------|-------|
-| Instância | `instance-20260706-112125` |
+| Instância | `klarim-prod` (migração KL-77 Fase 1, 2026-07-19) |
 | Zona | `us-central1-a` |
 | Projeto | `project-b08050df-fa4e-49ac-919` |
 | Diretório | `/opt/klarim` |
-| Máquina | GCP Compute Engine `e2-small` (2 vCPU, ~4GB) |
+| Máquina | GCP Compute Engine `e2-standard-4` (4 vCPU, 16GB) |
+| Disco | 200GB `pd-ssd` |
+| IP | estático `34.135.194.208` (reserva `klarim-static-ip`) |
+| VM antiga | `instance-20260706-112125` (e2-medium, IP efêmero 35.238.72.10) — **standby de fallback** |
 
 ```bash
-gcloud compute ssh --zone "us-central1-a" "instance-20260706-112125" \
+gcloud compute ssh --zone "us-central1-a" "klarim-prod" \
   --project "project-b08050df-fa4e-49ac-919"
 ```
 
 O `.env` de produção vive **apenas na VM** (`/opt/klarim/.env`) — nunca no git.
+
+> **Migração de VM (KL-77 Fase 1):** IP estático → criar VM (`e2-standard-4`, 200GB
+> pd-ssd, **sem** `enable-oslogin` — o SSH do CI usa injeção de chave por metadata) →
+> Docker + clone → `.env` copiado byte-idêntico → `pg_dump -Fc | pg_restore` por stream
+> SSH → comparar contagens → subir serviços → **copiar `/etc/letsencrypt` da VM antiga**
+> (cert LE portável, o nginx só sobe HTTPS com o cert presente + `DOMAIN` no .env) →
+> validar → **trocar DNS no Cloudflare** (registros A → novo IP, proxy laranja on) +
+> atualizar secret `GCP_INSTANCE_NAME` → **handoff dos workers** (parar `discovery` na
+> antiga, iniciar na nova → só a produção emaila) → VM antiga 24h em standby. Reverter =
+> DNS de volta para 35.238.72.10 + reiniciar workers da antiga.
 
 ## 2. Deploy manual
 
@@ -34,7 +47,8 @@ build` (site **no ar** durante o build) → `docker compose up -d --remove-orpha
 Postgres/Redis nem são tocados). ⚠️ O script se auto-atualiza no `git pull`, mas a
 mudança só vale **no deploy seguinte** (o bash já leu o arquivo no início).
 
-> **Nota:** o build de `api`/`web` na `e2-small` leva **10–50 min**. Lento ≠ travado.
+> **Nota:** o build de `api`/`web` na `e2-standard-4` (4 vCPU) leva **~5–15 min**
+> (era 10–50 min na e2-small/medium antiga). Lento ≠ travado.
 
 ## 3. CI/CD automático (`.github/workflows/deploy.yml`)
 
