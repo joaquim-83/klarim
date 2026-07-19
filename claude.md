@@ -284,7 +284,7 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
 - Alvos: ~25.400 · Scans: ~8.100 · Perfis públicos: ~7.200
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **985+ passed** · MCP tools: **49+**
+- Testes: **1035+ passed** · MCP tools: **49+**
 - Workers: **5/5 ativos** (discovery, alert, scan, vigília, rescan)
 - Planos: 8 contas Pro trial · Vigílias: 35 (30 ok, 5 error)
 - E-mail: `klarimscan.com` verificado, warmup ativo
@@ -393,6 +393,18 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   + "Relatório completo. 100% gratuito.", centralizado verticalmente `flex min-h-screen flex-col`
   → hero + footer apenas; removidas Como funciona/checks/benchmark/Para quem. Posicionamento:
   buscador de segurança "pesquise qualquer site", não "seu site é seguro?". Busca segue `GET /scan?url=`)
+- **KL-82** — Confiança progressiva (Slice 1 ✅ de 4): scan **result-first** sem gate de e-mail
+  (o antigo email+código de 6 díg. matava 97% da conversão). `GET /scan/result` escaneia anônimo e
+  devolve o payload **filtrado server-side** por **nível de acesso** — `anonymous` (score+barras por
+  categoria sem números+1 risco; benchmark/checks travados) < `unconfirmed` (benchmark+2 riscos+
+  nomes dos checks sem evidência+PDF travado) < `confirmed`/`alert_session` (tudo). NUNCA vaza
+  evidência aos níveis baixos (corte no backend, não blur). Rate limit anônimo **5/h + 20/dia por
+  IP** (conta logada ilimitada); scan ≠ monitoramento (KL-78). Migração `users.email_confirmed`
+  (`link`/`hmac`/`code`; sem DEFAULT → backfill idempotente `WHERE IS NULL`). Front: `ScanFlow.jsx`
+  result-first + `ScanResultDetail.jsx` (`client:load`, CSP-safe: accordion `<details>`, blur CSS,
+  share `<a>`/JS-ilha); fluxo de código KL-25 fica **dormente** (fallback). Linguagem neutra pública
+  ("Este site", não "Seu site"). **Deferido:** Bloco 2 (signup sem confirmação + `/confirmar` +
+  welcome link), Blocos 3+4 (Fluxo 2 do alerta), cleanup cron de contas não confirmadas.
 - **KL-64** — Analytics tracker (pendente)
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos

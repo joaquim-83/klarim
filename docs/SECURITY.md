@@ -35,6 +35,10 @@ Na dúvida, trate o alvo como site de terceiro que só autorizou olhar o que é 
   `KLARIM_DEV_MODE=true` (senão 404).
 - **Rate limit no login:** `POST /auth/login` = 5 tentativas/min por IP (`X-Real-IP` do
   Nginx); 6ª → 429.
+- **Rate limit do scan anônimo (KL-82):** `GET /scan/result` sem sessão = **5/h + 20/dia por
+  IP** (`X-Real-IP`); estourou → 429 com CTA de conta. Conta logada é ilimitada. O resultado é
+  **filtrado server-side por nível de acesso** — anonymous/unconfirmed **nunca** recebem
+  evidência/detalhe de check no payload (corte no backend, não blur cosmético no front).
 - **Anti stored-XSS no `/events`:** `_sanitize_str`/`_sanitize_metadata` removem tags e
   esquemas (`javascript:`/`data:`), limitam tamanho/profundidade. React escapa `{}` (sem
   `dangerouslySetInnerHTML`).

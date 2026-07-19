@@ -335,6 +335,8 @@ _seal_attempts: dict = {}          # KL-44 P5: selo "Monitorado por Klarim"
 _upgrade_attempts: dict = {}       # KL-44 P6: checkout de upgrade de plano
 _sub_webhook_attempts: dict = {}   # KL-44 P6: webhook de pagamento de assinatura
 _scan_get_attempts: dict = {}      # KL-78 item 8: rate limit do GET /scan (anti-abuso)
+_scan_anon_hour: dict = {}         # KL-82: scan anônimo 5/hora por IP
+_scan_anon_day: dict = {}          # KL-82: scan anônimo 20/dia por IP
 
 
 def _mask_email(email: str) -> str:
@@ -3038,6 +3040,219 @@ def _summary_payload(report: ScanReport, full: bool = False) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# KL-82 — Confiança progressiva: scan anônimo + resultado por nível de acesso
+# --------------------------------------------------------------------------- #
+
+# Agrupamento dos 48 checks em 6 categorias (espelha web/src/components/scan/checks.js —
+# mesma ordem/números; mantenha os dois em sincronia ao adicionar um check).
+_CHECK_CATEGORIES: list = [
+    ("Transporte & TLS", {1, 2, 3, 4, 41, 42, 43, 44}),
+    ("Headers de segurança", {5, 6, 7, 8, 17, 18, 31, 32, 33, 34, 35, 36}),
+    ("Supply chain", {13, 14, 15, 30}),
+    ("DNS & E-mail", {21, 22, 23, 37, 38, 39, 40}),
+    ("Conteúdo", {9, 10, 11, 12, 24, 25, 45, 46, 47, 48}),
+    ("OSINT & Reputação", {16, 19, 20, 26, 27, 28, 29}),
+]
+_CHECK_NUM_RE = re.compile(r"check_(\d+)_")
+
+
+def _check_category(check_id: Optional[str]) -> str:
+    m = _CHECK_NUM_RE.match(check_id or "")
+    n = int(m.group(1)) if m else 0
+    for name, nums in _CHECK_CATEGORIES:
+        if n in nums:
+            return name
+    return "Outros"
+
+
+def _build_categories(checks: list) -> list:
+    """Agrega os checks por categoria: pass/fail/total + `pass_ratio` (exclui INCONCLUSO
+    do denominador) + `has_high_fails` (FAIL Alta/Crítica → abre expandido no front)."""
+    order = [name for name, _ in _CHECK_CATEGORIES]
+    agg: dict = {}
+    for c in checks:
+        cat = c.get("category") or "Outros"
+        a = agg.setdefault(cat, {"name": cat, "pass_count": 0, "fail_count": 0,
+                                 "total": 0, "_high": False})
+        a["total"] += 1
+        st = c.get("status")
+        if st == "PASS":
+            a["pass_count"] += 1
+        elif st == "FAIL":
+            a["fail_count"] += 1
+            if c.get("severity") in ("CRITICA", "ALTA"):
+                a["_high"] = True
+    out = []
+    for name in order + [k for k in agg if k not in order]:
+        a = agg.get(name)
+        if not a or a["total"] == 0:
+            continue
+        considered = a["pass_count"] + a["fail_count"]
+        a["pass_ratio"] = round(a["pass_count"] / considered, 3) if considered else 1.0
+        a["has_high_fails"] = a.pop("_high")
+        out.append(a)
+    return out
+
+
+def _full_scan_result(report: ScanReport, url: str, sector: Optional[str] = None) -> dict:
+    """Monta o resultado COMPLETO (todos os 48 checks com detalhe + categorias + riscos +
+    privacidade). Ainda NÃO filtrado — `_filter_scan_result` corta por nível de acesso."""
+    sp = _summary_payload(report, full=True)
+    by_result = {r.check_id: r for r in report.results}
+    checks = []
+    for c in (sp["free_checks"] + sp["paid_checks"]):
+        cid = c.get("check_id")
+        r = by_result.get(cid)
+        checks.append({**c, "category": _check_category(cid),
+                       "severity": getattr(r, "severity", None) if r is not None else None})
+    try:
+        from reporter.risk_messages import build_risk_summary
+        risk = build_risk_summary(report.results, sector=sector, limit=99)
+    except Exception:  # noqa: BLE001 - riscos são best-effort
+        risk = {"risks": [], "remaining_count": 0}
+    return {
+        "url": report.url,
+        "domain": _norm_domain(url),
+        "score": sp["score"], "semaphore": sp["semaphore"], "grade_icon": sp["grade_icon"],
+        "scan_date": str(getattr(report, "finished_at", "") or ""),
+        "fail_count": sp["fail_count"], "passed": sp["passed"],
+        "inconclusive": sp["inconclusive"], "total_checks": sp["total_checks"],
+        "checks": checks,
+        "categories": _build_categories(checks),
+        "risk_summary": risk,
+        "privacy": getattr(report, "privacy", None),
+    }
+
+
+def _filter_scan_result(full: dict, level: str) -> dict:
+    """KL-82 Bloco 5 — corta o resultado por nível de acesso. NUNCA vaza evidência/impacto/
+    detalhe de check para anonymous/unconfirmed (filtro server-side, não blur cosmético)."""
+    base = {
+        "access_level": level,
+        "score": full["score"], "semaphore": full["semaphore"],
+        "grade_icon": full["grade_icon"], "domain": full["domain"],
+        "scan_date": full["scan_date"], "fail_count": full["fail_count"],
+        "total_checks": full["total_checks"],
+        "has_profile": full.get("has_profile", False),
+        "profile_domain": full.get("profile_domain"),
+    }
+    risks = (full.get("risk_summary") or {}).get("risks", [])
+
+    if level == "anonymous":
+        base["categories_preview"] = [{"name": c["name"], "pass_ratio": c["pass_ratio"]}
+                                      for c in full["categories"]]
+        base["risks_preview"] = risks[:1]
+        base["risks_total"] = len(risks)
+        base["benchmark_locked"] = True
+        base["checks_locked"] = True
+        return base
+
+    if level == "unconfirmed":
+        base["benchmark"] = full.get("benchmark")
+        base["risks_preview"] = risks[:2]
+        base["risks_total"] = len(risks)
+        base["categories"] = [{"name": c["name"], "pass_count": c["pass_count"],
+                               "fail_count": c["fail_count"], "total": c["total"],
+                               "pass_ratio": c["pass_ratio"], "has_high_fails": c["has_high_fails"]}
+                              for c in full["categories"]]
+        # Nomes dos checks SEM evidência/impacto/correção (só existência).
+        base["checks_names_only"] = True
+        base["checks"] = [{"check_id": c["check_id"], "name": c["name"],
+                           "status": c["status"], "category": c["category"]}
+                          for c in full["checks"]]
+        base["pdf_locked"] = True
+        return base
+
+    # confirmed | alert_session — acesso total àquele resultado.
+    base.update({
+        "benchmark": full.get("benchmark"),
+        "risk_summary": full.get("risk_summary"),
+        "risks_total": len(risks),
+        "categories": full["categories"],
+        "checks": full["checks"],
+        "privacy_indicators": full.get("privacy"),
+        "pdf_available": True,
+        "report_urls": full.get("report_urls"),
+    })
+    return base
+
+
+async def _get_alert_session(request: Request) -> Optional[dict]:
+    """Fluxo 2 do alerta (Bloco 3) — valida o cookie `alert_session` (JWT HMAC, 24h,
+    escopo target_id). Slice 1 ainda não emite o cookie, então retorna None (o nível cai
+    para 'anonymous')."""
+    return None
+
+
+async def _access_level(request: Optional[Request]) -> tuple[str, Optional[dict]]:
+    """KL-82 Bloco 5 — nível: anonymous < alert_session < unconfirmed < confirmed.
+    `email_confirmed` NULL (conta pré-KL-82) conta como confirmada; só `false` explícito
+    (conta criada sem confirmar, Bloco 2) vira 'unconfirmed'."""
+    user = None
+    if request is not None:
+        try:
+            user = await auth_users.optional_user(request)
+        except Exception:  # noqa: BLE001
+            user = None
+    if user:
+        level = "confirmed" if user.get("email_confirmed") is not False else "unconfirmed"
+        return level, {"user": user}
+    if request is not None:
+        sess = await _get_alert_session(request)
+        if sess:
+            return "alert_session", sess
+    return "anonymous", None
+
+
+@app.get("/scan/result")
+async def scan_result(url: str = Query(..., description="URL alvo."),
+                      request: Request = None) -> dict:
+    """KL-82 — resultado do scan SEM exigir e-mail (result-first). Escaneia qualquer site
+    anonimamente e devolve o payload FILTRADO pelo nível de acesso. O scan NÃO adiciona
+    ninguém ao monitoramento (KL-78: scan ≠ monitoramento). Rate limit anônimo: 5/h + 20/dia
+    por IP; conta autenticada é ilimitada."""
+    url = _norm_scan_url(url)
+    level, ctx = await _access_level(request)
+
+    # Rate limit só para anônimo (conta logada = ilimitado). Dois tetos (hora + dia).
+    if level == "anonymous" and request is not None:
+        ip = _client_ip(request)
+        ok_h, retry_h = await _redis_allow("scan_anon", ip, 5, 3600, _scan_anon_hour)
+        ok_d, retry_d = await _redis_allow("scan_anon_daily", ip, 20, 86400, _scan_anon_day)
+        if not ok_h or not ok_d:
+            raise HTTPException(status_code=429, detail=(
+                "Limite de pesquisas atingido. Crie uma conta gratuita para pesquisas ilimitadas."),
+                headers={"Retry-After": str(max(retry_h, retry_d))})
+
+    scanned_by = None
+    if ctx and ctx.get("user"):
+        scanned_by = (ctx["user"].get("email") or "").strip() or None
+
+    ingest = "demo" if _is_demo(email=scanned_by, url=url) else "public"
+    report = await _safe_scan(url, full=True, ingest_source=ingest, scanned_by_email=scanned_by)
+
+    sector = None
+    try:
+        tgt = await get_target_store().get_target_by_url(url)
+        sector = (tgt or {}).get("sector")
+    except Exception:  # noqa: BLE001 - setor é best-effort (riscos caem no default)
+        pass
+
+    full = _full_scan_result(report, url, sector=sector)
+    try:
+        b = await get_target_store().global_avg_score()
+        full["benchmark"] = {"avg_score": b["avg_score"], "count": b["count"]}
+    except Exception:  # noqa: BLE001
+        full["benchmark"] = None
+    full.update(await _profile_info(url))
+    if level in ("confirmed", "alert_session"):
+        q = f"url={quote(url, safe='')}"
+        full["report_urls"] = {"executive": f"/report/executive?{q}",
+                               "technical": f"/report/technical?{q}"}
+    return _filter_scan_result(full, level)
+
+
+# --------------------------------------------------------------------------- #
 # Pagamento (AbacatePay PIX)
 # --------------------------------------------------------------------------- #
 
@@ -4526,6 +4741,8 @@ _KNOWN_EVENTS = {
     # KL-42 — score social: widget + card + ranking + compartilhamento
     "widget_loaded", "widget_clicked", "widget_copied",
     "card_downloaded", "share_clicked", "ranking_viewed",
+    # KL-82 — confiança progressiva: scan anônimo (result-first) vs autenticado
+    "scan_anonymous", "scan_authenticated", "signup_inline_clicked",
 }
 _EVENT_RL_MAX = 100          # eventos/minuto por sessão
 _event_rl: dict = {}         # session_id -> lista de timestamps (janela de 60s)

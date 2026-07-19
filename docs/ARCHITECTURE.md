@@ -109,6 +109,11 @@ tráfego) que conduz ao scanner. Camadas:
   ≥50 · 🔴 <50.
 - **Cache por tier** (`cache.py`): `scan:free:<hash>` / `scan:full:<hash>` (ambos casam
   `scan:*` no flush), TTL 1h, com fallback no banco (`scans`).
+- **Níveis de acesso ao resultado (KL-82, confiança progressiva):** `GET /scan/result`
+  escaneia sem e-mail e **filtra o payload no backend** (`_access_level` + `_filter_scan_result`)
+  por `anonymous` (score + barras de categoria + 1 risco) < `unconfirmed` (benchmark + 2 riscos +
+  nomes de checks sem evidência) < `confirmed`/`alert_session` (48 checks completos + PDF).
+  Corte server-side (nunca vaza evidência aos níveis baixos); rate limit anônimo 5/h+20/dia por IP.
 - **Enriquecimento** (`profiler.py` + `ai_enrichment.py` + `enrichment.py`): crawl
   multi-page → dados comerciais (contatos, JSON-LD, tecnologias, CNPJ) + IA (setor,
   descrição, tags, CNAEs). Best-effort, **fora do caminho síncrono** do scan, **não

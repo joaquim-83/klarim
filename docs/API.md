@@ -77,7 +77,8 @@ Um middleware (`_admin_auth_mw`) protege os prefixos abaixo (`_PROTECTED_PREFIXE
 | POST | `/scan/verify-code` | valida código → scan token (HMAC) |
 | POST | `/scan/check-credit` | estado do crédito sem enviar código |
 | POST | `/scan/rescan` | re-verificação (consome crédito; comparação antes/depois) |
-| GET | `/scan/summary` | dispara/retorna o scan (exige `X-Scan-Token`, `charge_id` pago, ou sessão) |
+| GET | `/scan/result` | **KL-82** — resultado result-first SEM e-mail; payload FILTRADO por nível de acesso (`anonymous`/`unconfirmed`/`confirmed`/`alert_session`). Rate limit anônimo **5/h + 20/dia por IP** (429 amigável); conta logada ilimitada. Scan ≠ monitoramento (KL-78). Filtro server-side nunca vaza evidência a anonymous/unconfirmed |
+| GET | `/scan/summary` | (legado) dispara/retorna o scan (exige `X-Scan-Token`, `charge_id` pago, ou sessão) |
 | POST | `/scan/send-report` | envia os 2 PDFs por e-mail (rate limit 3/e-mail/h) |
 | GET | `/scan` | (rota SSR do fluxo antigo) |
 | GET | `/benchmark` · `/benchmark/{sector}` · `/benchmark/all` · `/benchmark/cnae/{division}` | KL-44 P5: médias/mediana/min/max + distribuição anônima por semáforo (setor ≥10 scans; cache 24h) |

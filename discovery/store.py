@@ -241,6 +241,18 @@ CREATE TABLE IF NOT EXISTS users (
 );
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 
+-- KL-82 (confiança progressiva): confirmação de e-mail desacoplada do signup. A conta
+-- é criada na hora (email_confirmed=false) e confirma depois via link no e-mail de
+-- boas-vindas ('link'), clique num alerta HMAC-validado ('hmac') ou código legado ('code').
+-- SEM DEFAULT de propósito: linhas pré-KL-82 ficam NULL e o backfill abaixo (WHERE IS NULL,
+-- idempotente — ensure_schema re-roda a cada boot) as marca 'code' UMA vez, sem tocar as
+-- contas novas não-confirmadas (que gravam false explícito no Bloco 2).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email_confirmed BOOLEAN;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email_confirmed_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS confirmation_source VARCHAR(20);  -- 'link' | 'hmac' | 'code'
+UPDATE users SET email_confirmed = true, confirmation_source = 'code', email_confirmed_at = created_at
+WHERE email_confirmed IS NULL;
+
 -- Vínculo usuário ↔ target (site monitorado). is_owner = reivindicou propriedade.
 CREATE TABLE IF NOT EXISTS user_sites (
     id SERIAL PRIMARY KEY,
@@ -1745,7 +1757,7 @@ class TargetStore:
     # --- contas de usuário (KL-51 f3) -------------------------------------- #
 
     _USER_COLS = ("id", "email", "name", "plan", "max_sites", "created_at",
-                  "last_login_at", "is_active", "role")
+                  "last_login_at", "is_active", "role", "email_confirmed")
 
     async def create_user(self, email: str, password_hash: str,
                           name: Optional[str] = None,

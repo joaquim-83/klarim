@@ -16,7 +16,9 @@ export default function ShareScore({ domain, score, badge, ranking }) {
   const [copied, setCopied] = useState(false);
   const b = badge || badgeFor(score, true); // card do próprio site monitorado → tem conta
   const profileUrl = `${SITE}/site/${domain}`;
-  const text = `Nosso site tem score ${score}/100 de segurança no Klarim. E o seu?`;
+  // KL-82: linguagem neutra ("Este site", não "Nosso") — o card de share aparece tanto no
+  // dashboard do dono quanto no resultado público de qualquer site pesquisado.
+  const text = `Este site tem score ${score}/100 de segurança no Klarim. E o seu?`;
 
   function track(ev, meta) {
     try { window.klarimTrack?.(ev, meta, `https://${domain}`); } catch { /* nunca quebra */ }

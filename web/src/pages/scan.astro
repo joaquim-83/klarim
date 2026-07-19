@@ -8,22 +8,9 @@ import ScanFlow from '../components/scan/ScanFlow.jsx';
 
 const url = Astro.url.searchParams.get('url') || '';
 
-// Auth (KL-51 f3 fix UX): usuário logado escaneia sem código de e-mail. Lê o cookie
-// e valida no backend; passa o user (ou null) ao island.
-const API = process.env.KLARIM_API_URL || 'http://api:8000';
-let user = null;
-const sessionToken = Astro.cookies.get('klarim_session')?.value;
-if (sessionToken) {
-  try {
-    // Timeout curto: se a API estiver ocupada (scan em andamento), não travar o render
-    // da página — cai para deslogado (o fluxo com e-mail/código ainda funciona).
-    const res = await fetch(`${API}/account/me`, {
-      headers: { Authorization: `Bearer ${sessionToken}` },
-      signal: AbortSignal.timeout(4000),
-    });
-    if (res.ok) user = (await res.json()).user;
-  } catch { /* deslogado ou timeout */ }
-}
+// KL-82 (confiança progressiva): a ilha escaneia via /api/scan/result e o backend decide o
+// nível de acesso a partir do cookie de sessão (enviado com credentials:'include'). Não é
+// mais preciso resolver o usuário no SSR — reduz a latência do render.
 
 function safeDomain(u) {
   if (!u) return '';
@@ -38,15 +25,15 @@ const domain = safeDomain(url);
 
 <Base
   title={domain ? `Analisando ${domain}` : 'Análise de segurança'}
-  description="Análise de segurança do seu site — 48 verificações, score e relatório completo, gratuito."
+  description="Pesquise a segurança de qualquer site — 48 verificações, score e relatório, gratuito e sem cadastro."
   path="/scan"
 >
   <Header />
   <main class="mx-auto max-w-3xl px-5 pt-28 pb-20 sm:pt-32">
-    <ScanFlow url={url} user={user} client:load />
+    <ScanFlow url={url} client:load />
     <noscript>
       <p class="mt-6 rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-300">
-        A análise interativa precisa de JavaScript. Ative-o para escanear seu site.
+        A análise interativa precisa de JavaScript. Ative-o para pesquisar um site.
       </p>
     </noscript>
   </main>
