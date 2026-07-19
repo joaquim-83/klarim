@@ -87,6 +87,27 @@ Rate limit anônimo (5/h, 20/dia) ✅ · scan ≠ monitoramento ✅ · `contact_
 fluxo de código mantido como fallback ✅ · revisão de segurança (filtro server-side, não vaza
 evidência a anonymous/unconfirmed; rate limit no caminho novo) ✅.
 
+## Correção de segurança pós-deploy — rate limit efetivo atrás do Cloudflare
+
+O smoke test em produção revelou que **7 chamadas anônimas rápidas não davam 429**. Causa: o
+Nginx faz `proxy_set_header X-Real-IP $remote_addr`, mas atrás do Cloudflare `$remote_addr` é o
+**IP do edge do CF**, não do visitante — então o rate limit por IP (do KL-82 **e de todos os
+endpoints**: login, scan, ownership…) chaveava por edge, inefetivo por usuário real.
+
+**Dois consertos (aprovados pelo dono):**
+1. **`_client_ip`** passou a preferir **`CF-Connecting-IP`** (IP real que o CF sempre envia) →
+   `X-Real-IP` → peer. Conserta o rate limit de todos os endpoints de uma vez (2 testes novos).
+2. **Firewall de origem (GCP):** `443` do origin (`34.135.194.208`) agora só aceita os **ranges
+   do Cloudflare** (regras `klarim-allow-cf-https` v4 + `klarim-allow-cf-https-v6`; removida a
+   `klarim-allow-https` 0.0.0.0/0). Impede que alguém batendo direto no IP **forje** o
+   `CF-Connecting-IP` para escapar do rate limit. **Porta 80 fica aberta** (renovação Let's
+   Encrypt HTTP-01 + redirect http→https). Verificado: via CF 200; direto no origin:443 →
+   timeout (bloqueado); direto no origin:80 → 301 (aberto). SSH (22) inalterado (CI intacto).
+
+**Follow-up:** os ranges do Cloudflare mudam raramente — se o CF publicar novos, atualizar as
+duas regras. Renovação do cert via HTTP-01 passa pelo CF (porta 80 aberta); se o CF "Always Use
+HTTPS" interferir no futuro, migrar para DNS-01 ou origin cert do Cloudflare.
+
 ## Pendências (próximos slices)
 
 Bloco 2 (contas sem confirmação + `/confirmar` + welcome link), Blocos 3+4 (Fluxo 2 do alerta),

@@ -36,9 +36,16 @@ Na dúvida, trate o alvo como site de terceiro que só autorizou olhar o que é 
 - **Rate limit no login:** `POST /auth/login` = 5 tentativas/min por IP (`X-Real-IP` do
   Nginx); 6ª → 429.
 - **Rate limit do scan anônimo (KL-82):** `GET /scan/result` sem sessão = **5/h + 20/dia por
-  IP** (`X-Real-IP`); estourou → 429 com CTA de conta. Conta logada é ilimitada. O resultado é
-  **filtrado server-side por nível de acesso** — anonymous/unconfirmed **nunca** recebem
-  evidência/detalhe de check no payload (corte no backend, não blur cosmético no front).
+  IP**; estourou → 429 com CTA de conta. Conta logada é ilimitada. O resultado é **filtrado
+  server-side por nível de acesso** — anonymous/unconfirmed **nunca** recebem evidência/detalhe
+  de check no payload (corte no backend, não blur cosmético no front).
+- **IP real atrás do Cloudflare (KL-82):** `_client_ip` usa **`CF-Connecting-IP`** (o `X-Real-IP`
+  do Nginx é `$remote_addr` = IP do **edge** do CF, não do visitante — tornava TODOS os rate
+  limits por IP inefetivos). Ordem: CF-Connecting-IP → X-Real-IP → peer.
+- **Firewall de origem (KL-82):** o `443` do origin (`34.135.194.208`) só aceita **ranges do
+  Cloudflare** (`klarim-allow-cf-https` v4/v6; sem 0.0.0.0/0) — impede bater direto no IP e
+  **forjar** o `CF-Connecting-IP` p/ escapar do rate limit. Porta `80` aberta (ACME + redirect).
+  SSH (`22`) inalterado. Ranges do CF mudam raramente → atualizar as 2 regras se necessário.
 - **Anti stored-XSS no `/events`:** `_sanitize_str`/`_sanitize_metadata` removem tags e
   esquemas (`javascript:`/`data:`), limitam tamanho/profundidade. React escapa `{}` (sem
   `dangerouslySetInnerHTML`).

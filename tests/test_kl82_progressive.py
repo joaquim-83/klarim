@@ -266,3 +266,20 @@ def test_scan_result_authenticated_unlimited(client):
     # muito além do teto anônimo (5) — conta logada não tem rate limit
     for _ in range(8):
         assert client.get("/scan/result?url=https://x.com.br", headers=_bearer(u)).status_code == 200
+
+
+# --------------------------------------------------------------------------- #
+# 3. _client_ip — atrás do Cloudflare, o IP real vem em CF-Connecting-IP
+# --------------------------------------------------------------------------- #
+
+def test_client_ip_prefers_cf_connecting_ip():
+    req = SimpleNamespace(headers={"cf-connecting-ip": "203.0.113.5", "x-real-ip": "172.16.0.1"},
+                          client=SimpleNamespace(host="10.0.0.1"))
+    assert m._client_ip(req) == "203.0.113.5"
+
+
+def test_client_ip_falls_back_to_x_real_ip_then_peer():
+    req = SimpleNamespace(headers={"x-real-ip": "172.16.0.1"}, client=SimpleNamespace(host="10.0.0.1"))
+    assert m._client_ip(req) == "172.16.0.1"
+    req2 = SimpleNamespace(headers={}, client=SimpleNamespace(host="10.0.0.1"))
+    assert m._client_ip(req2) == "10.0.0.1"

@@ -274,7 +274,16 @@ _login_attempts: dict = {}   # ip -> [timestamps monotônicos]
 
 
 def _client_ip(request: Request) -> str:
-    """IP real do cliente — o Nginx envia X-Real-IP (senão, o peer da conexão)."""
+    """IP REAL do cliente. Atrás do Cloudflare (produção), o Nginx põe
+    ``X-Real-IP = $remote_addr`` = IP do **edge do Cloudflare**, não do visitante — o que
+    tornava os rate limits por IP inefetivos (todos os visitantes de um mesmo edge
+    compartilhavam a cota). O IP real vem em ``CF-Connecting-IP`` (o Cloudflare sempre o
+    envia). Ordem: CF-Connecting-IP → X-Real-IP → peer da conexão. O **firewall de origem**
+    (só ranges do Cloudflare batem no 80/443) impede que alguém acessando o IP direto forje
+    o CF-Connecting-IP para escapar do rate limit (KL-82 revisão de segurança)."""
+    cf = request.headers.get("cf-connecting-ip")
+    if cf:
+        return cf.strip()
     xri = request.headers.get("x-real-ip")
     if xri:
         return xri.split(",")[0].strip()
