@@ -111,8 +111,10 @@ const allJsonLd = [ORG_JSONLD, WEBSITE_JSONLD, ...extraLd];
     <slot />
     <!-- Tracking (KL-21): asset EXTERNO (não inline) → passa na CSP `script-src 'self'`. -->
     <script src="/track.js" is:inline></script>
-    <!-- KL-87: toggle de tema (sol/lua). Externo → CSP `script-src 'self'`. -->
-    <script src="/theme.js" is:inline></script>
+    <!-- KL-87: toggle de tema (sol/lua). Externo → CSP `script-src 'self'`. O `?v=2` escapa
+         uma entrada de cache do Cloudflare envenenada (o /theme.js caiu no fallback SSR — HTML
+         com max-age=14400 — enquanto NÃO estava na allowlist do Nginx; já corrigido). -->
+    <script src="/theme.js?v=2" is:inline></script>
     <!-- Cloudflare Web Analytics — só nas páginas Astro (públicas + conta), NUNCA no
          /painel (AdminLayout). Externo → coberto pela CSP (`script-src` inclui o host).
          `is:inline` = Astro renderiza verbatim (não processa/bundle). -->
