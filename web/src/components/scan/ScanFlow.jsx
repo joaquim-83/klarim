@@ -118,7 +118,7 @@ export default function ScanFlow({ url: initialUrl = '', user = null }) {
   }
 
   return (
-    <div className="mx-auto max-w-2xl">
+    <div className="mx-auto max-w-3xl">
       {step === 'progress' && <ProgressStep domain={domain} />}
       {step === 'result' && result && <ScanResultDetail result={result} url={url} />}
       {step === 'limit' && <LimitStep message={limitMsg} url={url} />}

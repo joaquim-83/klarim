@@ -13,7 +13,7 @@ const user = Astro.locals.user || {};
 
 <Base title="Dashboard" description="Seus sites monitorados no Klarim." path="/dashboard" noindex={true}>
   <Header />
-  <main class="mx-auto max-w-3xl px-5 pt-28 pb-20 sm:pt-32">
+  <main class="mx-auto max-w-3xl md:max-w-5xl lg:max-w-7xl px-5 lg:px-8 pt-28 pb-20 sm:pt-32">
     <Dashboard client:load user={user} />
   </main>
   <Footer />
