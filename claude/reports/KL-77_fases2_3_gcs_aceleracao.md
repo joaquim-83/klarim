@@ -153,24 +153,50 @@ docker stats --no-stream ; free -h ; df -h / ; redis-cli LLEN klarim:scan_queue
 
 ---
 
-## 7. Validação de sucesso (status)
+## 7. Confirmação em produção (executado nesta entrega)
+
+Deploy CI verde (Test 1m28s + Deploy to GCP VM 3m21s). Bucket criado e endurecido,
+arquivamento validado end-to-end na VM `klarim-prod`, scan rate acelerado ao vivo.
+
+- **Bucket `gs://klarim-raw`** criado: **NEARLINE · US-CENTRAL1 · uniform bucket-level
+  access · `public-access-prevention=enforced`** · sem `allUsers`/`allAuthenticatedUsers`
+  (privado). IAM: `roles/storage.objectCreator` **apenas** para a SA da VM
+  `10946387758-compute@developer.gserviceaccount.com` (**ADC — sem key file**; confirmado
+  que `storage.Client()` autentica pela SA da VM).
+- **1º uploads reais:** `gs://klarim-raw/2026/07/19/14854.json.gz`,
+  `.../14855.json.gz` (path `YYYY/MM/DD/{scan_id}.json.gz` ✓).
+- **Conteúdo verificado** (scan 14854, `celltechsistema.com.br`): todas as chaves
+  (`target_id, scan_id, domain, url, timestamp, http_status, response_time_ms, headers,
+  html, html_size_bytes, dns{mx,ns}, ssl`); `http_status=200`, `ssl.protocol=TLSv1.3`
+  (do cache do `tls_analyzer`, sem handshake extra).
+- **Resiliência comprovada ao vivo:** entre o deploy (~22:25) e a criação do bucket
+  (~22:26) o worker acumulou **3 erros** (`NotFound: bucket does not exist`) **sem travar
+  nenhum scan** (`scan.completed_today` seguiu subindo). Após o bucket, `last_upload_at` >
+  `last_error` → uploads OK, erros congelados (aging out em 48h).
+- **Scan rate → 200/h** aplicado ao vivo via MCP `set_scan_config` (`worker_control`,
+  sem redeploy). Rate limit por-domínio 1 req/s inalterado.
+
+### Validação de sucesso
 
 | # | Critério | Status |
 |---|---|---|
-| 1 | Bucket `klarim-raw` Nearline | ⏳ operador (runbook §6) |
-| 2 | SA com `objectCreator` (e nada mais) | ⏳ operador |
-| 3 | Worker faz upload após cada scan | ✅ código (worker → `archive_scan_response`) |
-| 4 | Path `YYYY/MM/DD/{scan_id}.json.gz` | ✅ código + teste |
-| 5 | Conteúdo: headers, html, dns, ssl, target_id, domain | ✅ código + teste |
-| 6 | Upload falho não trava o scan | ✅ fire-and-forget + teste (bucket inexistente) |
+| 1 | Bucket `klarim-raw` Nearline | ✅ criado (US-CENTRAL1, PAP enforced, privado) |
+| 2 | SA com `objectCreator` (e nada mais) | ✅ SA da VM, só objectCreator (ADC) |
+| 3 | Worker faz upload após cada scan | ✅ verificado (files_today > 0) |
+| 4 | Path `YYYY/MM/DD/{scan_id}.json.gz` | ✅ confirmado no bucket |
+| 5 | Conteúdo: headers, html, dns, ssl, target_id, domain | ✅ verificado no arquivo real |
+| 6 | Upload falho não trava o scan | ✅ comprovado ao vivo (janela pré-bucket) |
 | 7 | `GCS_ENABLED=false` desativa tudo | ✅ código + teste |
-| 8 | Scan rate 200/h | ✅ default `.env.example`; ⏳ aplicar no `.env` da VM |
-| 9 | Fila Redis estável | ⏳ observar pós-aceleração |
-| 10 | CPU<70% / RAM<80% após 1h a 200/h | ⏳ observar pós-aceleração |
+| 8 | Scan rate 200/h | ✅ aplicado ao vivo (`set_scan_config`) |
+| 9 | Fila Redis estável | ⏳ observar 1h a 200/h |
+| 10 | CPU<70% / RAM<80% após 1h a 200/h | ⏳ observar na VM (`docker stats`/`free -h`/`df -h`) |
 | 11 | ≥10 testes novos | ✅ **18** (+1 MCP) |
-| 12 | CI verde | ⏳ após push |
+| 12 | CI verde | ✅ Test + Deploy verdes |
 
-**Legenda:** ✅ entregue no código/testes locais · ⏳ ação de operador/observação na VM.
+**Pendência única:** observação de carga por ~1h a 200/h (CPU/RAM/fila) para decidir
+subir a 300/h (CPU<60% e RAM<70%) ou manter 200/h (CPU>80% ou RAM>85%). Requer SSH na
+VM (`docker stats --no-stream` · `free -h` · `df -h /` · `redis-cli LLEN klarim:scan_queue`);
+a fila também é visível pelo MCP `get_system_status` (`scan.queue_size`).
 
 ---
 
