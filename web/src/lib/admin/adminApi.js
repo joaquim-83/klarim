@@ -204,6 +204,10 @@ export const admin = {
   aaFunnel: (period = '7d') => get(`/admin/analytics/funnel?period=${period}`),
   aaEvents: (params) => get(`/admin/analytics/events${qs(params)}`),
   aaSessions: (params) => get(`/admin/analytics/sessions${qs(params)}`),
+  aaPages: (params) => get(`/admin/analytics/pages${qs(params)}`),
+  aaJourneys: (period = '7d', limit = 10) =>
+    get(`/admin/analytics/journeys?period=${period}&limit=${limit}`),
+  aaFunnelBySector: (period = '7d') => get(`/admin/analytics/funnel-by-sector?period=${period}`),
 
   // reclassificação de setor (refino KL-11)
   reclassifyDomains: () => post('/admin/reclassify-domains'),

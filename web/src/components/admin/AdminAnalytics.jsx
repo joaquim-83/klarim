@@ -4,24 +4,25 @@ import { admin } from '../../lib/admin/adminApi'
 import { useAsync, useDebounce } from '../../lib/admin/useAsync'
 import { Card, Loading, ErrorBox, Badge } from './ui'
 import AdminShell from './AdminShell'
+import PaginationBar from './analytics/PaginationBar'
+import SortableTable from './analytics/SortableTable'
+import SessionCard, { CAMPAIGN_COLOR, EV_COLOR } from './analytics/SessionCard'
+import {
+  sortRows, paginate, journeyStepKind, STEP_COLOR, bounceColor, clickRateColor,
+  deltaMeta, filterSectors, parseTabHash, buildTabHash,
+} from '../../lib/admin/analyticsUtils'
 
-// KL-83 — Analytics admin redesenhado (Prompt 1). Abas: Visão geral (dashboard executivo) +
-// Eventos (stream com filtros). Páginas/Jornadas = placeholder "Em breve" (Prompt 2). Uma
-// chamada por endpoint, cache no backend (5 min). Admin sempre dark (tokens klarim-*).
+// KL-83 — Analytics admin (Prompts 1+2). 4 abas: Visão geral, Eventos, Páginas, Jornadas.
+// Uma chamada por endpoint; cache no backend (5 min). Lazy: cada aba só busca quando ativa.
 const PERIODS = [
   { key: 'today', label: 'Hoje' }, { key: '7d', label: '7 dias' },
   { key: '30d', label: '30 dias' }, { key: '90d', label: '90 dias' },
 ]
 const TABS = [
-  { key: 'overview', label: 'Visão geral', soon: false },
-  { key: 'events', label: 'Eventos', soon: false },
-  { key: 'pages', label: 'Páginas', soon: true },
-  { key: 'journeys', label: 'Jornadas', soon: true },
+  { key: 'overview', label: 'Visão geral' }, { key: 'events', label: 'Eventos' },
+  { key: 'pages', label: 'Páginas' }, { key: 'journeys', label: 'Jornadas' },
 ]
-const CAMPAIGN_COLOR = {
-  alerta: '#3B82F6', profile_view: '#00D26A', alerta_score100: '#F0C000',
-  '(sem campanha)': '#8B949E',
-}
+const TAB_KEYS = TABS.map((t) => t.key)
 const TOOLTIP_STYLE = { backgroundColor: '#161B22', border: '1px solid #30363D', borderRadius: 8, color: '#E6EDF3' }
 const TREND_COLORS = { visitors: '#58A6FF', scans: '#FF6B35', accounts: '#00D26A' }
 const TREND_LABEL = { visitors: 'Visitantes', scans: 'Scans', accounts: 'Contas' }
@@ -32,23 +33,20 @@ function fmtDelta(pct) {
   const up = pct >= 0
   return <span style={{ color: up ? '#00D26A' : '#F85149' }}>{up ? '↑' : '↓'} {Math.abs(pct)}%</span>
 }
-function fmtDate(s) {
+function fmtDateTime(s) {
   if (!s) return '—'
   try { return new Date(/[Z+]/.test(s) ? s : `${s}Z`).toLocaleString('pt-BR') } catch { return s }
 }
-function secs(s) { const n = Math.round(Number(s || 0)); return n < 60 ? `${n}s` : `${Math.floor(n / 60)}min ${n % 60}s` }
+function trunc(s, n = 35) { return (s || '').length > n ? `${s.slice(0, n)}…` : (s || '') }
 
 export default function AdminAnalytics() {
   const [period, setPeriod] = useState('7d')
-  const [tab, setTab] = useState(() => {
-    if (typeof window === 'undefined') return 'overview'
-    const h = window.location.hash.replace('#', '')
-    return TABS.some((t) => t.key === h && !t.soon) ? h : 'overview'
-  })
-  function goTab(k) {
-    if (TABS.find((t) => t.key === k)?.soon) return
-    setTab(k)
-    window.location.hash = k
+  const [nav, setNav] = useState(() =>
+    parseTabHash(typeof window !== 'undefined' ? window.location.hash : '', TAB_KEYS))
+
+  function navigate(tab, params = {}) {
+    if (typeof window !== 'undefined') window.location.hash = buildTabHash(tab, params)
+    setNav({ tab, params })
   }
 
   return (
@@ -66,20 +64,21 @@ export default function AdminAnalytics() {
           </div>
         </div>
 
-        {/* Abas */}
         <div className="flex flex-wrap gap-2 border-b border-klarim-border">
           {TABS.map((t) => (
-            <button key={t.key} onClick={() => goTab(t.key)} disabled={t.soon}
-              className={`relative -mb-px rounded-t px-4 py-2 text-sm ${tab === t.key ? 'border-b-2 border-klarim-alert font-semibold text-klarim-text' : 'text-klarim-muted hover:text-klarim-text'} ${t.soon ? 'cursor-not-allowed opacity-60' : ''}`}>
+            <button key={t.key} onClick={() => navigate(t.key)}
+              className={`-mb-px rounded-t px-4 py-2 text-sm ${nav.tab === t.key ? 'border-b-2 border-klarim-alert font-semibold text-klarim-text' : 'text-klarim-muted hover:text-klarim-text'}`}>
               {t.label}
-              {t.soon && <span className="ml-1.5 rounded bg-klarim-border px-1.5 py-0.5 text-[10px]">Em breve</span>}
             </button>
           ))}
         </div>
 
-        {tab === 'overview' && <OverviewTab period={period} />}
-        {tab === 'events' && <EventsTab period={period} />}
-        {(tab === 'pages' || tab === 'journeys') && <SoonTab />}
+        {nav.tab === 'overview' && <OverviewTab period={period} />}
+        {nav.tab === 'events' && (
+          <EventsTab key={JSON.stringify(nav.params)} period={period} initialParams={nav.params} />
+        )}
+        {nav.tab === 'pages' && <PagesTab period={period} navigate={navigate} />}
+        {nav.tab === 'journeys' && <JourneysTab period={period} navigate={navigate} />}
       </div>
     </AdminShell>
   )
@@ -89,12 +88,9 @@ export default function AdminAnalytics() {
 // Aba 1 — Visão geral
 // =========================================================================== #
 const METRIC_ORDER = [
-  ['unique_visitors', 'Visitantes únicos', (v) => fmtNum(v)],
-  ['scans_manual', 'Scans realizados', (v) => fmtNum(v)],
-  ['accounts_created', 'Contas criadas', (v) => fmtNum(v)],
-  ['conversion_rate', 'Conversão visitante→conta', (v) => `${v}%`],
-  ['pageviews_per_session', 'Pageviews/sessão', (v) => v],
-  ['alert_click_rate', 'Clique em alertas', (v) => `${v}%`],
+  ['unique_visitors', 'Visitantes únicos'], ['scans_manual', 'Scans realizados'],
+  ['accounts_created', 'Contas criadas'], ['conversion_rate', 'Conversão visitante→conta', '%'],
+  ['pageviews_per_session', 'Pageviews/sessão'], ['alert_click_rate', 'Clique em alertas', '%'],
 ]
 
 function OverviewTab({ period }) {
@@ -105,12 +101,11 @@ function OverviewTab({ period }) {
   )
   if (loading) return <Loading />
   if (error) return <ErrorBox message={error} />
-
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {METRIC_ORDER.map(([key, label, fmt]) => (
-          <MetricCard key={key} label={label} m={data.metrics[key]} fmt={fmt} />
+        {METRIC_ORDER.map(([key, label, suffix]) => (
+          <MetricCard key={key} label={label} m={data.metrics[key]} suffix={suffix} />
         ))}
       </div>
       <Card title="Tendência">
@@ -135,30 +130,29 @@ function OverviewTab({ period }) {
 }
 
 function trendData(trend) {
-  const dates = trend.dates || []
-  return dates.map((date, i) => {
+  return (trend.dates || []).map((date, i) => {
     const row = { date }
     for (const [k, arr] of Object.entries(trend.series || {})) row[k] = arr[i] ?? 0
     return row
   })
 }
 
-function MetricCard({ label, m }) {
+function MetricCard({ label, m, suffix }) {
   const value = m?.value ?? 0
   const spark = (m?.sparkline || []).map((v, i) => ({ i, v }))
   return (
     <div className="rounded-lg border border-klarim-border bg-klarim-surface p-4">
       <p className="text-xs text-klarim-muted">{label}</p>
       <div className="mt-1 flex items-end justify-between gap-2">
-        <span className="text-2xl font-bold">{typeof value === 'number' ? value.toLocaleString('pt-BR') : value}</span>
+        <span className="text-2xl font-bold">
+          {typeof value === 'number' ? value.toLocaleString('pt-BR') : value}{suffix || ''}
+        </span>
         <span className="text-xs">{fmtDelta(m?.change_pct)}</span>
       </div>
       <div style={{ width: '100%', height: 40 }} className="mt-2">
         {spark.length > 1 && (
           <ResponsiveContainer>
-            <LineChart data={spark}>
-              <Line type="monotone" dataKey="v" stroke="#FF6B35" strokeWidth={1.5} dot={false} />
-            </LineChart>
+            <LineChart data={spark}><Line type="monotone" dataKey="v" stroke="#FF6B35" strokeWidth={1.5} dot={false} /></LineChart>
           </ResponsiveContainer>
         )}
       </div>
@@ -217,18 +211,13 @@ const EVENT_TYPES = [
   'page_view', 'profile_view', 'scan_started', 'scan_completed', 'scan_anonymous',
   'code_requested', 'account_created_alert', 'cta_clicked', 'payment_created', 'payment_completed',
 ]
-const EV_COLOR = {
-  page_view: '#8B949E', profile_view: '#2DD4BF', scan_started: '#58A6FF',
-  scan_completed: '#58A6FF', scan_anonymous: '#58A6FF', cta_clicked: '#A855F7',
-  payment_created: '#F0C000', payment_completed: '#00D26A', account_created_alert: '#FF6B35',
-}
 
-function EventsTab({ period }) {
+function EventsTab({ period, initialParams = {} }) {
   const [types, setTypes] = useState([])
   const [domain, setDomain] = useState('')
   const [campaign, setCampaign] = useState('')
-  const [path, setPath] = useState('')
-  const [groupBy, setGroupBy] = useState(false)
+  const [path, setPath] = useState(initialParams.path || '')
+  const [groupBy, setGroupBy] = useState(initialParams.group === 'session')
   const [page, setPage] = useState(1)
   const [limit, setLimit] = useState(50)
   const [data, setData] = useState(null)
@@ -266,9 +255,7 @@ function EventsTab({ period }) {
     if (total > 5000 && !window.confirm(`Exportando ${total} eventos, pode demorar. Continuar?`)) return
     setExporting('Exportando…')
     try {
-      const rows = []
-      const per = 100
-      const pages = Math.min(Math.ceil(total / per), 60) // teto de 6000
+      const rows = []; const per = 100; const pages = Math.min(Math.ceil(total / per), 60)
       for (let pg = 1; pg <= pages; pg++) {
         const d = await admin.aaEvents({ ...filters, page: pg, limit: per })
         rows.push(...(d.events || []))
@@ -281,17 +268,13 @@ function EventsTab({ period }) {
       const a = document.createElement('a')
       a.href = URL.createObjectURL(blob)
       a.download = `eventos_${period}_${new Date().toISOString().slice(0, 10)}.csv`
-      a.click()
-      URL.revokeObjectURL(a.href)
+      a.click(); URL.revokeObjectURL(a.href)
     } finally { setExporting('') }
   }
 
-  const counters = data?.counters
-  const pag = data?.pagination
-
+  const counters = data?.counters; const pag = data?.pagination
   return (
     <div className="space-y-4">
-      {/* Filtros */}
       <Card title="Filtros">
         <div className="flex flex-wrap gap-2">
           {EVENT_TYPES.map((t) => (
@@ -327,23 +310,13 @@ function EventsTab({ period }) {
       </Card>
 
       {loading ? <Loading /> : error ? <ErrorBox message={error} /> :
-        groupBy ? <SessionsView sessions={data.sessions} /> : <EventsTable events={data.events} />}
+        groupBy
+          ? ((data.sessions || []).length ? <div className="space-y-2">{data.sessions.map((s) => <SessionCard key={s.session_id} s={s} />)}</div> : <p className="text-sm text-klarim-muted">Nenhuma sessão.</p>)
+          : <EventsTable events={data.events} />}
 
-      {/* Paginação */}
-      {pag && pag.pages > 1 && (
-        <div className="flex items-center justify-center gap-3 text-sm">
-          <button disabled={page <= 1} onClick={() => setPage((p) => p - 1)}
-            className="rounded border border-klarim-border px-3 py-1 disabled:opacity-40">← Anterior</button>
-          <span className="text-klarim-muted">Página {page} de {pag.pages}</span>
-          <button disabled={page >= pag.pages} onClick={() => setPage((p) => p + 1)}
-            className="rounded border border-klarim-border px-3 py-1 disabled:opacity-40">Próxima →</button>
-          {!groupBy && (
-            <select value={limit} onChange={(e) => setLimit(Number(e.target.value))}
-              className="rounded border border-klarim-border bg-klarim-bg px-2 py-1">
-              {[25, 50, 100].map((n) => <option key={n} value={n}>{n}/pág</option>)}
-            </select>
-          )}
-        </div>
+      {pag && (
+        <PaginationBar page={page} pages={pag.pages} total={pag.total} onPage={setPage}
+          limit={limit} onLimit={groupBy ? undefined : setLimit} />
       )}
     </div>
   )
@@ -355,15 +328,13 @@ function EventsTable({ events }) {
     <div className="overflow-x-auto rounded-lg border border-klarim-border">
       <table className="w-full text-sm">
         <thead className="bg-klarim-surface text-left text-xs text-klarim-muted">
-          <tr>
-            {['Hora', 'Tipo', 'Página', 'Domínio', 'Campanha', 'Sessão'].map((h) =>
-              <th key={h} className="px-3 py-2 font-medium">{h}</th>)}
-          </tr>
+          <tr>{['Hora', 'Tipo', 'Página', 'Domínio', 'Campanha', 'Sessão'].map((h) =>
+            <th key={h} scope="col" className="px-3 py-2 font-medium">{h}</th>)}</tr>
         </thead>
         <tbody>
           {events.map((e) => (
             <tr key={e.id} className="border-t border-klarim-border">
-              <td className="whitespace-nowrap px-3 py-2 text-klarim-muted">{fmtDate(e.created_at)}</td>
+              <td className="whitespace-nowrap px-3 py-2 text-klarim-muted">{fmtDateTime(e.created_at)}</td>
               <td className="px-3 py-2"><Badge color={EV_COLOR[e.event_type] || '#8B949E'}>{e.event_type}</Badge></td>
               <td className="max-w-xs truncate px-3 py-2">{e.page_url || '—'}</td>
               <td className="px-3 py-2 text-klarim-muted">{domainOf(e)}</td>
@@ -384,51 +355,229 @@ function domainOf(e) {
   try { return new URL(raw.startsWith('http') ? raw : `https://${raw}`).hostname.replace(/^www\./, '') } catch { return '—' }
 }
 
-function SessionsView({ sessions }) {
-  if (!sessions || sessions.length === 0) return <p className="text-sm text-klarim-muted">Nenhuma sessão.</p>
-  return (
-    <div className="space-y-2">
-      {sessions.map((s) => <SessionCard key={s.session_id} s={s} />)}
-    </div>
-  )
-}
+// =========================================================================== #
+// Aba 3 — Páginas
+// =========================================================================== #
+const PAGE_COLUMNS = [
+  { key: 'path', label: 'Página', align: 'left' },
+  { key: 'views', label: 'Views', align: 'right' },
+  { key: 'sessions', label: 'Sessões', align: 'right' },
+  { key: 'bounce_rate', label: 'Bounce', align: 'right' },
+  { key: 'next_page', label: 'Próxima', align: 'left', sortable: false },
+  { key: 'conversion', label: 'Conv.', align: 'right' },
+  { key: 'delta_views', label: 'Δ', align: 'right' },
+]
 
-function SessionCard({ s }) {
-  const [open, setOpen] = useState(false)
+function PagesTab({ period, navigate }) {
+  const [sort, setSort] = useState('views')
+  const [order, setOrder] = useState('desc')
+  const [search, setSearch] = useState('')
+  const [grouped, setGrouped] = useState(false)
+  const [page, setPage] = useState(1)
+  const [limit, setLimit] = useState(25)
+  const dSearch = useDebounce(search, 300)
+
+  const { data, loading, error } = useAsync(
+    () => admin.aaPages({ period, ...(dSearch ? { search: dSearch } : {}) }), [period, dSearch])
+
+  useEffect(() => { setPage(1) }, [period, dSearch, sort, order, grouped])
+
+  function onSort(key) {
+    if (sort === key) setOrder((o) => (o === 'asc' ? 'desc' : 'asc'))
+    else { setSort(key); setOrder('desc') }
+  }
+  function rowFor(p) {
+    return (
+      <tr key={p.path} className="cursor-pointer border-t border-klarim-border hover:bg-klarim-bg"
+        onClick={() => navigate('events', { path: p.path })} title={`Ver eventos de ${p.path}`}>
+        <td className="max-w-xs truncate px-3 py-2" title={p.path}>{trunc(p.path)}</td>
+        <td className="px-3 py-2 text-right">{fmtNum(p.views)}</td>
+        <td className="px-3 py-2 text-right text-klarim-muted">{fmtNum(p.sessions)}</td>
+        <td className="px-3 py-2 text-right" style={{ color: bounceColor(p.bounce_rate) }}>{p.bounce_rate}%</td>
+        <td className="max-w-[10rem] truncate px-3 py-2 text-klarim-muted" title={p.next_page || ''}>{trunc(p.next_page || '—', 22)}</td>
+        <td className="px-3 py-2 text-right">{p.conversion > 0 ? <Badge color="#00D26A">{p.conversion}%</Badge> : <span className="text-klarim-muted">0%</span>}</td>
+        <td className="px-3 py-2 text-right"><span style={{ color: deltaMeta(p.delta_views).color }}>{deltaMeta(p.delta_views).text}</span></td>
+      </tr>
+    )
+  }
+
+  if (loading) return <Loading />
+  if (error) return <ErrorBox message={error} />
+  const allPages = sortRows(data.pages || [], sort, order)
+
   return (
-    <div className="rounded-lg border border-klarim-border bg-klarim-surface">
-      <button onClick={() => setOpen((o) => !o)} className="flex w-full items-center justify-between px-4 py-3 text-left">
-        <span className="text-sm">
-          <span className="font-mono text-klarim-muted">#{(s.session_id || '').slice(0, 8)}…</span>
-          <span className="ml-2 text-klarim-muted">{s.event_count} eventos · {secs(s.duration_seconds)}</span>
-        </span>
-        <span>
-          {s.campaign && <Badge color={CAMPAIGN_COLOR[s.campaign] || '#8B949E'}>{s.campaign}</Badge>}
-          <span className="ml-2"><Badge color={s.converted ? '#00D26A' : '#8B949E'}>{s.converted ? 'Converteu' : 'Abandonou'}</Badge></span>
-        </span>
-      </button>
-      {open && (
-        <ul className="border-t border-klarim-border px-4 py-2">
-          {(s.events || []).map((e, i) => (
-            <li key={i} className="flex items-center gap-3 py-1 text-xs">
-              <span className="w-32 shrink-0 text-klarim-muted">{fmtDate(e.created_at)}</span>
-              <Badge color={EV_COLOR[e.event_type] || '#8B949E'}>{e.event_type}</Badge>
-              <span className="truncate text-klarim-muted">{e.page_url || e.domain || e.target_url || ''}</span>
-            </li>
+    <div className="space-y-4">
+      <Card title="Páginas visitadas">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Buscar página…"
+            className="w-64 max-w-full rounded-lg border border-klarim-border bg-klarim-bg px-3 py-2 text-sm text-klarim-text" />
+          <label className="flex items-center gap-2 text-sm text-klarim-muted">
+            <input type="checkbox" checked={grouped} onChange={(e) => setGrouped(e.target.checked)} />
+            Agrupar por tipo
+          </label>
+        </div>
+      </Card>
+
+      {grouped ? (
+        <div className="space-y-2">
+          {(data.groups || []).slice().sort((a, b) => b.total_views - a.total_views).map((g) => (
+            <PageGroup key={g.group} group={g} rows={allPages.filter((p) => p.group === g.group)}
+              columns={PAGE_COLUMNS} sort={sort} order={order} onSort={onSort} rowFor={rowFor} />
           ))}
-        </ul>
+        </div>
+      ) : (
+        <>
+          <SortableTable columns={PAGE_COLUMNS} rows={paginate(allPages, page, limit).slice}
+            sort={sort} order={order} onSort={onSort} renderRow={rowFor} empty="Nenhuma página no período." />
+          <PaginationBar page={page} pages={paginate(allPages, page, limit).pages}
+            total={allPages.length} onPage={setPage} limit={limit} onLimit={setLimit} />
+        </>
       )}
     </div>
   )
 }
 
-function SoonTab() {
+function PageGroup({ group, rows, columns, sort, order, onSort, rowFor }) {
+  const [open, setOpen] = useState(false)
   return (
-    <Card title="Em breve">
-      <p className="text-sm text-klarim-muted">
-        Esta aba (tabela de páginas / jornadas de usuário) chega no próximo lote do KL-83. O
-        backend já está pronto — a visualização será entregue no Prompt 2.
-      </p>
+    <div className="rounded-lg border border-klarim-border bg-klarim-surface">
+      <button onClick={() => setOpen((o) => !o)} aria-expanded={open}
+        className="flex w-full items-center justify-between px-4 py-3 text-left text-sm">
+        <span><span aria-hidden="true">{open ? '▼' : '▶'}</span> <strong>{group.group}</strong></span>
+        <span className="text-klarim-muted">{fmtNum(group.total_views)} views · {fmtNum(group.pages_count)} páginas</span>
+      </button>
+      {open && (
+        <div className="border-t border-klarim-border p-2">
+          <SortableTable columns={columns} rows={rows} sort={sort} order={order} onSort={onSort}
+            renderRow={rowFor} empty="Nenhuma página neste grupo." />
+        </div>
+      )}
+    </div>
+  )
+}
+
+// =========================================================================== #
+// Aba 4 — Jornadas
+// =========================================================================== #
+const SECTOR_COLUMNS = [
+  { key: 'sector', label: 'Setor', align: 'left' },
+  { key: 'alerts_sent', label: 'Alertas', align: 'right' },
+  { key: 'clicks', label: 'Cliques', align: 'right' },
+  { key: 'click_rate', label: 'Taxa', align: 'right' },
+  { key: 'scans', label: 'Scans', align: 'right' },
+  { key: 'accounts', label: 'Contas', align: 'right' },
+]
+
+function JourneysTab({ period, navigate }) {
+  const { data, loading, error } = useAsync(
+    () => Promise.all([admin.aaJourneys(period, 10), admin.aaFunnelBySector(period)])
+      .then(([j, s]) => ({ paths: j.paths || [], sectors: s.sectors || [] })), [period])
+
+  return (
+    <div className="space-y-6">
+      {loading ? <Loading /> : error ? <ErrorBox message={error} /> : (
+        <>
+          <TopJourneys paths={data.paths} />
+          <SectorFunnel sectors={data.sectors} />
+        </>
+      )}
+      <SessionsDrilldown period={period} navigate={navigate} />
+    </div>
+  )
+}
+
+function TopJourneys({ paths }) {
+  const max = Math.max(1, ...paths.map((p) => p.count))
+  return (
+    <Card title="Caminhos mais comuns">
+      {paths.length === 0 ? <p className="text-sm text-klarim-muted">Sem jornadas no período.</p> : (
+        <ol className="space-y-3">
+          {paths.map((p, i) => (
+            <li key={i}>
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="mr-1 text-sm text-klarim-muted">{i + 1}.</span>
+                  {p.sequence.map((step, j) => (
+                    <span key={j} className="flex items-center gap-1.5">
+                      {j > 0 && <span className="text-klarim-muted" aria-hidden="true">→</span>}
+                      <span className="rounded px-2 py-0.5 text-xs"
+                        style={{ background: `${STEP_COLOR[journeyStepKind(step)]}22`, color: STEP_COLOR[journeyStepKind(step)] }}>
+                        {step}
+                      </span>
+                    </span>
+                  ))}
+                </div>
+                <span className="shrink-0 text-sm text-klarim-muted">{fmtNum(p.count)} sessões</span>
+              </div>
+              <div className="mt-1 flex items-center gap-2">
+                <div className="h-1.5 rounded-full bg-klarim-alert/40" style={{ width: `${(p.count / max) * 100}%`, minWidth: 4 }} />
+                <span className="text-xs" style={{ color: p.conversion_rate > 0 ? '#00D26A' : '#8B949E' }}>
+                  ({p.conversion_rate}% conv.)
+                </span>
+              </div>
+            </li>
+          ))}
+        </ol>
+      )}
+    </Card>
+  )
+}
+
+function SectorFunnel({ sectors }) {
+  const [sort, setSort] = useState('click_rate')
+  const [order, setOrder] = useState('desc')
+  const { shown, hidden } = filterSectors(sectors, 20)
+  const rows = sortRows(shown, sort, order)
+  function onSort(key) {
+    if (sort === key) setOrder((o) => (o === 'asc' ? 'desc' : 'asc'))
+    else { setSort(key); setOrder('desc') }
+  }
+  return (
+    <Card title="Conversão por setor">
+      <SortableTable columns={SECTOR_COLUMNS} rows={rows} sort={sort} order={order} onSort={onSort}
+        empty="Nenhum setor com alertas no período."
+        renderRow={(s) => (
+          <tr key={s.sector} className="border-t border-klarim-border">
+            <td className="px-3 py-2">{s.sector}</td>
+            <td className="px-3 py-2 text-right text-klarim-muted">{fmtNum(s.alerts_sent)}</td>
+            <td className="px-3 py-2 text-right">{fmtNum(s.clicks)}</td>
+            <td className="px-3 py-2 text-right font-semibold" style={{ color: clickRateColor(s.click_rate) }}>{s.click_rate}%</td>
+            <td className="px-3 py-2 text-right">{fmtNum(s.scans)}</td>
+            <td className="px-3 py-2 text-right">{fmtNum(s.accounts)}</td>
+          </tr>
+        )} />
+      {hidden > 0 && <p className="mt-2 text-xs text-klarim-muted">e mais {hidden} setor(es) com menos alertas.</p>}
+    </Card>
+  )
+}
+
+function SessionsDrilldown({ period, navigate }) {
+  const [page, setPage] = useState(1)
+  const [data, setData] = useState(null)
+  const [loading, setLoading] = useState(true)
+  useEffect(() => {
+    let alive = true; setLoading(true)
+    admin.aaSessions({ period, page, limit: 10 }).then((d) => { if (alive) { setData(d); setLoading(false) } })
+      .catch(() => { if (alive) setLoading(false) })
+    return () => { alive = false }
+  }, [period, page])
+  useEffect(() => { setPage(1) }, [period])
+  // convertidas primeiro, depois mais recentes
+  const sessions = data ? sortRows([...(data.sessions || [])].map((s, i) => ({ ...s, _i: i })), 'converted', 'desc') : []
+  return (
+    <Card title="Sessões recentes">
+      <div className="mb-2 flex justify-end">
+        <button onClick={() => navigate('events', { group: 'session' })}
+          className="text-sm text-klarim-alert hover:underline">ver todas →</button>
+      </div>
+      {loading ? <Loading /> : sessions.length === 0 ? <p className="text-sm text-klarim-muted">Sem sessões.</p> : (
+        <div className="space-y-2">{sessions.map((s) => <SessionCard key={s.session_id} s={s} />)}</div>
+      )}
+      {data?.pagination && (
+        <div className="mt-3">
+          <PaginationBar page={page} pages={data.pagination.pages} total={data.pagination.total} onPage={setPage} />
+        </div>
+      )}
     </Card>
   )
 }

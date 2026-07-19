@@ -80,10 +80,11 @@ jobs:
           node-version: '22'  # Astro 7 exige Node >= 22.12
           cache: 'npm'
           cache-dependency-path: web/package-lock.json
-      - name: Install & build
+      - name: Install, test & build
         working-directory: web
         run: |
           npm ci
+          npm run test:unit   # KL-83: testes puros do analytics (node --test, sem deps)
           npm run build
 
   # KL-51: valida a config do Nginx (nginx -t) ANTES do deploy. Uma config

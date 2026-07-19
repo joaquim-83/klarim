@@ -457,8 +457,15 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   `AdminAnalytics.jsx` (abas #overview/#events completas + #pages/#journeys "Em breve"):
   6 cards KPI+sparkline (Recharts), gráfico de tendência, funil por campanha com gargalo;
   stream de eventos com filtros combináveis + contadores + toggle "por sessão" + export CSV.
-  2 MCP tools (`get_analytics_metrics` sem sparkline, `get_analytics_funnel`). **Prompt 2**:
-  frontend das abas Páginas/Jornadas (backend já pronto).
+  2 MCP tools (`get_analytics_metrics` sem sparkline, `get_analytics_funnel`).
+  **Prompt 2 ✅** (fecha o KL-83): abas **Páginas** (tabela ordenável 7-col, busca debounce,
+  agrupar-por-tipo colapsável, Δ colorido, click→`#events?path=`) e **Jornadas** (top-10
+  caminhos com breadcrumbs coloridos por tipo de passo, funil por setor ordenável, drill-down de
+  sessões com "ver todas →" `#events?group=session`). Componentes extraídos
+  (`analytics/{SessionCard,SortableTable,PaginationBar}.jsx`) + lógica pura
+  (`lib/admin/analyticsUtils.js`: sort/paginate/journeyStepKind/cores/parse-hash) com **15 testes
+  `node --test`** (sem deps novas; `npm run test:unit` no CI antes do build). Navegação cruzada
+  entre abas via hash. Nenhum "Em breve" restante.
 - **KL-64** — Analytics tracker (pendente)
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
