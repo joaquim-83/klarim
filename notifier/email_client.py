@@ -13,6 +13,7 @@ import hashlib
 import hmac
 import json
 import os
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -145,6 +146,27 @@ def build_unsubscribe_link(email: str, secret: str) -> str:
     return f"{SITE_BASE}/api/unsubscribe?email={quote(email)}&token={unsubscribe_token(email, secret)}"
 
 
+# KL-82 Slice 3 — token do LINK do alerta (Fluxo 2). Formato IDÊNTICO ao
+# `api.main._verify_alert_access_token` (base64(json).hmac[:32], typ='alert_access'), com o
+# MESMO segredo (JWT_SECRET|UNSUBSCRIBE_SECRET) — o contrato é testado em test_kl82_slice3.
+_ALERT_ACCESS_TTL = 30 * 86400
+
+
+def alert_access_token(email: str, target_id: int, domain: str, secret: str) -> str:
+    payload = {"typ": "alert_access", "email": (email or "").lower().strip(),
+               "tid": int(target_id), "domain": (domain or "").lower(),
+               "exp": int(time.time()) + _ALERT_ACCESS_TTL}
+    raw = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode()
+    sig = hmac.new(secret.encode(), raw.encode(), hashlib.sha256).hexdigest()[:32]
+    return f"{raw}.{sig}"
+
+
+def build_alert_access_link(email: str, target_id: int, domain: str, secret: str) -> str:
+    """Link do alerta que abre o resultado COMPLETO (Fluxo 2). `/api/alert-access` valida o
+    token, cria a sessão temporária (cookie 24h) e redireciona ao resultado do site."""
+    return f"{SITE_BASE}/api/alert-access?token={quote(alert_access_token(email, target_id, domain, secret), safe='')}"
+
+
 def list_unsubscribe_headers(unsubscribe_url: Optional[str]) -> Dict[str, str]:
     """Headers RFC 8058 (one-click) para e-mails **proativos** (alerta, profile_view).
     O botão "Cancelar inscrição" do Gmail/Outlook/Apple Mail usa isto; melhora a
@@ -189,7 +211,8 @@ def alert_subject(domain: str, is_score100: bool = False) -> str:
 
 def build_alert_text(domain: str, score: int, unsubscribe_url: Optional[str],
                      is_score100: bool = False, risk_summary: Optional[dict] = None,
-                     benchmark_line: str = "", sector_slug: str = "") -> str:
+                     benchmark_line: str = "", sector_slug: str = "",
+                     result_link: str = "") -> str:
     """Corpo em texto puro do alerta proativo (KL-44 + KL-20).
 
     KL-20: com `risk_summary` (de `reporter.risk_messages.build_risk_summary`) o alerta
@@ -226,8 +249,11 @@ def build_alert_text(domain: str, score: int, unsubscribe_url: Optional[str],
                   f"nota {score}/100 em segurança digital."]
         if benchmark_line:
             lines += ["", benchmark_line]
-    # CTA duplo (KL-20): perfil + página de setor (expõe o ecossistema KL-74).
-    lines += ["", "Veja seu resultado completo:", proactive_profile_link(domain, "alerta")]
+    # CTA duplo (KL-20): resultado completo + página de setor (expõe o ecossistema KL-74).
+    # KL-82 Slice 3: se houver `result_link` (link HMAC do alerta), o CTA primário abre o
+    # resultado COMPLETO do site (Fluxo 2); senão cai no perfil público (retrocompatível).
+    cta = result_link or proactive_profile_link(domain, "alerta")
+    lines += ["", "Veja seu resultado completo:", cta]
     if sector_slug and sector_slug != "outro":
         plural = (risk_summary or {}).get("plural") or "sites"
         lines += ["", f"Compare com o setor de {plural}:",
@@ -584,6 +610,14 @@ class KlarimMailer:
                 unsubscribe_link = build_unsubscribe_link(to_email, secret)
 
         is_100 = score == 100 and (semaphore or "").lower() == "verde"
+        # KL-82 Slice 3 — CTA primário = link HMAC do alerta (abre o resultado completo +
+        # cria a sessão). Só para o alerta normal (não score 100) e se houver segredo e
+        # target_id. Mesmo segredo que o api.main verifica (JWT_SECRET|UNSUBSCRIBE_SECRET).
+        result_link = ""
+        if not is_100 and target_id is not None:
+            secret = os.environ.get("JWT_SECRET", "") or os.environ.get("UNSUBSCRIBE_SECRET", "")
+            if secret:
+                result_link = build_alert_access_link(to_email, target_id, site, secret)
         # PROATIVO (cold) → remetente do domínio de warmup (klarimscan.com), plain text.
         params = {
             "from": self._proactive_from(),
@@ -591,7 +625,7 @@ class KlarimMailer:
             "subject": alert_subject(site, is_100),
             "text": build_alert_text(site, score, unsubscribe_link, is_score100=is_100,
                                      risk_summary=risk_summary, benchmark_line=benchmark_line,
-                                     sector_slug=sector),
+                                     sector_slug=sector, result_link=result_link),
         }
         hdrs = list_unsubscribe_headers(unsubscribe_link)   # RFC 8058 one-click (proativo)
         if hdrs:

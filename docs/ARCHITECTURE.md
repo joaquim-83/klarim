@@ -120,6 +120,11 @@ tráfego) que conduz ao scanner. Camadas:
   banner "confirme seu e-mail"; `confirmed` desbloqueia PDF/checks detalhados. O código de 6 dígitos
   (`/account/verify`) fica como fallback dormente. Cleanup diário (worker `trial`) remove contas
   não confirmadas +30d sem atividade.
+- **Fluxo 2 do alerta (KL-82 Slice 3):** o CTA do e-mail de alerta é um link HMAC
+  (`/api/alert-access?token=`). Clicar prova posse do e-mail → cria uma **sessão temporária**
+  (cookie `klarim_alert`, 24h, escopada a 1 site) → resultado completo daquele site sem conta →
+  `signup-from-alert` converte em conta só com senha (`source='hmac'`). Tabela `alert_sessions`
+  registra o funil (created/converted).
 - **Enriquecimento** (`profiler.py` + `ai_enrichment.py` + `enrichment.py`): crawl
   multi-page → dados comerciais (contatos, JSON-LD, tecnologias, CNPJ) + IA (setor,
   descrição, tags, CNAEs). Best-effort, **fora do caminho síncrono** do scan, **não

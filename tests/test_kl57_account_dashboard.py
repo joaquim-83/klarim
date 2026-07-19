@@ -34,7 +34,7 @@ class FakeStore:
         return True
 
     async def create_user(self, email, password_hash, name=None, role="owner",
-                          email_confirmed=True):
+                          email_confirmed=True, confirmation_source=None):
         email = email.lower().strip()
         if email in self.users:
             return None

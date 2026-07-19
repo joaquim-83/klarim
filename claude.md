@@ -284,7 +284,7 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
 - Alvos: ~25.400 · Scans: ~8.100 · Perfis públicos: ~7.200
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1049+ passed** · MCP tools: **49+**
+- Testes: **1058+ passed** · MCP tools: **49+**
 - Workers: **5/5 ativos** (discovery, alert, scan, vigília, rescan)
 - Planos: 8 contas Pro trial · Vigílias: 35 (30 ok, 5 error)
 - E-mail: `klarimscan.com` verificado, warmup ativo
@@ -413,7 +413,15 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   **3/h & 5/dia por IP** (via `CF-Connecting-IP`). Welcome = transacional `seguranca@klarim.net`
   (NÃO o `alerta@` de warmup — regra de isolamento). Cleanup diário no `trial` worker
   (`delete_unconfirmed_inactive_accounts`: não-confirmada +30d, sem site e sem re-login; FK CASCADE).
-  **Deferido:** Blocos 3+4 (Fluxo 2 do alerta — `_get_alert_session` já cabeado).
+  **Slice 3 ✅** (fecha o KL-82 — Fluxo 2 do alerta): o CTA do e-mail de alerta vira link HMAC
+  `/api/alert-access?token=` (`notifier.email_client.build_alert_access_link`, contrato testado
+  com `api.main._verify_alert_access_token` — mesmo segredo/esquema). O clique cria uma **sessão
+  temporária** (cookie `klarim_alert`, JWT-HMAC 24h, `typ=alert_session`, **escopada a 1 site**)
+  → resultado COMPLETO daquele site sem conta; `/scan/result` valida o escopo (outro domínio →
+  cai p/ anonymous, nunca vaza checks). `POST /account/signup-from-alert` cria conta **só com
+  senha** (e-mail do cookie, `email_confirmed=true` `source='hmac'`, vincula+auto-verifica Tier 1);
+  e-mail já com conta → `{existing_account}`. Tabela `alert_sessions` (funil: created/converted),
+  `contact_email` nunca em claro (só hint mascarado). Frontend: `AlertSignup` no `ScanResultDetail`.
 - **KL-64** — Analytics tracker (pendente)
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos

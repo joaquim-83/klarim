@@ -287,6 +287,22 @@ CREATE TABLE IF NOT EXISTS ownership_verifications (
 CREATE INDEX IF NOT EXISTS idx_ownership_verif_user_target ON ownership_verifications(user_id, target_id);
 CREATE INDEX IF NOT EXISTS idx_ownership_verif_status ON ownership_verifications(status);
 
+-- KL-82 Slice 3 — sessão temporária do alerta (Fluxo 2). Quando o destinatário clica no
+-- link HMAC do alerta, ganha acesso COMPLETO ao resultado daquele site (24h) sem conta.
+-- `token_hash` = SHA-256 do JWT de sessão (o JWT em si nunca é persistido). Registro para
+-- analytics/conversão; a autorização em si é stateless (o cookie JWT).
+CREATE TABLE IF NOT EXISTS alert_sessions (
+    id SERIAL PRIMARY KEY,
+    token_hash VARCHAR(64) NOT NULL,
+    email VARCHAR(255) NOT NULL,
+    target_id INTEGER REFERENCES targets(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    expires_at TIMESTAMPTZ NOT NULL,
+    converted_to_account BOOLEAN DEFAULT false
+);
+CREATE INDEX IF NOT EXISTS idx_alert_sessions_token ON alert_sessions(token_hash);
+CREATE INDEX IF NOT EXISTS idx_alert_sessions_email_target ON alert_sessions(email, target_id);
+
 -- Recuperação de senha: código 6 dígitos, TTL curto, rate-limited (KL-51 f3).
 CREATE TABLE IF NOT EXISTS password_resets (
     id SERIAL PRIMARY KEY,
@@ -1762,14 +1778,17 @@ class TargetStore:
     async def create_user(self, email: str, password_hash: str,
                           name: Optional[str] = None,
                           role: str = "owner",
-                          email_confirmed: bool = True) -> Optional[Dict[str, Any]]:
+                          email_confirmed: bool = True,
+                          confirmation_source: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Cria um usuário. `role`: owner|technician|both (KL-44 P3). `email_confirmed`
         (KL-82 Slice 2): `False` no signup sem código (confirma depois via link); `True`
-        no fluxo legado de código já validado. Retorna o dict do user (sem hash) ou
-        ``None`` se o e-mail já existe (violação da UNIQUE)."""
+        no fluxo legado de código já validado. `confirmation_source` sobrescreve a origem
+        ('hmac' no signup-from-alert, KL-82 Slice 3); default 'code' quando já confirmado.
+        Retorna o dict do user (sem hash) ou ``None`` se o e-mail já existe (viola a UNIQUE)."""
         r = role if role in ("owner", "technician", "both") else "owner"
-        # 'code' se já confirmado na criação (fluxo legado); NULL até confirmar por link.
-        src = "code" if email_confirmed else None
+        # origem: override explícito > 'code' (confirmado na criação) > NULL (confirma por link).
+        src = confirmation_source if confirmation_source is not None else (
+            "code" if email_confirmed else None)
 
         def _fn(cur):
             try:
@@ -1820,6 +1839,21 @@ class TargetStore:
             return len(cur.fetchall())
 
         return await asyncio.to_thread(self._run, _fn)
+
+    async def create_alert_session(self, token_hash: str, email: str, target_id: int,
+                                   expires_at: Any) -> None:
+        """KL-82 Slice 3 — registra a sessão temporária do alerta (best-effort; a
+        autorização real é o cookie JWT). `expires_at` é um datetime tz-aware."""
+        await asyncio.to_thread(self._run, lambda cur: cur.execute(
+            "INSERT INTO alert_sessions (token_hash, email, target_id, expires_at) "
+            "VALUES (%s, %s, %s, %s)",
+            (token_hash, (email or "").lower().strip(), target_id, expires_at)))
+
+    async def mark_alert_session_converted(self, token_hash: str) -> None:
+        """Marca a sessão do alerta como convertida em conta (analytics de funil)."""
+        await asyncio.to_thread(self._run, lambda cur: cur.execute(
+            "UPDATE alert_sessions SET converted_to_account = true WHERE token_hash = %s",
+            (token_hash,)))
 
     async def get_user_by_email(self, email: str, *, with_hash: bool = False
                                 ) -> Optional[Dict[str, Any]]:

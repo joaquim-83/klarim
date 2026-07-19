@@ -52,6 +52,13 @@ Na dúvida, trate o alvo como site de terceiro que só autorizou olhar o que é 
   **link** (`/account/confirm`, token JWT-HMAC 30d, `typ=confirm`, idempotente — nunca logado).
   Reenvio (`/account/resend-confirmation`) 3/h por conta. Contas não confirmadas +30d sem
   atividade (sem site monitorado e sem re-login) são **removidas** pelo worker `trial` (1x/dia).
+- **Sessão do alerta / Fluxo 2 (KL-82 S3):** o link do alerta carrega um token **HMAC-SHA256**
+  (`email|target_id|domain`, 30d) — infalsificável. `/alert-access` valida e emite um cookie
+  `klarim_alert` (JWT-HMAC 24h, `typ=alert_session`, httponly/secure/samesite=lax) **escopado a
+  1 site**: `/scan/result` só dá acesso completo se o domínio pedido bate o da sessão (senão cai
+  p/ anonymous). `signup-from-alert` cria conta só com senha (e-mail do cookie, `source='hmac'`).
+  `contact_email` **nunca em claro** — só hint mascarado. Tokens `typ`-isolados (um alert-access
+  não vale como sessão nem como confirm/scan token). Rate limit: alert-access 30/h, signup 5/h/IP.
 - **Anti stored-XSS no `/events`:** `_sanitize_str`/`_sanitize_metadata` removem tags e
   esquemas (`javascript:`/`data:`), limitam tamanho/profundidade. React escapa `{}` (sem
   `dangerouslySetInnerHTML`).

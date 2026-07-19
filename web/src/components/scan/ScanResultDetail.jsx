@@ -54,6 +54,9 @@ export default function ScanResultDetail({ result, url = '' }) {
       {/* CTA final por nível */}
       {level === 'anonymous' && <SignupInline url={url} />}
       {level === 'unconfirmed' && <ConfirmEmailCTA />}
+      {level === 'alert_session' && result.alert_signup && (
+        <AlertSignup emailHint={result.alert_email_hint} domain={domain} url={url} />
+      )}
 
       <div className="text-center">
         <a href="/" className="inline-flex min-h-[44px] items-center px-1 text-sm text-brand-400 hover:text-brand-300">
@@ -335,6 +338,60 @@ function SignupInline({ url }) {
         </button>
       </form>
       <p className="mt-3 text-xs text-slate-500">Sem cartão. Pesquisas ilimitadas.</p>
+    </div>
+  );
+}
+
+// Fluxo 2 (KL-82 Slice 3): quem chegou pelo link do alerta cria conta só com SENHA (o e-mail
+// vem do cookie HMAC-validado no backend). Sucesso → dashboard; e-mail já com conta → login.
+function AlertSignup({ emailHint, domain, url }) {
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const box = `${card} border-brand-500/30 bg-brand-500/5`;
+
+  async function submit(e) {
+    e.preventDefault();
+    setError('');
+    if (password.length < 8) return setError('A senha precisa ter ao menos 8 caracteres.');
+    setBusy(true);
+    const res = await fetch('/api/account/signup-from-alert', {
+      method: 'POST', credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password }),
+    });
+    const data = await res.json().catch(() => ({}));
+    setBusy(false);
+    if (res.ok && data.existing_account) {
+      window.location.href = `/entrar?redirect=${encodeURIComponent('/dashboard')}`;
+      return;
+    }
+    if (res.ok) {
+      window.klarimTrack?.('account_created_alert', {}, url);
+      window.klarimTrack?.('alert_session_converted', {}, url);
+      window.location.href = `/dashboard?claimed=${encodeURIComponent(domain)}`;
+      return;
+    }
+    setError(data.detail || 'Não foi possível criar a conta.');
+  }
+
+  return (
+    <div className={box}>
+      <h3 className="text-lg font-bold text-white">Monitore {domain} — crie sua conta</h3>
+      <p className="mt-1 text-sm text-slate-300">
+        Seu e-mail{emailHint ? ` (${emailHint})` : ''} já está confirmado. Defina uma senha para
+        acompanhar a evolução do score e receber alertas.
+      </p>
+      {error && <p className="mt-3 text-sm text-red-300">{error}</p>}
+      <form onSubmit={submit} className="mt-4 flex flex-col gap-3 sm:flex-row">
+        <input type="password" required minLength={8} value={password}
+          onChange={(e) => setPassword(e.target.value)} autoComplete="new-password"
+          placeholder="crie uma senha (mín. 8)"
+          className="h-12 w-full rounded-xl border border-slate-700 bg-slate-800/80 px-4 text-base text-white placeholder:text-slate-500 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/30 sm:flex-1" />
+        <button type="submit" disabled={busy} className={`${btn} w-full sm:w-auto`}>
+          {busy ? 'Criando…' : 'Criar conta →'}
+        </button>
+      </form>
     </div>
   );
 }

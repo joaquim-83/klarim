@@ -332,6 +332,8 @@ _RESET_CODE_TTL = 3600
 _signup_attempts: dict = {}
 _signup_daily_attempts: dict = {}   # KL-85: teto diário de criação de conta por IP
 _resend_confirm_attempts: dict = {}  # KL-82 Slice 2: reenvio do link de confirmação
+_alert_access_attempts: dict = {}    # KL-82 Slice 3: cliques no link do alerta por IP
+_signup_alert_attempts: dict = {}    # KL-82 Slice 3: signup via alerta por IP
 _forgot_attempts: dict = {}
 _reset_attempts: dict = {}
 _send_report_attempts: dict = {}
@@ -601,13 +603,16 @@ async def _create_account_record(store, email: str, password_hash: str,
                                  name: Optional[str], url: Optional[str],
                                  role: str = "owner", invite: Optional[str] = None,
                                  plan: Optional[str] = None,
-                                 email_confirmed: bool = True) -> tuple:
+                                 email_confirmed: bool = True,
+                                 confirmation_source: Optional[str] = None) -> tuple:
     """Cria a conta + reivindica o site (KL-68) + histórico + Pro trial + lead + vínculo de
     técnico (KL-44 P3). Retorna ``(user, claim_info)`` — `user` é None se o e-mail já existe.
     `email_confirmed` (KL-82 Slice 2): False no signup sem código (confirma depois por link).
-    Compartilhado pelo signup e pelo /account/verify (fallback de código)."""
+    `confirmation_source` (Slice 3): 'hmac' no signup-from-alert. Compartilhado pelo signup,
+    pelo /account/verify (fallback de código) e pelo signup-from-alert."""
     user = await store.create_user(email, password_hash, name=name, role=role,
-                                   email_confirmed=email_confirmed)
+                                   email_confirmed=email_confirmed,
+                                   confirmation_source=confirmation_source)
     if user is None:
         return None, {}
     # KL-44 P3: vincula convites de técnico pendentes deste e-mail + o convite explícito.
@@ -2678,6 +2683,60 @@ async def _send_welcome_confirmation(user_id: int, email: str) -> None:
         print(f"[signup] falha ao enviar boas-vindas ({email}): {exc!r}", flush=True)
 
 
+# --- KL-82 Slice 3 — Fluxo 2 do alerta: alert-access (link do e-mail) + alert-session ----- #
+_ALERT_ACCESS_TTL = 30 * 86400   # o link do alerta pode ser clicado semanas depois
+_ALERT_SESSION_TTL = 24 * 3600   # a sessão temporária (cookie) vale 24h
+_ALERT_COOKIE = "klarim_alert"   # cookie da sessão do alerta (distinto do klarim_session)
+
+
+def _make_alert_session_token(email: str, target_id: int, domain: str) -> str:
+    """JWT-HMAC da sessão temporária do alerta (base64(json).sig[:32]). `typ='alert_session'`.
+    Escopo: um único site (`tid`/`domain`) por 24h. NÃO dá acesso ao dashboard."""
+    payload = {"typ": "alert_session", "email": (email or "").lower().strip(),
+               "tid": int(target_id), "domain": (domain or "").lower(),
+               "exp": int(time.time()) + _ALERT_SESSION_TTL}
+    raw = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode()
+    sig = hmac.new(_scan_token_secret().encode(), raw.encode(), hashlib.sha256).hexdigest()[:32]
+    return f"{raw}.{sig}"
+
+
+def _verify_token_typed(token: str, expected_typ: str) -> Optional[dict]:
+    """Valida assinatura + expiração + `typ` de um token base64(json).hmac. Genérico."""
+    secret = _scan_token_secret()
+    if not token or not secret:
+        return None
+    try:
+        raw, sig = token.rsplit(".", 1)
+        expected = hmac.new(secret.encode(), raw.encode(), hashlib.sha256).hexdigest()[:32]
+        if not hmac.compare_digest(sig, expected):
+            return None
+        payload = json.loads(base64.urlsafe_b64decode(raw))
+        if payload.get("typ") != expected_typ or int(payload.get("exp", 0)) < int(time.time()):
+            return None
+        return payload
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _verify_alert_access_token(token: str) -> Optional[dict]:
+    """Token do LINK do alerta (e-mail). `typ='alert_access'`, construído por
+    `notifier.email_client.alert_access_token` com o MESMO segredo/esquema (contrato
+    testado). Retorna {email, tid, domain} ou None."""
+    return _verify_token_typed(token, "alert_access")
+
+
+def _verify_alert_session_token(token: str) -> Optional[dict]:
+    return _verify_token_typed(token, "alert_session")
+
+
+async def _get_alert_session(request: Request) -> Optional[dict]:
+    """KL-82 Slice 3 — lê o cookie `klarim_alert` (JWT da sessão do alerta) e valida.
+    Retorna {email, tid, domain} ou None (nível cai para anonymous)."""
+    if request is None:
+        return None
+    return _verify_alert_session_token(request.cookies.get(_ALERT_COOKIE, ""))
+
+
 def _is_admin_request(request: Request) -> bool:
     """True se o request traz um JWT de admin válido (bypass do token de scan)."""
     auth = request.headers.get("authorization", "")
@@ -3266,13 +3325,6 @@ def _filter_scan_result(full: dict, level: str) -> dict:
     return base
 
 
-async def _get_alert_session(request: Request) -> Optional[dict]:
-    """Fluxo 2 do alerta (Bloco 3) — valida o cookie `alert_session` (JWT HMAC, 24h,
-    escopo target_id). Slice 1 ainda não emite o cookie, então retorna None (o nível cai
-    para 'anonymous')."""
-    return None
-
-
 async def _access_level(request: Optional[Request]) -> tuple[str, Optional[dict]]:
     """KL-82 Bloco 5 — nível: anonymous < alert_session < unconfirmed < confirmed.
     `email_confirmed` NULL (conta pré-KL-82) conta como confirmada; só `false` explícito
@@ -3289,7 +3341,7 @@ async def _access_level(request: Optional[Request]) -> tuple[str, Optional[dict]
     if request is not None:
         sess = await _get_alert_session(request)
         if sess:
-            return "alert_session", sess
+            return "alert_session", {"alert_session": sess}
     return "anonymous", None
 
 
@@ -3302,6 +3354,13 @@ async def scan_result(url: str = Query(..., description="URL alvo."),
     por IP; conta autenticada é ilimitada."""
     url = _norm_scan_url(url)
     level, ctx = await _access_level(request)
+
+    # KL-82 Slice 3: a sessão do alerta é ESCOPADA a um único site. Se o domínio pedido
+    # não bate o da sessão, ela não vale aqui → cai para anonymous (não vaza outro site).
+    if level == "alert_session":
+        sess = (ctx or {}).get("alert_session") or {}
+        if _norm_domain(url) != (sess.get("domain") or ""):
+            level, ctx = "anonymous", None
 
     # Rate limit só para anônimo (conta logada = ilimitado). Dois tetos (hora + dia).
     if level == "anonymous" and request is not None:
@@ -3338,7 +3397,88 @@ async def scan_result(url: str = Query(..., description="URL alvo."),
         q = f"url={quote(url, safe='')}"
         full["report_urls"] = {"executive": f"/report/executive?{q}",
                                "technical": f"/report/technical?{q}"}
-    return _filter_scan_result(full, level)
+    result = _filter_scan_result(full, level)
+    # KL-82 Slice 3: na sessão do alerta, oferece criar conta só com senha. O e-mail vem do
+    # cookie (prova de posse); expõe só o HINT mascarado (contact_email nunca em claro).
+    if level == "alert_session":
+        sess = (ctx or {}).get("alert_session") or {}
+        result["alert_signup"] = True
+        result["alert_email_hint"] = _mask_email(sess.get("email") or "")
+    return result
+
+
+def _set_alert_cookie(resp: Response, token: str) -> None:
+    resp.set_cookie(key=_ALERT_COOKIE, value=token, max_age=_ALERT_SESSION_TTL,
+                    httponly=True, secure=True, samesite="lax", path="/")
+
+
+@app.get("/alert-access")
+async def alert_access(token: str = Query(default=""), request: Request = None) -> Response:
+    """KL-82 Slice 3 — handler do LINK do alerta (Fluxo 2). Valida o token HMAC (prova de
+    posse do e-mail), cria a **sessão temporária** (cookie 24h) escopada àquele site e
+    redireciona ao resultado com acesso COMPLETO. Token inválido → home (nunca 5xx)."""
+    if request is not None:
+        allowed, _ = await _redis_allow("alert_access", _client_ip(request), 30, 3600,
+                                        _alert_access_attempts)
+        if not allowed:
+            return RedirectResponse(url="/", status_code=302)
+    payload = _verify_alert_access_token(token)
+    if not payload:
+        return RedirectResponse(url="/", status_code=302)
+    email = (payload.get("email") or "").lower().strip()
+    tid = int(payload.get("tid") or 0)
+    domain = (payload.get("domain") or "").lower()
+    sess_token = _make_alert_session_token(email, tid, domain)
+    # Registro para analytics/conversão (best-effort; a autorização é o cookie).
+    try:
+        token_hash = hashlib.sha256(sess_token.encode()).hexdigest()
+        expires = datetime.now(timezone.utc) + timedelta(seconds=_ALERT_SESSION_TTL)
+        await get_target_store().create_alert_session(token_hash, email, tid, expires)
+    except Exception as exc:  # noqa: BLE001 - registro nunca bloqueia o acesso
+        print(f"[alert-access] create_alert_session falhou tid={tid}: {exc!r}", flush=True)
+    resp = RedirectResponse(url=f"/scan?url={quote('https://' + domain, safe='')}", status_code=302)
+    _set_alert_cookie(resp, sess_token)
+    return resp
+
+
+class SignupFromAlertBody(BaseModel):
+    password: str
+
+
+@app.post("/account/signup-from-alert")
+async def signup_from_alert(body: SignupFromAlertBody, request: Request) -> JSONResponse:
+    """KL-82 Slice 3 — cria conta a partir da sessão do alerta (Fluxo 2): SÓ senha (o e-mail
+    vem do cookie HMAC-validado). Conta nasce **confirmada** (`source='hmac'` — o clique no
+    link é a prova), vincula o site + auto-verifica posse (Tier 1). Login automático."""
+    allowed, retry = await _redis_allow("signup_alert", _client_ip(request), 5, 3600,
+                                        _signup_alert_attempts)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Muitas tentativas. Tente mais tarde.",
+                            headers={"Retry-After": str(retry)})
+    sess = await _get_alert_session(request)
+    if not sess:
+        raise HTTPException(status_code=401, detail="Sessão do alerta inválida ou expirada.")
+    email = (sess.get("email") or "").lower().strip()
+    domain = (sess.get("domain") or "").lower()
+    if len(body.password or "") < _PW_MIN:
+        raise HTTPException(status_code=400, detail="A senha precisa ter ao menos 8 caracteres.")
+    store = get_target_store()
+    if await store.get_user_by_email(email):
+        return JSONResponse({"existing_account": True,
+                             "message": "Este e-mail já tem conta. Faça login."})
+    pw_hash = auth_users.hash_password(body.password)
+    user, claim = await _create_account_record(
+        store, email, pw_hash, None, f"https://{domain}",
+        email_confirmed=True, confirmation_source="hmac")
+    if user is None:
+        return JSONResponse({"existing_account": True,
+                             "message": "Este e-mail já tem conta. Faça login."})
+    try:  # marca a sessão como convertida (analytics de funil)
+        token_hash = hashlib.sha256(request.cookies.get(_ALERT_COOKIE, "").encode()).hexdigest()
+        await store.mark_alert_session_converted(token_hash)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[signup-from-alert] mark_converted falhou: {exc!r}", flush=True)
+    return _account_session_response(user, claim)
 
 
 # --------------------------------------------------------------------------- #
@@ -4832,6 +4972,8 @@ _KNOWN_EVENTS = {
     "card_downloaded", "share_clicked", "ranking_viewed",
     # KL-82 — confiança progressiva: scan anônimo (result-first) vs autenticado
     "scan_anonymous", "scan_authenticated", "signup_inline_clicked",
+    # KL-82 Slice 3 — Fluxo 2 do alerta
+    "alert_session_created", "alert_session_converted", "account_created_alert",
 }
 _EVENT_RL_MAX = 100          # eventos/minuto por sessão
 _event_rl: dict = {}         # session_id -> lista de timestamps (janela de 60s)
