@@ -58,7 +58,7 @@ def test_scan_endpoint_protected():
 
 
 def test_sync_scan_returns_score(client, monkeypatch):
-    async def fake_get_or_scan(url, full=True, ingest_source=None, scanned_by_email=None):
+    async def fake_get_or_scan(url, full=True, ingest_source=None, scanned_by_email=None, force=False):
         assert full is True and ingest_source == "admin"
         return _report()
     monkeypatch.setattr(m, "get_or_scan", fake_get_or_scan)
@@ -70,7 +70,7 @@ def test_sync_scan_returns_score(client, monkeypatch):
 
 
 def test_sync_scan_reports_fail(client, monkeypatch):
-    async def fake_get_or_scan(url, full=True, ingest_source=None, scanned_by_email=None):
+    async def fake_get_or_scan(url, full=True, ingest_source=None, scanned_by_email=None, force=False):
         return _report(score_fail=True)
     monkeypatch.setattr(m, "get_or_scan", fake_get_or_scan)
     r = client.post("/targets/5/scan?sync=1", headers=_auth(client))

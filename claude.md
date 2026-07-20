@@ -322,7 +322,7 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
 - Alvos: ~25.400 · Scans: ~8.100 · Perfis públicos: ~7.200
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1284 passed** (backend pytest) + **67 node --test** (frontend `test:unit`, KL-89: +32)
+- Testes: **1287 passed** (backend pytest) + **67 node --test** (frontend `test:unit`, KL-89: +32)
   · MCP tools: **58+** (KL-75: +3 tecnografia)
 - Workers: **5/5 ativos** (discovery, alert, scan, vigília, rescan)
 - Planos: 8 contas Pro trial · Vigílias: 35 (30 ok, 5 error)
@@ -524,6 +524,17 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   Logado (`SiteDetail` / `/account/sites/{id}`) já entrega o relatório completo (48 checks c/
   evidência, PDF exec+téc, benchmark setorial+ranking, evolução) — sem mudança. `/site/{domain}`
   (KL-74) intacto (só o container mudou).
+  **P0 — resultado instantâneo ✅** (o link do alerta re-escaneava, 60s+ de espera → desistência):
+  `GET /scan/result` agora serve um scan **< 24h** já existente (cache Redis OU banco) na hora, SEM
+  re-escanear — o alerta é enviado DEPOIS do scan, o dado já existe. `get_recent_only(url, full,
+  max_age_minutes=_SCAN_RESULT_MAX_AGE_MIN=1440)` roda antes do scan; `refresh=1` (botão "Atualizar
+  análise") força scan novo (`get_or_scan`/`_safe_scan` ganham `force`). Vale p/ QUALQUER domínio
+  com scan recente (não só alerta). O **rate limit anônimo (5/h + 20/dia) só conta scans REAIS** —
+  servir do cache é grátis. Payload ganha `from_cache`; front mostra "Última análise: {data} ·
+  Atualizar análise →" (ação secundária no `ScoreHero`). **P1 — scanner não trava em 94% ✅:**
+  `ProgressStep` já mostra as 6 categorias avançando (○→⏳→✅, KL-89 fix 6); passados ~25s aparece
+  um aviso de que as últimas verificações consultam serviços externos (reputação/Safe Browsing) e
+  podem demorar — some a impressão de "travou". (Resultado parcial via SSE fica p/ o KL-90.)
 - **KL-83** — Redesign do Analytics admin (Prompt 1 de 2) ✅. Módulo dedicado
   **`api/admin_analytics.py`** (não toca o analytics antigo do KL-21): **8 endpoints**
   `/admin/analytics/{metrics,trend,funnel,events,sessions,pages,journeys,funnel-by-sector}`,

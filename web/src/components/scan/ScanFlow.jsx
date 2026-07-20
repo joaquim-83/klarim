@@ -17,8 +17,11 @@ const TIPS = [
 
 // Resultado sem exigir e-mail (KL-82). credentials:'include' envia o cookie de sessão →
 // conta logada recebe o resultado completo; anônimo recebe o preview (filtrado no backend).
-async function fetchResult(url) {
-  const res = await fetch(`/api/scan/result?url=${encodeURIComponent(url)}`, { credentials: 'include' });
+async function fetchResult(url, refresh = false) {
+  // KL-89 P0: sem refresh, o backend serve o scan < 24h já existente (instantâneo). O botão
+  // "Atualizar análise" manda refresh=1 → força um scan novo (aí sim com o feedback por categoria).
+  const q = `url=${encodeURIComponent(url)}${refresh ? '&refresh=1' : ''}`;
+  const res = await fetch(`/api/scan/result?${q}`, { credentials: 'include' });
   const data = await res.json().catch(() => ({}));
   return { ok: res.ok, status: res.status, data };
 }
@@ -89,9 +92,9 @@ export default function ScanFlow({ url: initialUrl = '', user = null }) {
     );
   }
 
-  async function runScan(attempt = 0) {
+  async function runScan(attempt = 0, refresh = false) {
     try {
-      const { ok, status, data } = await fetchResult(url);
+      const { ok, status, data } = await fetchResult(url, refresh);
       if (status === 429) {
         window.klarimTrack?.('scan_limit_reached', {}, url);
         setLimitMsg(data.detail || 'Limite de pesquisas atingido. Crie uma conta gratuita para pesquisas ilimitadas.');
@@ -101,7 +104,7 @@ export default function ScanFlow({ url: initialUrl = '', user = null }) {
       if (!ok || !data || data.score === undefined || data.score === null) {
         // Scan lento pode estourar o timeout do proxy (504) — o servidor termina e CACHEIA;
         // uma re-tentativa após pausa pega o cache quente.
-        if (attempt < 2) { await new Promise((r) => setTimeout(r, 15000)); return runScan(attempt + 1); }
+        if (attempt < 2) { await new Promise((r) => setTimeout(r, 15000)); return runScan(attempt + 1, refresh); }
         setError('A análise está demorando mais que o esperado. Tente novamente em instantes.');
         setStep('error');
         return;
@@ -114,16 +117,25 @@ export default function ScanFlow({ url: initialUrl = '', user = null }) {
       setCompleting(true);
       setTimeout(() => setStep('result'), 900);
     } catch {
-      if (attempt < 2) { await new Promise((r) => setTimeout(r, 20000)); return runScan(attempt + 1); }
+      if (attempt < 2) { await new Promise((r) => setTimeout(r, 20000)); return runScan(attempt + 1, refresh); }
       setError('A análise está demorando mais que o esperado. Tente novamente em instantes.');
       setStep('error');
     }
   }
 
+  // KL-89 P0: "Atualizar análise" → volta ao progresso e força um scan novo (refresh=1).
+  function refreshScan() {
+    window.klarimTrack?.('scan_refresh', {}, url);
+    setCompleting(false);
+    setResult(null);
+    setStep('progress');
+    runScan(0, true);
+  }
+
   // KL-89: o resultado usa layout de 2 colunas no desktop → preenche o container expandido da
   // página (não fica preso a max-w-3xl). Os demais passos são um card único, centralizado estreito.
   if (step === 'result' && result) {
-    return <ScanResultDetail result={result} url={url} />;
+    return <ScanResultDetail result={result} url={url} onRefresh={refreshScan} />;
   }
   return (
     <div className="mx-auto max-w-2xl">
@@ -138,15 +150,20 @@ export default function ScanFlow({ url: initialUrl = '', user = null }) {
 function ProgressStep({ domain, complete = false }) {
   const [pct, setPct] = useState(4);
   const [tip, setTip] = useState(0);
+  const [elapsed, setElapsed] = useState(0);
   useEffect(() => {
     if (complete) return; // scan terminou → congela a simulação; o pct efetivo vai a 100 abaixo
     const p = setInterval(() => setPct((v) => Math.min(94, v + Math.random() * 6 + 2)), 1400);
     const t = setInterval(() => setTip((i) => (i + 1) % TIPS.length), 5000);
-    return () => { clearInterval(p); clearInterval(t); };
+    const e = setInterval(() => setElapsed((v) => v + 1), 1000);
+    return () => { clearInterval(p); clearInterval(t); clearInterval(e); };
   }, [complete]);
   // KL-89 fix 6: as 6 categorias avançam done/active/pending conforme o % (proxy visual honesto —
   // o backend só devolve o % global). Ao completar, todas fecham em ✅ por ~0,9s antes do resultado.
   const shownPct = complete ? 100 : pct;
+  // KL-89 P1: scan lento não pode parecer travado. Passados ~25s, explica que as últimas
+  // verificações consultam serviços externos (reputação/Safe Browsing) e podem demorar.
+  const slow = !complete && elapsed >= 25;
   return (
     <div className={card}>
       <p className="text-sm text-slate-400">Analisando</p>
@@ -171,6 +188,12 @@ function ProgressStep({ domain, complete = false }) {
           );
         })}
       </ul>
+      {slow && (
+        <p className="mt-4 rounded-xl border border-amber-500/30 bg-amber-500/5 px-4 py-3 text-sm text-amber-200/90">
+          As últimas verificações consultam serviços externos (reputação, Safe Browsing) e podem
+          levar mais alguns segundos. Estamos quase lá — não feche a página.
+        </p>
+      )}
       <p className="mt-6 rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-3 text-sm text-slate-400">💡 {TIPS[tip]}</p>
     </div>
   );

@@ -305,3 +305,43 @@ corte é server-side — quem não pode ver nunca recebe o dado no payload.
 - Frontend: `viewFlags` — `showAllRisks` true p/ todos, `showPrivacy` só `confirmed`, `showEvidence`
   só full. **67 passed.**
 - Build Astro **verde**.
+
+---
+
+# P0 + P1 — Resultado instantâneo + scanner que não trava
+
+### P0 — Link do alerta carregava resultado instantâneo (não re-escaneia)
+
+**Causa:** `GET /scan/result` sempre escaneava; o `get_or_scan` só reusava scan do banco com **<
+60 min**. O alerta é clicado horas/dias depois → miss → re-scan de 60s → desistência (os
+`scan_started` sem `scan_completed`).
+
+**Fix (backend):** `scan_result` agora tenta `get_recent_only(url, full=True,
+max_age_minutes=1440)` **antes** de escanear — serve o scan **< 24h** (cache Redis ou banco) na
+hora. Só roda scan novo se não houver recente **ou** se `refresh=1`. `get_or_scan`/`_safe_scan`
+ganharam `force` (pula cache+banco). O **rate limit anônimo (5/h + 20/dia) só conta scans reais** —
+servir do cache não consome cota. Payload ganha `from_cache`. Vale p/ **qualquer** domínio com scan
+recente (não só alerta) — economiza recursos e entrega na hora.
+
+**Fix (frontend):** `ScanFlow` manda `refresh=1` no botão "Atualizar"; `ScoreHero` mostra "Última
+análise: {data} · **Atualizar análise →**" (ação secundária, `text-xs`, não dominante). O
+"Atualizar" volta ao progresso e força scan novo (aí sim com o feedback por categoria).
+
+**Segurança:** o `refresh=1` passa pelo mesmo rate limit e SSRF guard; nada de novo exposto.
+
+### P1 — Scanner não trava mais em 94%
+
+**A (feedback por categoria):** já entregue no fix 6 — as 6 camadas avançam ○→⏳ *analisando…*→✅
+*concluído* pelo % (proxy honesto; o backend só devolve o % global).
+
+**B (não parecer travado):** passados ~25s, `ProgressStep` mostra um aviso âmbar — "As últimas
+verificações consultam serviços externos (reputação, Safe Browsing) e podem levar mais alguns
+segundos. Estamos quase lá." Elimina a sensação de congelamento. Resultado parcial de verdade (via
+SSE/polling do backend) exige mudança arquitetural e fica para o KL-90.
+
+### Testes/validação (P0/P1)
+- Backend: +3 testes (serve do cache sem re-escanear; `refresh=1` força scan com `force=True`; hit
+  de cache não consome a cota anônima). **1287 passed.**
+- Frontend: **67 passed** · Build Astro **verde**.
+- Impacto esperado: visitante do alerta vê o resultado em **< 1s** (era 60s+); scans reais têm
+  feedback contínuo e reassurance quando serviços externos demoram.

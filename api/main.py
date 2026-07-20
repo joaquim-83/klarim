@@ -3169,6 +3169,10 @@ _ALERT_ACCESS_TTL = 30 * 86400   # o link do alerta pode ser clicado semanas dep
 _ALERT_SESSION_TTL = 24 * 3600   # a sessão temporária (cookie) vale 24h
 _ALERT_COOKIE = "klarim_alert"   # cookie da sessão do alerta (distinto do klarim_session)
 
+# KL-89 P0 — janela do "resultado instantâneo": /scan/result serve um scan já existente com até
+# 24h SEM re-escanear (o alerta é enviado depois do scan; a pesquisa recente também já tem dado).
+_SCAN_RESULT_MAX_AGE_MIN = 24 * 60
+
 
 def _make_alert_session_token(email: str, target_id: int, domain: str) -> str:
     """JWT-HMAC da sessão temporária do alerta (base64(json).sig[:32]). `typ='alert_session'`.
@@ -3825,11 +3829,15 @@ async def _access_level(request: Optional[Request]) -> tuple[str, Optional[dict]
 
 @app.get("/scan/result")
 async def scan_result(url: str = Query(..., description="URL alvo."),
+                      refresh: bool = Query(default=False, description="Força um scan novo."),
                       request: Request = None) -> dict:
-    """KL-82 — resultado do scan SEM exigir e-mail (result-first). Escaneia qualquer site
-    anonimamente e devolve o payload FILTRADO pelo nível de acesso. O scan NÃO adiciona
-    ninguém ao monitoramento (KL-78: scan ≠ monitoramento). Rate limit anônimo: 5/h + 20/dia
-    por IP; conta autenticada é ilimitada."""
+    """KL-82 — resultado do scan SEM exigir e-mail (result-first). Devolve o payload FILTRADO
+    pelo nível de acesso. O scan NÃO adiciona ninguém ao monitoramento (KL-78: scan ≠ monitoramento).
+
+    KL-89 P0 — resultado instantâneo: se já existe um scan < 24h (cache Redis ou banco), carrega
+    na hora SEM re-escanear (o link do alerta é enviado DEPOIS do scan → o resultado já existe).
+    ``refresh=1`` (botão "Atualizar análise") força um scan novo. Rate limit anônimo (5/h + 20/dia
+    por IP) só conta quando um scan REAL é disparado; carregar do cache não consome cota."""
     url = _norm_scan_url(url)
     level, ctx = await _access_level(request)
 
@@ -3840,22 +3848,33 @@ async def scan_result(url: str = Query(..., description="URL alvo."),
         if _norm_domain(url) != (sess.get("domain") or ""):
             level, ctx = "anonymous", None
 
-    # Rate limit só para anônimo (conta logada = ilimitado). Dois tetos (hora + dia).
-    if level == "anonymous" and request is not None:
-        ip = _client_ip(request)
-        ok_h, retry_h = await _redis_allow("scan_anon", ip, 5, 3600, _scan_anon_hour)
-        ok_d, retry_d = await _redis_allow("scan_anon_daily", ip, 20, 86400, _scan_anon_day)
-        if not ok_h or not ok_d:
-            raise HTTPException(status_code=429, detail=(
-                "Limite de pesquisas atingido. Crie uma conta gratuita para pesquisas ilimitadas."),
-                headers={"Retry-After": str(max(retry_h, retry_d))})
-
     scanned_by = None
     if ctx and ctx.get("user"):
         scanned_by = (ctx["user"].get("email") or "").strip() or None
 
-    ingest = "demo" if _is_demo(email=scanned_by, url=url) else "public"
-    report = await _safe_scan(url, full=True, ingest_source=ingest, scanned_by_email=scanned_by)
+    # P0: tenta o resultado recente (< 24h) SEM escanear. Só o refresh explícito pula isto.
+    from_cache = False
+    report = None
+    if not refresh:
+        try:
+            report = await get_recent_only(url, full=True, max_age_minutes=_SCAN_RESULT_MAX_AGE_MIN)
+        except Exception:  # noqa: BLE001 - lookup best-effort; cai no scan novo
+            report = None
+        from_cache = report is not None
+
+    if report is None:
+        # Rate limit anônimo SÓ quando vamos escanear de fato (cache não consome cota).
+        if level == "anonymous" and request is not None:
+            ip = _client_ip(request)
+            ok_h, retry_h = await _redis_allow("scan_anon", ip, 5, 3600, _scan_anon_hour)
+            ok_d, retry_d = await _redis_allow("scan_anon_daily", ip, 20, 86400, _scan_anon_day)
+            if not ok_h or not ok_d:
+                raise HTTPException(status_code=429, detail=(
+                    "Limite de pesquisas atingido. Crie uma conta gratuita para pesquisas ilimitadas."),
+                    headers={"Retry-After": str(max(retry_h, retry_d))})
+        ingest = "demo" if _is_demo(email=scanned_by, url=url) else "public"
+        report = await _safe_scan(url, full=True, ingest_source=ingest,
+                                  scanned_by_email=scanned_by, force=refresh)
 
     sector = None
     try:
@@ -3876,6 +3895,8 @@ async def scan_result(url: str = Query(..., description="URL alvo."),
         full["report_urls"] = {"executive": f"/report/executive?{q}",
                                "technical": f"/report/technical?{q}"}
     result = _filter_scan_result(full, level)
+    # P0: sinaliza ao front se veio do cache/banco (mostra "Última análise: …" + "Atualizar").
+    result["from_cache"] = from_cache
     # KL-82 Slice 3: na sessão do alerta, oferece criar conta só com senha. O e-mail vem do
     # cookie (prova de posse); expõe só o HINT mascarado (contact_email nunca em claro).
     if level == "alert_session":
@@ -7211,7 +7232,7 @@ def _tier_ok(report: ScanReport, full: bool) -> bool:
 
 
 async def get_or_scan(url: str, full: bool = True, ingest_source: Optional[str] = None,
-                      scanned_by_email: Optional[str] = None) -> ScanReport:
+                      scanned_by_email: Optional[str] = None, force: bool = False) -> ScanReport:
     """Retorna o scan do tier reusando o dado mais recente; só escaneia em último caso.
 
     Prioridade (fix — carregamento rápido pelo link do e-mail):
@@ -7220,15 +7241,17 @@ async def get_or_scan(url: str, full: bool = True, ingest_source: Optional[str] 
          **do tier certo** e reaquece o cache, sem reescanear.
       3. **Scan novo** — só se não houver nada recente compatível; se ``ingest_source``,
          grava alvo+scan no Postgres em background (KL-17).
+
+    ``force=True`` (botão "Atualizar análise", KL-89 P0) pula cache+banco e escaneia de novo.
     """
-    if _cache is not None:
+    if not force and _cache is not None:
         cached = await _cache.get(url, full)
         if cached is not None and _tier_ok(cached, full):
             return cached
 
     # 2. Scan recente no banco → reconstrói e reaquece o cache (sem reescanear).
     try:
-        checks = await get_target_store().get_recent_scan_checks(url, 60)
+        checks = None if force else await get_target_store().get_recent_scan_checks(url, 60)
     except Exception as exc:  # noqa: BLE001 - banco opcional; cai no scan novo
         checks = None
         print(f"[get_or_scan] lookup no banco falhou ({exc!r})", flush=True)
@@ -7251,15 +7274,17 @@ async def get_or_scan(url: str, full: bool = True, ingest_source: Optional[str] 
     return report
 
 
-async def get_recent_only(url: str, full: bool = False) -> Optional[ScanReport]:
-    """Retorna um scan RECENTE do tier (cache Redis ou banco < 1h) SEM reescanear.
-    Usado no /scan/summary quando não há token — nunca dispara scan novo (KL-25)."""
+async def get_recent_only(url: str, full: bool = False,
+                          max_age_minutes: int = 60) -> Optional[ScanReport]:
+    """Retorna um scan RECENTE do tier (cache Redis ou banco < ``max_age_minutes``) SEM
+    reescanear. Usado no /scan/summary sem token (KL-25) e no /scan/result (KL-89 P0 — janela
+    de 24h: o resultado do alerta/pesquisa recente carrega instantâneo, sem re-escanear)."""
     if _cache is not None:
         cached = await _cache.get(url, full)
         if cached is not None and _tier_ok(cached, full):
             return cached
     try:
-        checks = await get_target_store().get_recent_scan_checks(url, 60)
+        checks = await get_target_store().get_recent_scan_checks(url, max_age_minutes)
     except Exception:  # noqa: BLE001
         checks = None
     if checks:
@@ -7338,7 +7363,7 @@ def _scan_host_is_safe(hostname: str) -> bool:
 
 
 async def _safe_scan(url: str, full: bool = True, ingest_source: Optional[str] = None,
-                     scanned_by_email: Optional[str] = None):
+                     scanned_by_email: Optional[str] = None, force: bool = False):
     # KL-78 item 8: SSRF guard antes de qualquer fetch — o alvo é sempre controlado pelo
     # usuário. getaddrinfo bloqueia → roda numa thread.
     host = urlparse(_norm_scan_url(url) or "").hostname or ""
@@ -7346,7 +7371,7 @@ async def _safe_scan(url: str, full: bool = True, ingest_source: Optional[str] =
         raise HTTPException(status_code=400,
                             detail="URL aponta para um host interno/privado (bloqueado).")
     try:
-        return await get_or_scan(url, full, ingest_source, scanned_by_email)
+        return await get_or_scan(url, full, ingest_source, scanned_by_email, force=force)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"URL inválida: {exc}") from exc
     except Exception as exc:  # noqa: BLE001

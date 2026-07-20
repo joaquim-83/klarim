@@ -54,6 +54,10 @@ class FakeStore:
     async def get_target_by_url(self, url):
         return self.target
 
+    async def get_recent_scan_checks(self, url, max_age_minutes=60):
+        # Sem scan recente no banco por padrão → o fluxo cai no scan novo (from_cache=False).
+        return None
+
     async def get_site_profile(self, tid):
         return {"public_visible": True}
 
@@ -109,7 +113,7 @@ def store(monkeypatch):
     monkeypatch.setattr(auth_users, "_secret", lambda: "k" * 64)
     monkeypatch.setattr(m, "_email_enabled", lambda: False)
 
-    async def _fake_safe_scan(url, full=True, ingest_source=None, scanned_by_email=None):
+    async def _fake_safe_scan(url, full=True, ingest_source=None, scanned_by_email=None, force=False):
         return _fake_report()
     monkeypatch.setattr(m, "_safe_scan", _fake_safe_scan)
     # rate limit anônimo cai no fallback in-memory — zera entre testes
@@ -263,6 +267,55 @@ def test_scan_result_unconfirmed_user(client, store):
     assert j["access_level"] == "unconfirmed"
     assert j["checks_names_only"] is True
     assert "ev-check_" not in str(j) and "privacy_indicators" not in j
+
+
+def test_scan_result_serves_recent_from_cache_no_rescan(client, store, monkeypatch):
+    # KL-89 P0 — existe scan recente (< 24h) → carrega instantâneo, SEM re-escanear.
+    called = {"scan": False}
+
+    async def _no_scan(*a, **k):
+        called["scan"] = True
+        return _fake_report()
+    monkeypatch.setattr(m, "_safe_scan", _no_scan)
+
+    async def _recent(url, full=False, max_age_minutes=60):
+        assert max_age_minutes == m._SCAN_RESULT_MAX_AGE_MIN  # janela de 24h
+        return _fake_report()
+    monkeypatch.setattr(m, "get_recent_only", _recent)
+
+    j = client.get("/scan/result?url=https://x.com.br").json()
+    assert j["from_cache"] is True
+    assert called["scan"] is False  # NÃO re-escaneou
+
+
+def test_scan_result_refresh_forces_new_scan(client, store, monkeypatch):
+    # KL-89 P0 — refresh=1 (botão "Atualizar análise") pula o cache e força scan novo.
+    seen = {"force": None, "recent_called": False}
+
+    async def _scan(url, full=True, ingest_source=None, scanned_by_email=None, force=False):
+        seen["force"] = force
+        return _fake_report()
+    monkeypatch.setattr(m, "_safe_scan", _scan)
+
+    async def _recent(*a, **k):
+        seen["recent_called"] = True
+        return _fake_report()
+    monkeypatch.setattr(m, "get_recent_only", _recent)
+
+    j = client.get("/scan/result?url=https://x.com.br&refresh=1").json()
+    assert j["from_cache"] is False
+    assert seen["recent_called"] is False  # não consultou o cache (refresh explícito)
+    assert seen["force"] is True           # escaneou com force=True
+
+
+def test_scan_result_cache_hit_skips_anon_rate_limit(client, store, monkeypatch):
+    # KL-89 P0 — servir do cache NÃO consome a cota anônima (5/h). 8 hits do cache = 8x 200.
+    async def _recent(*a, **k):
+        return _fake_report()
+    monkeypatch.setattr(m, "get_recent_only", _recent)
+    for _ in range(8):
+        r = client.get("/scan/result?url=https://x.com.br")
+        assert r.status_code == 200 and r.json()["from_cache"] is True
 
 
 def test_scan_result_anon_rate_limit_5_per_hour(client):

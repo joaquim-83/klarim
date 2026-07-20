@@ -37,7 +37,21 @@ const SEMA = {
   vermelho: { dot: '🔴', ring: 'ring-red-500/40', text: 'text-red-400' },
 };
 
-export default function ScanResultDetail({ result, url = '' }) {
+// Data do último scan (timestamp naive do Postgres → adiciona Z antes do Date, KL-51 parseUTC).
+function fmtScanDate(s) {
+  if (!s) return '';
+  let iso = String(s).trim().replace(' ', 'T');
+  if (!/[zZ]|[+-]\d{2}:?\d{2}$/.test(iso)) iso += 'Z';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const hhmm = d.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+  const now = new Date();
+  return d.toDateString() === now.toDateString()
+    ? `hoje, ${hhmm}`
+    : `${d.toLocaleDateString('pt-BR')} ${hhmm}`;
+}
+
+export default function ScanResultDetail({ result, url = '', onRefresh = null }) {
   const flags = viewFlags(result);
   const domain = result.domain || result.profile_domain || '';
 
@@ -60,7 +74,7 @@ export default function ScanResultDetail({ result, url = '' }) {
 
   return (
     <div className="space-y-6">
-      <ScoreHero result={result} flags={flags} domain={domain} url={url} />
+      <ScoreHero result={result} flags={flags} domain={domain} url={url} onRefresh={onRefresh} />
 
       {/* 2 colunas no desktop (relatório + CTA fixo) — preenche telas largas sem linhas longas.
           No mobile empilha na ordem do card: score → share (no hero) → CTA → detalhes. */}
@@ -81,7 +95,7 @@ export default function ScanResultDetail({ result, url = '' }) {
 }
 
 // --- Score (hero): score + semáforo + frase contextual + share/PDF -------------------------- #
-function ScoreHero({ result, flags, domain, url }) {
+function ScoreHero({ result, flags, domain, url, onRefresh }) {
   const sema = SEMA[result.semaphore] || SEMA.amarelo;
   const [shown, setShown] = useState(0);
   useEffect(() => {
@@ -121,6 +135,22 @@ function ScoreHero({ result, flags, domain, url }) {
       )}
 
       <ShareRow result={result} domain={profileDomain} flags={flags} url={url} />
+
+      {/* KL-89 P0: data do último scan + "Atualizar" (ação secundária, não dominante). */}
+      {result.scan_date && fmtScanDate(result.scan_date) && (
+        <p className="mt-4 text-xs text-slate-500">
+          Última análise: {fmtScanDate(result.scan_date)}
+          {onRefresh && (
+            <>
+              {' · '}
+              <button type="button" onClick={onRefresh}
+                className="text-brand-400 underline-offset-2 hover:text-brand-300 hover:underline">
+                Atualizar análise →
+              </button>
+            </>
+          )}
+        </p>
+      )}
     </div>
   );
 }

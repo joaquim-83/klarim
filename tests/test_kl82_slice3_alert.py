@@ -143,7 +143,7 @@ def store(monkeypatch):
     monkeypatch.setattr(m, "_email_enabled", lambda: False)
     monkeypatch.setattr(m, "_spawn", lambda coro: coro.close())
 
-    async def _fake_safe_scan(url, full=True, ingest_source=None, scanned_by_email=None):
+    async def _fake_safe_scan(url, full=True, ingest_source=None, scanned_by_email=None, force=False):
         return _fake_report()
     monkeypatch.setattr(m, "_safe_scan", _fake_safe_scan)
     # KL-68 guard de domínio: x.com.br não é público/institucional → (blocked, reason)
