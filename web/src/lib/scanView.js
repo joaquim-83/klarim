@@ -106,16 +106,17 @@ export function viewFlags(result) {
     showShare: true,
     showPdf: true, // PDF é público com o paywall desligado (default) → disponível em todo nível
     showCTA: !hasAccount(level), // some para quem já tem conta
-    // Benchmark é PÚBLICO (contextualiza o score, dado agregado nacional já exposto em
-    // /estatisticas e /setores) → visível em TODO nível, SEM cadeado, desktop e mobile (KL-89 fix 5).
+    // Benchmark é PÚBLICO (agregado nacional já exposto em /estatisticas e /setores) → visível
+    // em TODO nível, sem cadeado, desktop e mobile.
     showBenchmark: true,
-    showAllRisks: full,
-    // Categorias: barras (anônimo) < resumo com números (unconfirmed) < accordion com evidência (full).
-    categoriesMode: level === 'anonymous' ? 'bars' : full ? 'full' : 'summary',
+    // TODOS os riscos para TODOS os níveis — riscos (linguagem de negócio) são o que converte.
+    showAllRisks: true,
+    // Evidência técnica / impacto / correção dos checks → só ACESSO COMPLETO (confirmed|alert_session).
+    // Anônimo e não-confirmado veem os checks por nome/status (barras + accordion), SEM evidência.
     showEvidence: full,
-    // Indicadores de privacidade/LGPD: restritos a acesso COMPLETO (confirmed/alert_session).
-    // Travados p/ anonymous E unconfirmed em desktop E mobile — deriva só do nível (KL-89 fix 2).
-    showPrivacy: full,
+    // Indicadores de privacidade/LGPD → SÓ conta CONFIRMADA. Anônimo, não-confirmado e o visitante
+    // do link do alerta veem apenas o título travado (desktop E mobile — deriva só do nível).
+    showPrivacy: level === 'confirmed',
   };
 }
 

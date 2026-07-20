@@ -106,56 +106,59 @@ test('ctaCopy: orgânico sem domínio → "este site"', () => {
   assert.equal(ctaCopy(false, '').title, 'Monitore este site gratuitamente')
 })
 
-// --- tabela de visibilidade (KL-89 item 2 + fixes 2/5) --------------------------------------- #
-test('viewFlags: anonymous mostra CTA/barras/benchmark; trava LGPD e evidência', () => {
+// --- tabela de visibilidade (KL-89 correção urgente) ----------------------------------------- #
+// Regra: só LGPD tem cadeado (e só p/ quem não é conta confirmada). Todo o resto — score, share,
+// benchmark, TODOS os riscos, barras+checks — é aberto. Evidência técnica só no acesso completo.
+test('viewFlags: anonymous — CTA, benchmark, TODOS os riscos, checks sem evidência; LGPD travado', () => {
   const f = viewFlags({ access_level: 'anonymous' })
   assert.equal(f.showCTA, true)
   assert.equal(f.showShare, true)
   assert.equal(f.showPdf, true)
-  assert.equal(f.showBenchmark, true)   // fix 5: benchmark é público (sem cadeado)
-  assert.equal(f.showAllRisks, false)
-  assert.equal(f.categoriesMode, 'bars')
-  assert.equal(f.showEvidence, false)
-  assert.equal(f.showPrivacy, false)    // fix 2: LGPD travado p/ anônimo (desktop E mobile)
+  assert.equal(f.showBenchmark, true)
+  assert.equal(f.showAllRisks, true)    // correção: TODOS os riscos (sem gate)
+  assert.equal(f.showEvidence, false)   // evidência só no acesso completo
+  assert.equal(f.showPrivacy, false)    // LGPD travado
 })
 
-test('viewFlags: unconfirmed some com o CTA de criar conta, tem benchmark, mas não LGPD', () => {
+test('viewFlags: unconfirmed — igual ao anônimo p/ conteúdo, sem CTA de conta', () => {
   const f = viewFlags({ access_level: 'unconfirmed' })
   assert.equal(f.showCTA, false)
   assert.equal(f.showBenchmark, true)
-  assert.equal(f.categoriesMode, 'summary')
-  assert.equal(f.showAllRisks, false)
-  assert.equal(f.showPrivacy, false)    // fix 2: LGPD travado p/ não confirmado também
+  assert.equal(f.showAllRisks, true)
+  assert.equal(f.showEvidence, false)
+  assert.equal(f.showPrivacy, false)    // LGPD travado até confirmar o e-mail
 })
 
-test('viewFlags: confirmed vê tudo e sem CTA de conta', () => {
+test('viewFlags: confirmed vê tudo (evidência + LGPD) e sem CTA de conta', () => {
   const f = viewFlags({ access_level: 'confirmed' })
   assert.equal(f.showCTA, false)
   assert.equal(f.full, true)
   assert.equal(f.showAllRisks, true)
-  assert.equal(f.categoriesMode, 'full')
   assert.equal(f.showEvidence, true)
   assert.equal(f.showPrivacy, true)
 })
 
-test('viewFlags: alert_session vê tudo (full) E ainda mostra o CTA (não tem conta)', () => {
+test('viewFlags: alert_session vê evidência + CTA, mas LGPD travado (não é conta)', () => {
   const f = viewFlags({ access_level: 'alert_session' })
   assert.equal(f.alertVisitor, true)
   assert.equal(f.full, true)
   assert.equal(f.showCTA, true)
   assert.equal(f.showAllRisks, true)
-  assert.equal(f.categoriesMode, 'full')
-  assert.equal(f.showPrivacy, true)
+  assert.equal(f.showEvidence, true)
+  assert.equal(f.showPrivacy, false)    // correção Problema 2: link do email = 🔒 LGPD
 })
 
-test('viewFlags: benchmark PÚBLICO em TODOS os níveis (fix 5) e LGPD só no acesso completo (fix 2)', () => {
+test('viewFlags: benchmark + TODOS os riscos PÚBLICOS em todo nível; LGPD só p/ conta confirmada', () => {
   for (const lvl of ['anonymous', 'unconfirmed', 'confirmed', 'alert_session']) {
-    assert.equal(viewFlags({ access_level: lvl }).showBenchmark, true, `benchmark visível em ${lvl}`)
+    const f = viewFlags({ access_level: lvl })
+    assert.equal(f.showBenchmark, true, `benchmark visível em ${lvl}`)
+    assert.equal(f.showAllRisks, true, `todos os riscos em ${lvl}`)
   }
+  // LGPD aberto SÓ no confirmed
   assert.equal(viewFlags({ access_level: 'anonymous' }).showPrivacy, false)
   assert.equal(viewFlags({ access_level: 'unconfirmed' }).showPrivacy, false)
+  assert.equal(viewFlags({ access_level: 'alert_session' }).showPrivacy, false)
   assert.equal(viewFlags({ access_level: 'confirmed' }).showPrivacy, true)
-  assert.equal(viewFlags({ access_level: 'alert_session' }).showPrivacy, true)
 })
 
 test('viewFlags: passwordOnly só no alerta (orgânico pede e-mail+senha)', () => {

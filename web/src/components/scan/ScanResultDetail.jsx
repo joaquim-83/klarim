@@ -45,7 +45,7 @@ export default function ScanResultDetail({ result, url = '' }) {
   // → benchmark (contextualiza o score) → detalhes técnicos → indicadores de privacidade.
   const details = (
     <div className="space-y-6">
-      <RisksSection result={result} flags={flags} url={url} />
+      <RisksSection result={result} />
       <BenchmarkSection result={result} />
       <CategoriesSection result={result} flags={flags} />
       <PrivacySection result={result} flags={flags} url={url} />
@@ -337,14 +337,10 @@ function BenchmarkSection({ result }) {
   );
 }
 
-// --- Riscos (linguagem de negócio, KL-20) ---------------------------------------------------- #
-function RisksSection({ result, flags, url }) {
-  const risks = flags.showAllRisks
-    ? (result.risk_summary?.risks || [])
-    : (result.risks_preview || []);
-  const total = result.risks_total ?? risks.length;
-  if (!risks.length && !total) return null;
-  const hidden = Math.max(0, total - risks.length);
+// --- Riscos (linguagem de negócio, KL-20) — TODOS os riscos p/ TODOS (sem gate) --------------- #
+function RisksSection({ result }) {
+  const risks = result.risk_summary?.risks || result.risks_preview || [];
+  if (!risks.length) return null;
   return (
     <div className={card}>
       <h2 className="text-lg font-bold text-white">Riscos para o negócio</h2>
@@ -359,96 +355,72 @@ function RisksSection({ result, flags, url }) {
           </li>
         ))}
       </ul>
-      {hidden > 0 && (
-        // Gate explícito (não cadeado vazio): diz quantos faltam e como ver — KL-89 regra 9.
-        <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-3 text-sm text-slate-400">
-          🔒 Mais {hidden} risco(s) identificado(s).
-          <a href={`/cadastrar${url ? `?url=${encodeURIComponent(url)}` : ''}`}
-            className="ml-1 text-brand-400 hover:text-brand-300">Crie conta para ver todos.</a>
+    </div>
+  );
+}
+
+// --- Categorias: barras de proporção + accordion de checks (todos os níveis) ------------------ #
+// Evidência técnica só aparece no acesso completo (`flags.showEvidence`); sem ela, o check mostra
+// só nome/status. As barras (proporção PASS/FAIL) dão a visão rápida; o accordion, o detalhe.
+function CategoriesSection({ result, flags }) {
+  const categories = result.categories || [];
+  const checks = result.checks || [];
+  if (!categories.length) return null;
+  return (
+    <div className={card}>
+      <h2 className="text-lg font-bold text-white">Detalhes da análise</h2>
+
+      {/* Barras de proporção por categoria (visão rápida) */}
+      <div className="mt-4 space-y-2.5">
+        {categories.map((cat) => (
+          <div key={cat.name} className="flex items-center gap-3">
+            <span className="w-32 shrink-0 truncate text-sm text-slate-300 sm:w-44">{cat.name}</span>
+            <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-slate-800">
+              <div className="h-full rounded-full bg-brand-500" style={{ width: `${Math.round((cat.pass_ratio || 0) * 100)}%` }} />
+            </div>
+            <span className="w-10 shrink-0 text-right text-xs text-slate-400">{cat.pass_count}/{cat.total}</span>
+          </div>
+        ))}
+      </div>
+
+      {/* Checks detalhados por categoria (expandíveis; evidência só no acesso completo) */}
+      {checks.length > 0 && (
+        <div className="mt-6 space-y-3">
+          {categories.map((cat) => {
+            const list = checks.filter((c) => c.category === cat.name);
+            if (!list.length) return null;
+            return (
+              <details key={cat.name} open={cat.has_high_fails}>
+                <summary className="flex min-h-[44px] cursor-pointer items-center justify-between rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-3">
+                  <span className="font-semibold text-white">{cat.name}</span>
+                  <span className={cat.fail_count > 0 ? 'text-red-400' : 'text-emerald-400'}>
+                    {cat.pass_count}/{cat.total} {cat.fail_count > 0 ? '⚠️' : '✅'}
+                  </span>
+                </summary>
+                <ul className="mt-2 space-y-1.5 pl-4">
+                  {list.map((c) => <CheckRow key={c.check_id} check={c} showEvidence={flags.showEvidence} />)}
+                </ul>
+              </details>
+            );
+          })}
         </div>
+      )}
+
+      {!flags.showEvidence && (
+        <p className="mt-4 text-sm text-slate-400">
+          Crie uma conta gratuita para ver a evidência técnica e como corrigir cada verificação.
+        </p>
       )}
     </div>
   );
 }
 
-// --- Categorias: barras (anon) / resumo (unconfirmed) / accordion+evidência (full) ----------- #
-function CategoriesSection({ result, flags }) {
-  if (flags.categoriesMode === 'bars') return <CategoryBars categories={result.categories_preview || []} />;
-  if (flags.categoriesMode === 'summary') return <CategoriesSummary categories={result.categories || []} />;
-  return <CategoriesFull categories={result.categories || []} checks={result.checks || []} />;
-}
-
-function CategoryBars({ categories }) {
-  return (
-    <div className={card}>
-      <h2 className="text-lg font-bold text-white">📋 Detalhes da análise</h2>
-      <div className="mt-4 space-y-3">
-        {categories.map((cat) => (
-          <div key={cat.name} className="flex items-center gap-3">
-            <span className="w-36 shrink-0 truncate text-sm text-slate-300 sm:w-44">{cat.name}</span>
-            <div className="h-3 flex-1 overflow-hidden rounded-full bg-slate-800">
-              <div className="h-full rounded-full bg-brand-500" style={{ width: `${Math.round((cat.pass_ratio || 0) * 100)}%` }} />
-            </div>
-          </div>
-        ))}
-      </div>
-      <p className="mt-4 text-sm text-slate-400">48 verificações realizadas — crie conta para ver cada uma.</p>
-    </div>
-  );
-}
-
-function CategoriesSummary({ categories }) {
-  return (
-    <div className={card}>
-      <h2 className="text-lg font-bold text-white">📋 Detalhes da análise</h2>
-      <div className="mt-4 space-y-2">
-        {categories.map((cat) => (
-          <div key={cat.name} className="flex items-center justify-between rounded-xl border border-slate-800 bg-slate-900/60 px-4 py-3">
-            <span className="text-sm font-medium text-slate-200">{cat.name}</span>
-            <span className={cat.fail_count > 0 ? 'text-red-400' : 'text-emerald-400'}>
-              {cat.pass_count}/{cat.total} {cat.fail_count > 0 ? '⚠️' : '✅'}
-            </span>
-          </div>
-        ))}
-      </div>
-      <p className="mt-4 text-sm text-slate-400">
-        Confirme seu e-mail para ver o detalhe de cada verificação e baixar o relatório em PDF.
-      </p>
-    </div>
-  );
-}
-
-function CategoriesFull({ categories, checks }) {
-  return (
-    <div className={card}>
-      <h2 className="text-lg font-bold text-white">Detalhes da análise</h2>
-      <div className="mt-4 space-y-3">
-        {categories.map((cat) => {
-          const list = checks.filter((c) => c.category === cat.name);
-          return (
-            <details key={cat.name} open={cat.has_high_fails}>
-              <summary className="flex min-h-[44px] cursor-pointer items-center justify-between rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-3">
-                <span className="font-semibold text-white">{cat.name}</span>
-                <span className={cat.fail_count > 0 ? 'text-red-400' : 'text-emerald-400'}>
-                  {cat.pass_count}/{cat.total} {cat.fail_count > 0 ? '⚠️' : '✅'}
-                </span>
-              </summary>
-              <ul className="mt-2 space-y-1.5 pl-4">
-                {list.map((c) => <CheckRow key={c.check_id} check={c} />)}
-              </ul>
-            </details>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
-function CheckRow({ check }) {
+function CheckRow({ check, showEvidence }) {
   const [open, setOpen] = useState(false);
   const isFail = check.status === 'FAIL';
   const icon = isFail ? '❌' : check.status === 'PASS' ? '✅' : check.status === 'locked' ? '🔒' : '⚪';
-  const canExpand = isFail && (check.evidence || check.impact || check.fix);
+  // Só expande se há ACESSO à evidência E o check de fato traz detalhe (backend só envia no full).
+  const canExpand = isFail && showEvidence && (check.evidence || check.impact || check.fix);
   return (
     <li className="text-sm">
       <div className={`flex items-start gap-2 ${canExpand ? 'cursor-pointer' : ''}`} onClick={() => canExpand && setOpen((o) => !o)}>

@@ -3754,8 +3754,15 @@ def _full_scan_result(report: ScanReport, url: str, sector: Optional[str] = None
 
 
 def _filter_scan_result(full: dict, level: str) -> dict:
-    """KL-82 Bloco 5 — corta o resultado por nível de acesso. NUNCA vaza evidência/impacto/
-    detalhe de check para anonymous/unconfirmed (filtro server-side, não blur cosmético)."""
+    """KL-82 Bloco 5 + KL-89 correção — corta o resultado por nível de acesso.
+
+    Tabela de visibilidade (mostrar VALOR antes de pedir conta — riscos convertem):
+      · Score/semáforo, compartilhar, benchmark (agregado público), TODOS os riscos, categorias
+        com contagens e checks (nome/status por categoria) → **todos os níveis**.
+      · Evidência técnica / impacto / correção dos checks → só ACESSO COMPLETO (confirmed|alert_session).
+      · Indicadores de privacidade/LGPD → só conta **confirmada** (anônimo, não-confirmado e o
+        visitante do link do alerta veem apenas o título travado).
+    O corte é server-side: quem não pode ver evidência/LGPD nunca recebe o dado (não é blur)."""
     base = {
         "access_level": level,
         "score": full["score"], "semaphore": full["semaphore"],
@@ -3764,48 +3771,35 @@ def _filter_scan_result(full: dict, level: str) -> dict:
         "total_checks": full["total_checks"],
         "has_profile": full.get("has_profile", False),
         "profile_domain": full.get("profile_domain"),
+        # Benchmark: agregado nacional público (já exposto em /estatisticas e /setores) — todos.
+        "benchmark": full.get("benchmark"),
     }
     risks = (full.get("risk_summary") or {}).get("risks", [])
+    # TODOS os riscos para TODOS os níveis (linguagem de negócio = conteúdo que converte).
+    base["risk_summary"] = {"risks": risks,
+                            "remaining_count": (full.get("risk_summary") or {}).get("remaining_count", 0)}
+    base["risks_total"] = len(risks)
+    # Categorias com contagens (barras de proporção + accordion) — todos os níveis.
+    base["categories"] = [{"name": c["name"], "pass_count": c["pass_count"],
+                           "fail_count": c["fail_count"], "total": c["total"],
+                           "pass_ratio": c["pass_ratio"], "has_high_fails": c["has_high_fails"]}
+                          for c in full["categories"]]
 
-    if level == "anonymous":
-        base["categories_preview"] = [{"name": c["name"], "pass_ratio": c["pass_ratio"]}
-                                      for c in full["categories"]]
-        base["risks_preview"] = risks[:1]
-        base["risks_total"] = len(risks)
-        # KL-89 fix 5: o benchmark é PÚBLICO (média nacional agregada + contagem, já exposta em
-        # /estatisticas e /setores) — contextualiza o score e é liberado até no anônimo. Nenhum
-        # dado por-site ou PII vaza aqui.
-        base["benchmark"] = full.get("benchmark")
-        base["checks_locked"] = True
-        return base
-
-    if level == "unconfirmed":
-        base["benchmark"] = full.get("benchmark")
-        base["risks_preview"] = risks[:2]
-        base["risks_total"] = len(risks)
-        base["categories"] = [{"name": c["name"], "pass_count": c["pass_count"],
-                               "fail_count": c["fail_count"], "total": c["total"],
-                               "pass_ratio": c["pass_ratio"], "has_high_fails": c["has_high_fails"]}
-                              for c in full["categories"]]
-        # Nomes dos checks SEM evidência/impacto/correção (só existência).
+    full_access = level in ("confirmed", "alert_session")
+    if full_access:
+        # Checks COMPLETOS (com evidência/impacto/correção) + PDF do backend.
+        base["checks"] = full["checks"]
+        base["pdf_available"] = True
+        base["report_urls"] = full.get("report_urls")
+        # LGPD só para conta CONFIRMADA (o link do alerta NÃO é conta).
+        if level == "confirmed":
+            base["privacy_indicators"] = full.get("privacy")
+    else:
+        # anonymous + unconfirmed: checks SÓ nome/status/categoria (SEM evidência técnica).
         base["checks_names_only"] = True
         base["checks"] = [{"check_id": c["check_id"], "name": c["name"],
                            "status": c["status"], "category": c["category"]}
                           for c in full["checks"]]
-        base["pdf_locked"] = True
-        return base
-
-    # confirmed | alert_session — acesso total àquele resultado.
-    base.update({
-        "benchmark": full.get("benchmark"),
-        "risk_summary": full.get("risk_summary"),
-        "risks_total": len(risks),
-        "categories": full["categories"],
-        "checks": full["checks"],
-        "privacy_indicators": full.get("privacy"),
-        "pdf_available": True,
-        "report_urls": full.get("report_urls"),
-    })
     return base
 
 

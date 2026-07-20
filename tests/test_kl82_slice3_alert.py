@@ -220,13 +220,15 @@ def test_scan_result_alert_session_full_access(store):
 
 
 def test_scan_result_alert_session_scoped_to_target(store):
-    # a sessão é do x.com.br; pedir OUTRO site → cai para anonymous (não vaza checks)
+    # a sessão é do x.com.br; pedir OUTRO site → cai para anonymous (escopo respeitado).
+    # KL-89: o anônimo agora vê checks por NOME, mas NUNCA evidência técnica nem LGPD do outro site.
     c = _cookie_client(store)
     store.target = {"id": 99, "domain": "outro.com.br", "url": "https://outro.com.br",
                     "status": "descoberto", "sector": "outro"}
     j = c.get("/scan/result?url=https://outro.com.br").json()
     assert j["access_level"] == "anonymous"
-    assert "checks" not in j and "ev-check_" not in str(j)
+    assert j["checks_names_only"] is True
+    assert "ev-check_" not in str(j) and "privacy_indicators" not in j
 
 
 # --------------------------------------------------------------------------- #

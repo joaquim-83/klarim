@@ -485,12 +485,18 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   termos/privacidade/sobre. `index` (hero KL-81) e `confirmar` seguem centralizados estreitos
   **de propósito**. **(2) Desktop == mobile**: a "tabela de visibilidade" virou flags puras em
   **`web/src/lib/scanView.js`** (`viewFlags`) — derivam SÓ do nível, NUNCA do dispositivo; acabou
-  o "desktop mostra tudo / mobile esconde". Níveis: `anonymous` (barras de categoria, 1 risco,
-  benchmark/LGPD/evidência travados, CTA) < `unconfirmed` (resumo+números, benchmark, 2 riscos,
-  confirmar e-mail) < `confirmed`/`alert_session` (accordion+evidência, todos os riscos, LGPD, PDF
-  do backend). **(3) Primeira tela reorganizada** (`ScanResultDetail.jsx`): score+semáforo → frase
+  o "desktop mostra tudo / mobile esconde". **Tabela de visibilidade FINAL (correção urgente —
+  mostrar VALOR antes de pedir conta):** só **LGPD** tem cadeado (e só p/ quem não é conta
+  confirmada). Score/semáforo, compartilhar+PDF, **benchmark**, **TODOS os riscos** (linguagem de
+  negócio = o que converte), barras de categoria e **checks detalhados** são abertos em TODO nível;
+  a **evidência técnica** dos checks só no acesso completo (`confirmed`/`alert_session`); **LGPD só
+  na conta `confirmed`** (anônimo, não-confirmado E o visitante do link do alerta veem só o título
+  🔒). O corte é server-side (`api/main.py::_filter_scan_result`): quem não pode ver
+  evidência/LGPD nunca recebe o dado. Segurança: nome+PASS/FAIL de check é padrão de scanner
+  passivo público (SSL Labs/Observatory) e coerente com "pesquise qualquer site" (KL-81); só a
+  evidência exploit-útil e a LGPD ficam gated. **(3) Primeira tela reorganizada** (`ScanResultDetail.jsx`): score+semáforo → frase
   contextual → **compartilhar + PDF na MESMA linha** (WhatsApp/LinkedIn/Copiar/📄PDF) → **CTA de
-  conta acima do fold** → barras/1 risco → (abaixo) checks/LGPD. Layout 2 colunas no `lg`
+  conta acima do fold** → riscos → benchmark → barras+checks → (abaixo) LGPD. Layout 2 colunas no `lg`
   (relatório 2/3 + CTA `sticky` 1/3) que empilha no mobile na ordem acima (mesmo conteúdo). O CTA
   **some** para quem já tem conta (`unconfirmed`→confirme e-mail; `confirmed`→"+monitorar"). PDF é
   público (paywall off) → `reportUrls` monta a URL no front, disponível em TODO nível.
@@ -508,6 +514,16 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   anônimo; não é PII); (6) **scanner com progresso real por categoria** (`SCAN_CATEGORIES` +
   `getCategoryStatus` puros: as 6 camadas avançam ○→⏳→✅ pelo % global, com beat de 100% antes do
   resultado). +6 testes.
+  **Correção urgente de conversão ✅** (as correções acima tinham travado demais o resultado):
+  agora a regra é **mostrar valor antes de pedir conta**. `_filter_scan_result` reescrito — TODOS
+  os riscos + categorias com contagem + checks por nome/status vão para **todos** os níveis;
+  evidência técnica só no acesso completo; **LGPD só na conta `confirmed`** (`alert_session` = link
+  do email = 🔒). `viewFlags`: `showAllRisks=true` p/ todos, `showEvidence=full`, `showPrivacy=level
+  ==='confirmed'`, removido `categoriesMode`. `ScanResultDetail`: `RisksSection` sem gate,
+  `CategoriesSection` unificada (barras de proporção + accordion; evidência só se `showEvidence`).
+  Logado (`SiteDetail` / `/account/sites/{id}`) já entrega o relatório completo (48 checks c/
+  evidência, PDF exec+téc, benchmark setorial+ranking, evolução) — sem mudança. `/site/{domain}`
+  (KL-74) intacto (só o container mudou).
 - **KL-83** — Redesign do Analytics admin (Prompt 1 de 2) ✅. Módulo dedicado
   **`api/admin_analytics.py`** (não toca o analytics antigo do KL-21): **8 endpoints**
   `/admin/analytics/{metrics,trend,funnel,events,sessions,pages,journeys,funnel-by-sector}`,

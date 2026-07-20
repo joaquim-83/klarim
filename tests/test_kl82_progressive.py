@@ -179,49 +179,52 @@ def _full_fixture():
     }
 
 
-def test_filter_anonymous_is_preview_only():
+def test_filter_anonymous_sees_risks_and_checks_without_evidence():
+    # KL-89 correção — anônimo vê VALOR (benchmark + TODOS os riscos + categorias com números +
+    # checks por nome/status), mas NUNCA evidência técnica nem LGPD.
     out = m._filter_scan_result(_full_fixture(), "anonymous")
     assert out["access_level"] == "anonymous"
     assert out["score"] == 72 and out["semaphore"] == "amarelo"
-    assert out["checks_locked"] is True
-    # KL-89 fix 5: o benchmark é PÚBLICO (agregado nacional, já exposto em /estatisticas) —
-    # liberado até no anônimo. Não é PII e contextualiza o score.
     assert out["benchmark"] == {"avg_score": 64, "count": 8000}
-    assert len(out["risks_preview"]) == 1 and out["risks_total"] == 3
-    assert [c["name"] for c in out["categories_preview"]] == ["Transporte & TLS"]
-    assert "pass_count" not in out["categories_preview"][0]  # barras: só ratio, sem números
-    # NUNCA vaza checks/evidência/privacidade (o benchmark agregado NÃO é dado por-site)
+    assert len(out["risk_summary"]["risks"]) == 3 and out["risks_total"] == 3  # TODOS os riscos
+    assert out["categories"][0]["pass_count"] == 1  # categorias com números (barras + accordion)
+    assert out["checks_names_only"] is True and isinstance(out["checks"], list)
+    # NUNCA vaza evidência técnica nem indicadores de privacidade/LGPD
     blob = str(out)
-    assert "SEGREDO-EVID" not in blob and "checks" not in out
-    assert "privacy_indicators" not in out
+    assert "SEGREDO-EVID" not in blob and "privacy_indicators" not in out
+    assert all("evidence" not in c and "impact" not in c for c in out["checks"])
 
 
-def test_filter_unconfirmed_is_partial_no_evidence():
+def test_filter_unconfirmed_same_visibility_no_evidence():
     out = m._filter_scan_result(_full_fixture(), "unconfirmed")
     assert out["access_level"] == "unconfirmed"
     assert out["benchmark"] == {"avg_score": 64, "count": 8000}
-    assert len(out["risks_preview"]) == 2 and out["risks_total"] == 3
-    assert out["categories"][0]["pass_count"] == 1  # categorias com números
-    assert out["checks_names_only"] is True and out["pdf_locked"] is True
-    # checks só nome/status — SEM evidência/impacto
+    assert len(out["risk_summary"]["risks"]) == 3 and out["risks_total"] == 3  # TODOS os riscos
+    assert out["categories"][0]["pass_count"] == 1
+    assert out["checks_names_only"] is True
+    # checks só nome/status — SEM evidência/impacto; LGPD travado
     assert "SEGREDO-EVID" not in str(out)
     assert all("evidence" not in c and "impact" not in c for c in out["checks"])
+    assert "privacy_indicators" not in out
 
 
 def test_filter_confirmed_sees_everything():
     out = m._filter_scan_result(_full_fixture(), "confirmed")
     assert out["access_level"] == "confirmed"
     assert out["pdf_available"] is True
-    assert out["privacy_indicators"]["score"] == 3
+    assert out["privacy_indicators"]["score"] == 3  # LGPD só p/ conta confirmada
     assert out["risk_summary"]["risks"] and out["risks_total"] == 3
     # evidência disponível no nível confirmado
     assert any(c.get("evidence") == "SEGREDO-EVID" for c in out["checks"])
 
 
-def test_filter_alert_session_same_as_confirmed():
+def test_filter_alert_session_full_checks_but_no_lgpd():
+    # O visitante do link do alerta vê o resultado COMPLETO (evidência + PDF), mas LGPD é travado
+    # (não é conta — KL-89 correção Problema 2).
     out = m._filter_scan_result(_full_fixture(), "alert_session")
     assert out["pdf_available"] is True and "checks" in out
     assert any(c.get("evidence") == "SEGREDO-EVID" for c in out["checks"])
+    assert "privacy_indicators" not in out
 
 
 # --------------------------------------------------------------------------- #
@@ -234,9 +237,11 @@ def test_scan_result_anonymous_no_email_no_leak(client):
     j = r.json()
     assert j["access_level"] == "anonymous"
     assert j["score"] == 72 and j["semaphore"] == "amarelo"
-    assert j["checks_locked"] is True and "categories_preview" in j
-    # anti-vazamento: nenhuma evidência ("ev-check_...") nem lista de checks completa
-    assert "ev-check_" not in str(j) and "checks" not in j
+    # KL-89: anônimo vê categorias + checks por nome (sem evidência) + todos os riscos; LGPD travado
+    assert j["checks_names_only"] is True and isinstance(j["checks"], list)
+    assert j["categories"] and j["risks_total"] >= 1
+    # anti-vazamento: nenhuma evidência ("ev-check_...") nem indicadores de LGPD
+    assert "ev-check_" not in str(j) and "privacy_indicators" not in j
 
 
 def test_scan_result_confirmed_gets_full(client):
@@ -256,8 +261,8 @@ def test_scan_result_unconfirmed_user(client, store):
     r = client.get("/scan/result?url=https://x.com.br", headers=_bearer(u))
     j = r.json()
     assert j["access_level"] == "unconfirmed"
-    assert j["pdf_locked"] is True and j["checks_names_only"] is True
-    assert "ev-check_" not in str(j)
+    assert j["checks_names_only"] is True
+    assert "ev-check_" not in str(j) and "privacy_indicators" not in j
 
 
 def test_scan_result_anon_rate_limit_5_per_hour(client):

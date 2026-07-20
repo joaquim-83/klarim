@@ -244,3 +244,64 @@ A barra de progresso continua acima. Ao completar, um `completing` leva o % a 10
 | 7 | ~50% → 3 ✅ / 1 ⏳ / 2 ○ (não 6 ✅) | ✅ |
 | 8 | Testes atualizados e passando | ✅ (67) |
 | 9 | Build Astro verde | ✅ |
+
+---
+
+# Correção URGENTE de conversão (4 problemas)
+
+As correções anteriores travaram conteúdo demais no resultado (risco → 0 conta em horas). Nova
+regra: **mostrar valor ANTES de pedir conta**. Só a LGPD tem cadeado (e só p/ quem não é conta
+confirmada).
+
+### Tabela de visibilidade FINAL (autoritativa)
+
+| Seção | Anônimo | Não confirmada | Confirmada |
+|---|---|---|---|
+| Score + semáforo | ✅ | ✅ | ✅ |
+| Compartilhar + PDF | ✅ | ✅ | ✅ |
+| Benchmark | ✅ | ✅ | ✅ |
+| **Riscos (TODOS)** | ✅ | ✅ | ✅ |
+| Barras de categoria | ✅ | ✅ | ✅ |
+| Checks detalhados | ✅ sem evidência | ✅ sem evidência | ✅ com evidência |
+| Download PDF | ✅ | ✅ | ✅ |
+| **LGPD** | 🔒 título | 🔒 título | ✅ |
+
+`alert_session` (link do email, sem conta) = vê o resultado completo (evidência + PDF) mas **LGPD
+travada** (Problema 2).
+
+### Problema 1 — Riscos abertos para todos
+Backend `_filter_scan_result` reescrito: `risk_summary` com **todos** os riscos em todo nível (antes
+1 p/ anônimo, 2 p/ não-confirmado). Frontend `RisksSection` sem gate (`viewFlags.showAllRisks=true`).
+Riscos em linguagem de negócio são o conteúdo que converte.
+
+### Problema 2 — LGPD travada para quem não é conta confirmada
+`viewFlags.showPrivacy = level === 'confirmed'` (antes `full`, que abria p/ `alert_session`). Agora
+anônimo, não-confirmado **e** o visitante do link do email veem só o título 🔒. Backend só inclui
+`privacy_indicators` no payload da conta `confirmed` (nem chega ao cliente nos outros níveis).
+
+### Problema 3 — Falta de conteúdo (regressão KL-74) — verificado
+`/site/{domain}` (perfil KL-74) está **intacto**: benchmark setorial, posição no ranking, breadcrumb
+e cross-linking "Outros sites do setor" seguem lá (minha mudança foi só o container). A "falta de
+conteúdo" era o **resultado do scan** estar magro — agora ele mostra **todos os riscos + categorias
+com contagem + 48 checks por nome** + benchmark, e o "Ver perfil completo →" leva ao perfil rico.
+
+### Problema 4 — Relatório completo para logado — verificado
+`SiteDetail` (`/dashboard/site/{id}`, endpoint `/account/sites/{id}`) **já** entrega tudo: 48 checks
+com evidência (accordion por categoria), PDF executivo + técnico, benchmark setorial + ranking,
+gráfico de evolução, perfil, monitoramento. O endpoint retorna os `checks` completos (do
+`checks_json`). Nenhuma mudança necessária — a data e o render já existem. No **resultado do scan**,
+o usuário `confirmed` também vê o relatório completo inline (evidência + PDF + benchmark).
+
+### Segurança (revisão)
+Expor **nome + PASS/FAIL** de check e riscos genéricos ao anônimo é padrão de scanner passivo
+público (SSL Labs, Mozilla Observatory, securityheaders.com) e coerente com o posicionamento
+"pesquise qualquer site" (KL-81). O que fica **gated**: a **evidência técnica** (valores/versões
+exploit-úteis, só `confirmed`/`alert_session`) e os **indicadores de LGPD** (só `confirmed`). O
+corte é server-side — quem não pode ver nunca recebe o dado no payload.
+
+### Testes/validação
+- Backend: `_filter_scan_result` — testes reescritos (anônimo/não-confirmado veem todos os riscos +
+  checks sem evidência + sem LGPD; `alert_session` full sem LGPD; `confirmed` com LGPD). **1284 passed.**
+- Frontend: `viewFlags` — `showAllRisks` true p/ todos, `showPrivacy` só `confirmed`, `showEvidence`
+  só full. **67 passed.**
+- Build Astro **verde**.
