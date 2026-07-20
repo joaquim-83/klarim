@@ -358,7 +358,7 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1390 passed** (backend pytest, KL-92: +77) + **74 node --test** (frontend `test:unit`, KL-64: +26)
+- Testes: **1401 passed** (backend pytest, KL-92: +88) + **85 node --test** (frontend `test:unit`, KL-92: +11)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - Workers: **5/5 ativos** (discovery, alert, scan, vigília, rescan)
 - Planos: 8 contas Pro trial · Vigílias: 35 (30 ok, 5 error)
@@ -698,7 +698,7 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   + linha de aviso), anti CSV-injection, admin-only; front usa `adminDownload` (Bearer+blob). 26 testes
   (19 backend + 7 tracker via `vm`). **Gotcha:** a data de análise do funil já era correta — o card
   supunha bug de período; o real era o volume de e-mail bot.
-- **KL-92** — Tracking server-side por IP (Prompt 1 de 2) ✅. A defesa client-side do KL-64 depende
+- **KL-92** — Tracking server-side por IP (Prompt 1 ✅ + Prompt 2 ✅). A defesa client-side do KL-64 depende
   de código que roda no browser do bot — insuficiente. A fonte de verdade das métricas de visitante
   passa a ser o **servidor**. Tabela **`access_log`** (IP INET, país, endpoint, método, status,
   domain_queried, user_id, UA, referrer, response_time, is_bot/bot_reason) + 6 índices, no
@@ -718,10 +718,28 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   2 ip-detail), completo só no banco. 3 endpoints admin `/admin/analytics/{server-metrics,ip-behavior,
   ip-detail}` (agregações `al_*` no store, derivação pura no módulo, cache 5min, rate 30/min) + 3 MCP
   (`get_server_metrics`/`get_ip_behavior`/`get_ip_detail`). O tracker.js **continua** para eventos de
-  interação. **77 testes offline** (classificação, helpers, buffer/flush, middleware fail-safe,
-  endpoints, LGPD). **Prompt 2:** queries de comportamento + dashboard usando o access_log como fonte
-  primária. **Gotcha:** o Nginx faz `rewrite ^/api/(.*)$ /$1` → o middleware vê paths SEM `/api`
+  interação. **Gotcha:** o Nginx faz `rewrite ^/api/(.*)$ /$1` → o middleware vê paths SEM `/api`
   (`/scan/result`, `/events`); `HUMAN_ACTIONS` e a extração de domínio usam os paths já sem prefixo.
+  **Prompt 2 ✅** (comportamento + migração do dashboard): 6 store methods novos — `al_server_funnel`
+  (funil server-side visitante→perfil→scan→conta→PDF), `al_top_domains`, `al_daily_series` (tendência),
+  `al_hourly_heatmap` (7×24), `al_pre_signup_journeys` + `al_retention` (D1/D3/D7). ⚠️ **Jornada/retenção
+  são chaveadas por IP, NÃO por user_id:** no POST /signup a conta ainda não tem cookie → `user_id` é
+  NULL; o user_id é recolhido das requests PÓS-signup. `server-metrics` ganhou `server_funnel`+
+  `top_domains`+`daily_series`+`hourly_heatmap`; `ip-behavior` ganhou `pre_signup_journey`+
+  `typical_journey`+`post_signup_retention` (cache 10min — self-JOIN é mais pesado). Derivações PURAS no
+  módulo (`assemble_server_funnel`/`_daily_series`/`_retention`/`_pre_signup_journeys`/`_hourly_heatmap`).
+  **Dashboard** (`web/src/components/admin/AdminAnalytics.jsx`): a aba **Visão geral** usa `server-metrics`
+  como **fonte primária** dos KPIs (Visitantes BR/Scans/Contas/Bots filtrados/Conversão via IP real, não
+  o tracker inflado; Clique-em-alertas fica do tracker), com **fontes independentes** (server-metrics +
+  metrics + funnel em `useAsync` separados — uma falhar não zera a outra), **tendência** do `daily_series`,
+  **toggle de funil email/server** (estado no hash `#overview?funnel=server`) e **badge de fonte**
+  `📡 server`/`📱 tracker` por card. Nova aba **Comportamento**: top domínios, visitantes multi-site,
+  jornada pré-signup (típica + exemplos), retenção D1/D3/D7 e mapa de calor 7×24. Lógica pura em
+  `web/src/lib/admin/analyticsUtils.js` (`dailySeriesToTrend`/`serverFunnelStages`/`retentionBars`/
+  `heatColor`/`DATA_SOURCE`). **Testes:** +22 offline (11 backend derivações/endpoints + 11 `node --test`).
+  `get_server_metrics` MCP omite `hourly_distribution`/`daily_series`/`hourly_heatmap`; `get_ip_behavior`
+  omite a lista detalhada de jornadas (economia de tokens). access_log é a **fonte primária**;
+  site_events/tracker.js segue como **complemento** das interações frontend (as duas coexistem).
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

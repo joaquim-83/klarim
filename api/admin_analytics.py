@@ -294,14 +294,14 @@ def assemble_pages(rows: List[dict], sessions: List[List[dict]],
 # Infra: cache + rate limit (delega a api.main sem import circular)
 # --------------------------------------------------------------------------- #
 
-async def _cached(key_suffix: str, period_key: str, builder) -> dict:
+async def _cached(key_suffix: str, period_key: str, builder, ttl: int = _CACHE_TTL) -> dict:
     import api.main as _m  # deferido: evita ciclo (main importa este módulo no fim)
     ckey = f"analytics:{key_suffix}:{period_key}"
     cached = await _m._cache_get(ckey)
     if cached is not None:
         return cached
     result = await builder()
-    await _m._cache_set(ckey, result, ttl=_CACHE_TTL)
+    await _m._cache_set(ckey, result, ttl=ttl)
     return result
 
 
@@ -644,6 +644,143 @@ def assemble_ip_behavior(raw: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+# --------------------------------------------------------------------------- #
+# KL-92 Prompt 2 — derivações puras de comportamento (funil/série/jornada/retenção/heatmap)
+# --------------------------------------------------------------------------- #
+
+def _rate(num: int, den: int) -> Optional[float]:
+    """Taxa de conversão inter-etapa em %. None se o denominador é 0 (sem base)."""
+    return round(num / den * 100, 1) if den else None
+
+
+def assemble_server_funnel(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Funil server-side + taxas de conversão inter-etapa (puro). Divisão por zero → None."""
+    vb = raw.get("visitors_br", 0)
+    vp = raw.get("viewed_profile", 0)
+    ss = raw.get("started_scan", 0)
+    cs = raw.get("completed_scan", 0)
+    ca = raw.get("created_account", 0)
+    pdf = raw.get("downloaded_pdf", 0)
+    return {
+        "visitors_br": vb, "viewed_profile": vp, "started_scan": ss,
+        "completed_scan": cs, "created_account": ca, "downloaded_pdf": pdf,
+        "conversion_rates": {
+            "visit_to_profile": _rate(vp, vb),
+            "profile_to_scan": _rate(ss, vp),
+            "scan_to_account": _rate(ca, cs),
+            "account_to_pdf": _rate(pdf, ca),
+            "overall": _rate(ca, vb),
+        },
+    }
+
+
+def assemble_daily_series(rows: List[dict], days: List[str]) -> Dict[str, Any]:
+    """Densifica a série diária (dias sem dado → 0) sobre a lista de datas do período. Puro."""
+    by_day = {r["day"]: r for r in rows}
+    zero = {"visitors_br": 0, "scans": 0, "accounts": 0}
+    picked = [by_day.get(d, zero) for d in days]
+    return {
+        "dates": list(days),
+        "visitors_br": [int(p.get("visitors_br", 0)) for p in picked],
+        "scans": [int(p.get("scans", 0)) for p in picked],
+        "accounts": [int(p.get("accounts", 0)) for p in picked],
+    }
+
+
+def assemble_retention(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Retenção D1/D3/D7: {returned, total, pct} por janela (puro)."""
+    total = int(raw.get("total", 0) or 0)
+
+    def one(k):
+        got = int(raw.get(k, 0) or 0)
+        return {"returned": got, "total": total,
+                "pct": round(got / total * 100, 1) if total else 0.0}
+
+    return {"day_1": one("day_1"), "day_3": one("day_3"), "day_7": one("day_7")}
+
+
+_JOURNEY_MAX = 20              # nº de jornadas detalhadas no payload
+_RETURN_MINUTES = 60 * 24      # atividade > 1 dia após o signup = "voltou"
+
+
+def _is_via_alert(steps: List[dict]) -> bool:
+    """A jornada veio de um alerta se tocou o link do alerta (endpoint /alert-access) ou o
+    referrer/UTM carrega 'alerta'."""
+    for s in steps:
+        ep = s.get("endpoint") or ""
+        ref = s.get("referrer") or ""
+        if "/alert-access" in ep or "alerta" in ref.lower():
+            return True
+    return False
+
+
+def assemble_pre_signup_journeys(rows: List[dict], limit: int = _JOURNEY_MAX) -> Dict[str, Any]:
+    """Agrupa a atividade por IP em jornadas pré/pós signup + calcula a jornada típica. Puro.
+    `rows` já vêm ordenados por (ip, created_at) do store."""
+    by_ip: Dict[str, list] = {}
+    for r in rows:
+        by_ip.setdefault(r["ip_address"], []).append(r)
+
+    journeys = []
+    for ip, steps in by_ip.items():
+        uid = next((s.get("user_id") for s in steps if s.get("user_id")), None)
+        before = [{"endpoint": s["endpoint"], "minutes_before": int(round(s["minutes_relative"]))}
+                  for s in steps if s["minutes_relative"] <= 0]
+        after = [{"endpoint": s["endpoint"], "minutes_after": int(round(s["minutes_relative"]))}
+                 for s in steps if s["minutes_relative"] > 0]
+        returned = any(s["minutes_relative"] > _RETURN_MINUTES for s in steps)
+        journeys.append({
+            "user_id": uid, "steps_before": before[:10], "steps_after": after[:5],
+            "returned_within_7d": returned, "via_alert": _is_via_alert(steps),
+        })
+
+    typical = _typical_journey(journeys)
+    return {"pre_signup_journey": journeys[:limit], "typical_journey": typical}
+
+
+def _typical_journey(journeys: List[dict]) -> Dict[str, Any]:
+    """Jornada típica agregada: 1ª ação mais comum, média de passos, tempo médio até o
+    signup, % via alerta vs orgânico. Puro."""
+    from collections import Counter
+    if not journeys:
+        return {"most_common_first_action": None, "avg_steps_before_signup": 0.0,
+                "avg_minutes_to_signup": 0.0, "pct_via_alert": 0.0, "pct_via_organic": 0.0}
+    firsts = Counter()
+    steps_counts, times = [], []
+    via_alert = 0
+    for j in journeys:
+        before = j["steps_before"]
+        # exclui o próprio /account/signup (minute 0) da contagem de passos "antes"
+        pre = [s for s in before if s["minutes_before"] < 0]
+        steps_counts.append(len(pre))
+        if pre:
+            firsts[pre[0]["endpoint"]] += 1
+            times.append(abs(pre[0]["minutes_before"]))
+        if j.get("via_alert"):
+            via_alert += 1
+    n = len(journeys)
+    pct_alert = round(via_alert / n * 100, 1)
+    return {
+        "most_common_first_action": firsts.most_common(1)[0][0] if firsts else None,
+        "avg_steps_before_signup": round(sum(steps_counts) / n, 1) if n else 0.0,
+        "avg_minutes_to_signup": round(sum(times) / len(times), 1) if times else 0.0,
+        "pct_via_alert": pct_alert,
+        "pct_via_organic": round(100 - pct_alert, 1),
+    }
+
+
+def assemble_hourly_heatmap(rows: List[dict]) -> Dict[str, Any]:
+    """Grade densa 7×24 (dia-da-semana × hora) + o máximo (para escala de cor). Puro.
+    `dow` 0=domingo..6=sábado (padrão Postgres EXTRACT(DOW))."""
+    grid = [[0] * 24 for _ in range(7)]
+    for r in rows:
+        dow, hour = int(r.get("dow", 0)), int(r.get("hour", 0))
+        if 0 <= dow < 7 and 0 <= hour < 24:
+            grid[dow][hour] = int(r.get("count", 0) or 0)
+    mx = max((max(row) for row in grid), default=0)
+    return {"grid": grid, "max": mx}
+
+
 def _valid_ip(ip: Optional[str]) -> Optional[str]:
     """Valida/normaliza um IP (v4/v6). None se inválido — evita SQL com lixo."""
     import ipaddress
@@ -661,13 +798,25 @@ async def server_metrics(request: Request, period: str = Query("7d"),
     """KL-92 — métricas server-side derivadas do access_log (fonte de verdade vs. tracker
     inflado): visitantes BR/total (IPs únicos, is_bot=false), bots filtrados, scans, contas,
     PDFs, cliques de alerta e perfis vistos (BR), domínios únicos consultados, top países/
-    endpoints e distribuição horária. Períodos: today|7d|30d|90d. Cache 5 min."""
+    endpoints, distribuição horária. **P2:** + `server_funnel` (funil server-side +
+    conversões), `top_domains`, `daily_series` (tendência) e `hourly_heatmap` (7×24).
+    Períodos: today|7d|30d|90d. Cache 5 min."""
     await _rate_limit(request)
     pr = resolve_period(period, start, end)
 
     async def build():
-        raw = await get_target_store().al_server_metrics(pr["start"], pr["end"])
-        return assemble_server_metrics(raw, _period_meta(pr))
+        store = get_target_store()
+        raw = await store.al_server_metrics(pr["start"], pr["end"])
+        funnel = await store.al_server_funnel(pr["start"], pr["end"])
+        top_domains = await store.al_top_domains(pr["start"], pr["end"])
+        daily = await store.al_daily_series(pr["start"], pr["end"])
+        heatmap = await store.al_hourly_heatmap(pr["start"], pr["end"])
+        result = assemble_server_metrics(raw, _period_meta(pr))
+        result["server_funnel"] = assemble_server_funnel(funnel)
+        result["top_domains"] = top_domains
+        result["daily_series"] = assemble_daily_series(daily, day_list(pr["start"], pr["days"]))
+        result["hourly_heatmap"] = assemble_hourly_heatmap(heatmap)
+        return result
 
     return await _cached("server-metrics", _period_key(period, start, end), build)
 
@@ -676,16 +825,26 @@ async def server_metrics(request: Request, period: str = Query("7d"),
 async def ip_behavior(request: Request, period: str = Query("7d"),
                       start: Optional[str] = None, end: Optional[str] = None) -> dict:
     """KL-92 — comportamento por IP (só humanos): visitantes multi-site (consultaram >1
-    domínio), recorrentes (ativos em >1 dia), média de sites/visitante e os tops. IPs
-    MASCARADOS (1º octeto, LGPD). Períodos: today|7d|30d|90d. Cache 5 min."""
+    domínio), recorrentes (ativos em >1 dia), média de sites/visitante e os tops. **P2:** +
+    `pre_signup_journey` (jornada de -24h a +7d por IP que criou conta), `typical_journey` e
+    `post_signup_retention` (D1/D3/D7). IPs MASCARADOS (1º octeto, LGPD). Períodos:
+    today|7d|30d|90d. Cache **10 min** (queries de comportamento são mais pesadas)."""
     await _rate_limit(request)
     pr = resolve_period(period, start, end)
 
     async def build():
-        raw = await get_target_store().al_ip_behavior(pr["start"], pr["end"])
-        return assemble_ip_behavior(raw)
+        store = get_target_store()
+        raw = await store.al_ip_behavior(pr["start"], pr["end"])
+        journeys = await store.al_pre_signup_journeys(pr["start"], pr["end"])
+        retention = await store.al_retention(pr["start"], pr["end"])
+        result = assemble_ip_behavior(raw)
+        jr = assemble_pre_signup_journeys(journeys)
+        result["pre_signup_journey"] = jr["pre_signup_journey"]
+        result["typical_journey"] = jr["typical_journey"]
+        result["post_signup_retention"] = assemble_retention(retention)
+        return result
 
-    return await _cached("ip-behavior", _period_key(period, start, end), build)
+    return await _cached("ip-behavior", _period_key(period, start, end), build, ttl=600)
 
 
 @router.get("/ip-detail")

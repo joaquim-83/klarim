@@ -6230,6 +6230,144 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    # --- KL-92 Prompt 2: queries de comportamento (funil/série/domínios/jornada/retenção) --- #
+
+    # Endpoints de scan são GET (`/scan/result`, `/scan/summary`) — NÃO filtrar por POST.
+    _AL_SCAN_LIKE = "endpoint LIKE '/scan%%'"
+    _AL_SCAN_DONE = "endpoint IN ('/scan/result','/scan/summary')"
+    _AL_SIGNUP = "endpoint LIKE '%%signup%%' AND http_method = 'POST' AND http_status < 400"
+    _AL_PDF = "(endpoint LIKE '/report/pdf%%' OR endpoint LIKE '/report/executive%%' OR endpoint LIKE '/report/technical%%')"
+
+    async def al_server_funnel(self, start: Any, end: Any) -> Dict[str, Any]:
+        """KL-92 P2 — funil server-side (IPs distintos por etapa, só humanos). visitante BR →
+        viu perfil → iniciou scan → concluiu scan → criou conta → baixou PDF. As taxas de
+        conversão são derivadas puras no módulo."""
+        def _fn(cur):
+            cur.execute(
+                f"SELECT "
+                f"  COUNT(DISTINCT ip_address) FILTER (WHERE is_bot=false AND country_code='BR'), "
+                f"  COUNT(DISTINCT ip_address) FILTER (WHERE domain_queried IS NOT NULL AND is_bot=false), "
+                f"  COUNT(DISTINCT ip_address) FILTER (WHERE {self._AL_SCAN_LIKE} AND is_bot=false), "
+                f"  COUNT(DISTINCT ip_address) FILTER (WHERE {self._AL_SCAN_DONE} AND is_bot=false), "
+                f"  COUNT(DISTINCT ip_address) FILTER (WHERE {self._AL_SIGNUP}), "
+                f"  COUNT(DISTINCT ip_address) FILTER (WHERE {self._AL_PDF} AND is_bot=false) "
+                f"FROM access_log WHERE created_at >= %s AND created_at < %s",
+                (start, end))
+            r = cur.fetchone() or [0] * 6
+            keys = ("visitors_br", "viewed_profile", "started_scan", "completed_scan",
+                    "created_account", "downloaded_pdf")
+            return {k: int(r[i] or 0) for i, k in enumerate(keys)}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def al_top_domains(self, start: Any, end: Any, limit: int = 20) -> List[Dict[str, Any]]:
+        """KL-92 P2 — domínios mais consultados no período (só humanos): views, IPs únicos,
+        scans. Teto de `limit` (default 20)."""
+        def _fn(cur):
+            cur.execute(
+                f"SELECT domain_queried, COUNT(*) views, COUNT(DISTINCT ip_address) unique_ips, "
+                f"  COUNT(*) FILTER (WHERE {self._AL_SCAN_DONE}) scans "
+                f"FROM access_log WHERE created_at >= %s AND created_at < %s "
+                f"  AND domain_queried IS NOT NULL AND is_bot=false "
+                f"GROUP BY domain_queried ORDER BY views DESC, unique_ips DESC LIMIT %s",
+                (start, end, limit))
+            return [{"domain": r[0], "views": int(r[1]), "unique_ips": int(r[2]),
+                     "scans": int(r[3])} for r in cur.fetchall()]
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def al_daily_series(self, start: Any, end: Any) -> List[Dict[str, Any]]:
+        """KL-92 P2 — série diária (visitantes BR / scans / contas) para o gráfico de
+        tendência server-side. 1 linha por dia COM dados; a densificação (dias sem dado → 0)
+        é derivação pura no módulo."""
+        def _fn(cur):
+            cur.execute(
+                f"SELECT created_at::date d, "
+                f"  COUNT(DISTINCT ip_address) FILTER (WHERE is_bot=false AND country_code='BR') visitors_br, "
+                f"  COUNT(*) FILTER (WHERE {self._AL_SCAN_LIKE} AND is_bot=false) scans, "
+                f"  COUNT(*) FILTER (WHERE {self._AL_SIGNUP}) accounts "
+                f"FROM access_log WHERE created_at >= %s AND created_at < %s "
+                f"GROUP BY d ORDER BY d",
+                (start, end))
+            return [{"day": str(r[0]), "visitors_br": int(r[1]), "scans": int(r[2]),
+                     "accounts": int(r[3])} for r in cur.fetchall()]
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def al_hourly_heatmap(self, start: Any, end: Any) -> List[Dict[str, Any]]:
+        """KL-92 P2 — volume de requests humanos por (dia-da-semana, hora) para o mapa de
+        calor 7×24. `dow` 0=domingo..6=sábado (padrão Postgres). A grade densa é derivação
+        pura no módulo."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT EXTRACT(DOW FROM created_at)::int dow, "
+                "  EXTRACT(HOUR FROM created_at)::int hour, COUNT(*) n "
+                "FROM access_log WHERE created_at >= %s AND created_at < %s AND is_bot=false "
+                "GROUP BY dow, hour",
+                (start, end))
+            return [{"dow": int(r[0]), "hour": int(r[1]), "count": int(r[2])}
+                    for r in cur.fetchall()]
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def al_pre_signup_journeys(self, start: Any, end: Any, limit: int = 2000
+                                     ) -> List[Dict[str, Any]]:
+        """KL-92 P2 — atividade em torno de cada signup, chaveada por **IP** (não user_id: no
+        momento do POST /signup a conta ainda não tem cookie → user_id é NULL; o user_id é
+        recolhido das requests PÓS-signup). Para cada IP que criou conta no período, devolve a
+        atividade de -24h a +7d (só humanos). O agrupamento/jornada típica é derivação pura."""
+        def _fn(cur):
+            cur.execute(
+                f"WITH signups AS ("
+                f"  SELECT ip_address, MIN(created_at) AS signup_at FROM access_log "
+                f"  WHERE {self._AL_SIGNUP} AND created_at >= %s AND created_at < %s "
+                f"  GROUP BY ip_address) "
+                f"SELECT s.ip_address, al.endpoint, al.domain_queried, al.referrer, al.user_id, "
+                f"  al.created_at, "
+                f"  EXTRACT(EPOCH FROM (al.created_at - s.signup_at))/60 AS minutes_relative "
+                f"FROM signups s JOIN access_log al ON al.ip_address = s.ip_address "
+                f"WHERE al.created_at BETWEEN s.signup_at - INTERVAL '24 hours' "
+                f"                        AND s.signup_at + INTERVAL '7 days' "
+                f"  AND al.is_bot = false "
+                f"ORDER BY s.ip_address, al.created_at LIMIT %s",
+                (start, end, limit))
+            return [{"ip_address": str(r[0]), "endpoint": r[1], "domain_queried": r[2],
+                     "referrer": r[3], "user_id": r[4], "created_at": r[5],
+                     "minutes_relative": float(r[6] or 0)} for r in cur.fetchall()]
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def al_retention(self, start: Any, end: Any) -> Dict[str, int]:
+        """KL-92 P2 — retenção pós-signup (chaveada por IP, pela mesma razão do NULL user_id):
+        de quem criou conta no período, quantos retornaram em D1/D3/D7. `total` = contas
+        criadas. As %s são derivação pura no módulo."""
+        def _fn(cur):
+            cur.execute(
+                f"WITH signups AS ("
+                f"  SELECT ip_address, MIN(created_at) AS signup_at FROM access_log "
+                f"  WHERE {self._AL_SIGNUP} AND created_at >= %s AND created_at < %s "
+                f"  GROUP BY ip_address), "
+                f"returns AS ("
+                f"  SELECT s.ip_address, "
+                f"    bool_or(al.created_at BETWEEN s.signup_at + INTERVAL '1 day' "
+                f"                              AND s.signup_at + INTERVAL '2 days') d1, "
+                f"    bool_or(al.created_at BETWEEN s.signup_at + INTERVAL '1 day' "
+                f"                              AND s.signup_at + INTERVAL '4 days') d3, "
+                f"    bool_or(al.created_at BETWEEN s.signup_at + INTERVAL '1 day' "
+                f"                              AND s.signup_at + INTERVAL '8 days') d7 "
+                f"  FROM signups s LEFT JOIN access_log al ON al.ip_address = s.ip_address "
+                f"    AND al.created_at > s.signup_at AND al.is_bot = false "
+                f"  GROUP BY s.ip_address) "
+                f"SELECT COUNT(*) total, COUNT(*) FILTER (WHERE d1) day_1, "
+                f"  COUNT(*) FILTER (WHERE d3) day_3, COUNT(*) FILTER (WHERE d7) day_7 "
+                f"FROM returns",
+                (start, end))
+            r = cur.fetchone() or [0, 0, 0, 0]
+            return {"total": int(r[0] or 0), "day_1": int(r[1] or 0),
+                    "day_3": int(r[2] or 0), "day_7": int(r[3] or 0)}
+
+        return await asyncio.to_thread(self._run, _fn)
+
     # --- inbox scan@klarim.net (KL-56) ------------------------------------- #
 
     _INBOX_COLS = ("id, message_id, from_address, from_name, to_address, subject, "

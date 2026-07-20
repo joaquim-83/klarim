@@ -420,6 +420,37 @@ class _FakeStore:
                 "timeline": [{"at": NOW, "endpoint": "/scan/result", "method": "POST",
                               "status": 200, "domain": "hotel.com.br"}]}
 
+    # --- KL-92 P2 ---
+    async def al_server_funnel(self, start, end):
+        return {"visitors_br": 80, "viewed_profile": 45, "started_scan": 12,
+                "completed_scan": 10, "created_account": 5, "downloaded_pdf": 3}
+
+    async def al_top_domains(self, start, end, limit=20):
+        return [{"domain": "hotel.com.br", "views": 12, "unique_ips": 8, "scans": 2},
+                {"domain": "clinica.com.br", "views": 8, "unique_ips": 6, "scans": 1}]
+
+    async def al_daily_series(self, start, end):
+        return [{"day": NOW.date().isoformat(), "visitors_br": 52, "scans": 8, "accounts": 1}]
+
+    async def al_hourly_heatmap(self, start, end):
+        return [{"dow": 1, "hour": 15, "count": 30}, {"dow": 3, "hour": 9, "count": 12}]
+
+    async def al_pre_signup_journeys(self, start, end, limit=2000):
+        return [
+            {"ip_address": "189.28.100.42", "endpoint": "/site/hotel.com.br",
+             "domain_queried": "hotel.com.br", "referrer": None, "user_id": None,
+             "created_at": NOW, "minutes_relative": -45},
+            {"ip_address": "189.28.100.42", "endpoint": "/account/signup",
+             "domain_queried": None, "referrer": None, "user_id": None,
+             "created_at": NOW, "minutes_relative": 0},
+            {"ip_address": "189.28.100.42", "endpoint": "/account/dashboard",
+             "domain_queried": None, "referrer": None, "user_id": 19,
+             "created_at": NOW, "minutes_relative": 2},
+        ]
+
+    async def al_retention(self, start, end):
+        return {"total": 5, "day_1": 3, "day_3": 2, "day_7": 1}
+
 
 @pytest.fixture
 def store(monkeypatch):
@@ -539,5 +570,111 @@ def test_store_has_lgpd_and_batch_methods():
     # contrato: métodos existem (SQL validado na VM). Anonimização = LGPD retenção 90d.
     from discovery.store import TargetStore
     for name in ("log_access_batch", "mark_ip_human_today", "anonymize_old_access_logs",
-                 "al_server_metrics", "al_ip_behavior", "al_ip_detail"):
+                 "al_server_metrics", "al_ip_behavior", "al_ip_detail",
+                 "al_server_funnel", "al_top_domains", "al_daily_series",
+                 "al_hourly_heatmap", "al_pre_signup_journeys", "al_retention"):
         assert callable(getattr(TargetStore, name)), name
+
+
+# =========================================================================== #
+# 7. Prompt 2 — comportamento (funil / série / jornada / retenção / heatmap)
+# =========================================================================== #
+
+def test_assemble_server_funnel_rates():
+    out = aa.assemble_server_funnel({"visitors_br": 80, "viewed_profile": 45,
+                                     "started_scan": 12, "completed_scan": 10,
+                                     "created_account": 5, "downloaded_pdf": 3})
+    r = out["conversion_rates"]
+    assert r["visit_to_profile"] == 56.2       # 45/80 (round bancário do Python)
+    assert r["profile_to_scan"] == 26.7        # 12/45
+    assert r["scan_to_account"] == 50.0        # 5/10 (usa completed_scan)
+    assert r["account_to_pdf"] == 60.0         # 3/5
+    assert r["overall"] == 6.2                 # 5/80
+
+
+def test_assemble_server_funnel_zero_safe():
+    out = aa.assemble_server_funnel({})
+    assert out["conversion_rates"]["overall"] is None   # div/0 → None, não erro
+    assert out["visitors_br"] == 0
+
+
+def test_assemble_retention_pct():
+    out = aa.assemble_retention({"total": 5, "day_1": 3, "day_3": 2, "day_7": 1})
+    assert out["day_1"] == {"returned": 3, "total": 5, "pct": 60.0}
+    assert out["day_7"]["pct"] == 20.0
+
+
+def test_assemble_retention_zero_total():
+    out = aa.assemble_retention({"total": 0, "day_1": 0, "day_3": 0, "day_7": 0})
+    assert out["day_1"]["pct"] == 0.0          # sem signups → 0, não erro
+
+
+def test_assemble_daily_series_densifies():
+    rows = [{"day": "2026-07-16", "visitors_br": 52, "scans": 8, "accounts": 1}]
+    out = aa.assemble_daily_series(rows, ["2026-07-15", "2026-07-16", "2026-07-17"])
+    assert out["dates"] == ["2026-07-15", "2026-07-16", "2026-07-17"]
+    assert out["visitors_br"] == [0, 52, 0]    # dias sem dado → 0
+    assert out["scans"] == [0, 8, 0]
+    assert len(out["accounts"]) == 3
+
+
+def test_assemble_pre_signup_journeys_groups_and_typical():
+    rows = [
+        {"ip_address": "1.1.1.1", "endpoint": "/site/a.com", "domain_queried": "a.com",
+         "referrer": None, "user_id": None, "created_at": None, "minutes_relative": -30},
+        {"ip_address": "1.1.1.1", "endpoint": "/account/signup", "domain_queried": None,
+         "referrer": None, "user_id": None, "created_at": None, "minutes_relative": 0},
+        {"ip_address": "1.1.1.1", "endpoint": "/account/dashboard", "domain_queried": None,
+         "referrer": None, "user_id": 7, "created_at": None, "minutes_relative": 3},
+    ]
+    out = aa.assemble_pre_signup_journeys(rows)
+    j = out["pre_signup_journey"][0]
+    assert j["user_id"] == 7                    # user_id recolhido do pós-signup
+    assert j["steps_before"][0]["minutes_before"] == -30
+    assert len(j["steps_after"]) == 1
+    t = out["typical_journey"]
+    assert t["most_common_first_action"] == "/site/a.com"
+    assert t["avg_minutes_to_signup"] == 30.0
+    assert t["pct_via_organic"] == 100.0
+
+
+def test_assemble_pre_signup_journeys_empty():
+    out = aa.assemble_pre_signup_journeys([])
+    assert out["pre_signup_journey"] == []
+    assert out["typical_journey"]["most_common_first_action"] is None
+
+
+def test_assemble_pre_signup_journeys_via_alert():
+    rows = [
+        {"ip_address": "2.2.2.2", "endpoint": "/alert-access", "domain_queried": None,
+         "referrer": None, "user_id": None, "created_at": None, "minutes_relative": -5},
+        {"ip_address": "2.2.2.2", "endpoint": "/account/signup", "domain_queried": None,
+         "referrer": None, "user_id": None, "created_at": None, "minutes_relative": 0},
+    ]
+    out = aa.assemble_pre_signup_journeys(rows)
+    assert out["pre_signup_journey"][0]["via_alert"] is True
+    assert out["typical_journey"]["pct_via_alert"] == 100.0
+
+
+def test_assemble_hourly_heatmap_grid():
+    out = aa.assemble_hourly_heatmap([{"dow": 1, "hour": 15, "count": 30},
+                                      {"dow": 6, "hour": 23, "count": 5}])
+    assert len(out["grid"]) == 7 and len(out["grid"][0]) == 24
+    assert out["grid"][1][15] == 30
+    assert out["grid"][6][23] == 5
+    assert out["max"] == 30
+
+
+def test_server_metrics_includes_p2_fields(client):
+    j = client.get("/admin/analytics/server-metrics?period=7d", headers=_admin()).json()
+    assert j["server_funnel"]["conversion_rates"]["overall"] == 6.2
+    assert j["top_domains"][0]["domain"] == "hotel.com.br"
+    assert "dates" in j["daily_series"] and "visitors_br" in j["daily_series"]
+    assert len(j["hourly_heatmap"]["grid"]) == 7
+
+
+def test_ip_behavior_includes_p2_fields(client):
+    j = client.get("/admin/analytics/ip-behavior?period=7d", headers=_admin()).json()
+    assert j["post_signup_retention"]["day_1"]["returned"] == 3
+    assert j["typical_journey"]["most_common_first_action"] == "/site/hotel.com.br"
+    assert j["pre_signup_journey"][0]["user_id"] == 19

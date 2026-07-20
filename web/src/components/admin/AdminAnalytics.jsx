@@ -10,6 +10,8 @@ import SessionCard, { CAMPAIGN_COLOR, EV_COLOR } from './analytics/SessionCard'
 import {
   sortRows, paginate, journeyStepKind, STEP_COLOR, bounceColor, clickRateColor,
   deltaMeta, filterSectors, parseTabHash, buildTabHash,
+  DATA_SOURCE, dailySeriesToTrend, sparkFromDaily, serverFunnelStages,
+  retentionBars, heatColor, DOW_LABELS,
 } from '../../lib/admin/analyticsUtils'
 
 // KL-83 — Analytics admin (Prompts 1+2). 4 abas: Visão geral, Eventos, Páginas, Jornadas.
@@ -19,13 +21,12 @@ const PERIODS = [
   { key: '30d', label: '30 dias' }, { key: '90d', label: '90 dias' },
 ]
 const TABS = [
-  { key: 'overview', label: 'Visão geral' }, { key: 'events', label: 'Eventos' },
-  { key: 'pages', label: 'Páginas' }, { key: 'journeys', label: 'Jornadas' },
+  { key: 'overview', label: 'Visão geral' }, { key: 'behavior', label: 'Comportamento' },
+  { key: 'events', label: 'Eventos' }, { key: 'pages', label: 'Páginas' },
+  { key: 'journeys', label: 'Jornadas' },
 ]
 const TAB_KEYS = TABS.map((t) => t.key)
 const TOOLTIP_STYLE = { backgroundColor: '#161B22', border: '1px solid #30363D', borderRadius: 8, color: '#E6EDF3' }
-const TREND_COLORS = { visitors: '#58A6FF', scans: '#FF6B35', accounts: '#00D26A' }
-const TREND_LABEL = { visitors: 'Visitantes', scans: 'Scans', accounts: 'Contas' }
 
 function fmtNum(n) { return (n ?? 0).toLocaleString('pt-BR') }
 function fmtDelta(pct) {
@@ -82,7 +83,11 @@ export default function AdminAnalytics() {
           ))}
         </div>
 
-        {nav.tab === 'overview' && <OverviewTab period={period} includeBots={includeBots} />}
+        {nav.tab === 'overview' && (
+          <OverviewTab period={period} includeBots={includeBots} navigate={navigate}
+            funnelSource={nav.params.funnel === 'server' ? 'server' : 'email'} />
+        )}
+        {nav.tab === 'behavior' && <BehaviorTab period={period} />}
         {nav.tab === 'events' && (
           <EventsTab key={JSON.stringify(nav.params)} period={period} initialParams={nav.params}
             includeBots={includeBots} />
@@ -95,122 +100,210 @@ export default function AdminAnalytics() {
 }
 
 // =========================================================================== #
-// Aba 1 — Visão geral
+// Aba 1 — Visão geral (KL-92 P2: access_log = fonte primária dos KPIs de visitante)
 // =========================================================================== #
-const METRIC_ORDER = [
-  ['unique_visitors', 'Visitantes únicos'], ['scans_manual', 'Scans realizados'],
-  ['accounts_created', 'Contas criadas'], ['conversion_rate', 'Conversão visitante→conta', '%'],
-  ['pageviews_per_session', 'Pageviews/sessão'], ['alert_click_rate', 'Clique em alertas', '%'],
-]
+const SERVER_TREND_COLORS = { visitors_br: '#58A6FF', scans: '#FF6B35', accounts: '#00D26A' }
+const SERVER_TREND_LABEL = { visitors_br: 'Visitantes BR', scans: 'Scans', accounts: 'Contas' }
 
-function OverviewTab({ period, includeBots }) {
-  const { data, loading, error } = useAsync(
-    () => Promise.all([admin.aaMetrics(period, includeBots), admin.aaTrend(period, undefined, includeBots), admin.aaFunnel(period, includeBots)])
-      .then(([metrics, trend, funnel]) => ({ metrics: metrics.metrics, trend, funnel: funnel.stages })),
-    [period, includeBots],
+// Badge discreto de fonte do dado (📡 server / 📱 tracker) — ajuda o admin durante a transição.
+function DataSourceBadge({ source }) {
+  const meta = DATA_SOURCE[source]
+  if (!meta) return null
+  return (
+    <span title={meta.title} className="shrink-0 text-[10px] font-normal text-klarim-muted">
+      {meta.icon} {meta.label}
+    </span>
   )
-  if (loading) return <Loading />
-  if (error) return <ErrorBox message={error} />
+}
+
+function OverviewTab({ period, includeBots, navigate, funnelSource }) {
+  // Fontes independentes: se uma falhar, a outra ainda renderiza (KL-92 P2).
+  const server = useAsync(() => admin.aaServerMetrics(period), [period])
+  const tracker = useAsync(() => admin.aaMetrics(period, includeBots), [period, includeBots])
+  const emailFunnel = useAsync(() => admin.aaFunnel(period, includeBots), [period, includeBots])
+
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {METRIC_ORDER.map(([key, label, suffix]) => (
-          <MetricCard key={key} label={label} m={data.metrics[key]} suffix={suffix} />
-        ))}
+      <KpiGrid server={server} tracker={tracker} />
+      <TrendBlock server={server} />
+      <FunnelBlock server={server} emailFunnel={emailFunnel} funnelSource={funnelSource} navigate={navigate} />
+    </div>
+  )
+}
+
+function fmtVal(v, suffix = '') {
+  if (v == null) return '—'
+  return `${typeof v === 'number' ? v.toLocaleString('pt-BR') : v}${suffix}`
+}
+
+function KpiGrid({ server, tracker }) {
+  const sm = server.data; const daily = sm?.daily_series; const tm = tracker.data?.metrics
+  const sState = { loading: server.loading, error: server.error }
+  const tState = { loading: tracker.loading, error: tracker.error }
+  const alertClick = tm?.alert_click_rate
+  const cards = [
+    { label: 'Visitantes BR', value: sm?.visitors_br, spark: sparkFromDaily(daily, 'visitors_br'), source: 'server', state: sState },
+    { label: 'Scans', value: sm?.scans, spark: sparkFromDaily(daily, 'scans'), source: 'server', state: sState },
+    { label: 'Contas criadas', value: sm?.accounts, spark: sparkFromDaily(daily, 'accounts'), source: 'server', state: sState },
+    { label: 'Bots filtrados', value: sm?.bots_filtered, source: 'server', state: sState },
+    { label: 'Conversão', value: sm?.server_funnel?.conversion_rates?.overall, suffix: '%', source: 'server', state: sState },
+    { label: 'Clique em alertas', value: alertClick?.value, suffix: '%', changePct: alertClick?.change_pct, spark: alertClick?.sparkline || [], source: 'tracker', state: tState },
+  ]
+  return (
+    <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+      {cards.map((c) => <KpiCard key={c.label} {...c} />)}
+    </div>
+  )
+}
+
+function KpiCard({ label, value, suffix, spark, changePct, source, state }) {
+  const data = spark ? spark.map((v, i) => ({ i, v: v ?? 0 })) : []
+  return (
+    <div className="rounded-lg border border-klarim-border bg-klarim-surface p-4">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs text-klarim-muted">{label}</p>
+        <DataSourceBadge source={source} />
       </div>
-      <Card title="Tendência">
+      {state?.loading ? <div className="mt-2 h-8 animate-pulse rounded bg-klarim-border/40" />
+        : state?.error ? <p className="mt-2 text-xs text-klarim-fail" title={state.error}>indisponível</p>
+          : (
+            <>
+              <div className="mt-1 flex items-end justify-between gap-2">
+                <span className="text-2xl font-bold">{fmtVal(value, suffix || '')}</span>
+                {changePct != null && <span className="text-xs">{fmtDelta(changePct)}</span>}
+              </div>
+              <div style={{ width: '100%', height: 40 }} className="mt-2">
+                {data.length > 1 && (
+                  <ResponsiveContainer>
+                    <LineChart data={data}><Line type="monotone" dataKey="v" stroke="#FF6B35" strokeWidth={1.5} dot={false} /></LineChart>
+                  </ResponsiveContainer>
+                )}
+              </div>
+            </>
+          )}
+    </div>
+  )
+}
+
+function TrendBlock({ server }) {
+  const rows = dailySeriesToTrend(server.data?.daily_series)
+  return (
+    <Card title={<span className="flex items-center justify-between">Tendência <DataSourceBadge source="server" /></span>}>
+      {server.loading ? <Loading /> : server.error ? <ErrorBox message={server.error} /> : (
         <div style={{ width: '100%', height: 250 }}>
           <ResponsiveContainer>
-            <LineChart data={trendData(data.trend)}>
+            <LineChart data={rows}>
               <XAxis dataKey="date" stroke="#8B949E" fontSize={10} tickFormatter={(d) => (d || '').slice(5)} />
               <YAxis stroke="#8B949E" fontSize={11} allowDecimals={false} />
               <Tooltip contentStyle={TOOLTIP_STYLE} />
               <Legend />
-              {Object.keys(data.trend.series || {}).map((k) => (
-                <Line key={k} type="monotone" dataKey={k} name={TREND_LABEL[k] || k}
-                  stroke={TREND_COLORS[k] || '#8B949E'} strokeWidth={2} dot={false} />
+              {['visitors_br', 'scans', 'accounts'].map((k) => (
+                <Line key={k} type="monotone" dataKey={k} name={SERVER_TREND_LABEL[k]}
+                  stroke={SERVER_TREND_COLORS[k]} strokeWidth={2} dot={false} />
               ))}
             </LineChart>
           </ResponsiveContainer>
         </div>
-      </Card>
-      <FunnelChart stages={data.funnel} />
-    </div>
+      )}
+    </Card>
   )
 }
 
-function trendData(trend) {
-  return (trend.dates || []).map((date, i) => {
-    const row = { date }
-    for (const [k, arr] of Object.entries(trend.series || {})) row[k] = arr[i] ?? 0
-    return row
-  })
-}
-
-function MetricCard({ label, m, suffix }) {
-  const value = m?.value ?? 0
-  const spark = (m?.sparkline || []).map((v, i) => ({ i, v }))
+function FunnelBlock({ server, emailFunnel, funnelSource, navigate }) {
+  const isServer = funnelSource === 'server'
+  const toggle = (key, icon, label) => (
+    <button onClick={() => navigate('overview', { funnel: key })}
+      className={`rounded px-2 py-0.5 text-xs ${(key === 'server') === isServer ? 'bg-klarim-alert text-klarim-bg font-semibold' : 'text-klarim-muted hover:text-klarim-text'}`}>
+      {icon} {label}
+    </button>
+  )
   return (
-    <div className="rounded-lg border border-klarim-border bg-klarim-surface p-4">
-      <p className="text-xs text-klarim-muted">{label}</p>
-      <div className="mt-1 flex items-end justify-between gap-2">
-        <span className="text-2xl font-bold">
-          {typeof value === 'number' ? value.toLocaleString('pt-BR') : value}{suffix || ''}
+    <Card title={
+      <span className="flex items-center justify-between gap-2">
+        <span>Funil de conversão <DataSourceBadge source={isServer ? 'server' : 'tracker'} /></span>
+        <span className="flex gap-1 rounded-lg border border-klarim-border p-0.5">
+          {toggle('email', '📱', 'email')}{toggle('server', '📡', 'server')}
         </span>
-        <span className="text-xs">{fmtDelta(m?.change_pct)}</span>
-      </div>
-      <div style={{ width: '100%', height: 40 }} className="mt-2">
-        {spark.length > 1 && (
-          <ResponsiveContainer>
-            <LineChart data={spark}><Line type="monotone" dataKey="v" stroke="#FF6B35" strokeWidth={1.5} dot={false} /></LineChart>
-          </ResponsiveContainer>
-        )}
-      </div>
-    </div>
+      </span>
+    }>
+      {isServer
+        ? (server.loading ? <Loading /> : server.error ? <ErrorBox message={server.error} />
+          : <ServerFunnelBars stages={serverFunnelStages(server.data?.server_funnel)} />)
+        : (emailFunnel.loading ? <Loading /> : emailFunnel.error ? <ErrorBox message={emailFunnel.error} />
+          : <><EmailFunnelBars stages={emailFunnel.data?.stages || []} /><FunnelLegend stages={emailFunnel.data?.stages || []} /></>)}
+    </Card>
   )
 }
 
-function FunnelChart({ stages }) {
+function EmailFunnelBars({ stages }) {
   const max = Math.max(1, ...stages.map((s) => s.total))
   return (
-    <Card title="Funil de conversão">
-      <div className="space-y-1">
-        {stages.map((s, i) => {
-          const widthPct = (s.total / max) * 100
-          const entries = Object.entries(s.by_campaign || {}).filter(([, v]) => v > 0)
-          return (
-            <div key={s.name}>
-              {i > 0 && (
-                <p className="py-0.5 text-center text-xs text-klarim-muted">
-                  {s.conversion_from_previous != null ? `${s.conversion_from_previous}% ↓` : ''}
-                </p>
-              )}
-              <div className="flex items-center gap-3">
-                <span className="w-40 shrink-0 text-right text-xs text-klarim-muted">{s.label}</span>
-                <div className={`h-7 flex-1 overflow-hidden rounded ${s.bottleneck ? 'ring-2 ring-klarim-fail' : ''}`}
-                  style={{ width: `${Math.max(widthPct, 3)}%`, minWidth: 40, background: '#0D1117' }}>
-                  <div className="flex h-full">
-                    {entries.length === 0 ? <div className="h-full w-full bg-klarim-border" /> :
-                      entries.map(([c, v]) => (
-                        <div key={c} title={`${c}: ${v}`} style={{ flex: v, background: CAMPAIGN_COLOR[c] || '#8B949E' }} />
-                      ))}
-                  </div>
+    <div className="space-y-1">
+      {stages.map((s, i) => {
+        const widthPct = (s.total / max) * 100
+        const entries = Object.entries(s.by_campaign || {}).filter(([, v]) => v > 0)
+        return (
+          <div key={s.name}>
+            {i > 0 && (
+              <p className="py-0.5 text-center text-xs text-klarim-muted">
+                {s.conversion_from_previous != null ? `${s.conversion_from_previous}% ↓` : ''}
+              </p>
+            )}
+            <div className="flex items-center gap-3">
+              <span className="w-40 shrink-0 text-right text-xs text-klarim-muted">{s.label}</span>
+              <div className={`h-7 flex-1 overflow-hidden rounded ${s.bottleneck ? 'ring-2 ring-klarim-fail' : ''}`}
+                style={{ width: `${Math.max(widthPct, 3)}%`, minWidth: 40, background: '#0D1117' }}>
+                <div className="flex h-full">
+                  {entries.length === 0 ? <div className="h-full w-full bg-klarim-border" /> :
+                    entries.map(([c, v]) => (
+                      <div key={c} title={`${c}: ${v}`} style={{ flex: v, background: CAMPAIGN_COLOR[c] || '#8B949E' }} />
+                    ))}
                 </div>
-                <span className="w-14 shrink-0 text-sm font-semibold">{fmtNum(s.total)}</span>
               </div>
+              <span className="w-14 shrink-0 text-sm font-semibold">{fmtNum(s.total)}</span>
             </div>
-          )
-        })}
-      </div>
-      <div className="mt-3 flex flex-wrap gap-3 text-xs text-klarim-muted">
-        {Object.entries(CAMPAIGN_COLOR).map(([c, color]) => (
-          <span key={c} className="inline-flex items-center gap-1">
-            <span className="inline-block h-2 w-2 rounded-full" style={{ background: color }} />{c}
-          </span>
-        ))}
-        {stages.some((s) => s.bottleneck) && <span className="text-klarim-fail">▮ gargalo</span>}
-      </div>
-    </Card>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function FunnelLegend({ stages }) {
+  return (
+    <div className="mt-3 flex flex-wrap gap-3 text-xs text-klarim-muted">
+      {Object.entries(CAMPAIGN_COLOR).map(([c, color]) => (
+        <span key={c} className="inline-flex items-center gap-1">
+          <span className="inline-block h-2 w-2 rounded-full" style={{ background: color }} />{c}
+        </span>
+      ))}
+      {stages.some((s) => s.bottleneck) && <span className="text-klarim-fail">▮ gargalo</span>}
+    </div>
+  )
+}
+
+function ServerFunnelBars({ stages }) {
+  const max = Math.max(1, ...stages.map((s) => s.total))
+  return (
+    <div className="space-y-1">
+      {stages.map((s, i) => (
+        <div key={s.key}>
+          {i > 0 && (
+            <p className="py-0.5 text-center text-xs text-klarim-muted">
+              {s.rate != null ? `${s.rate}% ↓` : ''}
+            </p>
+          )}
+          <div className="flex items-center gap-3">
+            <span className="w-32 shrink-0 text-right text-xs text-klarim-muted">{s.label}</span>
+            <div className="h-7 flex-1 overflow-hidden rounded" style={{ background: '#0D1117' }}>
+              <div className="h-full rounded bg-klarim-alert/70"
+                style={{ width: `${Math.max((s.total / max) * 100, 3)}%`, minWidth: 40 }} />
+            </div>
+            <span className="w-14 shrink-0 text-sm font-semibold">{fmtNum(s.total)}</span>
+          </div>
+        </div>
+      ))}
+    </div>
   )
 }
 
@@ -583,6 +676,198 @@ function SessionsDrilldown({ period, navigate }) {
           <PaginationBar page={page} pages={data.pagination.pages} total={data.pagination.total} onPage={setPage} />
         </div>
       )}
+    </Card>
+  )
+}
+
+// =========================================================================== #
+// Aba 5 — Comportamento (KL-92 P2: inteligência do access_log server-side)
+// =========================================================================== #
+function BehaviorTab({ period }) {
+  // Fontes independentes (loading/erro isolados): server-metrics (domínios+heatmap) e
+  // ip-behavior (multi-site+jornada+retenção). Uma falhar não zera a outra.
+  const server = useAsync(() => admin.aaServerMetrics(period), [period])
+  const behavior = useAsync(() => admin.aaIpBehavior(period), [period])
+  return (
+    <div className="space-y-6">
+      <TopDomainsBlock server={server} />
+      <MultiSiteBlock behavior={behavior} />
+      <PreSignupJourneyBlock behavior={behavior} />
+      <RetentionBlock behavior={behavior} />
+      <HeatmapBlock server={server} />
+    </div>
+  )
+}
+
+function BlockBody({ state, empty, children }) {
+  if (state.loading) return <Loading />
+  if (state.error) return <ErrorBox message={state.error} />
+  if (empty) return <p className="text-sm text-klarim-muted">{empty}</p>
+  return children
+}
+
+function TopDomainsBlock({ server }) {
+  const rows = server.data?.top_domains || []
+  return (
+    <Card title={<span className="flex items-center justify-between">Domínios mais consultados <DataSourceBadge source="server" /></span>}>
+      <BlockBody state={server} empty={!server.loading && !server.error && rows.length === 0 ? 'Nenhum domínio consultado no período.' : ''}>
+        <div className="overflow-x-auto rounded-lg border border-klarim-border">
+          <table className="w-full text-sm">
+            <thead className="bg-klarim-surface text-left text-xs text-klarim-muted">
+              <tr>{['Domínio', 'Views', 'IPs únicos', 'Scans'].map((h) => <th key={h} scope="col" className="px-3 py-2 font-medium">{h}</th>)}</tr>
+            </thead>
+            <tbody>
+              {rows.map((d) => (
+                <tr key={d.domain} className="border-t border-klarim-border">
+                  <td className="px-3 py-2">{d.domain}</td>
+                  <td className="px-3 py-2 text-right">{fmtNum(d.views)}</td>
+                  <td className="px-3 py-2 text-right text-klarim-muted">{fmtNum(d.unique_ips)}</td>
+                  <td className="px-3 py-2 text-right">{d.scans > 0 ? <Badge color="#FF6B35">{fmtNum(d.scans)}</Badge> : <span className="text-klarim-muted">0</span>}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </BlockBody>
+    </Card>
+  )
+}
+
+function MultiSiteBlock({ behavior }) {
+  const rows = behavior.data?.top_multi_site_ips || []
+  const avg = behavior.data?.avg_sites_per_visitor
+  return (
+    <Card title={<span className="flex items-center justify-between">Visitantes multi-site <DataSourceBadge source="server" /></span>}>
+      <BlockBody state={behavior} empty={!behavior.loading && !behavior.error && rows.length === 0 ? 'Nenhum visitante consultou mais de um site.' : ''}>
+        <p className="mb-2 text-xs text-klarim-muted">
+          {fmtNum(behavior.data?.multi_site_visitors)} visitantes viram &gt;1 site · média {avg ?? 0} sites/visitante
+        </p>
+        <div className="overflow-x-auto rounded-lg border border-klarim-border">
+          <table className="w-full text-sm">
+            <thead className="bg-klarim-surface text-left text-xs text-klarim-muted">
+              <tr>{['IP', 'País', 'Sites', 'Domínios'].map((h) => <th key={h} scope="col" className="px-3 py-2 font-medium">{h}</th>)}</tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => (
+                <tr key={`${r.ip_masked}-${i}`} className="border-t border-klarim-border">
+                  <td className="px-3 py-2 font-mono text-xs">{r.ip_masked}</td>
+                  <td className="px-3 py-2 text-klarim-muted">{r.country || '—'}</td>
+                  <td className="px-3 py-2 text-right font-semibold">{fmtNum(r.sites)}</td>
+                  <td className="max-w-xs truncate px-3 py-2 text-klarim-muted" title={(r.domains || []).join(', ')}>{(r.domains || []).join(', ') || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </BlockBody>
+    </Card>
+  )
+}
+
+function PreSignupJourneyBlock({ behavior }) {
+  const t = behavior.data?.typical_journey
+  const journeys = behavior.data?.pre_signup_journey || []
+  return (
+    <Card title={<span className="flex items-center justify-between">Jornada pré-signup <DataSourceBadge source="server" /></span>}>
+      <BlockBody state={behavior} empty={!behavior.loading && !behavior.error && journeys.length === 0 ? 'Sem contas criadas com atividade rastreável no período.' : ''}>
+        {t && (
+          <div className="mb-4 grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <TypicalStat label="1ª ação" value={t.most_common_first_action || '—'} mono />
+            <TypicalStat label="Passos até signup" value={t.avg_steps_before_signup} />
+            <TypicalStat label="Min. até signup" value={t.avg_minutes_to_signup} />
+            <TypicalStat label="Via alerta" value={`${t.pct_via_alert ?? 0}%`} />
+          </div>
+        )}
+        <div className="space-y-3">
+          {journeys.slice(0, 8).map((j, i) => (
+            <div key={i} className="rounded-lg border border-klarim-border p-3">
+              <div className="mb-1 flex items-center justify-between text-xs text-klarim-muted">
+                <span>{j.via_alert ? '📧 via alerta' : '🔍 orgânico'}{j.user_id ? ` · conta #${j.user_id}` : ''}</span>
+                <span>{j.returned_within_7d ? <span className="text-klarim-pass">voltou em 7d</span> : 'não voltou'}</span>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {j.steps_before.map((s, k) => (
+                  <span key={`b-${k}`} className="flex items-center gap-1.5">
+                    {k > 0 && <span className="text-klarim-muted" aria-hidden="true">→</span>}
+                    <span className="rounded bg-klarim-alert/15 px-2 py-0.5 font-mono text-[11px] text-klarim-alert">{s.endpoint}</span>
+                  </span>
+                ))}
+                {j.steps_after.length > 0 && <span className="text-klarim-muted" aria-hidden="true">⋯</span>}
+                {j.steps_after.map((s, k) => (
+                  <span key={`a-${k}`} className="rounded bg-klarim-border/40 px-2 py-0.5 font-mono text-[11px] text-klarim-muted">{s.endpoint}</span>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      </BlockBody>
+    </Card>
+  )
+}
+
+function TypicalStat({ label, value, mono }) {
+  return (
+    <div className="rounded-lg border border-klarim-border bg-klarim-bg p-3">
+      <p className="text-[10px] uppercase text-klarim-muted">{label}</p>
+      <p className={`mt-0.5 truncate text-sm font-semibold ${mono ? 'font-mono' : ''}`} title={String(value)}>{value}</p>
+    </div>
+  )
+}
+
+function RetentionBlock({ behavior }) {
+  const bars = retentionBars(behavior.data?.post_signup_retention)
+  return (
+    <Card title={<span className="flex items-center justify-between">Retenção pós-signup <DataSourceBadge source="server" /></span>}>
+      <BlockBody state={behavior}>
+        <div className="space-y-3">
+          {bars.map((b) => (
+            <div key={b.key} className="flex items-center gap-3">
+              <span className="w-8 shrink-0 text-sm font-semibold">{b.label}</span>
+              <div className="h-6 flex-1 overflow-hidden rounded" style={{ background: '#0D1117' }}>
+                <div className="h-full rounded bg-klarim-pass/70" style={{ width: `${Math.max(b.pct, 1)}%` }} />
+              </div>
+              <span className="w-24 shrink-0 text-right text-xs text-klarim-muted">{b.pct}% ({b.returned}/{b.total})</span>
+            </div>
+          ))}
+        </div>
+        <p className="mt-3 text-xs text-klarim-muted">% de quem criou conta que retornou em até 1/3/7 dias (por IP).</p>
+      </BlockBody>
+    </Card>
+  )
+}
+
+function HeatmapBlock({ server }) {
+  const hm = server.data?.hourly_heatmap
+  const grid = hm?.grid || []
+  const max = hm?.max || 0
+  return (
+    <Card title={<span className="flex items-center justify-between">Mapa de calor por hora <DataSourceBadge source="server" /></span>}>
+      <BlockBody state={server} empty={!server.loading && !server.error && max === 0 ? 'Sem tráfego no período.' : ''}>
+        <div className="overflow-x-auto">
+          <table className="border-separate" style={{ borderSpacing: 2 }}>
+            <thead>
+              <tr>
+                <th className="pr-2" />
+                {Array.from({ length: 24 }, (_, h) => (
+                  <th key={h} className="text-[9px] font-normal text-klarim-muted">{h % 6 === 0 ? h : ''}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {grid.map((row, dow) => (
+                <tr key={dow}>
+                  <td className="pr-2 text-right text-[10px] text-klarim-muted">{DOW_LABELS[dow]}</td>
+                  {row.map((count, h) => (
+                    <td key={h} title={`${DOW_LABELS[dow]} ${h}h: ${count}`}
+                      style={{ width: 14, height: 14, background: heatColor(count, max), border: '1px solid #21262D', borderRadius: 2 }} />
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <p className="mt-2 text-xs text-klarim-muted">Requests humanos por dia da semana × hora (UTC). Máx: {fmtNum(max)}.</p>
+      </BlockBody>
     </Card>
   )
 }

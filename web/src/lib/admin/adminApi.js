@@ -209,6 +209,9 @@ export const admin = {
   aaJourneys: (period = '7d', limit = 10, includeBots = false) =>
     get(`/admin/analytics/journeys${qs({ period, limit, include_bots: includeBots || undefined })}`),
   aaFunnelBySector: (period = '7d', includeBots = false) => get(`/admin/analytics/funnel-by-sector${qs({ period, include_bots: includeBots || undefined })}`),
+  // KL-92 P2: analytics server-side (access_log) — fonte de verdade das métricas de visitante.
+  aaServerMetrics: (period = '7d') => get(`/admin/analytics/server-metrics${qs({ period })}`),
+  aaIpBehavior: (period = '7d') => get(`/admin/analytics/ip-behavior${qs({ period })}`),
   // KL-64: export CSV server-side (streaming, respeita os filtros ativos + is_human). Baixa direto.
   aaEventsExport: (params) => adminDownload(`/admin/analytics/events/export${qs(params)}`, 'klarim-eventos.csv'),
 

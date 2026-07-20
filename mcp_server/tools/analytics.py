@@ -127,7 +127,9 @@ async def get_server_metrics(period: str = "7d") -> dict:
     async def _impl():
         from api import admin_analytics as aa
         data = await aa.server_metrics(None, period=period, start=None, end=None)
-        data.pop("hourly_distribution", None)  # array de 24h — omitido p/ economizar tokens
+        # arrays grandes (24h · série diária · grade 7×24) — omitidos p/ economizar tokens
+        for k in ("hourly_distribution", "daily_series", "hourly_heatmap"):
+            data.pop(k, None)
         return data
     return await _guard(_impl)
 
@@ -135,11 +137,15 @@ async def get_server_metrics(period: str = "7d") -> dict:
 @mcp.tool()
 async def get_ip_behavior(period: str = "7d") -> dict:
     """KL-92 — comportamento por IP (só humanos): visitantes multi-site (consultaram >1
-    domínio), recorrentes (ativos em >1 dia), média de sites/visitante e os tops (IPs
-    MASCARADOS por LGPD). Períodos: today, 7d, 30d, 90d."""
+    domínio), recorrentes (ativos em >1 dia), média de sites/visitante, os tops (IPs
+    MASCARADOS por LGPD), a jornada TÍPICA pré-signup e a retenção D1/D3/D7. A lista
+    detalhada de jornadas por IP é omitida (economia de tokens; use o painel). Períodos:
+    today, 7d, 30d, 90d."""
     async def _impl():
         from api import admin_analytics as aa
-        return await aa.ip_behavior(None, period=period, start=None, end=None)
+        data = await aa.ip_behavior(None, period=period, start=None, end=None)
+        data.pop("pre_signup_journey", None)  # lista grande de passos por IP — só no painel
+        return data
     return await _guard(_impl)
 
 

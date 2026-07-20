@@ -251,11 +251,12 @@ response** (1 octeto em ip-behavior, 2 em ip-detail), completo só no banco.
 
 | Método | Path | Descrição |
 |---|---|---|
-| GET | `/admin/analytics/server-metrics` | `?period=today\|7d\|30d\|90d` — visitantes BR/total (IPs únicos, `is_bot=false`), `bots_filtered`, scans, contas, PDFs, `alert_clicks_br`, `profiles_viewed_br`, `unique_domains_queried`, `top_countries`, `top_endpoints`, `hourly_distribution` (24h densa) |
-| GET | `/admin/analytics/ip-behavior` | `?period=…` — `multi_site_visitors` (consultaram >1 domínio), `returning_visitors` (ativos em >1 dia), `avg_sites_per_visitor`, `top_multi_site_ips`/`top_returning_ips` com `ip_masked` (1º octeto) |
+| GET | `/admin/analytics/server-metrics` | `?period=today\|7d\|30d\|90d` — visitantes BR/total (IPs únicos, `is_bot=false`), `bots_filtered`, scans, contas, PDFs, `alert_clicks_br`, `profiles_viewed_br`, `unique_domains_queried`, `top_countries`, `top_endpoints`, `hourly_distribution` (24h densa). **P2:** + `server_funnel` (visitante→perfil→scan→conta→PDF + `conversion_rates`), `top_domains` (≤20), `daily_series` (tendência), `hourly_heatmap` (grade 7×24) |
+| GET | `/admin/analytics/ip-behavior` | `?period=…` — `multi_site_visitors` (consultaram >1 domínio), `returning_visitors` (ativos em >1 dia), `avg_sites_per_visitor`, `top_multi_site_ips`/`top_returning_ips` com `ip_masked` (1º octeto). **P2:** + `pre_signup_journey` (por IP, -24h a +7d), `typical_journey`, `post_signup_retention` (D1/D3/D7). Cache **10 min** |
 | GET | `/admin/analytics/ip-detail` | `?ip={ip}` (IP completo, admin-only; 422 se inválido) — first/last seen, dias ativos, domínios consultados, ações, user_id, is_bot, timeline. `ip` no response mascarado (2 octetos) |
 
-> **MCP:** `get_server_metrics` (sem `hourly_distribution`, economia de tokens), `get_ip_behavior`, `get_ip_detail(ip)`.
+> **P2 (jornada/retenção):** chaveadas por **IP**, não user_id — no `POST /signup` a conta ainda não tem cookie (`user_id` NULL); o user_id é recolhido das requests pós-signup.
+> **MCP:** `get_server_metrics` (omite `hourly_distribution`/`daily_series`/`hourly_heatmap`), `get_ip_behavior` (omite a lista detalhada de jornadas), `get_ip_detail(ip)`.
 
 ### Taxonomia aberta de setores (KL-84, `api/admin_sectors.py`) — admin-only (prefixo `/admin` → middleware JWT)
 

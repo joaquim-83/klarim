@@ -80,3 +80,62 @@ export function buildTabHash(tab, params = {}) {
     Object.entries(params).filter(([, v]) => v != null && v !== '')).toString()
   return `#${tab}${qs ? `?${qs}` : ''}`
 }
+
+// =========================================================================== #
+// KL-92 Prompt 2 — dashboard server-side (access_log). Lógica PURA (testável).
+// =========================================================================== #
+
+// Fonte de cada número no dashboard durante a transição (badge discreto).
+export const DATA_SOURCE = {
+  server: { icon: '📡', label: 'server', title: 'access_log (IP real, server-side)' },
+  tracker: { icon: '📱', label: 'tracker', title: 'site_events (tracker.js, client-side)' },
+}
+
+// daily_series ({dates, visitors_br[], scans[], accounts[]}) → linhas p/ o LineChart.
+export function dailySeriesToTrend(series) {
+  const dates = series?.dates || []
+  return dates.map((date, i) => ({
+    date,
+    visitors_br: series.visitors_br?.[i] ?? 0,
+    scans: series.scans?.[i] ?? 0,
+    accounts: series.accounts?.[i] ?? 0,
+  }))
+}
+
+// Sparkline de um KPI a partir da série diária (array de números).
+export function sparkFromDaily(series, key) {
+  return (series?.[key] || []).map((v) => v ?? 0)
+}
+
+// server_funnel → etapas ordenadas p/ render (label + total + taxa da etapa anterior).
+const SERVER_FUNNEL_ORDER = [
+  ['visitors_br', 'Visitantes BR', null],
+  ['viewed_profile', 'Viu perfil', 'visit_to_profile'],
+  ['started_scan', 'Iniciou scan', 'profile_to_scan'],
+  ['completed_scan', 'Concluiu scan', null],
+  ['created_account', 'Criou conta', 'scan_to_account'],
+  ['downloaded_pdf', 'Baixou PDF', 'account_to_pdf'],
+]
+export function serverFunnelStages(funnel) {
+  const rates = funnel?.conversion_rates || {}
+  return SERVER_FUNNEL_ORDER.map(([key, label, rateKey]) => ({
+    key, label, total: funnel?.[key] ?? 0,
+    rate: rateKey ? (rates[rateKey] ?? null) : null,
+  }))
+}
+
+// Retenção {day_1,day_3,day_7} → barras horizontais ordenadas.
+export function retentionBars(retention) {
+  return [['day_1', 'D1'], ['day_3', 'D3'], ['day_7', 'D7']].map(([k, label]) => {
+    const r = retention?.[k] || { returned: 0, total: 0, pct: 0 }
+    return { key: k, label, pct: r.pct ?? 0, returned: r.returned ?? 0, total: r.total ?? 0 }
+  })
+}
+
+// Cor de uma célula do mapa de calor (laranja da marca, opacidade ∝ volume). max=0 → transparente.
+export function heatColor(count, max) {
+  if (!max || count <= 0) return 'transparent'
+  const op = Math.max(0.08, Math.min(1, count / max))
+  return `rgba(255,107,53,${op.toFixed(2)})`
+}
+export const DOW_LABELS = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb']
