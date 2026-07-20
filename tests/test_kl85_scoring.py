@@ -177,6 +177,41 @@ def test_worker_bounce_penalizes(monkeypatch):
     assert kept == [] and skipped == 1 and store.scores[5] == -30
 
 
+# --- Fix 2026-07-20: bounce por-domínio NÃO penaliza provedores genéricos ---------------------- #
+def test_domain_bounced_free_provider_short_circuits(monkeypatch):
+    # gmail.com TEM bounce no banco, mas é provedor genérico → curto-circuita p/ False (não lê
+    # store/redis). Domínio corporativo com bounce → True (comportamento normal).
+    store = FakeStore(bounce_domains={"gmail.com", "empresa.com.br"})
+    w = _worker(monkeypatch, store)
+    assert _run(w._domain_bounced("gmail.com", {})) is False
+    assert _run(w._domain_bounced("empresa.com.br", {})) is True
+
+
+def test_calc_score_bounce_ignored_for_free_domain():
+    # e-mail genérico (gmail) + bounce → NÃO aplica -40 (um bounce em outro gmail é irrelevante).
+    r = calculate_alert_score({"domain": "hotel.com.br", "last_scan_score": 70},
+                              "zezinho@gmail.com", domain_bounced=True)
+    assert "bounce_domain" not in _sig(r)
+
+
+def test_calc_score_bounce_applies_for_corporate_domain():
+    # domínio corporativo próprio + bounce → aplica -40 (servidor de e-mail da empresa com problema).
+    r = calculate_alert_score({"domain": "hotel.com.br", "last_scan_score": 70},
+                              "a@othercorp.com", domain_bounced=True)
+    assert "bounce_domain" in _sig(r)
+
+
+def test_worker_gmail_bounce_not_double_penalized(monkeypatch):
+    # E2E: alvo com e-mail gmail (mismatch) + gmail com bounce no banco → NÃO leva -40; fica em
+    # -20 (mismatch_free) +20 (zona de ação) = 0 (antes do fix era -40). Documenta que o fix do
+    # bounce sozinho leva o alvo a 0 — ainda abaixo do threshold 20 (o -20/threshold é o outro gargalo).
+    store = FakeStore(bounce_domains={"gmail.com"})
+    w = _worker(monkeypatch, store)
+    targets = [{"id": 9, "domain": "hotel.com.br", "last_scan_score": 70, "contact_email": "x@gmail.com"}]
+    _run(w._apply_alert_scoring(targets))
+    assert store.scores[9] == 0
+
+
 def test_worker_scoring_failsafe_keeps_target(monkeypatch):
     """Bug de scoring NÃO derruba o alvo (fail-safe: mantém)."""
     store = FakeStore()

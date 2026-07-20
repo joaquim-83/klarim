@@ -100,7 +100,10 @@ def calculate_alert_score(target: Dict[str, Any], contact_email: Optional[str],
         add(-15, "role_based_prefix")
     if target.get("status") == "descartado" or (sc is not None and sc < 40):
         add(-10, "abandoned_or_low_score")
-    if domain_bounced:
+    # Bounce por DOMÍNIO só penaliza domínio próprio/corporativo. Num provedor genérico
+    # (gmail/outlook/…), um bounce em joao@gmail.com NÃO diz nada sobre maria@gmail.com — são
+    # endereços independentes. Penalizar o domínio inteiro filtrava ~38% do pool (fix 2026-07-20).
+    if domain_bounced and edomain not in FREE_EMAIL_DOMAINS:
         add(-40, "bounce_domain")                 # histórico ruim → protege reputação
 
     return {"score": score, "signals": signals}

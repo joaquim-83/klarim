@@ -27,7 +27,7 @@ from notifier import KlarimMailer, KlarimMailerError, build_unsubscribe_link
 from .store import get_target_store
 from .heartbeat import publish_heartbeat
 from .contact import email_mx_status, _clean_email
-from .alert_scoring import calculate_alert_score
+from .alert_scoring import FREE_EMAIL_DOMAINS, calculate_alert_score
 from . import worker_control
 
 # Formato de e-mail aceito no batch. 1 e-mail malformado faz o Resend Batch API
@@ -302,6 +302,10 @@ class AlertWorker:
         qualquer erro → False (não penaliza por falha de infra)."""
         dom = (domain or "").strip().lower()
         if not dom:
+            return False
+        # Provedores genéricos (gmail/outlook/…) NUNCA são penalizados por domínio: um bounce em
+        # joao@gmail.com não diz nada sobre maria@gmail.com. Evita a query + polui cache (fix 2026-07-20).
+        if dom in FREE_EMAIL_DOMAINS:
             return False
         if dom in cache:
             return cache[dom]
