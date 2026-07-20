@@ -4,7 +4,7 @@
 // resultado progressivo. O antigo fluxo de código de 6 dígitos (KL-25) fica DORMENTE ao fim
 // do arquivo como fallback (regra 9 do card — não remover, apenas despriorizar).
 import { useEffect, useRef, useState } from 'react';
-import { CATEGORIES } from './checks.js';
+import { SCAN_CATEGORIES, getCategoryStatus } from '../../lib/scanView.js';
 import ScanResultDetail from './ScanResultDetail.jsx';
 
 const TIPS = [
@@ -66,6 +66,7 @@ export default function ScanFlow({ url: initialUrl = '', user = null }) {
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
   const [limitMsg, setLimitMsg] = useState('');
+  const [completing, setCompleting] = useState(false); // KL-89 fix 6: beat de 100% antes do resultado
   const startedRef = useRef(false);
 
   const domain = domainOf(url);
@@ -109,7 +110,9 @@ export default function ScanFlow({ url: initialUrl = '', user = null }) {
       window.klarimTrack?.(data.access_level === 'anonymous' ? 'scan_anonymous' : 'scan_authenticated', { score: data.score }, url);
       window.klarimTrack?.('scan_completed', { score: data.score }, url);
       window.klarimTrack?.('result_viewed', {}, url);
-      setStep('result');
+      // KL-89 fix 6: fecha as 6 categorias em 100% (✅) por ~0,9s antes de transicionar p/ o resultado.
+      setCompleting(true);
+      setTimeout(() => setStep('result'), 900);
     } catch {
       if (attempt < 2) { await new Promise((r) => setTimeout(r, 20000)); return runScan(attempt + 1); }
       setError('A análise está demorando mais que o esperado. Tente novamente em instantes.');
@@ -124,7 +127,7 @@ export default function ScanFlow({ url: initialUrl = '', user = null }) {
   }
   return (
     <div className="mx-auto max-w-2xl">
-      {step === 'progress' && <ProgressStep domain={domain} />}
+      {step === 'progress' && <ProgressStep domain={domain} complete={completing} />}
       {step === 'limit' && <LimitStep message={limitMsg} url={url} />}
       {step === 'error' && <ErrorCard message={error} onRetry={() => { setStep('progress'); startedRef.current = false; runScan(); }} />}
     </div>
@@ -132,32 +135,41 @@ export default function ScanFlow({ url: initialUrl = '', user = null }) {
 }
 
 // --- Progresso (simulado durante o scan bloqueante) ------------------------- #
-function ProgressStep({ domain }) {
+function ProgressStep({ domain, complete = false }) {
   const [pct, setPct] = useState(4);
   const [tip, setTip] = useState(0);
-  const [catIdx, setCatIdx] = useState(0);
   useEffect(() => {
+    if (complete) return; // scan terminou → congela a simulação; o pct efetivo vai a 100 abaixo
     const p = setInterval(() => setPct((v) => Math.min(94, v + Math.random() * 6 + 2)), 1400);
     const t = setInterval(() => setTip((i) => (i + 1) % TIPS.length), 5000);
-    const c = setInterval(() => setCatIdx((i) => Math.min(CATEGORIES.length, i + 1)), 3500);
-    return () => { clearInterval(p); clearInterval(t); clearInterval(c); };
-  }, []);
+    return () => { clearInterval(p); clearInterval(t); };
+  }, [complete]);
+  // KL-89 fix 6: as 6 categorias avançam done/active/pending conforme o % (proxy visual honesto —
+  // o backend só devolve o % global). Ao completar, todas fecham em ✅ por ~0,9s antes do resultado.
+  const shownPct = complete ? 100 : pct;
   return (
     <div className={card}>
       <p className="text-sm text-slate-400">Analisando</p>
       <p className="text-xl font-bold text-white">{domain}</p>
       <div className="mt-6 h-2.5 w-full overflow-hidden rounded-full bg-slate-800">
-        <div className="h-full rounded-full bg-brand-500 transition-all duration-700 ease-out" style={{ width: `${pct}%` }} />
+        <div className="h-full rounded-full bg-brand-500 transition-all duration-700 ease-out" style={{ width: `${shownPct}%` }} />
       </div>
-      <p className="mt-2 text-sm text-slate-400">{Math.round(pct)}% — 48 verificações de segurança</p>
+      <p className="mt-2 text-sm text-slate-400">{Math.round(shownPct)}% — 48 verificações de segurança</p>
       <ul className="mt-6 space-y-2">
-        {CATEGORIES.map((cat, i) => (
-          <li key={cat} className="flex items-center gap-2 text-sm">
-            <span className={i < catIdx ? 'text-brand-400' : 'text-slate-600'}>{i < catIdx ? '✓' : '○'}</span>
-            <span className={i < catIdx ? 'text-slate-200' : 'text-slate-500'}>{cat}</span>
-            {i === catIdx && <span className="text-slate-500">analisando…</span>}
-          </li>
-        ))}
+        {SCAN_CATEGORIES.map((cat) => {
+          const st = getCategoryStatus(cat, shownPct);
+          return (
+            <li key={cat.name} className="flex items-center gap-2 text-sm">
+              <span aria-hidden="true" className={
+                st === 'done' ? 'text-emerald-400' : st === 'active' ? 'text-brand-400' : 'text-slate-600'}>
+                {st === 'done' ? '✅' : st === 'active' ? '⏳' : '○'}
+              </span>
+              <span className={st === 'pending' ? 'text-slate-500' : 'text-slate-200'}>{cat.name}</span>
+              {st === 'done' && <span className="text-emerald-500/80">concluído</span>}
+              {st === 'active' && <span className="animate-pulse text-brand-400">analisando…</span>}
+            </li>
+          );
+        })}
       </ul>
       <p className="mt-6 rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-3 text-sm text-slate-400">💡 {TIPS[tip]}</p>
     </div>

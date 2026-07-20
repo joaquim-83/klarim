@@ -322,7 +322,7 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
 - Alvos: ~25.400 · Scans: ~8.100 · Perfis públicos: ~7.200
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1284 passed** (backend pytest) + **61 node --test** (frontend `test:unit`, KL-89: +26)
+- Testes: **1284 passed** (backend pytest) + **67 node --test** (frontend `test:unit`, KL-89: +32)
   · MCP tools: **58+** (KL-75: +3 tecnografia)
 - Workers: **5/5 ativos** (discovery, alert, scan, vigília, rescan)
 - Planos: 8 contas Pro trial · Vigílias: 35 (30 ok, 5 error)
@@ -499,6 +499,15 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   mostrado **mascarado** `j***o@x.com` via `maskEmail`, real nunca no HTML); orgânico → "**Este**
   site. E o seu?" + e-mail+senha (signup inline `/api/account/signup`). +26 testes `node --test`
   (`scanView.test.js` + `layout.test.js`), ligados no `npm run test:unit` (CI).
+  **Correções pós-entrega ✅:** (1) **riscos ANTES de detalhes** no resultado (linguagem de negócio
+  primeiro); (2) **LGPD travado em desktop E mobile** p/ anonymous/unconfirmed (`showPrivacy=full`);
+  (3) **botão PDF com destaque** brand (`bg-brand-500`, `text-[var(--accent-text)]` p/ contraste
+  light/dark); (4) e-mail HMAC mascarado + só-senha idêntico em mobile e desktop (as flags derivam
+  só do nível, nunca do device); (5) **benchmark PÚBLICO** — visível sem cadeado em TODO nível
+  (`showBenchmark=true` + 1 linha no `_filter_scan_result` que inclui o agregado nacional no payload
+  anônimo; não é PII); (6) **scanner com progresso real por categoria** (`SCAN_CATEGORIES` +
+  `getCategoryStatus` puros: as 6 camadas avançam ○→⏳→✅ pelo % global, com beat de 100% antes do
+  resultado). +6 testes.
 - **KL-83** — Redesign do Analytics admin (Prompt 1 de 2) ✅. Módulo dedicado
   **`api/admin_analytics.py`** (não toca o analytics antigo do KL-21): **8 endpoints**
   `/admin/analytics/{metrics,trend,funnel,events,sessions,pages,journeys,funnel-by-sector}`,

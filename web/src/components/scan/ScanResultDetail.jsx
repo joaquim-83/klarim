@@ -22,6 +22,11 @@ const btn =
 const btnGhost =
   'inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-slate-700 px-4 py-3 ' +
   'text-sm font-semibold text-slate-200 transition-colors hover:bg-slate-800 active:scale-[0.98]';
+// PDF = entrega de maior valor → destaque com o laranja da marca (brand-500 = #ff6b35).
+// `text-[var(--accent-text)]` garante contraste no tema light e no dark (KL-87), não `text-white`.
+const btnAccent =
+  'inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-brand-500 px-4 py-3 ' +
+  'text-sm font-semibold text-[var(--accent-text)] transition-colors hover:bg-brand-400 active:scale-[0.98]';
 const inputCls =
   'h-12 w-full rounded-xl border border-slate-700 bg-slate-800/80 px-4 text-base text-white ' +
   'placeholder:text-slate-500 outline-none transition-colors focus:border-brand-500 focus:ring-2 focus:ring-brand-500/30';
@@ -36,13 +41,13 @@ export default function ScanResultDetail({ result, url = '' }) {
   const flags = viewFlags(result);
   const domain = result.domain || result.profile_domain || '';
 
-  // Coluna do relatório (mesma ordem em todos os níveis; o conteúdo de cada seção varia pelo
-  // que o backend entregou). Barras de categoria e "1 risco" ficam no topo (above the fold).
+  // Coluna do relatório. Ordem (KL-89 fix 1): RISCOS primeiro (linguagem de negócio, converte)
+  // → benchmark (contextualiza o score) → detalhes técnicos → indicadores de privacidade.
   const details = (
     <div className="space-y-6">
-      <CategoriesSection result={result} flags={flags} />
       <RisksSection result={result} flags={flags} url={url} />
-      <BenchmarkSection result={result} flags={flags} url={url} />
+      <BenchmarkSection result={result} />
+      <CategoriesSection result={result} flags={flags} />
       <PrivacySection result={result} flags={flags} url={url} />
     </div>
   );
@@ -150,7 +155,7 @@ function ShareRow({ result, domain, flags, url }) {
         <button type="button" onClick={copy} className={btnGhost}>{copied ? '✓ Copiado' : '🔗 Copiar'}</button>
         {reports && (
           <div className="relative">
-            <button type="button" onClick={() => setPdfOpen((o) => !o)} className={btnGhost}
+            <button type="button" onClick={() => setPdfOpen((o) => !o)} className={btnAccent}
               aria-expanded={pdfOpen}>📄 Baixar PDF <span className="text-xs">▾</span></button>
             {pdfOpen && (
               <div className="absolute left-1/2 z-10 mt-2 w-64 -translate-x-1/2 overflow-hidden rounded-xl border border-slate-700 bg-slate-900 text-left shadow-xl">
@@ -312,14 +317,8 @@ function MonitorNote({ domain }) {
   );
 }
 
-// --- Benchmark -------------------------------------------------------------------------------- #
-function BenchmarkSection({ result, flags, url }) {
-  if (flags.benchmarkLocked) {
-    return (
-      <LockedSection title="📊 Benchmark do setor"
-        cta="Crie uma conta gratuita para comparar com o mercado" url={url} />
-    );
-  }
+// --- Benchmark (PÚBLICO — sempre visível, sem cadeado, KL-89 fix 5) -------------------------- #
+function BenchmarkSection({ result }) {
   const b = result.benchmark;
   if (!b || !b.count) return null;
   const above = (result.score ?? 0) >= b.avg_score;
@@ -473,7 +472,8 @@ function CheckRow({ check }) {
 
 // --- Indicadores de privacidade / LGPD (só com acesso completo) ------------------------------ #
 function PrivacySection({ result, flags, url }) {
-  if (!flags.showLGPD) {
+  // Travado p/ anonymous E unconfirmed (desktop e mobile) — deriva só do nível (KL-89 fix 2).
+  if (!flags.showPrivacy) {
     return (
       <LockedSection title="⚖️ Indicadores de privacidade (LGPD)"
         cta="Crie uma conta gratuita para ver os 8 indicadores de privacidade" url={url} />

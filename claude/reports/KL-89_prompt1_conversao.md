@@ -176,4 +176,71 @@ fica no cookie HttpOnly e o signup do alerta manda **só a senha** (`/api/accoun
 
 ## Pendente (Prompt 2, deferido)
 
-Resultado instantâneo direto do e-mail e feedback por categoria no scanner.
+Resultado instantâneo direto do e-mail e feedback por categoria no scanner (o feedback por
+categoria foi antecipado no Fix 6 abaixo).
+
+---
+
+# Correções pós-entrega (6 fixes)
+
+Ajustes no componente de resultado após revisão. Quase tudo frontend; **uma** linha de backend
+foi necessária (Fix 5) — justificada abaixo.
+
+### Fix 1 — Riscos antes dos detalhes
+`ScanResultDetail.jsx`: a coluna do relatório passou a renderizar **Riscos para o negócio →
+Benchmark → Detalhes da análise → Indicadores de privacidade**. Os riscos (KL-20, linguagem
+humana) são o conteúdo que converte; os detalhes técnicos ficam como complemento.
+
+### Fix 2 — LGPD travado em desktop E mobile para anônimo
+`scanView.js`: `showLGPD` renomeado para **`showPrivacy` = `full`** (só confirmed/alert_session).
+`PrivacySection` mostra o teaser travado para anonymous **e** unconfirmed. Não havia gate por
+breakpoint no código (confirmado por varredura: zero `md:hidden`/`innerWidth`/`matchMedia`) — a
+visibilidade deriva **só do nível**, então desktop e mobile já são idênticos.
+
+### Fix 3 — Botão PDF com destaque
+Novo estilo `btnAccent` (`bg-brand-500` = #ff6b35 + `text-[var(--accent-text)]`) no botão "Baixar
+PDF"; WhatsApp/LinkedIn/Copiar seguem outline neutro. Uso de `--accent-text` (não `text-white`)
+garante contraste correto no tema **light e dark** (regra KL-87) — `text-white` sobre laranja teria
+contraste ruim.
+
+### Fix 4 — E-mail HMAC (só senha) idêntico no mobile
+O `passwordOnly` vem de `viewFlags(access_level)` (device-agnostic); o `access_level` é decidido
+pelo backend a partir do cookie `alert_session` enviado com `credentials:'include'` — sem
+dependência de viewport. Portanto o visitante do alerta vê **só senha + e-mail mascarado** tanto no
+desktop quanto no mobile. Coberto por teste (`passwordOnly` por nível).
+
+### Fix 5 — Benchmark público (sem cadeado) — inclui 1 linha de backend
+`viewFlags.showBenchmark = true` para **todos** os níveis; removido `benchmarkLocked` e o
+`BenchmarkSection` não trava mais. **Necessário 1 ajuste no backend:** o `_filter_scan_result`
+**omitia** o benchmark no payload anônimo (`benchmark_locked=True`, sem dados) — sem os dados o
+frontend não tinha o que mostrar. Adicionada 1 linha que inclui o benchmark (média nacional
+agregada + contagem) no branch anônimo. **Revisão de segurança:** é dado **agregado público**, já
+exposto em `/estatisticas` e `/setores` a qualquer visitante; **nenhum** dado por-site ou PII vaza
+(checks/evidência/privacidade continuam travados). Foi a menor mudança possível para cumprir o
+requisito "benchmark visível para todos" — impossível só no frontend porque a API não entregava o
+dado. Teste `test_filter_anonymous_is_preview_only` atualizado.
+
+### Fix 6 — Scanner com progresso real por categoria
+`scanView.js`: `SCAN_CATEGORIES` (6 camadas com faixas de %) + `getCategoryStatus(cat, %)` puros
+(`done`/`active`/`pending`). `ScanFlow.jsx::ProgressStep` deriva o estado de cada categoria do
+percentual (○ → ⏳ *analisando…* com pulse → ✅ *concluído*), em vez de mostrar as 6 ✅ de uma vez.
+A barra de progresso continua acima. Ao completar, um `completing` leva o % a 100 (todas ✅) por
+~0,9s antes de transicionar para o resultado. Ex.: ~52% → 3 ✅, 1 ⏳, 2 ○.
+
+### Testes e validação (fixes)
+- **`npm run test:unit`: 67 passed** (+6: `getCategoryStatus` nos boundaries/0%/100%/~52%,
+  `SCAN_CATEGORIES`, benchmark público em todos os níveis, `showPrivacy` por nível).
+- **`npm run build`: verde.**
+- **`pytest`: 1284 passed, 1 skipped** (`test_kl82_progressive` atualizado para o benchmark público).
+
+| # | Validação do card | Status |
+|---|---|---|
+| 1 | Riscos antes de Detalhes (desktop + mobile) | ✅ |
+| 2 | LGPD com cadeado p/ anônimo em ambas as versões | ✅ |
+| 3 | Botão PDF com cor accent | ✅ |
+| 4 | HMAC no mobile: só senha + e-mail mascarado | ✅ |
+| 5 | Benchmark visível para todos, sem cadeado | ✅ (1 linha backend, justificada) |
+| 6 | Scanner progride categoria a categoria | ✅ |
+| 7 | ~50% → 3 ✅ / 1 ⏳ / 2 ○ (não 6 ✅) | ✅ |
+| 8 | Testes atualizados e passando | ✅ (67) |
+| 9 | Build Astro verde | ✅ |

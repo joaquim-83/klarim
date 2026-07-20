@@ -6,6 +6,7 @@ import assert from 'node:assert/strict'
 import {
   accessLevelOf, isAlertVisitor, hasAccount, isFullAccess, maskEmail, maskedEmailOf,
   scoreHeadline, shareLabel, ctaCopy, viewFlags, reportUrls,
+  SCAN_CATEGORIES, getCategoryStatus,
 } from './scanView.js'
 
 // --- nível de acesso ------------------------------------------------------------------------- #
@@ -105,28 +106,26 @@ test('ctaCopy: orgânico sem domínio → "este site"', () => {
   assert.equal(ctaCopy(false, '').title, 'Monitore este site gratuitamente')
 })
 
-// --- tabela de visibilidade (KL-89 item 2) --------------------------------------------------- #
-test('viewFlags: anonymous mostra CTA, barras, 1 risco; trava benchmark/LGPD/evidência', () => {
+// --- tabela de visibilidade (KL-89 item 2 + fixes 2/5) --------------------------------------- #
+test('viewFlags: anonymous mostra CTA/barras/benchmark; trava LGPD e evidência', () => {
   const f = viewFlags({ access_level: 'anonymous' })
   assert.equal(f.showCTA, true)
   assert.equal(f.showShare, true)
   assert.equal(f.showPdf, true)
-  assert.equal(f.showBenchmark, false)
-  assert.equal(f.benchmarkLocked, true)
+  assert.equal(f.showBenchmark, true)   // fix 5: benchmark é público (sem cadeado)
   assert.equal(f.showAllRisks, false)
   assert.equal(f.categoriesMode, 'bars')
   assert.equal(f.showEvidence, false)
-  assert.equal(f.showLGPD, false)
+  assert.equal(f.showPrivacy, false)    // fix 2: LGPD travado p/ anônimo (desktop E mobile)
 })
 
-test('viewFlags: unconfirmed some com o CTA de criar conta e libera benchmark, mas não LGPD', () => {
+test('viewFlags: unconfirmed some com o CTA de criar conta, tem benchmark, mas não LGPD', () => {
   const f = viewFlags({ access_level: 'unconfirmed' })
   assert.equal(f.showCTA, false)
   assert.equal(f.showBenchmark, true)
-  assert.equal(f.benchmarkLocked, false)
   assert.equal(f.categoriesMode, 'summary')
   assert.equal(f.showAllRisks, false)
-  assert.equal(f.showLGPD, false)
+  assert.equal(f.showPrivacy, false)    // fix 2: LGPD travado p/ não confirmado também
 })
 
 test('viewFlags: confirmed vê tudo e sem CTA de conta', () => {
@@ -136,7 +135,7 @@ test('viewFlags: confirmed vê tudo e sem CTA de conta', () => {
   assert.equal(f.showAllRisks, true)
   assert.equal(f.categoriesMode, 'full')
   assert.equal(f.showEvidence, true)
-  assert.equal(f.showLGPD, true)
+  assert.equal(f.showPrivacy, true)
 })
 
 test('viewFlags: alert_session vê tudo (full) E ainda mostra o CTA (não tem conta)', () => {
@@ -146,7 +145,17 @@ test('viewFlags: alert_session vê tudo (full) E ainda mostra o CTA (não tem co
   assert.equal(f.showCTA, true)
   assert.equal(f.showAllRisks, true)
   assert.equal(f.categoriesMode, 'full')
-  assert.equal(f.showLGPD, true)
+  assert.equal(f.showPrivacy, true)
+})
+
+test('viewFlags: benchmark PÚBLICO em TODOS os níveis (fix 5) e LGPD só no acesso completo (fix 2)', () => {
+  for (const lvl of ['anonymous', 'unconfirmed', 'confirmed', 'alert_session']) {
+    assert.equal(viewFlags({ access_level: lvl }).showBenchmark, true, `benchmark visível em ${lvl}`)
+  }
+  assert.equal(viewFlags({ access_level: 'anonymous' }).showPrivacy, false)
+  assert.equal(viewFlags({ access_level: 'unconfirmed' }).showPrivacy, false)
+  assert.equal(viewFlags({ access_level: 'confirmed' }).showPrivacy, true)
+  assert.equal(viewFlags({ access_level: 'alert_session' }).showPrivacy, true)
 })
 
 test('viewFlags: passwordOnly só no alerta (orgânico pede e-mail+senha)', () => {
@@ -172,4 +181,34 @@ test('reportUrls: constrói do endpoint público quando o backend não mandou (P
   assert.match(u.executive, /^\/report\/executive\?url=/)
   assert.match(u.technical, /^\/report\/technical\?url=/)
   assert.match(u.executive, /hotel\.com\.br/)
+})
+
+// --- progresso do scanner por categoria (KL-89 fix 6) ---------------------------------------- #
+test('getCategoryStatus: done/active/pending pelas faixas de %', () => {
+  assert.equal(getCategoryStatus({ start: 0, end: 16 }, 20), 'done')
+  assert.equal(getCategoryStatus({ start: 17, end: 33 }, 20), 'active')
+  assert.equal(getCategoryStatus({ start: 34, end: 50 }, 20), 'pending')
+})
+
+test('getCategoryStatus: 0% → só a primeira categoria ativa, o resto pendente', () => {
+  const st = SCAN_CATEGORIES.map((c) => getCategoryStatus(c, 0))
+  assert.equal(st[0], 'active')
+  assert.deepEqual(st.slice(1), Array(SCAN_CATEGORIES.length - 1).fill('pending'))
+})
+
+test('getCategoryStatus: 100% → todas concluídas', () => {
+  for (const c of SCAN_CATEGORIES) assert.equal(getCategoryStatus(c, 100), 'done')
+})
+
+test('getCategoryStatus: ~52% → 3 concluídas, 1 analisando, 2 pendentes (não 6 ✅ juntas)', () => {
+  const st = SCAN_CATEGORIES.map((c) => getCategoryStatus(c, 52))
+  assert.equal(st.filter((s) => s === 'done').length, 3)
+  assert.equal(st.filter((s) => s === 'active').length, 1)
+  assert.equal(st.filter((s) => s === 'pending').length, 2)
+})
+
+test('SCAN_CATEGORIES: 6 camadas, faixas contíguas cobrindo 0–100', () => {
+  assert.equal(SCAN_CATEGORIES.length, 6)
+  assert.equal(SCAN_CATEGORIES[0].start, 0)
+  assert.equal(SCAN_CATEGORIES.at(-1).end, 100)
 })

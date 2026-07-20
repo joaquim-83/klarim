@@ -183,14 +183,17 @@ def test_filter_anonymous_is_preview_only():
     out = m._filter_scan_result(_full_fixture(), "anonymous")
     assert out["access_level"] == "anonymous"
     assert out["score"] == 72 and out["semaphore"] == "amarelo"
-    assert out["benchmark_locked"] is True and out["checks_locked"] is True
+    assert out["checks_locked"] is True
+    # KL-89 fix 5: o benchmark é PÚBLICO (agregado nacional, já exposto em /estatisticas) —
+    # liberado até no anônimo. Não é PII e contextualiza o score.
+    assert out["benchmark"] == {"avg_score": 64, "count": 8000}
     assert len(out["risks_preview"]) == 1 and out["risks_total"] == 3
     assert [c["name"] for c in out["categories_preview"]] == ["Transporte & TLS"]
     assert "pass_count" not in out["categories_preview"][0]  # barras: só ratio, sem números
-    # NUNCA vaza checks/evidência/benchmark/privacidade
+    # NUNCA vaza checks/evidência/privacidade (o benchmark agregado NÃO é dado por-site)
     blob = str(out)
     assert "SEGREDO-EVID" not in blob and "checks" not in out
-    assert "benchmark" not in out and "privacy_indicators" not in out
+    assert "privacy_indicators" not in out
 
 
 def test_filter_unconfirmed_is_partial_no_evidence():

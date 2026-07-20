@@ -106,16 +106,36 @@ export function viewFlags(result) {
     showShare: true,
     showPdf: true, // PDF é público com o paywall desligado (default) → disponível em todo nível
     showCTA: !hasAccount(level), // some para quem já tem conta
-    // Benchmark: o backend só envia os números para unconfirmed/full; anônimo vê o teaser travado.
-    showBenchmark: full || level === 'unconfirmed',
-    benchmarkLocked: level === 'anonymous',
+    // Benchmark é PÚBLICO (contextualiza o score, dado agregado nacional já exposto em
+    // /estatisticas e /setores) → visível em TODO nível, SEM cadeado, desktop e mobile (KL-89 fix 5).
+    showBenchmark: true,
     showAllRisks: full,
     // Categorias: barras (anônimo) < resumo com números (unconfirmed) < accordion com evidência (full).
     categoriesMode: level === 'anonymous' ? 'bars' : full ? 'full' : 'summary',
     showEvidence: full,
-    // LGPD é o ÚNICO conteúdo restrito a conta com acesso completo (KL-89 regras UX).
-    showLGPD: full,
+    // Indicadores de privacidade/LGPD: restritos a acesso COMPLETO (confirmed/alert_session).
+    // Travados p/ anonymous E unconfirmed em desktop E mobile — deriva só do nível (KL-89 fix 2).
+    showPrivacy: full,
   };
+}
+
+// KL-89 fix 6 — progresso do scanner por categoria. O backend só devolve o `percent` global
+// (quantos dos 48 checks completaram); o frontend mapeia esse % às 6 camadas por faixas
+// proporcionais para dar sensação de progresso real (proxy honesto, não invenção de dados).
+export const SCAN_CATEGORIES = [
+  { name: 'Transporte & TLS', start: 0, end: 16 },
+  { name: 'Headers de segurança', start: 17, end: 33 },
+  { name: 'Supply chain', start: 34, end: 50 },
+  { name: 'DNS & E-mail', start: 51, end: 66 },
+  { name: 'Conteúdo', start: 67, end: 83 },
+  { name: 'OSINT & Reputação', start: 84, end: 100 },
+];
+
+// Estado de uma categoria dado o % atual: 'done' (✅), 'active' (⏳) ou 'pending' (○).
+export function getCategoryStatus(category, currentPercent) {
+  if (currentPercent >= category.end) return 'done';
+  if (currentPercent >= category.start) return 'active';
+  return 'pending';
 }
 
 // URLs dos relatórios PDF. O backend só popula `report_urls` nos níveis full; nos demais

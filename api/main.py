@@ -3772,7 +3772,10 @@ def _filter_scan_result(full: dict, level: str) -> dict:
                                       for c in full["categories"]]
         base["risks_preview"] = risks[:1]
         base["risks_total"] = len(risks)
-        base["benchmark_locked"] = True
+        # KL-89 fix 5: o benchmark é PÚBLICO (média nacional agregada + contagem, já exposta em
+        # /estatisticas e /setores) — contextualiza o score e é liberado até no anônimo. Nenhum
+        # dado por-site ou PII vaza aqui.
+        base["benchmark"] = full.get("benchmark")
         base["checks_locked"] = True
         return base
 
