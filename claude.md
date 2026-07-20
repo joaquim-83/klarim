@@ -127,10 +127,16 @@ standalone) + **React** (islands) + **Tailwind v4** (CSS-first, sem config) +
   site" + CTA só senha (e-mail HMAC mascarado); orgânico → "Este site. E o seu?". O CTA de conta
   some para quem já tem conta. LGPD é o único bloco restrito a acesso completo.
 
-### E-mail (isolamento de reputação — nunca misturar)
-- **Alertas proativos:** `alerta@klarimscan.com` (domínio isolado, em warmup,
-  `ALERT_DAILY_LIMIT=30`).
-- **Transacionais:** `seguranca@klarim.net`.
+### E-mail (reputação)
+- **Alertas proativos:** `Klarim <alerta@klarim.net>` (`ALERT_FROM_EMAIL`/`ALERT_FROM_NAME`).
+  **2026-07-20:** MIGRADO de `alerta@klarimscan.com` → `alerta@klarim.net`. O warmup do
+  klarimscan.com falhou (7.419 alertas → 2 cliques; tudo no spam); `klarim.net` é aged, com
+  SPF/DKIM/DMARC no Resend e entrega na inbox. **Trade-off:** o proativo (cold) passa a
+  compartilhar o domínio com o transacional — **monitorar a reputação do `klarim.net`**
+  (bounce/complaint em `get_email_health`); se degradar o transacional, reavaliar. O
+  `ALERT_DAILY_LIMIT=30` (warmup) pode ser relaxado num domínio aged. `_proactive_from` lê o
+  env a cada envio; a troca do `.env` vale ao **recriar o container** (sem rebuild).
+- **Transacionais:** `seguranca@klarim.net` (`RESEND_FROM`).
 - **Proativo respeita a blocklist; transacional pode ignorá-la mas SEMPRE registra**
   (todo e-mail passa por `KlarimMailer._send` → `email_log`).
 - **E-mails proativos (alerta + "perfil consultado") = TEXTO PURO** (`text`, sem
@@ -181,8 +187,8 @@ Valide com `nginx -t` (há job de CI); config inválida **derruba o site**.
 ### Workers
 - **Discovery** — CT log poller (`ct_poller.py`), ciclo 30 min; enfileira **todo site
   acessível** (scan desacoplado do e-mail, KL-60).
-- **Alert** — batch 50, ciclo 30 min, remetente `klarimscan.com`, teto pela cota
-  mensal / `ALERT_DAILY_LIMIT`; kill-switch `STOP_ALERTS` + `worker_control`.
+- **Alert** — batch 50, ciclo 30 min, remetente `alerta@klarim.net` (ex-klarimscan.com, 2026-07-20),
+  teto pela cota mensal / `ALERT_DAILY_LIMIT`; kill-switch `STOP_ALERTS` + `worker_control`.
 - **Rescan** — ciclo 24 h, alvos ≥30 dias.
 - **Vigília** (KL-44 P2/P4) — ciclo 6 h, 8 tipos: **core** (SSL, domínio, score,
   e-mail, reputação) + **avançadas P4** (`changes` integridade do site, `phishing`
@@ -192,7 +198,7 @@ Valide com `nginx -t` (há job de CI); config inválida **derruba o site**.
   todo o buffer de CT logs (`is_typosquat`) → grava `typosquat_alerts` (event-driven).
 - **Bulletin** (KL-44 P3) — ciclo 1 h, envia às `BULLETIN_HOUR_UTC` (13h) o boletim por
   frequência do plano (free=mensal · pro=semanal · agency=diário útil); plain text via
-  `klarimscan.com`, + laudo técnico ao técnico vinculado via `seguranca@klarim.net`.
+  `alerta@klarim.net` (proativo), + laudo técnico ao técnico vinculado via `seguranca@klarim.net`.
 - **Trial** (KL-44 P6) — ciclo 1 h, **age 1x/dia** às `TRIAL_HOUR_UTC` (6h): avisa 7d/1d
   antes e, no vencimento, faz **downgrade silencioso para Free** (desativa vigílias, dados
   preservados) + e-mail. Flag `TRIAL_EXPIRATION_ENABLED`. (Também há expiração *lazy* na
@@ -322,11 +328,11 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
 - Alvos: ~25.400 · Scans: ~8.100 · Perfis públicos: ~7.200
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1287 passed** (backend pytest) + **67 node --test** (frontend `test:unit`, KL-89: +32)
+- Testes: **1307 passed** (backend pytest) + **74 node --test** (frontend `test:unit`, KL-64: +26)
   · MCP tools: **58+** (KL-75: +3 tecnografia)
 - Workers: **5/5 ativos** (discovery, alert, scan, vigília, rescan)
 - Planos: 8 contas Pro trial · Vigílias: 35 (30 ok, 5 error)
-- E-mail: `klarimscan.com` verificado, warmup ativo
+- E-mail: alertas proativos migrados p/ `alerta@klarim.net` (2026-07-20; klarimscan.com falhou no spam)
 - Scan rate: **200/h** (KL-77 Fase 3) · Responses brutos arquivados no GCS `gs://klarim-raw` (KL-77 Fase 2)
 - Tech stack detectado por scan (KL-75 P1): `site_tech_stack` + `site_status_log` + `targets.email_provider`
 
@@ -529,7 +535,16 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   re-escanear — o alerta é enviado DEPOIS do scan, o dado já existe. `get_recent_only(url, full,
   max_age_minutes=_SCAN_RESULT_MAX_AGE_MIN=1440)` roda antes do scan; `refresh=1` (botão "Atualizar
   análise") força scan novo (`get_or_scan`/`_safe_scan` ganham `force`). Vale p/ QUALQUER domínio
-  com scan recente (não só alerta). O **rate limit anônimo (5/h + 20/dia) só conta scans REAIS** —
+  com scan recente (não só alerta). **⚠️ Gotcha crítico (o 1º fix falhou por isto):** o scan POR
+  TRÁS DO ALERTA é o do **worker de discovery**, que grava só o tier **FREE (15 checks)**
+  (`scanner/main.py`: `full = source not in ("discovery","public")`). Exigir `full=True` no lookup
+  fazia `_tier_ok(15>=48)` reprovar → **re-escaneava sempre**. Fix: `/scan/result` tenta o FULL e,
+  se não houver, **cai no lookup FREE** (`get_recent_only(full=False)`) e serve o scan de 15 mesmo
+  assim — instantâneo > completo; o "Atualizar" pega os 48. (URL casa: worker grava `https://{domain}`,
+  alerta manda `https://{domain}`.) **2º gotcha:** servir o scan free pelo builder padrava os 33
+  pagos como INCONCLUSO (tela parecia quebrada: "DNS 0/7"). `_full_scan_result` agora inclui **só os
+  checks que rodaram** (15 free / 48 full) + `partial=True` no free → front mostra "Análise rápida ·
+  Ver análise completa (48) →". O **rate limit anônimo (5/h + 20/dia) só conta scans REAIS** —
   servir do cache é grátis. Payload ganha `from_cache`; front mostra "Última análise: {data} ·
   Atualizar análise →" (ação secundária no `ScoreHero`). **P1 — scanner não trava em 94% ✅:**
   `ProgressStep` já mostra as 6 categorias avançando (○→⏳→✅, KL-89 fix 6); passados ~25s aparece
@@ -560,8 +575,12 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   `discovery/alert_scoring.py::calculate_alert_score(target, email, domain_bounced)` — função
   **pura** (testável) → `{score, signals}`. Sinais: +30 e-mail no domínio · +10 corporativo ·
   +20/+10/+5 por faixa de score (50-85/40-49/>85) · +15 setor de alto clique (vazio por ora) ·
-  -20 free de terceiro · -15 prefixo role-based · -10 descartado/score<40 · -40 domínio com
-  bounce. Coluna `targets.alert_quality_score` (gravada para TODOS os avaliados, mesmo filtrados;
+  `MISMATCH_FREE_PENALTY` free de terceiro (**0 desde 2026-07-20**, era -20 — PMEs BR usam gmail como
+  e-mail comercial; o -20 barrava leads legítimos) · -15 prefixo role-based · -10 descartado/score<40
+  · -40 domínio com bounce **só p/ domínio próprio/corporativo** (2026-07-20: provedores genéricos
+  gmail/outlook/… NÃO são penalizados por bounce — um bounce em joao@gmail.com não diz nada sobre
+  maria@gmail.com; `_domain_bounced` curto-circuita free). Coluna `targets.alert_quality_score`
+  (gravada para TODOS os avaliados, mesmo filtrados;
   NUNCA impede scan). Alert worker: `_apply_alert_scoring` grava o score + filtra abaixo do
   threshold (`ALERT_SCORE_THRESHOLD`, default 20, editável no painel) — **fail-safe** (bug de
   scoring mantém o alvo); bounce por domínio com cache Redis 24h; stats `skipped_low_quality`/
@@ -629,7 +648,24 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   (`get_site_subdomains`) — CT log é público mas a lista é premium. 100 testes offline (51+49).
   **Dados p/ KL-57:** market share de tech/site_type por setor, correlação stack×score, sites
   parked/abandonados, staging exposto, SaaS com score baixo (risco LGPD).
-- **KL-64** — Analytics tracker (pendente)
+- **KL-64** — Analytics correto (filtro de bots + fix do funil de e-mails + export CSV) ✅.
+  **Causa raiz comum:** pre-fetch de servidores de e-mail (Gmail/Outlook, Chrome real, a Cloudflare
+  não marca como bot) crawleando os links dos alertas e os perfis inflava tudo. **(1) E-mails
+  profile_view (~7.000/dia!):** o `/site/[domain].astro` disparava `POST /notify/profile-view` NO SSR
+  a cada render → todo bot que abria um perfil gerava e-mail ao dono (a query do funil já filtrava por
+  período — o VOLUME é que era bot). Fix: o gatilho saiu do SSR → nasce do **evento `profile_view`
+  HUMANO-verificado** (`track.js` → `/api/events` → `_profile_view_notify`). Bots não interagem → não
+  geram e-mail. **(2) Filtro is_human:** `track.js` reescrito — NÃO dispara `page_view` no load;
+  espera sinal humano (scroll/click/mouse/touch/tecla) OU 5s visível, aí dispara com
+  `verified_human:true` (eventos de AÇÃO disparam na hora com o flag). Coluna `site_events.is_human`
+  (NULL=histórico preservado) + índice parcial; `verified_human`→`log_event(is_human)`; filtro
+  **`(is_human=TRUE OR is_human IS NULL)` DEFAULT em TODAS as queries de site_events** dos 8 endpoints
+  (`aa_*`) + 2 MCP tools; `include_bots=true` desliga (debug); toggle no admin. `users`/`alert_log`/
+  `email_log` NÃO levam o filtro. **(3) Export CSV** `/admin/analytics/events/export` — server-side,
+  `StreamingResponse`, cursor `fetchmany(1000)`, mesmos filtros + is_human, teto **10k** (+`X-Truncated`
+  + linha de aviso), anti CSV-injection, admin-only; front usa `adminDownload` (Bearer+blob). 26 testes
+  (19 backend + 7 tracker via `vm`). **Gotcha:** a data de análise do funil já era correta — o card
+  supunha bug de período; o real era o volume de e-mail bot.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.
