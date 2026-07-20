@@ -115,3 +115,13 @@ Colunas: `timestamp,event_type,page,domain,campaign,session_id,is_human,referrer
 | 8 | CSV respeita filtros ativos | ✅ (server-side) |
 | 9 | CSV 10k + aviso de truncamento | ✅ |
 | 10 | ≥ 20 testes novos | ✅ (26) |
+
+## Verificação em produção (pós-deploy)
+- Migração viva: coluna `site_events.is_human` (boolean) + índice `idx_events_human` confirmados.
+- **Gotcha KL-87 aplicado:** bots cacheavam `/track.js` ignorando o `no-store` e seguiam no tracker
+  antigo (eventos `is_human=NULL`, `page_view` no load). Cache-bust **`/track.js?v=64`** (deploy
+  extra) → todos os clientes buscaram o tracker novo.
+- Pós-cache-bust: os eventos mais recentes têm **`is_human=t` + `detection=interaction`** (só
+  disparam após interação); janela de 3 min = **26 eventos, 100% humanos, zero NULL** — o flood de
+  `page_view` de bot cessou (bots não interagem → não geram evento).
+- **E-mails `profile_view`: 0 nos últimos 5 min** (era ~7.095/dia). Risco de reputação resolvido.
