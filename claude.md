@@ -116,6 +116,16 @@ standalone) + **React** (islands) + **Tailwind v4** (CSS-first, sem config) +
   `text-sm` — evita zoom iOS) + `h-12`; botões `w-full sm:w-auto` (empilham no mobile); **nada de
   largura fixa que estoure 375px** (dropdowns `w-full sm:w-64`); grades `grid-cols-1` → `md:`/`lg:`;
   `active:scale-95`/`[0.98]` p/ feedback tátil. Breakpoints Tailwind padrão (sm640/md768/lg1024/xl1280).
+- **Container das páginas públicas (KL-89):** o `<main>` de toda página pública puxa a largura de
+  **`web/src/lib/layout.js`** — **não** invente `max-w` por página. Conteúdo (listagens/scan/perfil)
+  → `PAGE_CONTAINER` (expande até `lg:max-w-7xl`); formulário → `FORM_CONTAINER` (`max-w-md`); texto
+  corrido → `PROSE_CONTAINER` (`max-w-3xl`, via `Page.astro`). Tailwind escaneia `.js`, então as
+  classes literais dessas constantes entram no build mesmo interpoladas (`class={PAGE_CONTAINER}`).
+- **Resultado do scan (KL-89):** desktop e mobile entregam o **mesmo conteúdo/nível** — a
+  visibilidade deriva do `access_level` (KL-82), **nunca** do dispositivo (`web/src/lib/scanView.js
+  ::viewFlags`, puro/testável). Linguagem adapta pela **origem**: alerta (`alert_session`) → "Seu
+  site" + CTA só senha (e-mail HMAC mascarado); orgânico → "Este site. E o seu?". O CTA de conta
+  some para quem já tem conta. LGPD é o único bloco restrito a acesso completo.
 
 ### E-mail (isolamento de reputação — nunca misturar)
 - **Alertas proativos:** `alerta@klarimscan.com` (domínio isolado, em warmup,
@@ -312,7 +322,8 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
 - Alvos: ~25.400 · Scans: ~8.100 · Perfis públicos: ~7.200
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1232+ passed** · MCP tools: **58+** (KL-75: +3 tecnografia)
+- Testes: **1284 passed** (backend pytest) + **61 node --test** (frontend `test:unit`, KL-89: +26)
+  · MCP tools: **58+** (KL-75: +3 tecnografia)
 - Workers: **5/5 ativos** (discovery, alert, scan, vigília, rescan)
 - Planos: 8 contas Pro trial · Vigílias: 35 (30 ok, 5 error)
 - E-mail: `klarimscan.com` verificado, warmup ativo
@@ -465,6 +476,29 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   evolução→plano (checklist sobe). Bloco 6 = `PlanSection` reusado. Onboarding do perfil
   (`PUT /account/profile-confirm`, dono edita company_name/phone → `edited_by_admin`). Linguagem
   "Pesquisar" (não "Verificar"), "Olá, {empresa}". Sem site → buscador + checklist reduzido.
+- **KL-89** — Fix de conversão (Prompt 1 de 2 — layout, primeira tela, linguagem) ✅. Tudo
+  frontend; reaproveita os 4 níveis do KL-82 (backend inalterado). **(1) Container expandido**:
+  `web/src/lib/layout.js` centraliza a largura das páginas públicas (fim dos `max-w` ad-hoc por
+  página). `PAGE_CONTAINER` (`max-w-2xl md:max-w-5xl lg:max-w-7xl mx-auto px-4/6/8`) em
+  scan/perfil/setores/setor/melhores/estatisticas/planos; `FORM_CONTAINER` (max-w-md) em
+  cadastrar/entrar/recuperar/contato; `PROSE_CONTAINER` (max-w-3xl, via `Page.astro`) em
+  termos/privacidade/sobre. `index` (hero KL-81) e `confirmar` seguem centralizados estreitos
+  **de propósito**. **(2) Desktop == mobile**: a "tabela de visibilidade" virou flags puras em
+  **`web/src/lib/scanView.js`** (`viewFlags`) — derivam SÓ do nível, NUNCA do dispositivo; acabou
+  o "desktop mostra tudo / mobile esconde". Níveis: `anonymous` (barras de categoria, 1 risco,
+  benchmark/LGPD/evidência travados, CTA) < `unconfirmed` (resumo+números, benchmark, 2 riscos,
+  confirmar e-mail) < `confirmed`/`alert_session` (accordion+evidência, todos os riscos, LGPD, PDF
+  do backend). **(3) Primeira tela reorganizada** (`ScanResultDetail.jsx`): score+semáforo → frase
+  contextual → **compartilhar + PDF na MESMA linha** (WhatsApp/LinkedIn/Copiar/📄PDF) → **CTA de
+  conta acima do fold** → barras/1 risco → (abaixo) checks/LGPD. Layout 2 colunas no `lg`
+  (relatório 2/3 + CTA `sticky` 1/3) que empilha no mobile na ordem acima (mesmo conteúdo). O CTA
+  **some** para quem já tem conta (`unconfirmed`→confirme e-mail; `confirmed`→"+monitorar"). PDF é
+  público (paywall off) → `reportUrls` monta a URL no front, disponível em TODO nível.
+  **(4) Linguagem contextual por ORIGEM** (`scoreHeadline`/`ctaCopy`/`shareLabel`): alerta
+  (`access_level=alert_session`) → "**Seu** site" + CTA **só senha** (e-mail do cookie HMAC,
+  mostrado **mascarado** `j***o@x.com` via `maskEmail`, real nunca no HTML); orgânico → "**Este**
+  site. E o seu?" + e-mail+senha (signup inline `/api/account/signup`). +26 testes `node --test`
+  (`scanView.test.js` + `layout.test.js`), ligados no `npm run test:unit` (CI).
 - **KL-83** — Redesign do Analytics admin (Prompt 1 de 2) ✅. Módulo dedicado
   **`api/admin_analytics.py`** (não toca o analytics antigo do KL-21): **8 endpoints**
   `/admin/analytics/{metrics,trend,funnel,events,sessions,pages,journeys,funnel-by-sector}`,

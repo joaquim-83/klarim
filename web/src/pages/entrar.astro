@@ -6,6 +6,7 @@ import Header from '../components/Header.astro';
 import Footer from '../components/Footer.astro';
 import LoginForm from '../components/account/LoginForm.jsx';
 import ClaimContext from '../components/account/ClaimContext.astro';
+import { FORM_CONTAINER } from '../lib/layout.js';
 
 const params = Astro.url.searchParams;
 const url = params.get('url') || '';
@@ -16,7 +17,7 @@ const redirect = params.get('redirect') || '/dashboard';
 
 <Base title="Entrar" description="Acesse sua conta Klarim." path="/entrar">
   <Header />
-  <main class="mx-auto max-w-md px-5 pt-28 pb-20 sm:pt-32">
+  <main class={FORM_CONTAINER}>
     <ClaimContext url={url} />
     <LoginForm client:load redirect={redirect} url={url} email={email} />
   </main>

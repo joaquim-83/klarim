@@ -5,6 +5,7 @@ import Base from '../layouts/Base.astro';
 import Header from '../components/Header.astro';
 import Footer from '../components/Footer.astro';
 import ForgotForm from '../components/account/ForgotForm.jsx';
+import { FORM_CONTAINER } from '../lib/layout.js';
 
 const params = Astro.url.searchParams;   // KL-68: preserva o contexto de claim
 const url = params.get('url') || '';
@@ -13,7 +14,7 @@ const email = params.get('email') || '';
 
 <Base title="Recuperar senha" description="Redefina a senha da sua conta Klarim." path="/recuperar-senha">
   <Header />
-  <main class="mx-auto max-w-md px-5 pt-28 pb-20 sm:pt-32">
+  <main class={FORM_CONTAINER}>
     <ForgotForm client:load url={url} email={email} />
   </main>
   <Footer />

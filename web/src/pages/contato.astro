@@ -5,6 +5,7 @@ import Base from '../layouts/Base.astro';
 import Header from '../components/Header.astro';
 import Footer from '../components/Footer.astro';
 import ContactForm from '../components/ContactForm.jsx';
+import { FORM_CONTAINER } from '../lib/layout.js';
 
 // O formulário é uma ilha React que faz POST para /api/contact (FastAPI) via fetch —
 // evita a proteção CSRF do Astro SSR (`checkOrigin`), que barrava o POST do form nativo
@@ -17,7 +18,7 @@ import ContactForm from '../components/ContactForm.jsx';
   path="/contato"
 >
   <Header />
-  <main class="mx-auto max-w-xl px-5 pt-28 pb-20 sm:pt-32">
+  <main class={FORM_CONTAINER}>
     <h1 class="text-3xl font-bold tracking-tight text-white sm:text-4xl">Fale conosco</h1>
     <ContactForm client:load />
   </main>

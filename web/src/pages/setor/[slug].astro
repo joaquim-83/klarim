@@ -6,6 +6,7 @@ import Header from '../../components/Header.astro';
 import Footer from '../../components/Footer.astro';
 import ScanCTA from '../../components/ScanCTA.astro';
 import { badgeFor } from '../../lib/badge.js';
+import { PAGE_CONTAINER } from '../../lib/layout.js';
 
 const SITE = 'https://klarim.net';
 const API = process.env.KLARIM_API_URL || 'http://api:8000';
@@ -73,7 +74,7 @@ const card = 'rounded-2xl border border-slate-800 bg-slate-900/60 p-5 sm:p-6';
 <Base title={title} fullTitleOverride={`${title} | Klarim`} description={desc}
   path={`/setor/${slug}`} jsonLd={jsonLd} noindex={!indexable}>
   <Header />
-  <main class="mx-auto max-w-3xl md:max-w-5xl lg:max-w-6xl px-5 lg:px-8 pt-28 pb-20 sm:pt-32">
+  <main class={PAGE_CONTAINER}>
     <nav aria-label="Trilha" class="text-sm text-slate-500">
       <a href="/" class="hover:text-brand-300">Início</a> <span class="text-slate-700">→</span>
       <a href="/setores" class="hover:text-brand-300">Setores</a> <span class="text-slate-700">→</span>

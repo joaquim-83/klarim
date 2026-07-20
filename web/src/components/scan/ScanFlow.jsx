@@ -117,10 +117,14 @@ export default function ScanFlow({ url: initialUrl = '', user = null }) {
     }
   }
 
+  // KL-89: o resultado usa layout de 2 colunas no desktop → preenche o container expandido da
+  // página (não fica preso a max-w-3xl). Os demais passos são um card único, centralizado estreito.
+  if (step === 'result' && result) {
+    return <ScanResultDetail result={result} url={url} />;
+  }
   return (
-    <div className="mx-auto max-w-3xl">
+    <div className="mx-auto max-w-2xl">
       {step === 'progress' && <ProgressStep domain={domain} />}
-      {step === 'result' && result && <ScanResultDetail result={result} url={url} />}
       {step === 'limit' && <LimitStep message={limitMsg} url={url} />}
       {step === 'error' && <ErrorCard message={error} onRetry={() => { setStep('progress'); startedRef.current = false; runScan(); }} />}
     </div>

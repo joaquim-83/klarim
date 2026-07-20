@@ -6,6 +6,7 @@ import Header from '../../components/Header.astro';
 import Footer from '../../components/Footer.astro';
 import ClaimSite from '../../components/account/ClaimSite.jsx';
 import PrivacyPanel from '../../components/PrivacyPanel.jsx';
+import { PAGE_CONTAINER } from '../../lib/layout.js';
 
 const SITE = 'https://klarim.net';
 const API = process.env.KLARIM_API_URL || 'http://api:8000';
@@ -149,7 +150,7 @@ if (hasContact) {
   noindex={status !== 'ok'}
 >
   <Header />
-  <main class="mx-auto max-w-2xl md:max-w-4xl lg:max-w-6xl px-5 lg:px-8 pt-28 pb-20 sm:pt-32">
+  <main class={PAGE_CONTAINER}>
     {status === 'discarded' && (
       <div class={card}>
         <h1 class="text-2xl font-bold text-white">{domain}</h1>

@@ -1,17 +1,30 @@
-// KL-82 — Resultado do scan com confiança progressiva. Recebe o payload já FILTRADO por
-// nível de acesso (o backend nunca envia evidência/detalhe a anonymous/unconfirmed) e
-// renderiza condicionalmente. Linguagem neutra ("Este site", não "Seu site") no contexto
-// público (KL-82 Bloco 9). Mobile-first: alvos ≥44px, botões w-full sm:w-auto.
+// KL-82 → KL-89 — Resultado do scan com confiança progressiva + fixes de conversão.
+//
+// Recebe o payload já FILTRADO por nível de acesso (o backend nunca envia evidência/impacto/
+// LGPD a anonymous/unconfirmed) e renderiza conforme a "tabela de visibilidade" do KL-89
+// (`lib/scanView.viewFlags`). As MESMAS regras valem para desktop e mobile — a divergência
+// desktop-mostra-tudo / mobile-esconde-tudo acabou; o que muda é só o LAYOUT (2 colunas no
+// lg), não o conteúdo nem o nível de acesso.
+//
+// Ordem "above the fold" (KL-89 item 3): score+semáforo → frase contextual → compartilhar+PDF
+// → CTA de conta → barras de categoria → 1 risco → (abaixo) checks/LGPD. A linguagem adapta
+// pela ORIGEM (visitante do alerta vê "Seu site" + só senha; orgânico vê "Este site" + e-mail+
+// senha), nunca pelo dispositivo.
 import { useEffect, useState } from 'react';
-import ShareScore from '../account/ShareScore.jsx';
+import {
+  viewFlags, scoreHeadline, shareLabel, ctaCopy, maskedEmailOf, reportUrls,
+} from '../../lib/scanView.js';
 
 const card = 'rounded-2xl border border-slate-800 bg-slate-900/60 p-6 sm:p-8';
 const btn =
   'inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-brand-500 px-6 py-3.5 ' +
   'text-base font-semibold text-[var(--accent-text)] transition-colors hover:bg-brand-400 active:scale-[0.98] disabled:opacity-60';
 const btnGhost =
-  'inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-slate-700 px-5 py-3 ' +
-  'text-base font-semibold text-slate-200 transition-colors hover:bg-slate-800 active:scale-[0.98]';
+  'inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl border border-slate-700 px-4 py-3 ' +
+  'text-sm font-semibold text-slate-200 transition-colors hover:bg-slate-800 active:scale-[0.98]';
+const inputCls =
+  'h-12 w-full rounded-xl border border-slate-700 bg-slate-800/80 px-4 text-base text-white ' +
+  'placeholder:text-slate-500 outline-none transition-colors focus:border-brand-500 focus:ring-2 focus:ring-brand-500/30';
 
 const SEMA = {
   verde: { dot: '🟢', ring: 'ring-emerald-500/40', text: 'text-emerald-400' },
@@ -20,43 +33,38 @@ const SEMA = {
 };
 
 export default function ScanResultDetail({ result, url = '' }) {
-  const level = result.access_level || 'anonymous';
-  const full = level === 'confirmed' || level === 'alert_session';
+  const flags = viewFlags(result);
   const domain = result.domain || result.profile_domain || '';
 
+  // Coluna do relatório (mesma ordem em todos os níveis; o conteúdo de cada seção varia pelo
+  // que o backend entregou). Barras de categoria e "1 risco" ficam no topo (above the fold).
+  const details = (
+    <div className="space-y-6">
+      <CategoriesSection result={result} flags={flags} />
+      <RisksSection result={result} flags={flags} url={url} />
+      <BenchmarkSection result={result} flags={flags} url={url} />
+      <PrivacySection result={result} flags={flags} url={url} />
+    </div>
+  );
+
+  // Bloco lateral: CTA de conta (quem não tem) / confirme e-mail (unconfirmed) / monitorar (confirmed).
+  let aside = null;
+  if (flags.showCTA) aside = <AccountCTA flags={flags} result={result} domain={domain} url={url} />;
+  else if (flags.level === 'unconfirmed') aside = <ConfirmEmailCTA />;
+  else aside = <MonitorNote domain={domain} />;
+
   return (
-    <div className="space-y-8">
-      <ScoreHero result={result} domain={domain} url={url} />
+    <div className="space-y-6">
+      <ScoreHero result={result} flags={flags} domain={domain} url={url} />
 
-      {/* Benchmark — travado no anônimo (mostra que existe, sem revelar) */}
-      {level === 'anonymous' ? (
-        <LockedSection title="📊 Benchmark do setor"
-          cta="Crie uma conta gratuita para comparar com o mercado" url={url} />
-      ) : (
-        <BenchmarkSection result={result} />
-      )}
-
-      {/* Riscos para o negócio */}
-      <RisksSection result={result} level={level} url={url} />
-
-      {/* Categorias de verificações */}
-      {level === 'anonymous' ? (
-        <CategoryBars categories={result.categories_preview || []} url={url} />
-      ) : level === 'unconfirmed' ? (
-        <CategoriesSummary categories={result.categories || []} />
-      ) : (
-        <CategoriesFull categories={result.categories || []} checks={result.checks || []} />
-      )}
-
-      {/* Extras do nível completo: PDF + compartilhar */}
-      {full && <FullExtras result={result} url={url} domain={domain} />}
-
-      {/* CTA final por nível */}
-      {level === 'anonymous' && <SignupInline url={url} />}
-      {level === 'unconfirmed' && <ConfirmEmailCTA />}
-      {level === 'alert_session' && result.alert_signup && (
-        <AlertSignup emailHint={result.alert_email_hint} domain={domain} url={url} />
-      )}
+      {/* 2 colunas no desktop (relatório + CTA fixo) — preenche telas largas sem linhas longas.
+          No mobile empilha na ordem do card: score → share (no hero) → CTA → detalhes. */}
+      <div className="grid gap-6 lg:grid-cols-3">
+        <aside className="order-1 lg:order-2 lg:col-span-1">
+          <div className="lg:sticky lg:top-24">{aside}</div>
+        </aside>
+        <div className="order-2 space-y-6 lg:order-1 lg:col-span-2">{details}</div>
+      </div>
 
       <div className="text-center">
         <a href="/" className="inline-flex min-h-[44px] items-center px-1 text-sm text-brand-400 hover:text-brand-300">
@@ -67,8 +75,8 @@ export default function ScanResultDetail({ result, url = '' }) {
   );
 }
 
-// --- Score (hero) ----------------------------------------------------------- #
-function ScoreHero({ result, domain, url }) {
+// --- Score (hero): score + semáforo + frase contextual + share/PDF -------------------------- #
+function ScoreHero({ result, flags, domain, url }) {
   const sema = SEMA[result.semaphore] || SEMA.amarelo;
   const [shown, setShown] = useState(0);
   useEffect(() => {
@@ -85,6 +93,7 @@ function ScoreHero({ result, domain, url }) {
 
   const hasProfile = !!result.has_profile;
   const profileDomain = result.profile_domain || domain;
+  const head = scoreHeadline(result.score, flags.alertVisitor);
 
   return (
     <div className={`${card} text-center`}>
@@ -94,28 +103,34 @@ function ScoreHero({ result, domain, url }) {
         <span className="text-sm text-slate-400">/100</span>
       </div>
       <p className="mt-4 text-2xl">{sema.dot}</p>
-      {/* Linguagem neutra (KL-82): "Este site", nunca "Seu site" no público. */}
+      {/* Linguagem contextual (KL-89 item 4): alerta = "Seu site"; orgânico = "Este site. E o seu?". */}
       <p className="mx-auto mt-3 max-w-md text-lg text-slate-200">
-        Este site tem score {result.score}. <a href="/" className="text-brand-400 hover:text-brand-300">E o seu?</a>
+        {head.lead}{head.tail ? ` ${head.tail}` : ''}{' '}
+        {head.question && <a href="/" className="text-brand-400 hover:text-brand-300">{head.question}</a>}
       </p>
 
-      <div className="mt-6 flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
-        {hasProfile && (
+      {hasProfile && (
+        <div className="mt-5">
           <a href={`/site/${profileDomain}`} className={`${btn} w-full sm:w-auto`}>Ver perfil completo →</a>
-        )}
-        <ShareRow domain={profileDomain} score={result.score} url={url} />
-      </div>
+        </div>
+      )}
+
+      <ShareRow result={result} domain={profileDomain} flags={flags} url={url} />
     </div>
   );
 }
 
-// Compartilhar: WhatsApp/LinkedIn são <a href> (sem JS, CSP-safe); copiar usa a ilha React.
-function ShareRow({ domain, score, url }) {
+// Compartilhar (WhatsApp/LinkedIn = <a href>, CSP-safe) + Copiar + PDF na MESMA linha (KL-89
+// item 3): mesmo peso visual, sem botão de PDF isolado. O PDF é público (paywall off).
+function ShareRow({ result, domain, flags, url }) {
   const [copied, setCopied] = useState(false);
+  const [pdfOpen, setPdfOpen] = useState(false);
   const shareUrl = `https://klarim.net/site/${domain}`;
-  const text = `Este site tem score ${score}/100 de segurança no Klarim. Pesquise qualquer site em klarim.net`;
+  const text = `${flags.alertVisitor ? 'Meu' : 'Este'} site tem score ${result.score}/100 de segurança no Klarim. Pesquise qualquer site em klarim.net`;
   const wa = `https://wa.me/?text=${encodeURIComponent(text + ' ' + shareUrl)}`;
   const li = `https://www.linkedin.com/sharing/share-offsite/?url=${encodeURIComponent(shareUrl)}`;
+  const reports = flags.showPdf ? reportUrls(result, url) : null;
+
   function copy() {
     navigator.clipboard?.writeText(shareUrl).then(() => {
       setCopied(true);
@@ -123,23 +138,188 @@ function ShareRow({ domain, score, url }) {
       setTimeout(() => setCopied(false), 2000);
     });
   }
+
   return (
-    <div className="w-full sm:w-auto">
-      {/* KL-87 2A: rótulo acima dos botões de compartilhar. */}
-      <p className="mb-2 text-center text-sm text-slate-500">Compartilhe este resultado</p>
-      <div className="flex items-center justify-center gap-2">
+    <div className="mt-6">
+      <p className="mb-2 text-center text-sm text-slate-500">{shareLabel(flags.alertVisitor)}</p>
+      <div className="flex flex-wrap items-center justify-center gap-2">
         <a href={wa} target="_blank" rel="noopener" className={btnGhost}
           onClick={() => window.klarimTrack?.('share_clicked', { via: 'whatsapp', domain }, url)}>WhatsApp</a>
         <a href={li} target="_blank" rel="noopener" className={btnGhost}
           onClick={() => window.klarimTrack?.('share_clicked', { via: 'linkedin', domain }, url)}>LinkedIn</a>
         <button type="button" onClick={copy} className={btnGhost}>{copied ? '✓ Copiado' : '🔗 Copiar'}</button>
+        {reports && (
+          <div className="relative">
+            <button type="button" onClick={() => setPdfOpen((o) => !o)} className={btnGhost}
+              aria-expanded={pdfOpen}>📄 Baixar PDF <span className="text-xs">▾</span></button>
+            {pdfOpen && (
+              <div className="absolute left-1/2 z-10 mt-2 w-64 -translate-x-1/2 overflow-hidden rounded-xl border border-slate-700 bg-slate-900 text-left shadow-xl">
+                <a href={`/api${reports.executive}`} className="block px-4 py-3 text-sm text-slate-200 hover:bg-slate-800"
+                  onClick={() => { setPdfOpen(false); window.klarimTrack?.('pdf_downloaded', { kind: 'executive', domain }, url); }}>
+                  📋 Relatório Executivo<br /><span className="text-xs text-slate-500">linguagem acessível</span>
+                </a>
+                <a href={`/api${reports.technical}`} className="block border-t border-slate-800 px-4 py-3 text-sm text-slate-200 hover:bg-slate-800"
+                  onClick={() => { setPdfOpen(false); window.klarimTrack?.('pdf_downloaded', { kind: 'technical', domain }, url); }}>
+                  📊 Relatório Técnico<br /><span className="text-xs text-slate-500">OWASP / CWE / LGPD</span>
+                </a>
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );
 }
 
-// --- Benchmark -------------------------------------------------------------- #
-function BenchmarkSection({ result }) {
+// --- Bloco CTA de conta (some para quem já tem conta) ---------------------------------------- #
+// Orgânico: e-mail + senha (signup inline). Alerta: só senha (e-mail confirmado via HMAC no
+// backend; mostrado mascarado). Benefícios em linguagem humana (KL-89 item 3/4).
+function AccountCTA({ flags, result, domain, url }) {
+  const copy = ctaCopy(flags.alertVisitor, domain);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [existing, setExisting] = useState(false);
+  const maskedEmail = maskedEmailOf(result);
+
+  async function submit(e) {
+    e.preventDefault();
+    setError(''); setExisting(false);
+    if (password.length < 8) return setError('A senha precisa ter ao menos 8 caracteres.');
+    window.klarimTrack?.('signup_inline_clicked', { via: flags.alertVisitor ? 'alert' : 'organic' }, url);
+    setBusy(true);
+    try {
+      if (flags.passwordOnly) {
+        // Fluxo 2 (KL-82 Slice 3): e-mail vem do cookie HMAC → só senha.
+        const res = await fetch('/api/account/signup-from-alert', {
+          method: 'POST', credentials: 'include',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password }),
+        });
+        const data = await res.json().catch(() => ({}));
+        setBusy(false);
+        if (res.ok && data.existing_account) { setExisting(true); return; }
+        if (res.ok) {
+          window.klarimTrack?.('account_created_alert', {}, url);
+          window.klarimTrack?.('alert_session_converted', {}, url);
+          window.location.href = `/dashboard?claimed=${encodeURIComponent(domain)}`;
+          return;
+        }
+        setError(data.detail || 'Não foi possível criar a conta.');
+        return;
+      }
+      // Orgânico: e-mail + senha (KL-82 Slice 2). Sem código; conta na hora + e-mail de confirmação.
+      const res = await fetch('/api/account/signup', {
+        method: 'POST', credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password, url: url || undefined }),
+      });
+      const data = await res.json().catch(() => ({}));
+      setBusy(false);
+      if (res.ok) {
+        window.klarimTrack?.('account_created', {}, url);
+        const c = data.claim;
+        if (c?.site_added && c?.domain) {
+          window.location.href = `/dashboard?${c.is_owner ? 'claimed' : 'added'}=${encodeURIComponent(c.domain)}`;
+        } else {
+          window.location.href = '/dashboard';
+        }
+        return;
+      }
+      if (res.status === 409) { setExisting(true); return; }
+      if (res.status === 400 && /descart|permanente/i.test(data.detail || '')) {
+        return setError('Use um e-mail permanente para criar sua conta.');
+      }
+      if (res.status === 429) return setError('Limite de cadastros atingido. Tente novamente mais tarde.');
+      setError(data.detail || 'Não foi possível criar a conta.');
+    } catch {
+      setBusy(false);
+      setError('Falha de conexão. Tente novamente.');
+    }
+  }
+
+  const loginHref = `/entrar?redirect=${encodeURIComponent('/dashboard')}${!flags.passwordOnly && email ? `&email=${encodeURIComponent(email)}` : ''}`;
+
+  return (
+    <div className={`${card} border-brand-500/30 bg-brand-500/5`}>
+      <h3 className="text-lg font-bold text-white">📊 {copy.title}</h3>
+      <ul className="mt-3 space-y-1.5 text-sm text-slate-300">
+        {copy.benefits.map((b) => (
+          <li key={b} className="flex items-start gap-2"><span className="text-brand-400" aria-hidden="true">·</span>{b}</li>
+        ))}
+      </ul>
+
+      {existing ? (
+        <p className="mt-4 text-sm text-slate-300">
+          Já existe uma conta com este e-mail.{' '}
+          <a href={loginHref} className="text-brand-400 hover:text-brand-300">Entrar →</a>
+        </p>
+      ) : (
+        <form onSubmit={submit} className="mt-4 flex flex-col gap-3">
+          {flags.passwordOnly ? (
+            // E-mail read-only (mascarado) num hidden input — o valor real fica no cookie, nunca no HTML.
+            maskedEmail && (
+              <p className="text-sm text-slate-400">
+                Seu e-mail (<span className="font-medium text-slate-200">{maskedEmail}</span>) já está confirmado.
+              </p>
+            )
+          ) : (
+            <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)}
+              autoComplete="email" placeholder="seu@email.com.br" className={inputCls} />
+          )}
+          <input type="password" required minLength={8} value={password}
+            onChange={(e) => setPassword(e.target.value)} autoComplete="new-password"
+            placeholder="crie uma senha (mín. 8)" className={inputCls} />
+          {error && <p className="text-sm text-red-300">{error}</p>}
+          <button type="submit" disabled={busy} className={`${btn} w-full`}>
+            {busy ? 'Criando…' : copy.button}
+          </button>
+        </form>
+      )}
+      <p className="mt-3 text-xs text-slate-500">Sem cartão. Pesquisas ilimitadas.</p>
+    </div>
+  );
+}
+
+// unconfirmed — já tem conta, falta confirmar o e-mail (sem CTA de "criar conta").
+function ConfirmEmailCTA() {
+  return (
+    <div className={`${card} border-brand-500/30 bg-brand-500/5`}>
+      <h3 className="text-lg font-bold text-white">Confirme seu e-mail</h3>
+      <p className="mt-1 text-sm text-slate-300">
+        Enviamos um link de confirmação. Confirme para ver o detalhe de cada verificação, os
+        indicadores de LGPD e baixar o relatório completo.
+      </p>
+      <a href="/dashboard" className={`${btn} mt-4 w-full`}>Ir para o painel →</a>
+    </div>
+  );
+}
+
+// confirmed — já tem conta e acesso completo; oferece adicionar o site ao monitoramento.
+function MonitorNote({ domain }) {
+  return (
+    <div className={card}>
+      <h3 className="text-base font-bold text-white">✅ Você tem acesso completo</h3>
+      <p className="mt-1 text-sm text-slate-400">
+        Adicione {domain || 'este site'} ao monitoramento para acompanhar a evolução do score e
+        receber alertas.
+      </p>
+      <a href={`/dashboard${domain ? `?add=${encodeURIComponent(domain)}` : ''}`} className={`${btn} mt-4 w-full`}>
+        + Adicionar ao monitoramento
+      </a>
+    </div>
+  );
+}
+
+// --- Benchmark -------------------------------------------------------------------------------- #
+function BenchmarkSection({ result, flags, url }) {
+  if (flags.benchmarkLocked) {
+    return (
+      <LockedSection title="📊 Benchmark do setor"
+        cta="Crie uma conta gratuita para comparar com o mercado" url={url} />
+    );
+  }
   const b = result.benchmark;
   if (!b || !b.count) return null;
   const above = (result.score ?? 0) >= b.avg_score;
@@ -158,9 +338,9 @@ function BenchmarkSection({ result }) {
   );
 }
 
-// --- Riscos ----------------------------------------------------------------- #
-function RisksSection({ result, level, url }) {
-  const risks = level === 'confirmed' || level === 'alert_session'
+// --- Riscos (linguagem de negócio, KL-20) ---------------------------------------------------- #
+function RisksSection({ result, flags, url }) {
+  const risks = flags.showAllRisks
     ? (result.risk_summary?.risks || [])
     : (result.risks_preview || []);
   const total = result.risks_total ?? risks.length;
@@ -181,6 +361,7 @@ function RisksSection({ result, level, url }) {
         ))}
       </ul>
       {hidden > 0 && (
+        // Gate explícito (não cadeado vazio): diz quantos faltam e como ver — KL-89 regra 9.
         <div className="mt-4 rounded-xl border border-slate-800 bg-slate-950/50 px-4 py-3 text-sm text-slate-400">
           🔒 Mais {hidden} risco(s) identificado(s).
           <a href={`/cadastrar${url ? `?url=${encodeURIComponent(url)}` : ''}`}
@@ -191,8 +372,14 @@ function RisksSection({ result, level, url }) {
   );
 }
 
-// --- Categorias: barras (anônimo) ------------------------------------------- #
-function CategoryBars({ categories, url }) {
+// --- Categorias: barras (anon) / resumo (unconfirmed) / accordion+evidência (full) ----------- #
+function CategoriesSection({ result, flags }) {
+  if (flags.categoriesMode === 'bars') return <CategoryBars categories={result.categories_preview || []} />;
+  if (flags.categoriesMode === 'summary') return <CategoriesSummary categories={result.categories || []} />;
+  return <CategoriesFull categories={result.categories || []} checks={result.checks || []} />;
+}
+
+function CategoryBars({ categories }) {
   return (
     <div className={card}>
       <h2 className="text-lg font-bold text-white">📋 Detalhes da análise</h2>
@@ -203,20 +390,14 @@ function CategoryBars({ categories, url }) {
             <div className="h-3 flex-1 overflow-hidden rounded-full bg-slate-800">
               <div className="h-full rounded-full bg-brand-500" style={{ width: `${Math.round((cat.pass_ratio || 0) * 100)}%` }} />
             </div>
-            <span className="text-slate-500" aria-hidden="true">🔒</span>
           </div>
         ))}
       </div>
-      <p className="mt-4 text-sm text-slate-400">
-        48 verificações realizadas.
-        <a href={`/cadastrar${url ? `?url=${encodeURIComponent(url)}` : ''}`}
-          className="ml-1 text-brand-400 hover:text-brand-300">Crie conta para ver os detalhes.</a>
-      </p>
+      <p className="mt-4 text-sm text-slate-400">48 verificações realizadas — crie conta para ver cada uma.</p>
     </div>
   );
 }
 
-// --- Categorias: resumo com números, sem detalhe (unconfirmed) -------------- #
 function CategoriesSummary({ categories }) {
   return (
     <div className={card}>
@@ -238,17 +419,16 @@ function CategoriesSummary({ categories }) {
   );
 }
 
-// --- Categorias: completo com accordion (confirmed / alert_session) --------- #
 function CategoriesFull({ categories, checks }) {
   return (
-    <div>
+    <div className={card}>
       <h2 className="text-lg font-bold text-white">Detalhes da análise</h2>
       <div className="mt-4 space-y-3">
         {categories.map((cat) => {
           const list = checks.filter((c) => c.category === cat.name);
           return (
             <details key={cat.name} open={cat.has_high_fails}>
-              <summary className="flex min-h-[44px] cursor-pointer items-center justify-between rounded-xl border border-slate-800 bg-slate-900/60 px-4 py-3">
+              <summary className="flex min-h-[44px] cursor-pointer items-center justify-between rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-3">
                 <span className="font-semibold text-white">{cat.name}</span>
                 <span className={cat.fail_count > 0 ? 'text-red-400' : 'text-emerald-400'}>
                   {cat.pass_count}/{cat.total} {cat.fail_count > 0 ? '⚠️' : '✅'}
@@ -291,129 +471,37 @@ function CheckRow({ check }) {
   );
 }
 
-// --- Extras do nível completo: PDF + compartilhar --------------------------- #
-function FullExtras({ result, url, domain }) {
-  const exec = result.report_urls?.executive;
-  const tech = result.report_urls?.technical;
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="space-y-4">
-      {(exec || tech) && (
-        <div className="relative w-full sm:w-auto">
-          <button type="button" onClick={() => setOpen((o) => !o)} className={`${btn} w-full sm:w-auto`}>
-            📄 Baixar PDF <span className="text-sm">▾</span>
-          </button>
-          {open && (
-            <div className="absolute z-10 mt-2 w-full overflow-hidden rounded-xl border border-slate-700 bg-slate-900 shadow-xl sm:w-64">
-              {exec && (
-                <a href={`/api${exec}`} className="block px-4 py-3 text-sm text-slate-200 hover:bg-slate-800" onClick={() => setOpen(false)}>
-                  📋 Relatório Executivo<br /><span className="text-xs text-slate-500">linguagem acessível</span>
-                </a>
-              )}
-              {tech && (
-                <a href={`/api${tech}`} className="block border-t border-slate-800 px-4 py-3 text-sm text-slate-200 hover:bg-slate-800" onClick={() => setOpen(false)}>
-                  📊 Relatório Técnico<br /><span className="text-xs text-slate-500">OWASP / CWE / LGPD</span>
-                </a>
-              )}
-            </div>
-          )}
-        </div>
-      )}
-      {result.has_profile && <ShareScore domain={result.profile_domain || domain} score={result.score} />}
-    </div>
-  );
-}
-
-// --- CTAs por nível --------------------------------------------------------- #
-function SignupInline({ url }) {
-  const box = `${card} border-brand-500/30 bg-brand-500/5 text-center`;
-  return (
-    <div className={box}>
-      <h3 className="text-lg font-bold text-white">Veja a análise completa, grátis</h3>
-      <p className="mt-1 text-sm text-slate-300">
-        Crie sua conta em 10 segundos e desbloqueie o detalhe das 48 verificações, o benchmark
-        do setor e o relatório em PDF.
-      </p>
-      <form action="/cadastrar" method="GET" className="mt-4">
-        {url && <input type="hidden" name="url" value={url} />}
-        <button type="submit" className={`${btn} w-full sm:w-auto`}
-          onClick={() => window.klarimTrack?.('signup_inline_clicked', {}, url)}>
-          Criar conta gratuita →
-        </button>
-      </form>
-      <p className="mt-3 text-xs text-slate-500">Sem cartão. Pesquisas ilimitadas.</p>
-    </div>
-  );
-}
-
-// Fluxo 2 (KL-82 Slice 3): quem chegou pelo link do alerta cria conta só com SENHA (o e-mail
-// vem do cookie HMAC-validado no backend). Sucesso → dashboard; e-mail já com conta → login.
-function AlertSignup({ emailHint, domain, url }) {
-  const [password, setPassword] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  const box = `${card} border-brand-500/30 bg-brand-500/5`;
-
-  async function submit(e) {
-    e.preventDefault();
-    setError('');
-    if (password.length < 8) return setError('A senha precisa ter ao menos 8 caracteres.');
-    setBusy(true);
-    const res = await fetch('/api/account/signup-from-alert', {
-      method: 'POST', credentials: 'include',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ password }),
-    });
-    const data = await res.json().catch(() => ({}));
-    setBusy(false);
-    if (res.ok && data.existing_account) {
-      window.location.href = `/entrar?redirect=${encodeURIComponent('/dashboard')}`;
-      return;
-    }
-    if (res.ok) {
-      window.klarimTrack?.('account_created_alert', {}, url);
-      window.klarimTrack?.('alert_session_converted', {}, url);
-      window.location.href = `/dashboard?claimed=${encodeURIComponent(domain)}`;
-      return;
-    }
-    setError(data.detail || 'Não foi possível criar a conta.');
+// --- Indicadores de privacidade / LGPD (só com acesso completo) ------------------------------ #
+function PrivacySection({ result, flags, url }) {
+  if (!flags.showLGPD) {
+    return (
+      <LockedSection title="⚖️ Indicadores de privacidade (LGPD)"
+        cta="Crie uma conta gratuita para ver os 8 indicadores de privacidade" url={url} />
+    );
   }
-
+  const p = result.privacy_indicators;
+  if (!p || !Array.isArray(p.checks) || !p.checks.length) return null;
   return (
-    <div className={box}>
-      <h3 className="text-lg font-bold text-white">Monitore {domain} — crie sua conta</h3>
-      <p className="mt-1 text-sm text-slate-300">
-        Seu e-mail{emailHint ? ` (${emailHint})` : ''} já está confirmado. Defina uma senha para
-        acompanhar a evolução do score e receber alertas.
-      </p>
-      {error && <p className="mt-3 text-sm text-red-300">{error}</p>}
-      <form onSubmit={submit} className="mt-4 flex flex-col gap-3 sm:flex-row">
-        <input type="password" required minLength={8} value={password}
-          onChange={(e) => setPassword(e.target.value)} autoComplete="new-password"
-          placeholder="crie uma senha (mín. 8)"
-          className="h-12 w-full rounded-xl border border-slate-700 bg-slate-800/80 px-4 text-base text-white placeholder:text-slate-500 outline-none focus:border-brand-500 focus:ring-2 focus:ring-brand-500/30 sm:flex-1" />
-        <button type="submit" disabled={busy} className={`${btn} w-full sm:w-auto`}>
-          {busy ? 'Criando…' : 'Criar conta →'}
-        </button>
-      </form>
+    <div className={card}>
+      <h2 className="text-lg font-bold text-white">Indicadores de privacidade: {p.score}/{p.total}</h2>
+      <p className="mt-1 text-sm text-slate-400">Fatos técnicos observáveis por varredura passiva. Referência LGPD por indicador.</p>
+      <ul className="mt-4 space-y-2">
+        {p.checks.map((c, i) => (
+          <li key={c.id || i} className="flex items-start gap-2 text-sm">
+            <span aria-hidden="true">{c.status === 'PASS' ? '✅' : '❌'}</span>
+            <span className="text-slate-200">{c.name}</span>
+            {c.lgpd_ref && <span className="ml-auto shrink-0 text-xs text-slate-500">{c.lgpd_ref}</span>}
+          </li>
+        ))}
+      </ul>
+      {p.disclaimer && (
+        <p className="mt-4 border-t border-slate-800 pt-3 text-xs leading-relaxed text-slate-500">⚖️ {p.disclaimer}</p>
+      )}
     </div>
   );
 }
 
-function ConfirmEmailCTA() {
-  const box = `${card} border-brand-500/30 bg-brand-500/5 text-center`;
-  return (
-    <div className={box}>
-      <h3 className="text-lg font-bold text-white">Confirme seu e-mail para o relatório completo</h3>
-      <p className="mt-1 text-sm text-slate-300">
-        Enviamos um link de confirmação para o seu e-mail. Confirme para ver o detalhe de cada
-        verificação e baixar o PDF.
-      </p>
-    </div>
-  );
-}
-
-// --- Seção travada com blur + cadeado (preview, não punição — KL-82 regra 8) - #
+// --- Seção travada com teaser (preview, não punição — KL-82 regra 8 / KL-89 regra 9) --------- #
 function LockedSection({ title, cta, url }) {
   return (
     <div className={`relative overflow-hidden ${card}`}>
@@ -434,4 +522,12 @@ function LockedSection({ title, cta, url }) {
       </div>
     </div>
   );
+}
+
+// KL-82 Slice 3 mantido como export secundário para compatibilidade — o AccountCTA já cobre o
+// fluxo do alerta (só senha). Se algum ponto ainda importar AlertSignup, ele continua válido.
+export function AlertSignup({ emailHint, domain, url }) {
+  return <AccountCTA
+    flags={{ alertVisitor: true, passwordOnly: true, showPdf: true }}
+    result={{ alert_email_hint: emailHint }} domain={domain} url={url} />;
 }
