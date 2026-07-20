@@ -230,6 +230,14 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 | GET | `/admin/analytics/journeys` | top caminhos normalizados (`/site/{domain}`, `/setor/{slug}`, `alerta`, `[saiu]`) |
 | GET | `/admin/analytics/funnel-by-sector` | funil segmentado por `targets.sector` |
 | GET | `/admin/analytics/alert-quality` | **KL-85** — qualidade do lead scoring: distribuição do `alert_quality_score`, quanto seria filtrado (<20), médias, alertas enviados no período. `click_rate` por faixa / `top_disqualify_reasons` exigem log por-envio (não na Parte 1) → nulos |
+| GET | `/admin/analytics/events/export` | **KL-64** — export CSV (StreamingResponse, `text/csv`, `Content-Disposition`), mesmos filtros da aba Eventos + `is_human`; cursor `fetchmany(1000)`, teto 10k (`X-Truncated: true` + linha de aviso). Colunas: `timestamp,event_type,page,domain,campaign,session_id,is_human,referrer` |
+
+> **KL-64 — filtro de bots (`is_human`):** todos os endpoints acima que leem `site_events` filtram
+> **`(is_human = TRUE OR is_human IS NULL)` por padrão** — só humanos verificados; `is_human IS NULL`
+> preserva o histórico. `?include_bots=true` desliga o filtro (debug; toggle no admin). O tracker
+> (`public/track.js`) só marca `is_human=true` após interação humana (scroll/click/5s), então o
+> pre-fetch de servidores de e-mail não é contado. Coluna `site_events.is_human BOOLEAN` (NULL default).
+> As 2 MCP tools (`get_analytics_metrics`, `get_analytics_funnel`) aceitam `include_bots`.
 
 ### Taxonomia aberta de setores (KL-84, `api/admin_sectors.py`) — admin-only (prefixo `/admin` → middleware JWT)
 

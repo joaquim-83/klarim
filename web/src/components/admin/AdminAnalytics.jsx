@@ -41,6 +41,7 @@ function trunc(s, n = 35) { return (s || '').length > n ? `${s.slice(0, n)}…` 
 
 export default function AdminAnalytics() {
   const [period, setPeriod] = useState('7d')
+  const [includeBots, setIncludeBots] = useState(false)  // KL-64: default só humanos
   const [nav, setNav] = useState(() =>
     parseTabHash(typeof window !== 'undefined' ? window.location.hash : '', TAB_KEYS))
 
@@ -54,13 +55,21 @@ export default function AdminAnalytics() {
       <div className="space-y-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <h1 className="text-xl font-bold">Analytics</h1>
-          <div className="flex gap-1 rounded-lg border border-klarim-border bg-klarim-surface p-1">
-            {PERIODS.map((p) => (
-              <button key={p.key} onClick={() => setPeriod(p.key)}
-                className={`rounded px-3 py-1 text-sm ${period === p.key ? 'bg-klarim-alert text-klarim-bg font-semibold' : 'text-klarim-muted hover:text-klarim-text'}`}>
-                {p.label}
-              </button>
-            ))}
+          <div className="flex flex-wrap items-center gap-3">
+            {/* KL-64: toggle "incluir bots/pre-fetch" (default OFF = só humanos verificados). */}
+            <label className="flex cursor-pointer items-center gap-2 text-xs text-klarim-muted">
+              <input type="checkbox" checked={includeBots}
+                onChange={(e) => setIncludeBots(e.target.checked)} className="accent-klarim-alert" />
+              Incluir bots/pre-fetch
+            </label>
+            <div className="flex gap-1 rounded-lg border border-klarim-border bg-klarim-surface p-1">
+              {PERIODS.map((p) => (
+                <button key={p.key} onClick={() => setPeriod(p.key)}
+                  className={`rounded px-3 py-1 text-sm ${period === p.key ? 'bg-klarim-alert text-klarim-bg font-semibold' : 'text-klarim-muted hover:text-klarim-text'}`}>
+                  {p.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
@@ -73,12 +82,13 @@ export default function AdminAnalytics() {
           ))}
         </div>
 
-        {nav.tab === 'overview' && <OverviewTab period={period} />}
+        {nav.tab === 'overview' && <OverviewTab period={period} includeBots={includeBots} />}
         {nav.tab === 'events' && (
-          <EventsTab key={JSON.stringify(nav.params)} period={period} initialParams={nav.params} />
+          <EventsTab key={JSON.stringify(nav.params)} period={period} initialParams={nav.params}
+            includeBots={includeBots} />
         )}
-        {nav.tab === 'pages' && <PagesTab period={period} navigate={navigate} />}
-        {nav.tab === 'journeys' && <JourneysTab period={period} navigate={navigate} />}
+        {nav.tab === 'pages' && <PagesTab period={period} navigate={navigate} includeBots={includeBots} />}
+        {nav.tab === 'journeys' && <JourneysTab period={period} navigate={navigate} includeBots={includeBots} />}
       </div>
     </AdminShell>
   )
@@ -93,11 +103,11 @@ const METRIC_ORDER = [
   ['pageviews_per_session', 'Pageviews/sessão'], ['alert_click_rate', 'Clique em alertas', '%'],
 ]
 
-function OverviewTab({ period }) {
+function OverviewTab({ period, includeBots }) {
   const { data, loading, error } = useAsync(
-    () => Promise.all([admin.aaMetrics(period), admin.aaTrend(period), admin.aaFunnel(period)])
+    () => Promise.all([admin.aaMetrics(period, includeBots), admin.aaTrend(period, undefined, includeBots), admin.aaFunnel(period, includeBots)])
       .then(([metrics, trend, funnel]) => ({ metrics: metrics.metrics, trend, funnel: funnel.stages })),
-    [period],
+    [period, includeBots],
   )
   if (loading) return <Loading />
   if (error) return <ErrorBox message={error} />
@@ -212,7 +222,7 @@ const EVENT_TYPES = [
   'code_requested', 'account_created_alert', 'cta_clicked', 'payment_created', 'payment_completed',
 ]
 
-function EventsTab({ period, initialParams = {} }) {
+function EventsTab({ period, initialParams = {}, includeBots }) {
   const [types, setTypes] = useState([])
   const [domain, setDomain] = useState('')
   const [campaign, setCampaign] = useState('')
@@ -233,14 +243,17 @@ function EventsTab({ period, initialParams = {} }) {
     ...(dDomain ? { domain: dDomain } : {}),
     ...(campaign ? { campaign } : {}),
     ...(dPath ? { path: dPath } : {}),
-  }), [period, page, limit, types, dDomain, campaign, dPath])
+    ...(includeBots ? { include_bots: true } : {}),
+  }), [period, page, limit, types, dDomain, campaign, dPath, includeBots])
 
-  useEffect(() => { setPage(1) }, [period, types, dDomain, campaign, dPath, groupBy, limit])
+  useEffect(() => { setPage(1) }, [period, types, dDomain, campaign, dPath, groupBy, limit, includeBots])
 
   useEffect(() => {
     let alive = true
     setLoading(true); setError('')
-    const call = groupBy ? admin.aaSessions({ period, page, limit }) : admin.aaEvents(filters)
+    const call = groupBy
+      ? admin.aaSessions({ period, page, limit, ...(includeBots ? { include_bots: true } : {}) })
+      : admin.aaEvents(filters)
     call.then((d) => { if (alive) { setData(d); setLoading(false) } })
       .catch((e) => { if (alive) { setError(String(e.message || e)); setLoading(false) } })
     return () => { alive = false }
@@ -250,25 +263,16 @@ function EventsTab({ period, initialParams = {} }) {
     setTypes((prev) => prev.includes(t) ? prev.filter((x) => x !== t) : [...prev, t])
   }
 
+  // KL-64: export SERVER-SIDE (streaming) respeitando os filtros ativos + is_human — o browser
+  // baixa direto (adminDownload envia o Bearer e lê o filename do Content-Disposition). Sem
+  // paginar client-side (antes travava com 5k+); teto de 10k no backend com aviso.
   async function exportCSV() {
-    const total = data?.counters?.events ?? data?.pagination?.total ?? 0
-    if (total > 5000 && !window.confirm(`Exportando ${total} eventos, pode demorar. Continuar?`)) return
     setExporting('Exportando…')
     try {
-      const rows = []; const per = 100; const pages = Math.min(Math.ceil(total / per), 60)
-      for (let pg = 1; pg <= pages; pg++) {
-        const d = await admin.aaEvents({ ...filters, page: pg, limit: per })
-        rows.push(...(d.events || []))
-        if ((d.events || []).length < per) break
-      }
-      const header = ['created_at', 'event_type', 'session_id', 'page_url', 'target_url', 'utm_campaign']
-      const csv = [header.join(',')].concat(rows.map((r) =>
-        header.map((h) => `"${String(r[h] ?? '').replace(/"/g, '""')}"`).join(','))).join('\n')
-      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
-      const a = document.createElement('a')
-      a.href = URL.createObjectURL(blob)
-      a.download = `eventos_${period}_${new Date().toISOString().slice(0, 10)}.csv`
-      a.click(); URL.revokeObjectURL(a.href)
+      const { page: _p, limit: _l, ...f } = filters
+      await admin.aaEventsExport(f)
+    } catch (e) {
+      window.alert(`Falha ao exportar: ${e.message || e}`)
     } finally { setExporting('') }
   }
 
@@ -368,7 +372,7 @@ const PAGE_COLUMNS = [
   { key: 'delta_views', label: 'Δ', align: 'right' },
 ]
 
-function PagesTab({ period, navigate }) {
+function PagesTab({ period, navigate, includeBots }) {
   const [sort, setSort] = useState('views')
   const [order, setOrder] = useState('desc')
   const [search, setSearch] = useState('')
@@ -378,7 +382,8 @@ function PagesTab({ period, navigate }) {
   const dSearch = useDebounce(search, 300)
 
   const { data, loading, error } = useAsync(
-    () => admin.aaPages({ period, ...(dSearch ? { search: dSearch } : {}) }), [period, dSearch])
+    () => admin.aaPages({ period, ...(dSearch ? { search: dSearch } : {}), ...(includeBots ? { include_bots: true } : {}) }),
+    [period, dSearch, includeBots])
 
   useEffect(() => { setPage(1) }, [period, dSearch, sort, order, grouped])
 
@@ -468,10 +473,10 @@ const SECTOR_COLUMNS = [
   { key: 'accounts', label: 'Contas', align: 'right' },
 ]
 
-function JourneysTab({ period, navigate }) {
+function JourneysTab({ period, navigate, includeBots }) {
   const { data, loading, error } = useAsync(
-    () => Promise.all([admin.aaJourneys(period, 10), admin.aaFunnelBySector(period)])
-      .then(([j, s]) => ({ paths: j.paths || [], sectors: s.sectors || [] })), [period])
+    () => Promise.all([admin.aaJourneys(period, 10, includeBots), admin.aaFunnelBySector(period, includeBots)])
+      .then(([j, s]) => ({ paths: j.paths || [], sectors: s.sectors || [] })), [period, includeBots])
 
   return (
     <div className="space-y-6">

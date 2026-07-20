@@ -13,14 +13,15 @@ async def get_funnel(period: str = "7d") -> dict:
 
 
 @mcp.tool()
-async def get_analytics_metrics(period: str = "7d") -> dict:
+async def get_analytics_metrics(period: str = "7d", include_bots: bool = False) -> dict:
     """KL-83 — os 6 KPIs-chave do analytics (visitantes únicos, scans manuais, contas
     criadas, conversão visitante→conta, pageviews/sessão, taxa de clique em alertas) com
     valor, período anterior e variação %. SEM sparklines (economia de tokens). Períodos:
-    today, 7d, 30d, 90d."""
+    today, 7d, 30d, 90d. KL-64: por padrão SÓ humanos verificados (bots/pre-fetch excluídos);
+    `include_bots=True` mostra todo o tráfego (debug)."""
     async def _impl():
         from api import admin_analytics as aa
-        data = await aa.metrics(None, period=period, start=None, end=None)
+        data = await aa.metrics(None, period=period, start=None, end=None, include_bots=include_bots)
         # remove as sparklines (arrays diários) para não gastar tokens
         slim = {k: {kk: vv for kk, vv in v.items() if kk != "sparkline"}
                 for k, v in data.get("metrics", {}).items()}
@@ -29,13 +30,14 @@ async def get_analytics_metrics(period: str = "7d") -> dict:
 
 
 @mcp.tool()
-async def get_analytics_funnel(period: str = "7d") -> dict:
+async def get_analytics_funnel(period: str = "7d", include_bots: bool = False) -> dict:
     """KL-83 — funil de conversão com breakdown por campanha e taxas inter-etapa
     (emails_sent → clicks → result_viewed → scan_started → account_created → payment_created
-    → payment_completed). Marca o gargalo (menor conversão). Períodos: today, 7d, 30d, 90d."""
+    → payment_completed). Marca o gargalo (menor conversão). Períodos: today, 7d, 30d, 90d.
+    KL-64: as etapas de site_events filtram SÓ humanos por padrão; `include_bots=True` = tudo."""
     async def _impl():
         from api import admin_analytics as aa
-        return await aa.funnel(None, period=period, start=None, end=None)
+        return await aa.funnel(None, period=period, start=None, end=None, include_bots=include_bots)
     return await _guard(_impl)
 
 

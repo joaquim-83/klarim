@@ -10,11 +10,15 @@ já é protegido pelo middleware admin (JWT). Datas sempre parametrizadas (nunca
 
 from __future__ import annotations
 
+import csv
 import hashlib
+import io
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, HTTPException, Query, Request
+from fastapi.responses import StreamingResponse
 
 from discovery.store import get_target_store
 
@@ -25,6 +29,7 @@ _CACHE_TTL = 300  # 5 min
 _RL_MAX, _RL_WINDOW = 30, 60  # 30 req/min por IP
 _rl_bucket: dict = {}
 _FIXED_DAYS = {"today": 1, "7d": 7, "30d": 30, "90d": 90}
+_EXPORT_LIMIT = 10000  # KL-64: teto do CSV (streaming); acima disso marca truncado
 
 
 # --------------------------------------------------------------------------- #
@@ -317,53 +322,62 @@ def _period_meta(pr: dict) -> dict:
 # Endpoints (8)
 # --------------------------------------------------------------------------- #
 
+# KL-64: sufixo de cache para separar a visão "só humanos" (default) da "com bots" (debug).
+def _bots_key(include_bots: bool) -> str:
+    return "bots" if include_bots else "h"
+
+
 @router.get("/metrics")
 async def metrics(request: Request, period: str = Query("7d"),
-                  start: Optional[str] = None, end: Optional[str] = None) -> dict:
+                  start: Optional[str] = None, end: Optional[str] = None,
+                  include_bots: bool = Query(False)) -> dict:
     await _rate_limit(request)
     pr = resolve_period(period, start, end)
 
     async def build():
         store = get_target_store()
-        cur = await store.aa_metrics_raw(pr["start"], pr["end"])
-        prev = await store.aa_metrics_raw(pr["prev_start"], pr["prev_end"])
+        cur = await store.aa_metrics_raw(pr["start"], pr["end"], include_bots)
+        prev = await store.aa_metrics_raw(pr["prev_start"], pr["prev_end"], include_bots)
         return {"period": _period_meta(pr),
                 "metrics": assemble_metrics(cur, prev, day_list(pr["start"], pr["days"]))}
 
-    return await _cached("metrics", _period_key(period, start, end), build)
+    return await _cached(f"metrics:{_bots_key(include_bots)}", _period_key(period, start, end), build)
 
 
 @router.get("/trend")
 async def trend(request: Request, period: str = Query("30d"),
                 metrics: str = Query("visitors,scans,accounts"),
-                start: Optional[str] = None, end: Optional[str] = None) -> dict:
+                start: Optional[str] = None, end: Optional[str] = None,
+                include_bots: bool = Query(False)) -> dict:
     await _rate_limit(request)
     pr = resolve_period(period, start, end)
     wanted = [m.strip() for m in metrics.split(",") if m.strip() in ("visitors", "scans", "accounts")]
 
     async def build():
-        raw = await get_target_store().aa_metrics_raw(pr["start"], pr["end"])
+        raw = await get_target_store().aa_metrics_raw(pr["start"], pr["end"], include_bots)
         days = day_list(pr["start"], pr["days"])
         series = {m: _sparkline(raw[m]["daily"], days) for m in wanted}
         return {"dates": days, "series": series}
 
-    return await _cached(f"trend:{','.join(wanted)}", _period_key(period, start, end), build)
+    return await _cached(f"trend:{','.join(wanted)}:{_bots_key(include_bots)}",
+                         _period_key(period, start, end), build)
 
 
 @router.get("/funnel")
 async def funnel(request: Request, period: str = Query("7d"),
-                 start: Optional[str] = None, end: Optional[str] = None) -> dict:
+                 start: Optional[str] = None, end: Optional[str] = None,
+                 include_bots: bool = Query(False)) -> dict:
     await _rate_limit(request)
     pr = resolve_period(period, start, end)
 
     async def build():
         store = get_target_store()
-        cur = await store.aa_funnel_raw(pr["start"], pr["end"])
-        prev = await store.aa_funnel_raw(pr["prev_start"], pr["prev_end"])
+        cur = await store.aa_funnel_raw(pr["start"], pr["end"], include_bots)
+        prev = await store.aa_funnel_raw(pr["prev_start"], pr["prev_end"], include_bots)
         return {"stages": assemble_funnel(cur),
                 "comparison": {"period": "previous", "stages": assemble_funnel(prev)}}
 
-    return await _cached("funnel", _period_key(period, start, end), build)
+    return await _cached(f"funnel:{_bots_key(include_bots)}", _period_key(period, start, end), build)
 
 
 def _clean_text(s: Optional[str], maxlen: int = 120) -> Optional[str]:
@@ -379,28 +393,96 @@ async def events(request: Request, period: str = Query("7d"), page: int = Query(
                  limit: int = Query(50, ge=1, le=100), type: Optional[str] = None,
                  domain: Optional[str] = None, campaign: Optional[str] = None,
                  path: Optional[str] = None, start: Optional[str] = None,
-                 end: Optional[str] = None) -> dict:
+                 end: Optional[str] = None, include_bots: bool = Query(False)) -> dict:
     """Stream de eventos paginado com filtros (AND). NÃO cacheado (paginação/tempo real)."""
     await _rate_limit(request)
     pr = resolve_period(period, start, end)
     types = [t.strip() for t in (type or "").split(",") if t.strip()] or None
     data = await get_target_store().aa_events(
         pr["start"], pr["end"], types, _clean_text(domain), _clean_text(campaign),
-        _clean_text(path), (page - 1) * limit, limit)
+        _clean_text(path), (page - 1) * limit, limit, include_bots)
     total = data["total"]
     return {"events": data["events"], "counters": data["counters"],
             "pagination": {"total": total, "page": page, "limit": limit,
                            "pages": max(1, -(-total // limit))}}
 
 
+def _export_domain(target_url: Optional[str], page_url: Optional[str]) -> str:
+    """Domínio do site para o CSV: de target_url (https://dom) ou do path /site/{dom}."""
+    for u in (target_url, page_url):
+        if not u:
+            continue
+        m = re.search(r"https?://([^/]+)", u) or re.search(r"/site/([^/?#]+)", u)
+        if m:
+            return m.group(1).lower().replace("www.", "")
+    return ""
+
+
+def _csv_safe(v: str) -> str:
+    """Anti CSV-injection (Excel/Sheets executam células que começam com = + - @)."""
+    s = "" if v is None else str(v)
+    return ("'" + s) if s[:1] in ("=", "+", "-", "@") else s
+
+
+@router.get("/events/export")
+async def events_export(request: Request, period: str = Query("7d"), type: Optional[str] = None,
+                        domain: Optional[str] = None, campaign: Optional[str] = None,
+                        path: Optional[str] = None, start: Optional[str] = None,
+                        end: Optional[str] = None, include_bots: bool = Query(False)
+                        ) -> StreamingResponse:
+    """KL-64 — export CSV dos eventos (server-side, streaming). Mesmos filtros da aba Eventos +
+    `is_human` (default só humanos). Teto de 10.000 registros (header `X-Truncated: true` +
+    linha final de aviso). Admin-only (prefixo `/admin` → middleware JWT)."""
+    await _rate_limit(request)
+    pr = resolve_period(period, start, end)
+    types = [t.strip() for t in (type or "").split(",") if t.strip()] or None
+    rows = await get_target_store().aa_events_export(
+        pr["start"], pr["end"], types, _clean_text(domain), _clean_text(campaign),
+        _clean_text(path), include_bots, limit=_EXPORT_LIMIT)
+    truncated = len(rows) > _EXPORT_LIMIT
+    rows = rows[:_EXPORT_LIMIT]
+
+    def _generate():
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+
+        def _flush() -> str:
+            v = buf.getvalue()
+            buf.seek(0)
+            buf.truncate(0)
+            return v
+
+        writer.writerow(["timestamp", "event_type", "page", "domain", "campaign",
+                         "session_id", "is_human", "referrer"])
+        yield _flush()
+        for r in rows:
+            created_at, etype, page_url, target_url, camp, sid, is_human, referrer = r
+            writer.writerow([
+                created_at.isoformat() if created_at else "",
+                _csv_safe(etype), _csv_safe(page_url), _export_domain(target_url, page_url),
+                _csv_safe(camp), _csv_safe(sid),
+                "" if is_human is None else ("true" if is_human else "false"),
+                _csv_safe(referrer)])
+            yield _flush()
+        if truncated:
+            yield f"# Exportacao limitada a {_EXPORT_LIMIT} registros. Refine os filtros.\n"
+
+    fname = f"klarim-events-{_now().date().isoformat()}.csv"
+    headers = {"Content-Disposition": f'attachment; filename="{fname}"'}
+    if truncated:
+        headers["X-Truncated"] = "true"
+    return StreamingResponse(_generate(), media_type="text/csv; charset=utf-8", headers=headers)
+
+
 @router.get("/sessions")
 async def sessions(request: Request, period: str = Query("7d"), page: int = Query(1, ge=1),
                    limit: int = Query(20, ge=1, le=50), start: Optional[str] = None,
-                   end: Optional[str] = None) -> dict:
+                   end: Optional[str] = None, include_bots: bool = Query(False)) -> dict:
     """Eventos agrupados por sessão (toggle 'agrupar por sessão'). NÃO cacheado."""
     await _rate_limit(request)
     pr = resolve_period(period, start, end)
-    data = await get_target_store().aa_sessions(pr["start"], pr["end"], (page - 1) * limit, limit)
+    data = await get_target_store().aa_sessions(pr["start"], pr["end"], (page - 1) * limit, limit,
+                                                include_bots)
     out = []
     for s in data["sessions"]:
         first, last = s["first_event_at"], s["last_event_at"]
@@ -417,36 +499,39 @@ async def sessions(request: Request, period: str = Query("7d"), page: int = Quer
 async def pages(request: Request, period: str = Query("7d"), sort: str = Query("views"),
                 order: str = Query("desc"), search: Optional[str] = None,
                 group_by: Optional[str] = None, start: Optional[str] = None,
-                end: Optional[str] = None) -> dict:
+                end: Optional[str] = None, include_bots: bool = Query(False)) -> dict:
     await _rate_limit(request)
     pr = resolve_period(period, start, end)
 
     async def build():
         store = get_target_store()
-        rows = await store.aa_pages_raw(pr["start"], pr["end"], _clean_text(search))
-        prev_rows = await store.aa_pages_raw(pr["prev_start"], pr["prev_end"], _clean_text(search))
+        rows = await store.aa_pages_raw(pr["start"], pr["end"], _clean_text(search), include_bots=include_bots)
+        prev_rows = await store.aa_pages_raw(pr["prev_start"], pr["prev_end"], _clean_text(search), include_bots=include_bots)
         prev_views = {r["page_url"]: int(r.get("views") or 0) for r in prev_rows}
-        sess = await store.aa_journeys_raw(pr["start"], pr["end"])
+        sess = await store.aa_journeys_raw(pr["start"], pr["end"], include_bots=include_bots)
         result = assemble_pages(rows, sess, prev_views)
         key = sort if sort in ("views", "sessions", "bounce_rate", "conversion", "delta_views") else "views"
         result["pages"].sort(key=lambda p: p.get(key, 0), reverse=(order != "asc"))
         return result
 
-    return await _cached(f"pages:{sort}:{order}:{search or ''}", _period_key(period, start, end), build)
+    return await _cached(f"pages:{sort}:{order}:{search or ''}:{_bots_key(include_bots)}",
+                         _period_key(period, start, end), build)
 
 
 @router.get("/journeys")
 async def journeys(request: Request, period: str = Query("7d"),
                    limit: int = Query(10, ge=1, le=30),
-                   start: Optional[str] = None, end: Optional[str] = None) -> dict:
+                   start: Optional[str] = None, end: Optional[str] = None,
+                   include_bots: bool = Query(False)) -> dict:
     await _rate_limit(request)
     pr = resolve_period(period, start, end)
 
     async def build():
-        sess = await get_target_store().aa_journeys_raw(pr["start"], pr["end"])
+        sess = await get_target_store().aa_journeys_raw(pr["start"], pr["end"], include_bots=include_bots)
         return {"paths": assemble_journeys(sess, limit)}
 
-    return await _cached(f"journeys:{limit}", _period_key(period, start, end), build)
+    return await _cached(f"journeys:{limit}:{_bots_key(include_bots)}",
+                         _period_key(period, start, end), build)
 
 
 @router.get("/alert-quality")
@@ -487,12 +572,13 @@ async def alert_quality(request: Request, period: str = Query("7d"),
 
 @router.get("/funnel-by-sector")
 async def funnel_by_sector(request: Request, period: str = Query("7d"),
-                           start: Optional[str] = None, end: Optional[str] = None) -> dict:
+                           start: Optional[str] = None, end: Optional[str] = None,
+                           include_bots: bool = Query(False)) -> dict:
     await _rate_limit(request)
     pr = resolve_period(period, start, end)
 
     async def build():
-        rows = await get_target_store().aa_funnel_by_sector(pr["start"], pr["end"])
+        rows = await get_target_store().aa_funnel_by_sector(pr["start"], pr["end"], include_bots=include_bots)
         sectors = []
         for r in rows:
             clicks, scans, accts = int(r.get("clicks") or 0), int(r.get("scans") or 0), int(r.get("accounts") or 0)
@@ -502,4 +588,5 @@ async def funnel_by_sector(request: Request, period: str = Query("7d"),
                             "click_rate": round(scans / clicks * 100, 1) if clicks else 0})
         return {"sectors": sectors}
 
-    return await _cached("funnel-by-sector", _period_key(period, start, end), build)
+    return await _cached(f"funnel-by-sector:{_bots_key(include_bots)}",
+                         _period_key(period, start, end), build)

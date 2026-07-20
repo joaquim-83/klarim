@@ -148,6 +148,11 @@ CREATE INDEX IF NOT EXISTS idx_site_events_session_created ON site_events(sessio
     WHERE session_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_site_events_page_created ON site_events(page_url, created_at DESC)
     WHERE event_type = 'page_view';
+-- KL-64: `is_human` marca se o evento veio de interação humana verificada (o tracker só
+-- dispara page_view/profile_view após scroll/click/5s). Eventos antigos (antes do deploy) ficam
+-- NULL e são preservados (retrocompatível). Índice parcial só nos humanos (o filtro padrão).
+ALTER TABLE site_events ADD COLUMN IF NOT EXISTS is_human BOOLEAN DEFAULT NULL;
+CREATE INDEX IF NOT EXISTS idx_events_human ON site_events(is_human) WHERE is_human = true;
 
 -- Blocklist de e-mails que bouncaram/denunciaram (KL-24): nunca reenviar. O
 -- domínio fica guardado para análise, mas o bloqueio é por e-mail (não descarta
@@ -5270,16 +5275,19 @@ class TargetStore:
         referrer: Optional[str] = None, utm_source: Optional[str] = None,
         utm_medium: Optional[str] = None, utm_campaign: Optional[str] = None,
         utm_content: Optional[str] = None, metadata: Optional[dict] = None,
+        is_human: Optional[bool] = None,
     ) -> int:
         def _fn(cur):
             cur.execute(
                 """
                 INSERT INTO site_events (event_type, session_id, target_url, target_id,
-                    page_url, referrer, utm_source, utm_medium, utm_campaign, utm_content, metadata)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+                    page_url, referrer, utm_source, utm_medium, utm_campaign, utm_content,
+                    metadata, is_human)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
                 """,
                 (event_type, session_id, target_url, target_id, page_url, referrer,
-                 utm_source, utm_medium, utm_campaign, utm_content, json.dumps(metadata or {})),
+                 utm_source, utm_medium, utm_campaign, utm_content, json.dumps(metadata or {}),
+                 is_human),
             )
             return cur.fetchone()[0]
 
@@ -5679,10 +5687,19 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
-    async def aa_metrics_raw(self, start: Any, end: Any) -> Dict[str, Any]:
+    # KL-64: filtro padrão de humano (exclui bots/pre-fetch). `is_human IS NULL` preserva os
+    # eventos anteriores ao deploy (retrocompatível). `include_bots=True` desliga o filtro (debug).
+    _AA_HUMAN = "(is_human = TRUE OR is_human IS NULL)"
+
+    @classmethod
+    def _human_and(cls, include_bots: bool) -> str:
+        return "" if include_bots else f" AND {cls._AA_HUMAN}"
+
+    async def aa_metrics_raw(self, start: Any, end: Any, include_bots: bool = False) -> Dict[str, Any]:
         """Séries diárias + totais das 6 métricas (visitors, pageviews, scans, accounts,
-        alerts_sent, alert_clicks) para o período [start, end)."""
+        alerts_sent, alert_clicks) para o período [start, end). KL-64: só humanos por padrão."""
         se = self._AA_SCAN_EVENTS
+        h = self._human_and(include_bots)
 
         def _fn(cur):
             p = (start, end)
@@ -5699,14 +5716,14 @@ class TargetStore:
             sid = "session_id IS NOT NULL"
             return {
                 "visitors": {
-                    "daily": daily(f"SELECT date_trunc('day',created_at)::date d, COUNT(DISTINCT session_id) FROM site_events WHERE {sid} AND {ev} GROUP BY d"),
-                    "total": total(f"SELECT COUNT(DISTINCT session_id) FROM site_events WHERE {sid} AND {ev}")},
+                    "daily": daily(f"SELECT date_trunc('day',created_at)::date d, COUNT(DISTINCT session_id) FROM site_events WHERE {sid} AND {ev}{h} GROUP BY d"),
+                    "total": total(f"SELECT COUNT(DISTINCT session_id) FROM site_events WHERE {sid} AND {ev}{h}")},
                 "pageviews": {
-                    "daily": daily(f"SELECT date_trunc('day',created_at)::date d, COUNT(*) FROM site_events WHERE event_type='page_view' AND {ev} GROUP BY d"),
-                    "total": total(f"SELECT COUNT(*) FROM site_events WHERE event_type='page_view' AND {ev}")},
+                    "daily": daily(f"SELECT date_trunc('day',created_at)::date d, COUNT(*) FROM site_events WHERE event_type='page_view' AND {ev}{h} GROUP BY d"),
+                    "total": total(f"SELECT COUNT(*) FROM site_events WHERE event_type='page_view' AND {ev}{h}")},
                 "scans": {
-                    "daily": daily(f"SELECT date_trunc('day',created_at)::date d, COUNT(DISTINCT session_id) FROM site_events WHERE event_type IN {se} AND {sid} AND {ev} GROUP BY d"),
-                    "total": total(f"SELECT COUNT(DISTINCT session_id) FROM site_events WHERE event_type IN {se} AND {sid} AND {ev}")},
+                    "daily": daily(f"SELECT date_trunc('day',created_at)::date d, COUNT(DISTINCT session_id) FROM site_events WHERE event_type IN {se} AND {sid} AND {ev}{h} GROUP BY d"),
+                    "total": total(f"SELECT COUNT(DISTINCT session_id) FROM site_events WHERE event_type IN {se} AND {sid} AND {ev}{h}")},
                 "accounts": {
                     "daily": daily("SELECT date_trunc('day',created_at)::date d, COUNT(*) FROM users WHERE created_at >= %s AND created_at < %s GROUP BY d"),
                     "total": total("SELECT COUNT(*) FROM users WHERE created_at >= %s AND created_at < %s")},
@@ -5714,24 +5731,26 @@ class TargetStore:
                     "daily": daily("SELECT date_trunc('day',sent_at)::date d, COUNT(*) FROM alert_log WHERE status='sent' AND sent_at >= %s AND sent_at < %s GROUP BY d"),
                     "total": total("SELECT COUNT(*) FROM alert_log WHERE status='sent' AND sent_at >= %s AND sent_at < %s")},
                 "alert_clicks": {
-                    "daily": daily(f"SELECT date_trunc('day',created_at)::date d, COUNT(DISTINCT session_id) FROM site_events WHERE utm_campaign='alerta' AND {sid} AND {ev} GROUP BY d"),
-                    "total": total(f"SELECT COUNT(DISTINCT session_id) FROM site_events WHERE utm_campaign='alerta' AND {sid} AND {ev}")},
+                    "daily": daily(f"SELECT date_trunc('day',created_at)::date d, COUNT(DISTINCT session_id) FROM site_events WHERE utm_campaign='alerta' AND {sid} AND {ev}{h} GROUP BY d"),
+                    "total": total(f"SELECT COUNT(DISTINCT session_id) FROM site_events WHERE utm_campaign='alerta' AND {sid} AND {ev}{h}")},
             }
 
         return await asyncio.to_thread(self._run, _fn)
 
-    async def aa_funnel_raw(self, start: Any, end: Any) -> Dict[str, Any]:
+    async def aa_funnel_raw(self, start: Any, end: Any, include_bots: bool = False) -> Dict[str, Any]:
         """Funil bruto: por etapa, `total` + `by_campaign`. Etapa 1 (emails_sent) vem do
-        `email_log` (por email_type); etapas 2+ vêm de `site_events` (por utm_campaign,
-        DISTINCT session_id). Retorna dict stage_name → {total, by_campaign}."""
+        `email_log` (por email_type, filtrado por sent_at no período — KL-64 confirma o bound
+        superior); etapas 2+ vêm de `site_events` (por utm_campaign, DISTINCT session_id, só
+        humanos por padrão). Retorna dict stage_name → {total, by_campaign}."""
         # email_type → chave de campanha normalizada.
         etype_map = {"alert": "alerta", "profile_view": "profile_view",
                      "alert_score100": "alerta_score100"}
+        h = self._human_and(include_bots)
 
         def _fn(cur):
             p = (start, end)
             out: dict = {}
-            # Etapa 1 — emails enviados (email_log), por tipo.
+            # Etapa 1 — emails enviados (email_log), por tipo, DENTRO da janela [start, end).
             cur.execute("SELECT email_type, COUNT(*) FROM email_log WHERE status='sent' "
                         "AND sent_at >= %s AND sent_at < %s GROUP BY email_type", p)
             by_c: dict = {}
@@ -5741,8 +5760,8 @@ class TargetStore:
                     by_c[key] = by_c.get(key, 0) + int(n)
             out["emails_sent"] = {"total": sum(by_c.values()), "by_campaign": by_c}
 
-            # Etapas 2+ — site_events, DISTINCT session_id por utm_campaign.
-            ev = "created_at >= %s AND created_at < %s AND session_id IS NOT NULL"
+            # Etapas 2+ — site_events, DISTINCT session_id por utm_campaign (só humanos por padrão).
+            ev = f"created_at >= %s AND created_at < %s AND session_id IS NOT NULL{h}"
             stages = {
                 "clicks": "utm_medium = 'email'",
                 "result_viewed": "event_type = 'result_viewed'",
@@ -5762,12 +5781,15 @@ class TargetStore:
         return await asyncio.to_thread(self._run, _fn)
 
     async def aa_events(self, start: Any, end: Any, types: Optional[list], domain: Optional[str],
-                        campaign: Optional[str], path: Optional[str], offset: int, limit: int
-                        ) -> Dict[str, Any]:
+                        campaign: Optional[str], path: Optional[str], offset: int, limit: int,
+                        include_bots: bool = False) -> Dict[str, Any]:
         """Eventos paginados com filtros combináveis (AND) + contadores dos resultados
-        filtrados. Filtros de texto são passados como parâmetros LIKE (parametrizados)."""
+        filtrados. Filtros de texto são passados como parâmetros LIKE (parametrizados).
+        KL-64: só humanos por padrão (is_human=true ou NULL)."""
         def _fn(cur):
             where = ["created_at >= %s", "created_at < %s"]
+            if not include_bots:
+                where.append(self._AA_HUMAN)
             params: list = [start, end]
             if types:
                 where.append("event_type = ANY(%s)")
@@ -5804,11 +5826,53 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
-    async def aa_sessions(self, start: Any, end: Any, offset: int, limit: int) -> Dict[str, Any]:
-        """Sessões (agrupadas por session_id) mais recentes primeiro, com os eventos de cada
-        uma. `converted` = tem account_created/payment_completed."""
+    async def aa_events_export(self, start: Any, end: Any, types: Optional[list],
+                               domain: Optional[str], campaign: Optional[str], path: Optional[str],
+                               include_bots: bool = False, limit: int = 10000) -> list:
+        """KL-64 — export CSV: mesmos filtros do `aa_events`, ordenado por created_at DESC, com
+        cursor server-side (fetchmany 1000). Busca até `limit+1` (o +1 detecta truncamento).
+        Retorna tuplas (created_at, event_type, page_url, target_url, utm_campaign, session_id,
+        is_human, referrer)."""
         def _fn(cur):
-            ev = "created_at >= %s AND created_at < %s AND session_id IS NOT NULL"
+            where = ["created_at >= %s", "created_at < %s"]
+            if not include_bots:
+                where.append(self._AA_HUMAN)
+            params: list = [start, end]
+            if types:
+                where.append("event_type = ANY(%s)")
+                params.append(list(types))
+            if domain:
+                where.append("(target_url ILIKE %s OR page_url ILIKE %s)")
+                params += [f"%{domain}%", f"%/site/{domain}%"]
+            if campaign:
+                where.append("utm_campaign = %s")
+                params.append(campaign)
+            if path:
+                where.append("page_url ILIKE %s")
+                params.append(f"%{path}%")
+            w = " AND ".join(where)
+            cur.execute(
+                f"SELECT created_at, event_type, page_url, target_url, utm_campaign, session_id, "
+                f"is_human, referrer FROM site_events WHERE {w} "
+                f"ORDER BY created_at DESC LIMIT %s", params + [limit + 1])
+            rows: list = []
+            while True:
+                batch = cur.fetchmany(1000)
+                if not batch:
+                    break
+                rows.extend(batch)
+            return rows
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def aa_sessions(self, start: Any, end: Any, offset: int, limit: int,
+                          include_bots: bool = False) -> Dict[str, Any]:
+        """Sessões (agrupadas por session_id) mais recentes primeiro, com os eventos de cada
+        uma. `converted` = tem account_created/payment_completed. KL-64: só humanos por padrão."""
+        h = self._human_and(include_bots)
+
+        def _fn(cur):
+            ev = f"created_at >= %s AND created_at < %s AND session_id IS NOT NULL{h}"
             p = (start, end)
             cur.execute(f"SELECT COUNT(DISTINCT session_id) FROM site_events WHERE {ev}", p)
             total = int((cur.fetchone() or [0])[0] or 0)
@@ -5842,10 +5906,14 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
-    async def aa_funnel_by_sector(self, start: Any, end: Any, limit: int = 30) -> list:
-        """Funil por setor do site (join site_events.target_id → targets.sector)."""
+    async def aa_funnel_by_sector(self, start: Any, end: Any, limit: int = 30,
+                                  include_bots: bool = False) -> list:
+        """Funil por setor do site (join site_events.target_id → targets.sector). Só humanos."""
+        h = ("" if include_bots else
+             " AND (e.is_human = TRUE OR e.is_human IS NULL)")
+
         def _fn(cur):
-            ev = "e.created_at >= %s AND e.created_at < %s AND e.session_id IS NOT NULL"
+            ev = f"e.created_at >= %s AND e.created_at < %s AND e.session_id IS NOT NULL{h}"
             cur.execute(
                 f"SELECT t.sector, "
                 f"COUNT(DISTINCT e.session_id) FILTER (WHERE e.utm_campaign='alerta') clicks, "
@@ -5858,12 +5926,14 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
-    async def aa_pages_raw(self, start: Any, end: Any, search: Optional[str], limit: int = 200
-                           ) -> list:
+    async def aa_pages_raw(self, start: Any, end: Any, search: Optional[str], limit: int = 200,
+                           include_bots: bool = False) -> list:
         """Páginas (page_view) com views + sessões distintas + bounce (sessão de 1 pageview).
-        `next_page`/conversão/delta derivam no módulo. Ordenado por views."""
+        `next_page`/conversão/delta derivam no módulo. Ordenado por views. Só humanos."""
         def _fn(cur):
             where = ["event_type='page_view'", "created_at >= %s", "created_at < %s"]
+            if not include_bots:
+                where.append(self._AA_HUMAN)
             params: list = [start, end]
             if search:
                 where.append("page_url ILIKE %s")
@@ -5877,12 +5947,15 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
-    async def aa_journeys_raw(self, start: Any, end: Any, max_sessions: int = 3000) -> list:
+    async def aa_journeys_raw(self, start: Any, end: Any, max_sessions: int = 3000,
+                              include_bots: bool = False) -> list:
         """Sequências de page_view por sessão (para as jornadas). Retorna, por sessão, a lista
         ordenada de page_url + se converteu + a campanha. A normalização/agrupamento é no
-        módulo (testável). Limita o nº de sessões varridas (custo)."""
+        módulo (testável). Limita o nº de sessões varridas (custo). Só humanos por padrão."""
+        h = self._human_and(include_bots)
+
         def _fn(cur):
-            ev = "created_at >= %s AND created_at < %s AND session_id IS NOT NULL"
+            ev = f"created_at >= %s AND created_at < %s AND session_id IS NOT NULL{h}"
             cur.execute(
                 f"SELECT session_id FROM site_events WHERE {ev} "
                 f"GROUP BY session_id ORDER BY MAX(created_at) DESC LIMIT %s",

@@ -2977,56 +2977,56 @@ class ProfileViewBody(BaseModel):
     utm_campaign: str = ""  # KL-44: origem da visita (anti-loop do e-mail de alerta)
 
 
+async def _profile_view_notify(domain: str, utm_campaign: str = "") -> None:
+    """Envia o aviso de "perfil consultado" ao dono (KL-51 f4). Rate limit 1/domínio/24h.
+    Pula alvos sem e-mail, descartados, unsubscribed, ou cujo e-mail já é de usuário registrado.
+    KL-44: visita do próprio dono via link de alerta (`utm_campaign=alerta*`) NÃO notifica
+    (anti-loop). KL-64: chamado SÓ por evento profile_view com humano verificado (o SSR não
+    dispara mais — bots crawleando /site/ não geram e-mail)."""
+    domain = _norm_domain(domain)
+    if not domain or (utm_campaign or "").startswith("alerta"):
+        return
+    try:
+        store = get_target_store()
+        target = await store.get_target_by_domain(domain)
+        if not target:
+            return
+        email = (target.get("contact_email") or "").strip()
+        status = target.get("status")
+        if not email or status in ("descartado", "unsubscribed"):
+            return
+        # rate limit 1/domínio/24h (Redis SET NX EX); sem Redis, deixa passar.
+        if _cache is not None and _cache.redis is not None:
+            key = f"notify:{domain}"
+            if not await _cache.redis.set(key, "1", nx=True, ex=86400):
+                return  # já notificado nas últimas 24h
+        # não notificar se o e-mail já tem conta (o dono já acompanha)
+        try:
+            if await store.get_user_by_email(email):
+                return
+        except Exception:  # noqa: BLE001
+            pass
+        if not _email_enabled():
+            return
+        score = target.get("last_scan_score") or 0
+        semaphore = _semaphore_from_score(score)
+        cta = f"{os.environ.get('SITE_BASE', 'https://klarim.net')}/cadastrar"
+        await _mailer().send_profile_view(email, domain, int(score), semaphore, cta,
+                                          target_id=target.get("id"))  # KL-62
+        print(f"[notify] perfil {domain} consultado → aviso enviado a {email}", flush=True)
+    except Exception as exc:  # noqa: BLE001 - nunca derruba nada
+        print(f"[notify] profile-view erro {domain}: {exc!r}", flush=True)
+
+
 @app.post("/notify/profile-view")
 async def notify_profile_view(body: ProfileViewBody) -> dict:
-    """Avisa o dono que alguém consultou o perfil público (KL-51 f4). Fire-and-forget:
-    responde na hora e envia em background. Rate limit 1/domínio/24h (Redis). Pula alvos
-    sem e-mail, descartados, unsubscribed, ou cujo e-mail já é de usuário registrado.
-
-    KL-44: o próprio dono clicando no link do e-mail de alerta (`utm_campaign=alerta*`)
-    NÃO gera outra notificação de "perfil consultado" — senão viraria um loop de e-mail
-    (alerta → clique → aviso → clique → …)."""
-    domain = _norm_domain(body.domain)
-    if not domain:
-        return {"ok": True, "notified": False}
-    # KL-44: visita vinda do e-mail de alerta (o próprio dono) não notifica — anti-loop.
-    if (body.utm_campaign or "").startswith("alerta"):
-        return {"ok": True, "notified": False}
-
-    async def _do():
-        try:
-            store = get_target_store()
-            target = await store.get_target_by_domain(domain)
-            if not target:
-                return
-            email = (target.get("contact_email") or "").strip()
-            status = target.get("status")
-            if not email or status in ("descartado", "unsubscribed"):
-                return
-            # rate limit 1/domínio/24h (Redis SET NX EX); sem Redis, deixa passar.
-            if _cache is not None and _cache.redis is not None:
-                key = f"notify:{domain}"
-                if not await _cache.redis.set(key, "1", nx=True, ex=86400):
-                    return  # já notificado nas últimas 24h
-            # não notificar se o e-mail já tem conta (o dono já acompanha)
-            try:
-                if await store.get_user_by_email(email):
-                    return
-            except Exception:  # noqa: BLE001
-                pass
-            if not _email_enabled():
-                return
-            score = target.get("last_scan_score") or 0
-            semaphore = _semaphore_from_score(score)
-            cta = f"{os.environ.get('SITE_BASE', 'https://klarim.net')}/cadastrar"
-            await _mailer().send_profile_view(email, domain, int(score), semaphore, cta,
-                                              target_id=target.get("id"))  # KL-62
-            print(f"[notify] perfil {domain} consultado → aviso enviado a {email}", flush=True)
-        except Exception as exc:  # noqa: BLE001 - nunca derruba nada
-            print(f"[notify] profile-view erro {domain}: {exc!r}", flush=True)
-
-    _spawn(_do())
-    return {"ok": True}
+    """DEPRECATED (KL-64): o gatilho passou para o evento `profile_view` humano-verificado
+    (`/events`) — bots que fazem pre-fetch/crawl de /site/ NÃO geram mais e-mail ao dono
+    (eram ~7000/dia). Mantido por compatibilidade; hoje o SSR do perfil não o chama mais."""
+    # anti-loop (KL-44): visita do próprio dono via link de alerta não notifica.
+    if not (body.utm_campaign or "").startswith("alerta"):
+        _spawn(_profile_view_notify(body.domain, body.utm_campaign))
+    return {"ok": True, "notified": False}
 
 
 # --------------------------------------------------------------------------- #
@@ -5589,11 +5589,14 @@ class EventBody(BaseModel):
     utm_campaign: Optional[str] = None
     utm_content: Optional[str] = None
     metadata: Optional[dict] = None
+    verified_human: Optional[bool] = None  # KL-64: interação humana verificada pelo tracker
 
 
 @app.post("/events")
 async def api_track_event(body: EventBody) -> dict:
-    """Tracking público (sem JWT) — fire-and-forget, gravação em background (KL-21)."""
+    """Tracking público (sem JWT) — fire-and-forget, gravação em background (KL-21).
+    KL-64: `verified_human` (do tracker) vira `is_human`; um evento `profile_view` humano
+    dispara o aviso ao dono (o SSR não dispara mais — bots não geram e-mail)."""
     if body.event_type not in _KNOWN_EVENTS or not body.session_id:
         return {"ok": True, "recorded": False}
     if not _event_rate_ok(body.session_id):
@@ -5609,7 +5612,21 @@ async def api_track_event(body: EventBody) -> dict:
     body.metadata = _sanitize_metadata(body.metadata)
     target_id = _target_id_from_utm(body.utm_content, body.target_id)
     _spawn(_log_event_bg(body, target_id))
+    # KL-64: o e-mail "perfil consultado" agora nasce do evento profile_view HUMANO (gated no
+    # tracker) — bots que crawleiam /site/ não interagem, logo não geram e-mail (eram ~7000/dia).
+    if body.event_type == "profile_view" and body.verified_human:
+        dom = ((body.metadata or {}).get("domain")
+               or _norm_domain(body.target_url or "")
+               or _domain_from_site_path(body.page_url or ""))
+        if dom:
+            _spawn(_profile_view_notify(dom, body.utm_campaign or ""))
     return {"ok": True}
+
+
+def _domain_from_site_path(path: str) -> str:
+    """/site/<domain>[/…] → <domain> (usado como fallback do domínio do profile_view)."""
+    m = re.match(r"^/site/([^/?#]+)", path or "")
+    return _norm_domain(m.group(1)) if m else ""
 
 
 async def _log_event_bg(body: EventBody, target_id: Optional[int]) -> None:
@@ -5618,7 +5635,7 @@ async def _log_event_bg(body: EventBody, target_id: Optional[int]) -> None:
             body.event_type, body.session_id, target_url=body.target_url, target_id=target_id,
             page_url=body.page_url, referrer=body.referrer, utm_source=body.utm_source,
             utm_medium=body.utm_medium, utm_campaign=body.utm_campaign,
-            utm_content=body.utm_content, metadata=body.metadata)
+            utm_content=body.utm_content, metadata=body.metadata, is_human=body.verified_human)
     except Exception as exc:  # noqa: BLE001 - tracking nunca derruba nada
         print(f"[events] falha ao gravar {body.event_type} ({exc!r})", flush=True)
 

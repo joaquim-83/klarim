@@ -22,21 +22,10 @@ try {
 
 const status = data?.status || 'not_found';
 
-// Notifica o dono (best-effort) que o perfil foi consultado. /notify responde na hora
-// (envio em background no backend) — await rápido com timeout curto.
-// KL-44: encaminha o utm_campaign para o backend ignorar visitas do próprio dono vindas
-// do e-mail de alerta (utm_campaign=alerta*) e evitar loop de notificação.
-const utmCampaign = Astro.url.searchParams.get('utm_campaign') || '';
-if (status === 'ok') {
-  try {
-    await fetch(`${API}/notify/profile-view`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ domain, utm_campaign: utmCampaign }),
-      signal: AbortSignal.timeout(2500),
-    });
-  } catch { /* nunca bloqueia o perfil */ }
-}
+// KL-64: o aviso de "perfil consultado" ao dono NÃO é mais disparado aqui (SSR). Cada render —
+// inclusive de BOTS/crawlers/pre-fetch de e-mail — gerava um e-mail ao dono (~7000/dia, risco de
+// reputação). Agora ele nasce do evento `profile_view` HUMANO-verificado no tracker (track.js →
+// POST /api/events), então só uma visita humana real notifica o dono.
 
 // KL-74 — sites relacionados (mesmo setor) para cross-linking. SSR (melhor p/ SEO).
 let related = [];

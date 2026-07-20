@@ -219,33 +219,43 @@ class FakeStore:
     def __init__(self):
         self.metrics_calls = 0
 
-    async def aa_metrics_raw(self, start, end):
+    async def aa_metrics_raw(self, start, end, include_bots=False):
         self.metrics_calls += 1
+        self.last_include_bots = include_bots
         return _raw(200, 600, 50, 10, 100, 40)
 
-    async def aa_funnel_raw(self, start, end):
+    async def aa_funnel_raw(self, start, end, include_bots=False):
+        self.last_include_bots = include_bots
         return _funnel_raw([1000, 100, 50, 40, 4, 2, 0])
 
-    async def aa_events(self, start, end, types, domain, campaign, path, offset, limit):
+    async def aa_events(self, start, end, types, domain, campaign, path, offset, limit, include_bots=False):
+        self.last_include_bots = include_bots
         evs = [{"id": i, "event_type": "page_view", "session_id": f"s{i}",
                 "target_url": None, "page_url": "/", "utm_campaign": None,
                 "referrer": None, "metadata": {}, "created_at": NOW} for i in range(limit)]
         return {"events": evs, "total": 152,
                 "counters": {"events": 152, "sessions": 43, "domains": 12, "scans": 3, "accounts": 1}}
 
-    async def aa_sessions(self, start, end, offset, limit):
+    async def aa_events_export(self, start, end, types, domain, campaign, path,
+                               include_bots=False, limit=10000):
+        self.last_include_bots = include_bots
+        n = min(getattr(self, "export_rows", 3), limit + 1)
+        return [(NOW, "page_view", "/site/a.com", "https://a.com", "alerta",
+                 f"s{i}", True, "https://google.com") for i in range(n)]
+
+    async def aa_sessions(self, start, end, offset, limit, include_bots=False):
         return {"sessions": [{"session_id": "abc", "event_count": 2,
                               "first_event_at": NOW, "last_event_at": NOW,
                               "converted": True, "campaign": "alerta",
                               "events": []}], "total": 5}
 
-    async def aa_pages_raw(self, start, end, search, limit=200):
+    async def aa_pages_raw(self, start, end, search, limit=200, include_bots=False):
         return [{"page_url": "/site/a.com", "views": 10, "sessions": 4}]
 
-    async def aa_journeys_raw(self, start, end, max_sessions=3000):
+    async def aa_journeys_raw(self, start, end, max_sessions=3000, include_bots=False):
         return [_sess(["/", "/site/a.com"], converted=True)]
 
-    async def aa_funnel_by_sector(self, start, end, limit=30):
+    async def aa_funnel_by_sector(self, start, end, limit=30, include_bots=False):
         return [{"sector": "hotelaria", "clicks": 45, "scans": 8, "accounts": 0}]
 
 
@@ -384,3 +394,47 @@ def test_metrics_cache_hit(monkeypatch, store):
     calls_after_first = store.metrics_calls
     client.get("/admin/analytics/metrics?period=7d", headers=_admin())
     assert store.metrics_calls == calls_after_first   # 2ª veio do cache
+
+
+# --------------------------------------------------------------------------- #
+# KL-64 — include_bots passthrough + export CSV server-side
+# --------------------------------------------------------------------------- #
+
+def test_include_bots_passthrough(store, client):
+    # default (sem param) → só humanos; ?include_bots=true → tudo (chega no store).
+    client.get("/admin/analytics/metrics?period=7d", headers=_admin())
+    assert store.last_include_bots is False
+    client.get("/admin/analytics/metrics?period=7d&include_bots=true", headers=_admin())
+    assert store.last_include_bots is True
+    client.get("/admin/analytics/funnel?period=7d&include_bots=true", headers=_admin())
+    assert store.last_include_bots is True
+
+
+def test_export_requires_admin(client):
+    assert client.get("/admin/analytics/events/export?period=7d").status_code == 401
+
+
+def test_export_csv_headers_and_content(store, client):
+    r = client.get("/admin/analytics/events/export?period=7d", headers=_admin())
+    assert r.status_code == 200
+    assert r.headers["content-type"].startswith("text/csv")
+    assert 'attachment; filename="klarim-events-' in r.headers["content-disposition"]
+    lines = r.text.strip().splitlines()
+    assert lines[0] == "timestamp,event_type,page,domain,campaign,session_id,is_human,referrer"
+    assert len(lines) == 1 + 3          # header + 3 linhas (fake)
+    assert "X-Truncated" not in r.headers
+
+
+def test_export_default_is_human_only(store, client):
+    client.get("/admin/analytics/events/export?period=7d", headers=_admin())
+    assert store.last_include_bots is False
+    client.get("/admin/analytics/events/export?period=7d&include_bots=true", headers=_admin())
+    assert store.last_include_bots is True
+
+
+def test_export_truncation_flag(store, client):
+    store.export_rows = 10001            # > 10.000 → trunca + header + linha de aviso
+    r = client.get("/admin/analytics/events/export?period=7d", headers=_admin())
+    assert r.status_code == 200
+    assert r.headers.get("x-truncated") == "true"
+    assert "Exportacao limitada a 10000" in r.text
