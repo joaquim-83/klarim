@@ -5721,6 +5721,11 @@ class TargetStore:
                 "pageviews": {
                     "daily": daily(f"SELECT date_trunc('day',created_at)::date d, COUNT(*) FROM site_events WHERE event_type='page_view' AND {ev}{h} GROUP BY d"),
                     "total": total(f"SELECT COUNT(*) FROM site_events WHERE event_type='page_view' AND {ev}{h}")},
+                # KL-64 fix: sessões que TÊM ao menos 1 page_view — denominador correto de
+                # pageviews/sessão (usar todas as sessões incluía sessões só-ação → razão < 1).
+                "pageview_sessions": {
+                    "daily": daily(f"SELECT date_trunc('day',created_at)::date d, COUNT(DISTINCT session_id) FROM site_events WHERE event_type='page_view' AND {sid} AND {ev}{h} GROUP BY d"),
+                    "total": total(f"SELECT COUNT(DISTINCT session_id) FROM site_events WHERE event_type='page_view' AND {sid} AND {ev}{h}")},
                 "scans": {
                     "daily": daily(f"SELECT date_trunc('day',created_at)::date d, COUNT(DISTINCT session_id) FROM site_events WHERE event_type IN {se} AND {sid} AND {ev}{h} GROUP BY d"),
                     "total": total(f"SELECT COUNT(DISTINCT session_id) FROM site_events WHERE event_type IN {se} AND {sid} AND {ev}{h}")},
@@ -5742,9 +5747,11 @@ class TargetStore:
         `email_log` (por email_type, filtrado por sent_at no período — KL-64 confirma o bound
         superior); etapas 2+ vêm de `site_events` (por utm_campaign, DISTINCT session_id, só
         humanos por padrão). Retorna dict stage_name → {total, by_campaign}."""
-        # email_type → chave de campanha normalizada.
-        etype_map = {"alert": "alerta", "profile_view": "profile_view",
-                     "alert_score100": "alerta_score100"}
+        # email_type → chave de campanha. 2026-07-20: `emails_sent` conta SÓ os e-mails de ALERTA
+        # (alert + alert_score100) — casa com a página Alertas / count_alerts_sent_today. O
+        # `profile_view` (notificação de outra natureza, hoje inflado pelo flood de bot pré-KL-64)
+        # NÃO entra no funil de conversão de alerta — era o que fazia emails_sent parecer "acumulado".
+        etype_map = {"alert": "alerta", "alert_score100": "alerta_score100"}
         h = self._human_and(include_bots)
 
         def _fn(cur):

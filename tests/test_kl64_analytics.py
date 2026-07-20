@@ -95,6 +95,36 @@ def test_aa_funnel_include_bots_drops_human():
     assert HUMAN not in " ".join(cur.sqls)
 
 
+class _EmailRowCursor(RecCursor):
+    """Cursor que devolve linhas fake p/ a query de email_log (só ela); o resto retorna []."""
+    def __init__(self, email_rows):
+        super().__init__()
+        self._email_rows = email_rows
+        self._email_next = False
+
+    def execute(self, sql, params=None):
+        super().execute(sql, params)
+        self._email_next = "email_log" in sql
+
+    def fetchall(self):
+        if self._email_next:
+            self._email_next = False
+            return self._email_rows
+        return []
+
+
+def test_funnel_emails_sent_excludes_profile_view():
+    # Bug 1 (2026-07-20): emails_sent conta SÓ alert + alert_score100 (casa com a página Alertas);
+    # profile_view (inflado pelo flood de bot pré-KL-64) NÃO entra no funil de conversão de alerta.
+    s = TargetStore.__new__(TargetStore)
+    cur = _EmailRowCursor([("alert", 500), ("profile_view", 7000), ("alert_score100", 2)])
+    s._run = lambda fn: fn(cur)
+    out = asyncio.run(s.aa_funnel_raw(NOW, NOW))
+    assert out["emails_sent"]["total"] == 502   # 500 + 2, SEM os 7000 de profile_view
+    assert out["emails_sent"]["by_campaign"] == {"alerta": 500, "alerta_score100": 2}
+    assert "profile_view" not in out["emails_sent"]["by_campaign"]
+
+
 def test_aa_events_human_filter():
     s, cur = _capturing_store()
     _sql(s.aa_events(NOW, NOW, None, None, None, None, 0, 50))

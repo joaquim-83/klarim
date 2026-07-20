@@ -124,6 +124,9 @@ def assemble_metrics(cur: Dict[str, Any], prev: Dict[str, Any], days: List[str])
     pv, pp, _pd = m("pageviews")
     alv, alp, _ald = m("alerts_sent")
     clv, clp, _cld = m("alert_clicks")
+    # KL-64 fix: pageviews/sessão usa como denominador as sessões COM page_view (não todas as
+    # sessões). Antes `pv/vv` dava < 1 quando havia sessões só-ação (profile_view/scan sem page_view).
+    pvs_v, pvs_p, pvs_d = m("pageview_sessions")
 
     def kpi(value, previous, spark):
         return {"value": value, "previous": previous,
@@ -131,8 +134,8 @@ def assemble_metrics(cur: Dict[str, Any], prev: Dict[str, Any], days: List[str])
 
     conv = round(av / vv * 100, 1) if vv else 0
     conv_prev = round(ap / vp * 100, 1) if vp else 0
-    pps = round(pv / vv, 2) if vv else 0
-    pps_prev = round(pp / vp, 2) if vp else 0
+    pps = round(pv / pvs_v, 2) if pvs_v else 0
+    pps_prev = round(pp / pvs_p, 2) if pvs_p else 0
     acr = round(clv / alv * 100, 1) if alv else 0
     acr_prev = round(clp / alp * 100, 1) if alp else 0
 
@@ -143,7 +146,7 @@ def assemble_metrics(cur: Dict[str, Any], prev: Dict[str, Any], days: List[str])
         "conversion_rate": kpi(conv, conv_prev,
                                _ratio_sparkline(ad, vd, days, 100.0)),
         "pageviews_per_session": kpi(pps, pps_prev,
-                                     _ratio_sparkline(cur["pageviews"]["daily"], vd, days, 1.0, 2)),
+                                     _ratio_sparkline(cur["pageviews"]["daily"], pvs_d, days, 1.0, 2)),
         "alert_click_rate": kpi(acr, acr_prev,
                                 _ratio_sparkline(cur["alert_clicks"]["daily"],
                                                  cur["alerts_sent"]["daily"], days, 100.0)),

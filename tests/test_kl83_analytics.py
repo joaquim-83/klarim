@@ -108,12 +108,14 @@ def test_page_group():
 # 3. assemble_metrics
 # =========================================================================== #
 
-def _raw(v, pvw, sc, ac, al, cl):
-    """Monta um dict de agregação bruta (totais; daily simplificado num só dia)."""
+def _raw(v, pvw, sc, ac, al, cl, pvs=None):
+    """Monta um dict de agregação bruta (totais; daily simplificado num só dia). `pvs` =
+    sessões com page_view (default = visitantes, p/ compat)."""
     def one(total):
         return {"daily": {"2026-07-13": total}, "total": total}
     return {"visitors": one(v), "pageviews": one(pvw), "scans": one(sc),
-            "accounts": one(ac), "alerts_sent": one(al), "alert_clicks": one(cl)}
+            "accounts": one(ac), "alerts_sent": one(al), "alert_clicks": one(cl),
+            "pageview_sessions": one(v if pvs is None else pvs)}
 
 
 def test_assemble_metrics_values_and_change():
@@ -126,11 +128,21 @@ def test_assemble_metrics_values_and_change():
     assert m6["accounts_created"]["value"] == 10
     # conversão = 10/200*100 = 5.0
     assert m6["conversion_rate"]["value"] == 5.0
-    # pageviews/sessão = 600/200 = 3.0
+    # pageviews/sessão = 600 / 200 sessões-com-pageview = 3.0
     assert m6["pageviews_per_session"]["value"] == 3.0
     # alert_click_rate = 40/100*100 = 40.0
     assert m6["alert_click_rate"]["value"] == 40.0
     assert len(m6["unique_visitors"]["sparkline"]) == 1
+
+
+def test_pageviews_per_session_uses_pageview_sessions():
+    # KL-64 fix: 600 pageviews, 400 VISITANTES, mas só 300 sessões têm page_view → 600/300 = 2.0
+    # (>= 1). Com o denominador antigo (visitantes) daria 600/400 = 1.5. Nunca < 1.
+    cur = _raw(400, 600, 0, 0, 0, 0, pvs=300)
+    prev = _raw(200, 300, 0, 0, 0, 0, pvs=200)
+    m6 = aa.assemble_metrics(cur, prev, ["2026-07-13"])
+    assert m6["pageviews_per_session"]["value"] == 2.0
+    assert m6["pageviews_per_session"]["value"] >= 1.0
 
 
 def test_assemble_metrics_zero_safe():

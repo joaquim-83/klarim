@@ -131,9 +131,16 @@ CUMULATIVO do dia inclui a madrugada pré-fix (emails/eventos), que sai amanhã;
 toggle "incluir bots". Nenhuma regressão; nenhuma mudança de código necessária além do KL-64 já
 deployado.
 
-Nota lateral: `pageviews_per_session` humano = 0,91 (< 1) — consequência do gating (page_view só
-dispara após interação; sessões só-ação contam como visitante sem page_view). Métrica mais honesta
-(menor), não um bug. A expectativa ">1,5" do KL-64 não se sustenta sob o gating.
+### 2 bugs adicionais corrigidos (2026-07-20)
+- **Funil `emails_sent` inflado por profile_view:** a query JÁ filtra por período (confirmado), mas
+  o `emails_sent` somava `profile_view` (7.119 hoje, flood de bot pré-KL-64) → parecia "acumulado".
+  Fix: `emails_sent` conta SÓ `alert + alert_score100` (etype_map sem profile_view) → casa com a
+  página Alertas / `count_alerts_sent_today`. O profile_view é outra natureza (notificação), fora
+  do funil de conversão de alerta.
+- **`pageviews_per_session` < 1 (0,91) — impossível:** o denominador era `visitors` (sessões de
+  QUALQUER evento); sessões só-ação (profile_view/scan sem page_view) o inflavam. Fix: denominador =
+  **sessões COM page_view** (`pageview_sessions`, nova agregação em `aa_metrics_raw` com o mesmo
+  filtro is_human) → `pageviews / pageview_sessions` ≥ 1 sempre. +2 testes.
 
 ---
 
