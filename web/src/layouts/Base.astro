@@ -112,7 +112,7 @@ const allJsonLd = [ORG_JSONLD, WEBSITE_JSONLD, ...extraLd];
     <!-- Tracking (KL-21): asset EXTERNO (não inline) → passa na CSP `script-src 'self'`.
          KL-64: `?v=64` força os clientes (inclusive bots/crawlers que cacheiam JS ignorando o
          `no-store`) a buscar o tracker NOVO (detecção de humano) — mesmo remédio do theme.js?v=2. -->
-    <script src="/track.js?v=64" is:inline></script>
+    <script src="/track.js?v=65" is:inline></script>
     <!-- KL-87: toggle de tema (sol/lua). Externo → CSP `script-src 'self'`. O `?v=2` escapa
          uma entrada de cache do Cloudflare envenenada (o /theme.js caiu no fallback SSR — HTML
          com max-age=14400 — enquanto NÃO estava na allowlist do Nginx; já corrigido). -->

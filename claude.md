@@ -656,8 +656,10 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   período — o VOLUME é que era bot). Fix: o gatilho saiu do SSR → nasce do **evento `profile_view`
   HUMANO-verificado** (`track.js` → `/api/events` → `_profile_view_notify`). Bots não interagem → não
   geram e-mail. **(2) Filtro is_human:** `track.js` reescrito — NÃO dispara `page_view` no load;
-  espera sinal humano (scroll/click/mouse/touch/tecla) OU 5s visível, aí dispara com
-  `verified_human:true` (eventos de AÇÃO disparam na hora com o flag). Coluna `site_events.is_human`
+  espera **interação real** (scroll/click/mousemove/touchstart/keydown), aí dispara com
+  `verified_human:true` (eventos de AÇÃO disparam na hora com o flag). **2026-07-20: removido o
+  fallback de 5s** (`?v=65`) — pre-fetches de e-mail ficam 5+s renderizando e passavam (inflavam
+  visitantes ~5x: 603 interno vs 101 Cloudflare); agora SÓ interação conta, sem exceção. Coluna `site_events.is_human`
   (NULL=histórico preservado) + índice parcial; `verified_human`→`log_event(is_human)`; filtro
   **`(is_human=TRUE OR is_human IS NULL)` DEFAULT em TODAS as queries de site_events** dos 8 endpoints
   (`aa_*`) + 2 MCP tools; `include_bots=true` desliga (debug); toggle no admin. `users`/`alert_log`/

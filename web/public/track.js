@@ -93,10 +93,9 @@
   HUMAN_SIGNALS.forEach(function (e) {
     document.addEventListener(e, onSignal, { once: true, passive: true, capture: true });
   });
-  // Fallback: 5s com a aba visível = humano lendo (pre-fetch de e-mail não fica 5s visível).
-  setTimeout(function () {
-    if (!humanVerified && document.visibilityState === 'visible') onHuman('timeout');
-  }, 5000);
+  // 2026-07-20: SEM fallback de timeout. O antigo "5s com a aba visível = humano" deixava passar
+  // pre-fetches de e-mail que renderizam 5+ s (inflava visitantes ~5x: 603 interno vs 101 Cloudflare).
+  // Agora SÓ conta humano quem interage de fato (scroll/click/mousemove/touchstart/keydown), sem exceção.
 
   // Eventos passivos do load (adiados até o sinal). O painel/dashboard ficam de fora.
   var path = window.location.pathname;

@@ -65,14 +65,12 @@ test('track.js: click também conta como humano e libera o profile_view do perfi
   assert.equal(p.body.metadata.domain, 'hotel.com.br')
 })
 
-test('track.js: fallback de 5s (aba visível) dispara o page_view', () => {
+test('track.js: SEM fallback de timeout — nada é agendado (só interação conta)', () => {
+  // 2026-07-20: o fallback de 5s foi removido (pre-fetches de e-mail ficavam 5+s visíveis e
+  // passavam). Nenhum setTimeout é registrado; sem interação, nada dispara.
   const ctx = makeEnv()
-  assert.equal(ctx.fetches.length, 0)
-  ctx.getTimeout()()   // executa o callback do setTimeout (5s)
-  const pv = ctx.fetches.find((f) => f.body.event_type === 'page_view')
-  assert.ok(pv)
-  assert.equal(pv.body.verified_human, true)
-  assert.equal(pv.body.metadata.detection, 'timeout')
+  assert.equal(ctx.getTimeout(), null)   // nenhum setTimeout agendado
+  assert.equal(ctx.fetches.length, 0)    // sem interação → zero eventos (nem por timeout)
 })
 
 test('track.js: evento de AÇÃO dispara na hora (não espera humano)', () => {
