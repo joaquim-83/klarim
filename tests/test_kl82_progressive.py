@@ -288,6 +288,30 @@ def test_scan_result_serves_recent_from_cache_no_rescan(client, store, monkeypat
     assert called["scan"] is False  # NÃO re-escaneou
 
 
+def test_scan_result_serves_free_tier_worker_scan_no_rescan(client, store, monkeypatch):
+    # KL-89 P0 (fix do bug): o scan do worker de discovery é FREE (15 checks) e NÃO passa no
+    # _tier_ok(full=True). O /scan/result deve cair no lookup free e servir esse scan mesmo assim
+    # (instantâneo), em vez de re-escanear. Regressão do "link do alerta re-escaneava".
+    called = {"scan": False}
+
+    async def _no_scan(*a, **k):
+        called["scan"] = True
+        return _fake_report()
+    monkeypatch.setattr(m, "_safe_scan", _no_scan)
+
+    calls = []
+
+    async def _recent(url, full=False, max_age_minutes=60):
+        calls.append(full)
+        return None if full else _fake_report()  # só existe o scan FREE (full=False)
+    monkeypatch.setattr(m, "get_recent_only", _recent)
+
+    j = client.get("/scan/result?url=https://x.com.br").json()
+    assert j["from_cache"] is True
+    assert called["scan"] is False       # NÃO re-escaneou
+    assert calls == [True, False]        # tentou o full, caiu no free (o do worker/alerta)
+
+
 def test_scan_result_refresh_forces_new_scan(client, store, monkeypatch):
     # KL-89 P0 — refresh=1 (botão "Atualizar análise") pula o cache e força scan novo.
     seen = {"force": None, "recent_called": False}

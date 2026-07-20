@@ -345,3 +345,28 @@ SSE/polling do backend) exige mudança arquitetural e fica para o KL-90.
 - Frontend: **67 passed** · Build Astro **verde**.
 - Impacto esperado: visitante do alerta vê o resultado em **< 1s** (era 60s+); scans reais têm
   feedback contínuo e reassurance quando serviços externos demoram.
+
+### P0 NÃO resolvido na 1ª tentativa — causa raiz e correção
+
+O 1º fix subiu (CI/deploy verde) mas **não mudou o comportamento**: o link do alerta seguia
+re-escaneando. Investigação:
+
+- O link do alerta (`/alert-access`) redireciona para `/scan?url=https://{domain}` → `ScanFlow`
+  → `GET /api/scan/result?url=…`. **Endpoint certo.**
+- A URL casa: o worker grava `scans.url = https://{domain}`; o alerta manda `https://{domain}`;
+  `_norm_scan_url` normaliza igual. **URL não era o problema.**
+- **Causa raiz — descasamento de TIER:** o scan por trás do alerta é o do **worker de discovery**,
+  que roda `full = source not in ("discovery","public")` → **FALSE** → grava só o tier **FREE (15
+  checks)**. O `/scan/result` pedia `get_recent_only(url, full=True)`, e `_tier_ok` exige
+  `len(results) >= len(ALL_CHECKS)` (48). Como `15 >= 48` é falso, o scan do worker era **sempre
+  reprovado** → caía no scan novo. Ou seja: o cache-lookup nunca casava para alvos de alerta.
+
+**Correção:** `/scan/result` tenta o FULL e, se não houver, **cai no lookup FREE**
+(`get_recent_only(url, full=False)`) — `_tier_ok(15>=15)` passa → serve o scan de 15 do worker na
+hora. Instantâneo > completo; o botão "Atualizar análise →" roda os 48. Regressão coberta por
+`test_scan_result_serves_free_tier_worker_scan_no_rescan` (tenta full → cai no free → não re-escaneia).
+
+- **1288 passed** (backend) · Build Astro **verde**.
+- Follow-up possível (KL-90): fazer o alerta disparar/garantir um scan FULL do alvo antes de enviar,
+  para o visitante ver os 48 checks já na 1ª tela (hoje vê 15 + "Atualizar"). Mais custo de scan;
+  fora do escopo urgente do P0.

@@ -3853,11 +3853,17 @@ async def scan_result(url: str = Query(..., description="URL alvo."),
         scanned_by = (ctx["user"].get("email") or "").strip() or None
 
     # P0: tenta o resultado recente (< 24h) SEM escanear. Só o refresh explícito pula isto.
+    # Prefere o FULL (48 checks); mas o worker de discovery — que é o scan POR TRÁS DO ALERTA —
+    # grava só o tier FREE (15 checks). Se for só isso que existe, serve o FREE mesmo (instantâneo
+    # > completo; o botão "Atualizar" roda o full). SEM este fallback o link do alerta SEMPRE
+    # re-escaneava: o scan de 15 do worker não passava no _tier_ok(full=True), que exige 48.
     from_cache = False
     report = None
     if not refresh:
         try:
             report = await get_recent_only(url, full=True, max_age_minutes=_SCAN_RESULT_MAX_AGE_MIN)
+            if report is None:
+                report = await get_recent_only(url, full=False, max_age_minutes=_SCAN_RESULT_MAX_AGE_MIN)
         except Exception:  # noqa: BLE001 - lookup best-effort; cai no scan novo
             report = None
         from_cache = report is not None
