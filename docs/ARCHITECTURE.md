@@ -169,7 +169,8 @@ Schema criado idempotente no `ensure_schema` (sem Alembic). Principais tabelas:
   48 oficiais no `ensure_schema`).
 - **Funil/e-mail:** `payments`, `alert_log`, `rescan_log`, `email_log` (rastreabilidade
   unificada, KL-62), `email_blocklist`, `recovery_tokens`, `scan_verifications`,
-  `scan_credits`, `site_events` (tracking), `scan_leads` (PQL).
+  `scan_credits`, `site_events` (tracking client-side), `access_log` (KL-92: tracking
+  **server-side** por IP — fonte de verdade das métricas de visitante), `scan_leads` (PQL).
 - **Contas:** `users`, `user_sites`, `password_resets`, `vigilias`, `vigilia_alerts`,
   `typosquat_alerts` (KL-44 P4), `plans`/`subscriptions`/`subscription_history` (KL-44 P1),
   `subscription_payments` (KL-44 P6: PIX de upgrade, **separada** de `payments`/relatório).
@@ -264,6 +265,39 @@ memória (regex sobre strings já carregadas), **sem request HTTP extra** (< 500
   e MCP (`get_tech_adoption`/`get_site_tech_stack`/`get_site_status_history`); o público vê
   só badges booleanos (`GET /public/tech-summary/{domain}`, 30/min/IP). Dados técnicos são
   públicos (headers/certificados); o **valor está na agregação** (market share por setor).
+
+### Pipeline de access log server-side (KL-92)
+
+O tracking client-side (`site_events` via `public/track.js`) infla visitantes ~5x porque
+pre-fetches de e-mail executam JavaScript no browser do bot. O KL-92 adiciona uma **fonte de
+verdade server-side**: um middleware HTTP que classifica bot/humano pelo **IP real**, sem
+depender de código no client.
+
+- **Middleware** `api/access_log_middleware.py` (registrado após o auth → **OUTERMOST**,
+  enxerga até respostas 401). Ignora assets estáticos (`should_log`). Para cada request
+  relevante: extrai IP (`CF-Connecting-IP`→`X-Real-IP`→peer), país (`CF-IPCountry`), user_id
+  (JWT de usuário) e `domain_queried` (`/site/{d}`, `/scan?url=`, ou `request.state.
+  domain_queried` que o handler seta p/ POST). **Fire-and-forget:** a captura é síncrona e
+  barata; o processamento pesado roda em background (`_spawn`) — o response volta na hora.
+- **Classificação** `api/bot_classifier.py::classify_bot` (função **pura**): IP próprio
+  (`34.135.194.208` nunca é bot) → usuário autenticado (logou = humano) → datacenter (~30
+  CIDRs estáticos AWS/GCP/Azure/DigitalOcean/Hetzner, sem lookup externo) → crawler declarado
+  no UA → rate >50/h sem conta (contador Redis `access_rate:{ip}`, TTL 1h) → padrão de
+  pré-fetch (US + `/site/*` sem navegação). Retorna `(is_bot, bot_reason)`.
+- **Gravação bufferizada:** cada registro entra num buffer em memória; um loop drena em
+  **batch INSERT** a cada 5s (`store.log_access_batch`). Volume estimado 200-500 req/min →
+  ~300-700k linhas/dia. Erro de banco = log perdido, nunca bloqueia o request.
+- **Retroatividade:** quando um IP faz uma **ação humana** (scan/signup/login/PDF/evento,
+  `HUMAN_ACTIONS`), `mark_ip_human_today` marca como não-bot todos os registros daquele IP no
+  dia — corrige o falso-positivo do dev/cliente real atrás de um IP de datacenter.
+- **LGPD:** o IP é dado pessoal → retido 90 dias e depois anonimizado (loop diário
+  `anonymize_old_access_logs` trunca o último octeto via `set_masklen(…,24)`). Nos responses
+  da API o IP volta **mascarado** (1 octeto em ip-behavior, 2 em ip-detail); o completo fica
+  só no banco (ip-detail aceita IP completo como parâmetro, admin-only).
+- **Exposição:** `GET /admin/analytics/{server-metrics,ip-behavior,ip-detail}` (agregações
+  `al_*` no store, derivação pura no módulo, cache 5 min) + MCP `get_server_metrics`/
+  `get_ip_behavior`/`get_ip_detail`. O tracker.js **continua** para eventos de interação.
+  ⚠️ O Nginx faz `rewrite ^/api/(.*)$ /$1` → o middleware vê os paths **sem** o prefixo `/api`.
 
 ### Reivindicação de site + verificação de propriedade em tiers (KL-68)
 

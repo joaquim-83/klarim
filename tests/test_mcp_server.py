@@ -32,6 +32,7 @@ READ_TOOLS = [
     "list_payments", "get_payment_stats", "get_funnel", "get_rescan_stats",
     "get_analytics_metrics", "get_analytics_funnel",  # KL-83
     "get_lead_scoring_stats",  # KL-85
+    "get_server_metrics", "get_ip_behavior", "get_ip_detail",  # KL-92: access log server-side
     "get_sector_stats",  # KL-84: taxonomia aberta de setores
     # fix MCP: novas tools de dados
     "get_dashboard_stats", "get_enrichment_status", "get_user_accounts", "search_inbox",

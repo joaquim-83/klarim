@@ -118,6 +118,43 @@ async def classify_target_sector(target_id: int) -> dict:
 
 
 @mcp.tool()
+async def get_server_metrics(period: str = "7d") -> dict:
+    """KL-92 — métricas server-side do access_log (fonte de verdade vs. tracker inflado ~5x):
+    visitantes BR e total (IPs únicos reais, bots/pre-fetch já excluídos), bots filtrados,
+    scans, contas, PDFs, cliques de alerta e perfis vistos (BR), domínios únicos consultados,
+    top países e top endpoints. SEM a distribuição horária (economia de tokens). Períodos:
+    today, 7d, 30d, 90d."""
+    async def _impl():
+        from api import admin_analytics as aa
+        data = await aa.server_metrics(None, period=period, start=None, end=None)
+        data.pop("hourly_distribution", None)  # array de 24h — omitido p/ economizar tokens
+        return data
+    return await _guard(_impl)
+
+
+@mcp.tool()
+async def get_ip_behavior(period: str = "7d") -> dict:
+    """KL-92 — comportamento por IP (só humanos): visitantes multi-site (consultaram >1
+    domínio), recorrentes (ativos em >1 dia), média de sites/visitante e os tops (IPs
+    MASCARADOS por LGPD). Períodos: today, 7d, 30d, 90d."""
+    async def _impl():
+        from api import admin_analytics as aa
+        return await aa.ip_behavior(None, period=period, start=None, end=None)
+    return await _guard(_impl)
+
+
+@mcp.tool()
+async def get_ip_detail(ip: str) -> dict:
+    """KL-92 — dossiê completo de UM IP: first/last seen, dias ativos, domínios consultados,
+    ações, user_id, is_bot e a timeline recente. Aceita o IP COMPLETO; o response devolve
+    o IP mascarado (2 octetos). Use para investigar um visitante/bot específico."""
+    async def _impl():
+        from api import admin_analytics as aa
+        return await aa.ip_detail(None, ip=ip)
+    return await _guard(_impl)
+
+
+@mcp.tool()
 async def get_privacy_stats() -> dict:
     """KL-44 P5 — distribuição PASS/FAIL por indicador TÉCNICO de privacidade nos sites
     escaneados (ex.: quantos têm política de privacidade, banner de cookies, DPO). Dado

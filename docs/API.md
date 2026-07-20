@@ -239,6 +239,24 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 > pre-fetch de servidores de e-mail não é contado. Coluna `site_events.is_human BOOLEAN` (NULL default).
 > As 2 MCP tools (`get_analytics_metrics`, `get_analytics_funnel`) aceitam `include_bots`.
 
+### Access log server-side (KL-92, `api/admin_analytics.py` + `access_log_middleware.py` + `bot_classifier.py`) — admin-only, cache Redis 5 min, rate 30/min/IP
+
+Fonte de verdade das métricas de visitante (o tracker.js infla ~5x com pre-fetch de e-mail). Um
+middleware HTTP grava cada request não-estático na tabela `access_log` com o IP real
+(`CF-Connecting-IP`), país (`CF-IPCountry`), user_id (JWT) e a classificação bot/humano do
+`bot_classifier` (IP próprio → autenticado → datacenter → crawler UA → rate >50/h → pré-fetch).
+Gravação fire-and-forget (buffer + flush batch 5s). Retroatividade: ação humana marca o IP não-bot
+no dia. LGPD: IP retido 90d depois anonimizado (trunca último octeto); **IP mascarado em todo
+response** (1 octeto em ip-behavior, 2 em ip-detail), completo só no banco.
+
+| Método | Path | Descrição |
+|---|---|---|
+| GET | `/admin/analytics/server-metrics` | `?period=today\|7d\|30d\|90d` — visitantes BR/total (IPs únicos, `is_bot=false`), `bots_filtered`, scans, contas, PDFs, `alert_clicks_br`, `profiles_viewed_br`, `unique_domains_queried`, `top_countries`, `top_endpoints`, `hourly_distribution` (24h densa) |
+| GET | `/admin/analytics/ip-behavior` | `?period=…` — `multi_site_visitors` (consultaram >1 domínio), `returning_visitors` (ativos em >1 dia), `avg_sites_per_visitor`, `top_multi_site_ips`/`top_returning_ips` com `ip_masked` (1º octeto) |
+| GET | `/admin/analytics/ip-detail` | `?ip={ip}` (IP completo, admin-only; 422 se inválido) — first/last seen, dias ativos, domínios consultados, ações, user_id, is_bot, timeline. `ip` no response mascarado (2 octetos) |
+
+> **MCP:** `get_server_metrics` (sem `hourly_distribution`, economia de tokens), `get_ip_behavior`, `get_ip_detail(ip)`.
+
 ### Taxonomia aberta de setores (KL-84, `api/admin_sectors.py`) — admin-only (prefixo `/admin` → middleware JWT)
 
 | Método | Path | Descrição |
@@ -293,7 +311,8 @@ passam por `_guard` (nunca derrubam a sessão).
 - **analytics.py** — `get_funnel`, `get_rescan_stats`, `send_report_to_email`,
   `get_analytics_metrics` + `get_analytics_funnel` (KL-83), `get_lead_scoring_stats` (KL-85),
   `get_privacy_stats` (KL-44 P5), `get_sector_stats` (KL-84: saúde da taxonomia + emergentes),
-  `classify_target_sector` (KL-84, write: reclassifica 1 alvo por IA sem re-scan)
+  `classify_target_sector` (KL-84, write: reclassifica 1 alvo por IA sem re-scan),
+  `get_server_metrics` + `get_ip_behavior` + `get_ip_detail` (KL-92: access log server-side)
 - **workers.py** — `pause_worker`, `resume_worker`, `get_worker_control`,
   `set_alert_throttle`, `set_discovery_config`, `set_scan_config`
 - **monitoring.py** — `list_monitored_sites`, `offer_monitoring`

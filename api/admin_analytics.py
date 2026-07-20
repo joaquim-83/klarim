@@ -593,3 +593,125 @@ async def funnel_by_sector(request: Request, period: str = Query("7d"),
 
     return await _cached(f"funnel-by-sector:{_bots_key(include_bots)}",
                          _period_key(period, start, end), build)
+
+
+# --------------------------------------------------------------------------- #
+# KL-92 — analytics server-side (access_log): server-metrics / ip-behavior / ip-detail.
+# As agregações brutas vivem no store (`al_*`); a derivação (hourly, mascaramento LGPD)
+# é PURA aqui. Auth: prefixo /admin → middleware JWT. IP mascarado em TODO response da API.
+# --------------------------------------------------------------------------- #
+
+def assemble_server_metrics(raw: Dict[str, Any], meta: Dict[str, Any]) -> Dict[str, Any]:
+    """Monta o payload de server-metrics: expande `hourly` (dict h→n) em uma lista densa
+    de 24 horas (0..23) e repassa os agregados. Puro."""
+    hourly = raw.get("hourly") or {}
+    hourly_distribution = [{"hour": h, "count": int(hourly.get(h, hourly.get(str(h), 0)) or 0)}
+                           for h in range(24)]
+    return {
+        "period": meta,
+        "visitors_br": raw.get("visitors_br", 0),
+        "visitors_total": raw.get("visitors_total", 0),
+        "bots_filtered": raw.get("bots_filtered", 0),
+        "scans": raw.get("scans", 0),
+        "accounts": raw.get("accounts", 0),
+        "pdfs": raw.get("pdfs", 0),
+        "alert_clicks_br": raw.get("alert_clicks_br", 0),
+        "profiles_viewed_br": raw.get("profiles_viewed_br", 0),
+        "unique_domains_queried": raw.get("unique_domains_queried", 0),
+        "top_countries": raw.get("top_countries", []),
+        "top_endpoints": raw.get("top_endpoints", []),
+        "hourly_distribution": hourly_distribution,
+    }
+
+
+def assemble_ip_behavior(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """Mascara os IPs (LGPD: 1º octeto) dos tops de multi-site/recorrentes. O IP completo
+    NUNCA sai da API por aqui. Puro (recebe `mask` injetável para testar sem I/O)."""
+    from api.access_log_middleware import mask_ip
+    multi = [{"ip_masked": mask_ip(r.get("ip"), 1), "country": r.get("country"),
+              "sites": r.get("sites", 0), "domains": r.get("domains", [])}
+             for r in raw.get("top_multi_site_ips", [])]
+    ret = [{"ip_masked": mask_ip(r.get("ip"), 1), "country": r.get("country"),
+            "days_active": r.get("days_active", 0),
+            "total_requests": r.get("total_requests", 0)}
+           for r in raw.get("top_returning_ips", [])]
+    return {
+        "multi_site_visitors": raw.get("multi_site_visitors", 0),
+        "returning_visitors": raw.get("returning_visitors", 0),
+        "avg_sites_per_visitor": raw.get("avg_sites_per_visitor", 0.0),
+        "top_multi_site_ips": multi,
+        "top_returning_ips": ret,
+    }
+
+
+def _valid_ip(ip: Optional[str]) -> Optional[str]:
+    """Valida/normaliza um IP (v4/v6). None se inválido — evita SQL com lixo."""
+    import ipaddress
+    if not ip:
+        return None
+    try:
+        return str(ipaddress.ip_address(ip.strip()))
+    except ValueError:
+        return None
+
+
+@router.get("/server-metrics")
+async def server_metrics(request: Request, period: str = Query("7d"),
+                         start: Optional[str] = None, end: Optional[str] = None) -> dict:
+    """KL-92 — métricas server-side derivadas do access_log (fonte de verdade vs. tracker
+    inflado): visitantes BR/total (IPs únicos, is_bot=false), bots filtrados, scans, contas,
+    PDFs, cliques de alerta e perfis vistos (BR), domínios únicos consultados, top países/
+    endpoints e distribuição horária. Períodos: today|7d|30d|90d. Cache 5 min."""
+    await _rate_limit(request)
+    pr = resolve_period(period, start, end)
+
+    async def build():
+        raw = await get_target_store().al_server_metrics(pr["start"], pr["end"])
+        return assemble_server_metrics(raw, _period_meta(pr))
+
+    return await _cached("server-metrics", _period_key(period, start, end), build)
+
+
+@router.get("/ip-behavior")
+async def ip_behavior(request: Request, period: str = Query("7d"),
+                      start: Optional[str] = None, end: Optional[str] = None) -> dict:
+    """KL-92 — comportamento por IP (só humanos): visitantes multi-site (consultaram >1
+    domínio), recorrentes (ativos em >1 dia), média de sites/visitante e os tops. IPs
+    MASCARADOS (1º octeto, LGPD). Períodos: today|7d|30d|90d. Cache 5 min."""
+    await _rate_limit(request)
+    pr = resolve_period(period, start, end)
+
+    async def build():
+        raw = await get_target_store().al_ip_behavior(pr["start"], pr["end"])
+        return assemble_ip_behavior(raw)
+
+    return await _cached("ip-behavior", _period_key(period, start, end), build)
+
+
+@router.get("/ip-detail")
+async def ip_detail(request: Request, ip: str = Query(...)) -> dict:
+    """KL-92 — dossiê de UM IP (admin-only): first/last seen, dias ativos, domínios
+    consultados, ações, user_id, is_bot e a timeline recente. Aceita o IP COMPLETO como
+    parâmetro (nunca exposto publicamente); o IP no response volta MASCARADO (2 octetos)."""
+    await _rate_limit(request)
+    from api.access_log_middleware import mask_ip
+    clean = _valid_ip(ip)
+    if not clean:
+        raise HTTPException(422, "IP inválido.")
+
+    def _iso(v):
+        return v.isoformat() if hasattr(v, "isoformat") else v
+
+    async def build():
+        data = await get_target_store().al_ip_detail(clean)
+        if not data:
+            return {"ip": mask_ip(clean, 2), "found": False, "timeline": []}
+        data["ip"] = mask_ip(clean, 2)   # LGPD: mascara o IP no response
+        data["found"] = True
+        data["first_seen"] = _iso(data.get("first_seen"))
+        data["last_seen"] = _iso(data.get("last_seen"))
+        for ev in data.get("timeline", []):
+            ev["at"] = _iso(ev.get("at"))
+        return data
+
+    return await _cached("ip-detail", _period_key("ip", clean, None), build)

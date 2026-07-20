@@ -28,6 +28,8 @@ def _reset_api_rate_limits():
         m._rotate_attempts.clear()
         m._public_content_attempts.clear()   # KL-74 endpoints públicos de conteúdo
         m._scan_get_attempts.clear()         # KL-78 item 8: rate limit do GET /scan
+        import api.admin_analytics as _aa     # KL-83/KL-92: rate bucket do analytics admin
+        _aa._rl_bucket.clear()
     except Exception:  # noqa: BLE001 - testes que não tocam a API seguem normais
         pass
     yield

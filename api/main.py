@@ -217,6 +217,13 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # noqa: BLE001 - targets/scans opcionais; API sobe mesmo assim
         print(f"[targets] schema indisponível ({exc!r})", flush=True)
     await _load_runtime_overrides()  # KL-44: MCP_API_KEY rotacionado sobrevive a restart
+    # KL-92: inicia o flush periódico do access log (batch INSERT) + anonimização LGPD diária.
+    try:
+        from api.access_log_middleware import start_flush_task
+        start_flush_task()
+        _spawn(_access_log_anonymize_loop())
+    except Exception as exc:  # noqa: BLE001 - access log é best-effort; API sobe mesmo assim
+        print(f"[access_log] não iniciado ({exc!r})", flush=True)
     yield
 
 
@@ -260,6 +267,27 @@ async def _admin_auth_mw(request: Request, call_next):
         except Exception:  # noqa: BLE001 - qualquer falha => 401
             return JSONResponse({"detail": "Não autorizado."}, status_code=401)
     return await call_next(request)
+
+
+# KL-92 — middleware de access log server-side (fonte de verdade das métricas de visitante).
+# Registrado DEPOIS do auth => fica OUTERMOST => enxerga o status final (inclusive 401 de bot).
+# Fail-safe: a gravação roda em background e nunca atrasa/quebra o response.
+from api.access_log_middleware import access_log_middleware  # noqa: E402
+
+app.middleware("http")(access_log_middleware)
+
+
+async def _access_log_anonymize_loop() -> None:
+    """KL-92 LGPD — anonimiza (trunca o último octeto) IPs do access_log com >90 dias.
+    Roda 1x/dia. Fail-safe: erro de banco não derruba o loop."""
+    while True:
+        try:
+            n = await get_target_store().anonymize_old_access_logs(days=90)
+            if n:
+                print(f"[access_log] {n} IPs anonimizados (>90d, LGPD)", flush=True)
+        except Exception as exc:  # noqa: BLE001 - best-effort
+            print(f"[access_log] anonimização falhou ({exc!r})", flush=True)
+        await asyncio.sleep(24 * 3600)
 
 
 class LoginBody(BaseModel):

@@ -728,6 +728,33 @@ CREATE TABLE IF NOT EXISTS admin_settings (
     updated_by TEXT NOT NULL DEFAULT 'admin',
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- KL-92 — access log server-side: fonte de verdade das métricas de visitante (o tracker.js
+-- é inflado ~5x por pre-fetch de e-mail). Cada request NÃO-estático é gravado com o IP REAL
+-- (CF-Connecting-IP), país (CF-IPCountry) e a classificação bot/humano do `bot_classifier`.
+-- LGPD: IP (dado pessoal) retido 90 dias; depois o último octeto é truncado (anonimização).
+CREATE TABLE IF NOT EXISTS access_log (
+    id BIGSERIAL PRIMARY KEY,
+    ip_address INET NOT NULL,
+    country_code VARCHAR(2),
+    endpoint VARCHAR(200) NOT NULL,
+    http_method VARCHAR(10) NOT NULL,
+    http_status INTEGER,
+    domain_queried VARCHAR(255),
+    user_id INTEGER,
+    user_agent TEXT,
+    referrer VARCHAR(500),
+    response_time_ms INTEGER,
+    is_bot BOOLEAN DEFAULT false,
+    bot_reason VARCHAR(50),
+    created_at TIMESTAMP DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_access_ip ON access_log(ip_address);
+CREATE INDEX IF NOT EXISTS idx_access_date ON access_log(created_at);
+CREATE INDEX IF NOT EXISTS idx_access_domain ON access_log(domain_queried);
+CREATE INDEX IF NOT EXISTS idx_access_user ON access_log(user_id);
+CREATE INDEX IF NOT EXISTS idx_access_bot ON access_log(is_bot, created_at);
+CREATE INDEX IF NOT EXISTS idx_access_country ON access_log(country_code, created_at);
 """
 
 # --------------------------------------------------------------------------- #
@@ -5978,6 +6005,228 @@ class TargetStore:
             for r in self._rows_to_dicts(cur):
                 by_sid.setdefault(r["session_id"], []).append(r)
             return list(by_sid.values())
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- KL-92: access log server-side (fonte de verdade das métricas de visitante) ----- #
+
+    async def log_access_batch(self, records: List[Dict[str, Any]]) -> int:
+        """Grava um LOTE de registros de access_log (batch INSERT). Chamado pelo flush
+        periódico do middleware — nunca no caminho síncrono do request. Fail-safe: erro
+        de banco é engolido pelo chamador (log perdido, response nunca bloqueia)."""
+        if not records:
+            return 0
+
+        def _fn(cur):
+            from psycopg2.extras import execute_values
+            rows = [
+                (r.get("ip_address"), r.get("country_code"), r.get("endpoint"),
+                 r.get("http_method"), r.get("http_status"), r.get("domain_queried"),
+                 r.get("user_id"), r.get("user_agent"), r.get("referrer"),
+                 r.get("response_time_ms"), bool(r.get("is_bot")), r.get("bot_reason"))
+                for r in records
+            ]
+            execute_values(
+                cur,
+                "INSERT INTO access_log (ip_address, country_code, endpoint, http_method, "
+                "http_status, domain_queried, user_id, user_agent, referrer, response_time_ms, "
+                "is_bot, bot_reason) VALUES %s",
+                rows)
+            return len(rows)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def mark_ip_human_today(self, ip: str) -> int:
+        """KL-92 retroatividade — ao detectar uma AÇÃO HUMANA de um IP, marca como
+        não-bot TODOS os registros daquele IP HOJE que estavam como bot. Corrige o
+        falso-positivo de um IP de datacenter que na verdade é um dev/cliente real.
+        Retorna o nº de linhas corrigidas."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE access_log SET is_bot = false, bot_reason = 'retroactive_human' "
+                "WHERE ip_address = %s AND created_at >= CURRENT_DATE AND is_bot = true",
+                (ip,))
+            return cur.rowcount
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def anonymize_old_access_logs(self, days: int = 90) -> int:
+        """LGPD — trunca o último octeto dos IPs com >`days` dias (192.168.1.42 →
+        192.168.1.0). Idempotente (só toca IPv4 /32 ainda não mascarados). Roda 1x/dia
+        (worker/cron). Retorna o nº de linhas anonimizadas."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE access_log SET ip_address = set_masklen(ip_address::cidr, 24)::inet "
+                "WHERE created_at < NOW() - (%s || ' days')::interval "
+                "  AND family(ip_address) = 4 AND masklen(ip_address::cidr) = 32",
+                (days,))
+            return cur.rowcount
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def al_server_metrics(self, start: Any, end: Any) -> Dict[str, Any]:
+        """KL-92 — agregações brutas do access_log para /admin/analytics/server-metrics.
+        Visitantes = COUNT(DISTINCT ip_address). Tudo com `is_bot = false`, exceto
+        `bots_filtered` (volume de requests classificados como bot). A DERIVAÇÃO (shape
+        final) é no módulo. SQL validado na VM (como os demais aa_*)."""
+        _SCAN_EP = "('/scan/result','/scan/summary')"
+        _ACC_EP = "('/account/signup','/account/signup-from-alert')"
+
+        def _fn(cur):
+            p = (start, end)
+            human = "is_bot = false AND created_at >= %s AND created_at < %s"
+
+            def scalar(sql, params=p):
+                cur.execute(sql, params)
+                return int((cur.fetchone() or [0])[0] or 0)
+
+            visitors_total = scalar(
+                f"SELECT COUNT(DISTINCT ip_address) FROM access_log WHERE {human}")
+            visitors_br = scalar(
+                f"SELECT COUNT(DISTINCT ip_address) FROM access_log WHERE {human} "
+                "AND country_code = 'BR'")
+            bots_filtered = scalar(
+                "SELECT COUNT(*) FROM access_log WHERE is_bot = true "
+                "AND created_at >= %s AND created_at < %s")
+            scans = scalar(
+                f"SELECT COUNT(*) FROM access_log WHERE {human} AND endpoint IN {_SCAN_EP}")
+            accounts = scalar(
+                f"SELECT COUNT(*) FROM access_log WHERE {human} AND http_method = 'POST' "
+                f"AND endpoint IN {_ACC_EP}")
+            pdfs = scalar(
+                f"SELECT COUNT(*) FROM access_log WHERE {human} AND endpoint LIKE '/report/pdf%%'")
+            alert_clicks_br = scalar(
+                f"SELECT COUNT(*) FROM access_log WHERE {human} AND country_code = 'BR' "
+                "AND endpoint LIKE '/alert-access%%'")
+            profiles_viewed_br = scalar(
+                f"SELECT COUNT(*) FROM access_log WHERE {human} AND country_code = 'BR' "
+                "AND endpoint LIKE '/site/%%'")
+            unique_domains = scalar(
+                f"SELECT COUNT(DISTINCT domain_queried) FROM access_log WHERE {human} "
+                "AND domain_queried IS NOT NULL")
+
+            cur.execute(
+                f"SELECT COALESCE(country_code,'??') c, COUNT(DISTINCT ip_address) n "
+                f"FROM access_log WHERE {human} GROUP BY c ORDER BY n DESC LIMIT 10", p)
+            top_countries = [{"code": r[0], "count": int(r[1])} for r in cur.fetchall()]
+
+            cur.execute(
+                f"SELECT endpoint, COUNT(*) n FROM access_log WHERE {human} "
+                f"GROUP BY endpoint ORDER BY n DESC LIMIT 10", p)
+            top_endpoints = [{"endpoint": r[0], "count": int(r[1])} for r in cur.fetchall()]
+
+            cur.execute(
+                f"SELECT EXTRACT(HOUR FROM created_at)::int h, COUNT(*) n "
+                f"FROM access_log WHERE {human} GROUP BY h", p)
+            hourly = {int(r[0]): int(r[1]) for r in cur.fetchall()}
+
+            return {
+                "visitors_br": visitors_br, "visitors_total": visitors_total,
+                "bots_filtered": bots_filtered, "scans": scans, "accounts": accounts,
+                "pdfs": pdfs, "alert_clicks_br": alert_clicks_br,
+                "profiles_viewed_br": profiles_viewed_br,
+                "unique_domains_queried": unique_domains,
+                "top_countries": top_countries, "top_endpoints": top_endpoints,
+                "hourly": hourly,
+            }
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def al_ip_behavior(self, start: Any, end: Any, top: int = 20) -> Dict[str, Any]:
+        """KL-92 — comportamento por IP (só humanos): visitantes multi-site (consultaram
+        >1 domínio), visitantes recorrentes (ativos em >1 dia), médias, e os tops. IP
+        COMPLETO no retorno (o mascaramento é no módulo/endpoint — LGPD)."""
+        def _fn(cur):
+            p = (start, end)
+            base = "is_bot = false AND created_at >= %s AND created_at < %s"
+
+            # multi-site: IPs que consultaram >1 domínio distinto
+            cur.execute(
+                f"SELECT ip_address, MAX(country_code) c, COUNT(DISTINCT domain_queried) sites, "
+                f"  array_agg(DISTINCT domain_queried) domains "
+                f"FROM access_log WHERE {base} AND domain_queried IS NOT NULL "
+                f"GROUP BY ip_address HAVING COUNT(DISTINCT domain_queried) > 1 "
+                f"ORDER BY sites DESC LIMIT %s", (*p, top))
+            multi = self._rows_to_dicts(cur)
+            multi_rows = [{"ip": str(r["ip_address"]), "country": r["c"],
+                           "sites": int(r["sites"]),
+                           "domains": [d for d in (r["domains"] or []) if d][:10]}
+                          for r in multi]
+
+            cur.execute(
+                f"SELECT COUNT(*) FROM (SELECT ip_address FROM access_log WHERE {base} "
+                f"AND domain_queried IS NOT NULL GROUP BY ip_address "
+                f"HAVING COUNT(DISTINCT domain_queried) > 1) t", p)
+            multi_count = int((cur.fetchone() or [0])[0] or 0)
+
+            # recorrentes: IPs ativos em >1 dia distinto
+            cur.execute(
+                f"SELECT ip_address, MAX(country_code) c, "
+                f"  COUNT(DISTINCT created_at::date) days, COUNT(*) reqs "
+                f"FROM access_log WHERE {base} "
+                f"GROUP BY ip_address HAVING COUNT(DISTINCT created_at::date) > 1 "
+                f"ORDER BY days DESC, reqs DESC LIMIT %s", (*p, top))
+            ret = self._rows_to_dicts(cur)
+            ret_rows = [{"ip": str(r["ip_address"]), "country": r["c"],
+                         "days_active": int(r["days"]), "total_requests": int(r["reqs"])}
+                        for r in ret]
+
+            cur.execute(
+                f"SELECT COUNT(*) FROM (SELECT ip_address FROM access_log WHERE {base} "
+                f"GROUP BY ip_address HAVING COUNT(DISTINCT created_at::date) > 1) t", p)
+            ret_count = int((cur.fetchone() or [0])[0] or 0)
+
+            # média de domínios por visitante (só quem consultou ao menos 1 domínio)
+            cur.execute(
+                f"SELECT AVG(sites) FROM (SELECT COUNT(DISTINCT domain_queried) sites "
+                f"FROM access_log WHERE {base} AND domain_queried IS NOT NULL "
+                f"GROUP BY ip_address) t", p)
+            avg = cur.fetchone()
+            avg_sites = round(float(avg[0]), 2) if avg and avg[0] is not None else 0.0
+
+            return {"multi_site_visitors": multi_count, "returning_visitors": ret_count,
+                    "avg_sites_per_visitor": avg_sites,
+                    "top_multi_site_ips": multi_rows, "top_returning_ips": ret_rows}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def al_ip_detail(self, ip: str, timeline_limit: int = 100) -> Optional[Dict[str, Any]]:
+        """KL-92 — dossiê completo de UM IP (admin-only, IP completo aceito como
+        parâmetro). first/last seen, dias ativos, domínios consultados, ações, user_id,
+        is_bot, e a timeline recente. None se o IP não tem registros."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT COUNT(*) reqs, MIN(created_at) first_seen, MAX(created_at) last_seen, "
+                "  COUNT(DISTINCT created_at::date) days, MAX(country_code) country, "
+                "  bool_or(is_bot) any_bot, MAX(user_id) user_id "
+                "FROM access_log WHERE ip_address = %s", (ip,))
+            agg = cur.fetchone()
+            if not agg or not agg[0]:
+                return None
+            reqs, first_seen, last_seen, days, country, any_bot, user_id = agg
+
+            cur.execute(
+                "SELECT DISTINCT domain_queried FROM access_log "
+                "WHERE ip_address = %s AND domain_queried IS NOT NULL LIMIT 50", (ip,))
+            domains = [r[0] for r in cur.fetchall()]
+
+            cur.execute(
+                "SELECT DISTINCT bot_reason FROM access_log "
+                "WHERE ip_address = %s AND bot_reason IS NOT NULL", (ip,))
+            reasons = [r[0] for r in cur.fetchall()]
+
+            cur.execute(
+                "SELECT created_at, endpoint, http_method, http_status, domain_queried "
+                "FROM access_log WHERE ip_address = %s ORDER BY created_at DESC LIMIT %s",
+                (ip, timeline_limit))
+            timeline = [{"at": r[0], "endpoint": r[1], "method": r[2],
+                         "status": r[3], "domain": r[4]} for r in cur.fetchall()]
+
+            return {"ip": ip, "country": country, "first_seen": first_seen,
+                    "last_seen": last_seen, "days_active": int(days or 0),
+                    "total_requests": int(reqs or 0), "domains_queried": domains,
+                    "bot_reasons": reasons, "user_id": user_id, "is_bot": bool(any_bot),
+                    "timeline": timeline}
 
         return await asyncio.to_thread(self._run, _fn)
 

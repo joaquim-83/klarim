@@ -231,6 +231,25 @@ detect_tech_stack` (função pura) extrai tecnografia — parse em memória, **s
 idempotente), `targets.email_provider`/`related_domains`, `site_status_log`, e `company_name`
 só-se-vazio. Público = badges `GET /public/tech-summary/{domain}`; detalhado = admin/MCP. Ver §9 KL-75.
 
+### Access log server-side (KL-92) — fonte de verdade das métricas de visitante
+O tracker.js (client-side) infla visitantes ~5x (pre-fetch de e-mail executa JS no browser do
+bot). A verdade é do **servidor**, que vê o IP real. `api/access_log_middleware.py` é um
+middleware HTTP (OUTERMOST — enxerga até 401) que grava CADA request não-estático na tabela
+**`access_log`** com o IP REAL (`CF-Connecting-IP`), país (`CF-IPCountry`), user_id (JWT) e a
+classificação bot/humano do **`api/bot_classifier.py`** (função PURA: IP próprio → autenticado →
+datacenter → crawler UA → rate >50/h → padrão de pré-fetch). **Fire-and-forget:** captura
+síncrona barata → `_spawn(_process_access)` (classifica + contador Redis `access_rate:{ip}` TTL
+1h + enfileira) → **buffer + flush em batch** a cada 5s (`log_access_batch`). Erro nunca atrasa/
+quebra o response; Redis fora → classificação de rate/pre-fetch pula (fail-open). **Retroatividade:**
+uma AÇÃO HUMANA (scan/signup/login/PDF/evento, `HUMAN_ACTIONS`) marca como não-bot todos os
+registros daquele IP no dia (`mark_ip_human_today`) — corrige o dev/cliente atrás de datacenter.
+**LGPD:** IP retido 90d; depois o loop diário `anonymize_old_access_logs` trunca o último octeto
+(`set_masklen(...,24)`). Nos responses da API o IP volta MASCARADO (1 octeto em ip-behavior, 2 em
+ip-detail); o completo fica só no banco. Endpoints admin `/admin/analytics/{server-metrics,
+ip-behavior,ip-detail}` + MCP `get_server_metrics`/`get_ip_behavior`/`get_ip_detail`. O tracker.js
+CONTINUA para eventos de interação (scan_started etc.). Prompt 2: queries de comportamento +
+dashboard usando o access_log como fonte primária. Ver §9 KL-92.
+
 ### Planos (KL-44 P1) — freemium
 `PAYWALL_ENABLED` (default **`false`**): todo scan autorizado vê os **48 checks** com
 detalhe; PDF sempre gratuito. Assinatura define o **monitoramento**:
@@ -265,7 +284,8 @@ seguem INCONCLUSO até o rescan; scans novos já pontuam o check.
 
 ```
 api/          → FastAPI: main.py (endpoints), auth_users.py, plans.py, vigilias.py,
-                lead_scoring.py, oauth.py (MCP), health_checks.py
+                lead_scoring.py, oauth.py (MCP), health_checks.py, admin_analytics.py,
+                access_log_middleware.py + bot_classifier.py (KL-92)
 discovery/    → Workers + store.py (TargetStore, todo o schema Postgres):
                 worker.py, alert_worker.py, rescan_worker.py, vigilia_worker.py,
                 ct_poller.py, classifier.py, contact.py, sector_taxonomy.py, cnae.py
@@ -338,8 +358,8 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1307 passed** (backend pytest) + **74 node --test** (frontend `test:unit`, KL-64: +26)
-  · MCP tools: **58+** (KL-75: +3 tecnografia)
+- Testes: **1390 passed** (backend pytest, KL-92: +77) + **74 node --test** (frontend `test:unit`, KL-64: +26)
+  · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - Workers: **5/5 ativos** (discovery, alert, scan, vigília, rescan)
 - Planos: 8 contas Pro trial · Vigílias: 35 (30 ok, 5 error)
 - E-mail: alertas proativos migrados p/ `alerta@klarim.net` (2026-07-20; klarimscan.com falhou no spam)
@@ -678,6 +698,30 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   + linha de aviso), anti CSV-injection, admin-only; front usa `adminDownload` (Bearer+blob). 26 testes
   (19 backend + 7 tracker via `vm`). **Gotcha:** a data de análise do funil já era correta — o card
   supunha bug de período; o real era o volume de e-mail bot.
+- **KL-92** — Tracking server-side por IP (Prompt 1 de 2) ✅. A defesa client-side do KL-64 depende
+  de código que roda no browser do bot — insuficiente. A fonte de verdade das métricas de visitante
+  passa a ser o **servidor**. Tabela **`access_log`** (IP INET, país, endpoint, método, status,
+  domain_queried, user_id, UA, referrer, response_time, is_bot/bot_reason) + 6 índices, no
+  `ensure_schema`. **`api/access_log_middleware.py`** (middleware HTTP OUTERMOST, registrado após o
+  auth → enxerga 401): ignora assets (`should_log`), extrai IP real (`CF-Connecting-IP`)/país
+  (`CF-IPCountry`)/user_id (JWT)/domínio (`/site/{d}`, `/scan?url=`, ou `request.state.domain_queried`);
+  **fire-and-forget** — captura barata → `_spawn(_process_access)` (classifica + INCR Redis
+  `access_rate:{ip}` TTL 1h + enfileira) → **buffer + flush batch 5s** (`log_access_batch`). Erro
+  jamais atrasa/quebra o response (tudo em try/except fora do caminho síncrono); Redis fora → rate/
+  pré-fetch pulam (fail-open). **`api/bot_classifier.py`** (PURO): `classify_bot` na ordem IP próprio
+  (34.135.194.208 nunca é bot) → **usuário autenticado** (logou = humano) → **datacenter** (~30 CIDRs
+  AWS/GCP/Azure/DO/Hetzner, sem lookup) → **crawler UA** → **rate >50/h** sem conta → **padrão de
+  pré-fetch** (US + `/site/*` sem navegação). **Retroatividade:** uma `HUMAN_ACTION` (scan/signup/
+  login/PDF/evento) chama `mark_ip_human_today` → marca não-bot todos os registros do IP no dia
+  (corrige dev/cliente atrás de nuvem). **LGPD:** IP retido 90d, depois `anonymize_old_access_logs`
+  (loop diário) trunca o último octeto; nos responses o IP volta **mascarado** (1 octeto ip-behavior,
+  2 ip-detail), completo só no banco. 3 endpoints admin `/admin/analytics/{server-metrics,ip-behavior,
+  ip-detail}` (agregações `al_*` no store, derivação pura no módulo, cache 5min, rate 30/min) + 3 MCP
+  (`get_server_metrics`/`get_ip_behavior`/`get_ip_detail`). O tracker.js **continua** para eventos de
+  interação. **77 testes offline** (classificação, helpers, buffer/flush, middleware fail-safe,
+  endpoints, LGPD). **Prompt 2:** queries de comportamento + dashboard usando o access_log como fonte
+  primária. **Gotcha:** o Nginx faz `rewrite ^/api/(.*)$ /$1` → o middleware vê paths SEM `/api`
+  (`/scan/result`, `/events`); `HUMAN_ACTIONS` e a extração de domínio usam os paths já sem prefixo.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.
