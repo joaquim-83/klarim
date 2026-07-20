@@ -53,8 +53,9 @@ READ_TOOLS = [
     "get_ownership_stats",
     # KL-44 P3: boletim + técnico
     "get_bulletin_stats", "list_technician_links",
-    # KL-75: tecnografia (tech stack, adoção, status do site)
+    # KL-75: tecnografia (tech stack, adoção, status do site, subdomínios)
     "get_tech_adoption", "get_site_tech_stack", "get_site_status_history",
+    "get_site_subdomains",
 ]
 WRITE_TOOLS = [
     "scan_url", "add_target", "update_target_email", "update_target_status",
@@ -282,6 +283,10 @@ class FakeStore:
         return [{"status": "ativo", "http_code": 200, "response_time_ms": 120,
                  "detected_at": None}]
 
+    async def get_subdomains(self, target_id, limit=50):
+        return [{"subdomain": "app.hotel.com.br", "subdomain_type": "app",
+                 "first_seen": None, "last_seen": None, "cert_issuer": "R3"}]
+
 
 @pytest.fixture
 def fake_store(monkeypatch):
@@ -438,4 +443,21 @@ def test_get_site_status_history_tool(fake_store):
 
 def test_get_site_status_history_tool_not_found(fake_store):
     res = asyncio.run(tech_tools.get_site_status_history(domain="naoexiste.com.br"))
+    assert res.get("status_code") == 404
+
+
+def test_get_site_tech_stack_tool_includes_site_type(fake_store):
+    # KL-75 P2: o retorno agora inclui site_type e subdomain_count.
+    res = asyncio.run(tech_tools.get_site_tech_stack("hotel.com.br"))
+    assert "site_type" in res and "subdomain_count" in res
+
+
+def test_get_site_subdomains_tool(fake_store):
+    res = asyncio.run(tech_tools.get_site_subdomains("hotel.com.br"))
+    assert res["count"] == 1 and res["subdomains"][0]["type"] == "app"
+    assert res["subdomains"][0]["subdomain"] == "app.hotel.com.br"
+
+
+def test_get_site_subdomains_tool_not_found(fake_store):
+    res = asyncio.run(tech_tools.get_site_subdomains("naoexiste.com.br"))
     assert res.get("status_code") == 404

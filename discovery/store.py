@@ -49,6 +49,12 @@ ALTER TABLE targets ADD COLUMN IF NOT EXISTS email_provider VARCHAR(50);
 ALTER TABLE targets ADD COLUMN IF NOT EXISTS related_domains JSONB DEFAULT '[]';
 CREATE INDEX IF NOT EXISTS idx_targets_email_provider ON targets(email_provider)
     WHERE email_provider IS NOT NULL;
+-- KL-75 Prompt 2 — tipo de site (institucional/ecommerce/saas/portal/blog/parked/
+-- abandonado), classificado no scan a partir dos sinais do HTML; e contagem de
+-- subdomínios vistos nos CT logs (dado público). Ambos p/ inteligência comercial.
+ALTER TABLE targets ADD COLUMN IF NOT EXISTS site_type VARCHAR(20) DEFAULT 'institucional';
+ALTER TABLE targets ADD COLUMN IF NOT EXISTS subdomain_count INTEGER DEFAULT 0;
+CREATE INDEX IF NOT EXISTS idx_targets_site_type ON targets(site_type);
 
 -- KL-84 — taxonomia ABERTA de setores. Os 48 setores fixos (KL-54) entram como 'official' via
 -- seed; a IA pode propor novos ('proposed') que o admin aprova/merge/rejeita. Só official/approved
@@ -297,6 +303,23 @@ CREATE TABLE IF NOT EXISTS site_status_log (
     detected_at TIMESTAMP DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_status_log_target ON site_status_log(target_id);
+
+-- KL-75 Prompt 2 — subdomínios vistos nos CT logs, vinculados ao domínio raiz JÁ na base
+-- (o discovery registra em vez de descartar). Dado público (CT log é registro público);
+-- só a EXISTÊNCIA é registrada — subdomínios NUNCA são escaneados (ético: podem conter
+-- ambientes de teste). `subdomain_type` classifica (app/api/admin/staging/mail/…).
+CREATE TABLE IF NOT EXISTS site_subdomains (
+    id SERIAL PRIMARY KEY,
+    target_id INTEGER NOT NULL REFERENCES targets(id) ON DELETE CASCADE,
+    subdomain VARCHAR(255) NOT NULL,
+    subdomain_type VARCHAR(30),
+    first_seen TIMESTAMP DEFAULT NOW(),
+    last_seen TIMESTAMP DEFAULT NOW(),
+    cert_issuer VARCHAR(100),
+    UNIQUE (target_id, subdomain)
+);
+CREATE INDEX IF NOT EXISTS idx_subdomains_target ON site_subdomains(target_id);
+CREATE INDEX IF NOT EXISTS idx_subdomains_type ON site_subdomains(subdomain_type);
 
 -- Contas de usuário (KL-51 f3). Separadas do operador/admin (que é único, via
 -- ADMIN_USER/ADMIN_PASSWORD). Senha com bcrypt; JWT de usuário no cookie.
@@ -1153,9 +1176,12 @@ class TargetStore:
         return await asyncio.to_thread(self._run, _fn)
 
     async def update_target_tech_fields(self, target_id: int, email_provider: Optional[str],
-                                        related_domains: Optional[List[str]]) -> None:
-        """Grava `email_provider` (via MX) e `related_domains` (via SSL SAN) em `targets`.
-        Só toca a coluna quando há valor novo (COALESCE) — nunca zera dado existente."""
+                                        related_domains: Optional[List[str]],
+                                        site_type: Optional[str] = None) -> None:
+        """Grava `email_provider` (via MX), `related_domains` (via SSL SAN) e `site_type`
+        (KL-75 P2) em `targets`. Só toca a coluna quando há valor novo (COALESCE) — nunca
+        zera dado existente. `site_type` sempre vem preenchido no scan (default
+        institucional), então sempre atualiza."""
         rd = json.dumps(related_domains) if related_domains else None
 
         def _fn(cur):
@@ -1163,9 +1189,10 @@ class TargetStore:
                 "UPDATE targets SET "
                 "  email_provider = COALESCE(%s, email_provider), "
                 "  related_domains = CASE WHEN %s IS NULL THEN related_domains "
-                "                         ELSE %s::jsonb END "
+                "                         ELSE %s::jsonb END, "
+                "  site_type = COALESCE(%s, site_type) "
                 "WHERE id = %s",
-                (email_provider, rd, rd, target_id))
+                (email_provider, rd, rd, site_type, target_id))
 
         await asyncio.to_thread(self._run, _fn)
 
@@ -1276,6 +1303,53 @@ class TargetStore:
             "has_ecommerce": "ecommerce" in cset,
             "tech_count": len(rows),
         }
+
+    # --- subdomínios (KL-75 P2) -------------------------------------------- #
+
+    async def upsert_subdomain(self, target_id: int, subdomain: str,
+                               subdomain_type: Optional[str],
+                               cert_issuer: Optional[str] = None) -> None:
+        """Registra/atualiza um subdomínio (KL-75 P2). INSERT ... ON CONFLICT
+        (target_id, subdomain) DO UPDATE last_seen/cert_issuer. Na MESMA transação,
+        recalcula `targets.subdomain_count` por COUNT(*) (idempotente — nunca conta 2x
+        o mesmo subdomínio, ao contrário de um incremento atômico)."""
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO site_subdomains (target_id, subdomain, subdomain_type, cert_issuer) "
+                "VALUES (%s, %s, %s, %s) "
+                "ON CONFLICT (target_id, subdomain) DO UPDATE SET "
+                "  last_seen = NOW(), "
+                "  cert_issuer = COALESCE(EXCLUDED.cert_issuer, site_subdomains.cert_issuer)",
+                (target_id, subdomain[:255], (subdomain_type or None),
+                 (cert_issuer[:100] if cert_issuer else None)))
+            cur.execute(
+                "UPDATE targets SET subdomain_count = "
+                "  (SELECT COUNT(*) FROM site_subdomains WHERE target_id = %s) "
+                "WHERE id = %s",
+                (target_id, target_id))
+
+        await asyncio.to_thread(self._run, _fn)
+
+    async def get_subdomains(self, target_id: int, limit: int = 50) -> List[Dict[str, Any]]:
+        """Subdomínios de um alvo (KL-75 P2), mais recentes primeiro."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT subdomain, subdomain_type, first_seen, last_seen, cert_issuer "
+                "FROM site_subdomains WHERE target_id = %s "
+                "ORDER BY first_seen DESC LIMIT %s",
+                (target_id, max(1, min(limit, 500))))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_all_root_domains(self) -> List[Dict[str, Any]]:
+        """(domain, id) de TODOS os alvos — alimenta o cache em memória do discovery
+        (KL-75 P2) que decide se um subdomínio dos CT logs pertence a um domínio na base."""
+        def _fn(cur):
+            cur.execute("SELECT domain, id FROM targets WHERE domain IS NOT NULL AND domain <> ''")
+            return [{"domain": r[0], "id": r[1]} for r in cur.fetchall()]
+
+        return await asyncio.to_thread(self._run, _fn)
 
     async def update_target_status(self, target_id: int, status: str) -> Optional[Dict[str, Any]]:
         """Atualiza o status de um alvo (edição manual no painel). Retorna o alvo

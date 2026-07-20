@@ -55,6 +55,10 @@ class DiscoveryWorker:
         self.store = get_target_store()
         self.ct = CTClient()
         self.source = CTLogPoller()
+        # KL-75 P2: cache em memória {domínio_raiz: target_id} + teto de subdomínios/ciclo.
+        from .subdomains import DomainCache
+        self.domain_cache = DomainCache()
+        self.max_subdomains_per_cycle = int(os.environ.get("SUBDOMAIN_MAX_PER_CYCLE", "2000"))
         self._redis = None
         # Estado para o /api/discovery/status (publicado no Redis).
         self._started_at = None
@@ -285,8 +289,32 @@ class DiscoveryWorker:
               f"{stats['registered']} com email, {stats['no_contact']} sem contato, "
               f"{stats['timeouts']} timeouts, {stats['errors']} erros, "
               f"{stats['skipped_existing']} já registrados", flush=True)
+        # KL-75 P2: registra os subdomínios acumulados pelo poller (best-effort — NUNCA
+        # derruba o ciclo nem o stream). Feito por último, com o cache já recarregado.
+        await self._process_subdomains(stats)
         self._last_cycle_stats = stats
         return stats
+
+    async def _process_subdomains(self, stats: dict) -> None:
+        """Drena o buffer de subdomínios do poller e registra os que pertencem a domínios
+        na base (KL-75 P2). Recarrega o cache de domínios raiz antes. Fail-safe: erro é
+        logado e engolido — o discovery continua normalmente."""
+        try:
+            from .subdomains import process_subdomains
+            await self.domain_cache.load(self.store, now=_utcnow())
+            sub_map = self.source.flush_subdomains()
+            if not sub_map:
+                return
+            sub_stats = await process_subdomains(
+                self.store, self.domain_cache, sub_map,
+                max_items=self.max_subdomains_per_cycle)
+            stats["subdomains"] = sub_stats
+            if sub_stats.get("registered"):
+                print(f"[discovery] subdomínios: {sub_stats['registered']} registrados de "
+                      f"{sub_stats['seen']} vistos (cache={self.domain_cache.size} domínios)",
+                      flush=True)
+        except Exception as exc:  # noqa: BLE001 - subdomínio nunca derruba o ciclo
+            print(f"[discovery] processamento de subdomínios falhou: {exc!r}", flush=True)
 
     async def start(self) -> None:
         try:

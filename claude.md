@@ -202,6 +202,13 @@ reprocessar. **Fire-and-forget:** `scanner/gcs_archive.py` (client lazy, upload 
 `tls_analyzer`); o caminho público passa `capture_raw=False` (nada muda). Contadores no
 Redis (`klarim:gcs:*`, TTL 48h) → MCP `get_gcs_archive_stats` / `GET /admin/gcs-archive/stats`.
 
+### Detecção de tech stack (KL-75 Prompt 1)
+Do MESMO response bruto (após o enrich, antes do GCS), `scanner/tech_detector.py::
+detect_tech_stack` (função pura) extrai tecnografia — parse em memória, **sem request extra**.
+`scanner/main.py::persist_tech_detection` grava (resiliente) em `site_tech_stack` (batch,
+idempotente), `targets.email_provider`/`related_domains`, `site_status_log`, e `company_name`
+só-se-vazio. Público = badges `GET /public/tech-summary/{domain}`; detalhado = admin/MCP. Ver §9 KL-75.
+
 ### Planos (KL-44 P1) — freemium
 `PAYWALL_ENABLED` (default **`false`**): todo scan autorizado vê os **48 checks** com
 detalhe; PDF sempre gratuito. Assinatura define o **monitoramento**:
@@ -305,11 +312,12 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
 - Alvos: ~25.400 · Scans: ~8.100 · Perfis públicos: ~7.200
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1181+ passed** · MCP tools: **55+**
+- Testes: **1232+ passed** · MCP tools: **58+** (KL-75: +3 tecnografia)
 - Workers: **5/5 ativos** (discovery, alert, scan, vigília, rescan)
 - Planos: 8 contas Pro trial · Vigílias: 35 (30 ok, 5 error)
 - E-mail: `klarimscan.com` verificado, warmup ativo
 - Scan rate: **200/h** (KL-77 Fase 3) · Responses brutos arquivados no GCS `gs://klarim-raw` (KL-77 Fase 2)
+- Tech stack detectado por scan (KL-75 P1): `site_tech_stack` + `site_status_log` + `targets.email_provider`
 
 > **Atualize este bloco a cada tarefa** que mude números relevantes.
 
@@ -519,6 +527,38 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   (`klarim:gcs:*`, TTL 48h) → MCP `get_gcs_archive_stats` + `GET /admin/gcs-archive/stats` +
   bloco `gcs_archive` no status. **Fase 3 ✅** — scan rate 50→**200/h** (`WORKER_MAX_SCANS_PER_HOUR`,
   editável ao vivo); rate limit por-domínio 1 req/s inalterado. 18 testes offline.
+- **KL-75** — Enriquecimento tecnográfico (**Prompt 1 ✅ + Prompt 2 ✅** — completo).
+  Extrai inteligência tecnográfica do MESMO response bruto que o KL-77 captura —
+  parse em memória, **sem request extra** (< 500ms/scan). **`scanner/tech_detector.py::
+  detect_tech_stack(headers, html, dns, ssl)`** — função PURA → `{technologies, email_provider,
+  dns_provider, related_domains, site_status, verified_platforms, company_name, schema_types}`.
+  6 grupos: headers/cookies (servidor/backend/CDN/plataforma), ~50 scripts (analytics/marketing/
+  pagamento/chat/e-commerce/CMS/segurança/social/infra), meta tags (OG/verificações/generator/RSS),
+  DNS (email_provider via MX · dns_provider via NS · plataformas via TXT), SSL (SAN→related_domains,
+  issuer→CA, organização OV/EV→company_name), status (`ativo`/`parked`/`abandonado`/`fora_do_ar`/
+  `bloqueado`/`dominio_inativo` via `classify_site_status`). Gravação em `scanner/main.py::
+  persist_tech_detection` (**resiliente** — nunca trava o scan; após enrich, antes do GCS): batch
+  INSERT em **`site_tech_stack`** (idempotente, UNIQUE `(target_id,scan_id,name)` + ON CONFLICT),
+  `targets.email_provider`/`related_domains`, `site_status_log`, e `company_name` **só se vazio**
+  (nunca sobrescreve regex/IA/manual). `enrich_profile` ganhou 1 lookup DNS TXT (só `capture_raw`);
+  `tls_analyzer` extrai `subject_o` (organização). Público = badges booleanos `GET /public/tech-
+  summary/{domain}` (30/min/IP, respeita `public_visible`); detalhado só admin (`GET /targets/{id}/
+  tech-stack`) + 3 MCP tools (`get_tech_adoption`/`get_site_tech_stack`/`get_site_status_history`).
+  Backfill `scripts/backfill_tech_stack.py` reprocessa os responses do GCS (≥2026-07-19) sem re-scan.
+  **Prompt 2 ✅:** (Grupo 7) `site_type` — classify_site_type DENTRO de detect_tech_stack (mesmo HTML,
+  sem 2ª passagem): institucional/ecommerce/saas/portal/blog/parked/abandonado, por sinais de
+  login/OAuth/pricing/API-docs/registro/footer (OAuth reusa as technologies) — prioridade parked>
+  abandonado>saas>ecommerce>portal>blog>institucional; gravado em `targets.site_type` (persist
+  reclassifica com o status autoritativo). (Grupo 8) subdomínios via CT logs: o discovery agora
+  **registra** subdomínio de domínio raiz JÁ na base em vez de descartar (`site_subdomains` +
+  `targets.subdomain_count`) — `discovery/subdomains.py` (classify_subdomain puro, `DomainCache` em
+  memória recarregado por ciclo ~1.8MB, `register_subdomain`/`process_subdomains` fail-safe, teto
+  `SUBDOMAIN_MAX_PER_CYCLE=2000`); o poller (`ct_poller.subdomain_of`) captura subdomínios num buffer
+  separado (`flush_subdomains`), o worker drena e registra no fim do ciclo. **Subdomínios NUNCA são
+  escaneados** (ético). Público ganha `site_type`+`subdomain_count`; admin/MCP ganham a lista
+  (`get_site_subdomains`) — CT log é público mas a lista é premium. 100 testes offline (51+49).
+  **Dados p/ KL-57:** market share de tech/site_type por setor, correlação stack×score, sites
+  parked/abandonados, staging exposto, SaaS com score baixo (risco LGPD).
 - **KL-64** — Analytics tracker (pendente)
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos

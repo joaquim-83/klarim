@@ -2847,7 +2847,8 @@ async def api_tech_adoption(tech: str, sector: Optional[str] = None) -> dict:
 
 async def api_site_tech_stack(domain: str) -> dict:
     """Tech stack completo de um domínio (KL-75, admin/MCP): tecnologias detectadas +
-    provedor de e-mail + domínios relacionados + status atual."""
+    provedor de e-mail + domínios relacionados + status atual + tipo de site (P2) +
+    contagem de subdomínios (P2)."""
     store = get_target_store()
     dom = _norm_domain(domain)
     target = await store.get_target_by_domain(dom)
@@ -2865,8 +2866,28 @@ async def api_site_tech_stack(domain: str) -> dict:
         "email_provider": target.get("email_provider"),
         "related_domains": _as_str_list(target.get("related_domains")),
         "site_status": hist[0]["status"] if hist else None,
+        "site_type": target.get("site_type"),               # KL-75 P2
+        "subdomain_count": int(target.get("subdomain_count") or 0),  # KL-75 P2
         "tech_count": len(tech),
     }
+
+
+async def api_site_subdomains(domain: str, limit: int = 50) -> dict:
+    """Lista de subdomínios de um domínio (KL-75 P2, admin/MCP). CT logs são registros
+    públicos, mas a listagem completa é feature premium — daí admin/API autenticada."""
+    store = get_target_store()
+    dom = _norm_domain(domain)
+    target = await store.get_target_by_domain(dom)
+    if not target:
+        return {"error": "site não encontrado", "status_code": 404}
+    subs = await store.get_subdomains(target["id"], limit=max(1, min(limit, 500)))
+    return {"domain": target.get("domain") or dom,
+            "count": int(target.get("subdomain_count") or len(subs)),
+            "subdomains": [{
+                "subdomain": s["subdomain"], "type": s.get("subdomain_type"),
+                "first_seen": _iso(s.get("first_seen")), "last_seen": _iso(s.get("last_seen")),
+                "cert_issuer": s.get("cert_issuer"),
+            } for s in subs]}
 
 
 async def api_site_status_history(domain: Optional[str] = None,
@@ -2902,7 +2923,8 @@ async def public_tech_summary(domain: str, request: Request) -> JSONResponse:
     store = get_target_store()
     empty = {"has_analytics": False, "has_cdn": False, "has_payment": False,
              "has_chat": False, "has_captcha": False, "has_ecommerce": False,
-             "email_provider": None, "site_status": None, "tech_count": 0}
+             "email_provider": None, "site_status": None, "site_type": None,
+             "subdomain_count": 0, "tech_count": 0}
     headers = {"Cache-Control": "public, max-age=3600"}
     target = await store.get_target_by_domain(dom)
     if not target or target.get("status") == "descartado":
@@ -2926,6 +2948,8 @@ async def public_tech_summary(domain: str, request: Request) -> JSONResponse:
         "has_ecommerce": bool(summary.get("has_ecommerce")),
         "email_provider": target.get("email_provider"),
         "site_status": hist[0]["status"] if hist else None,
+        "site_type": target.get("site_type"),                       # KL-75 P2
+        "subdomain_count": int(target.get("subdomain_count") or 0),  # KL-75 P2
         "tech_count": int(summary.get("tech_count") or 0),
     }
     return JSONResponse(out, headers=headers)
@@ -2934,7 +2958,7 @@ async def public_tech_summary(domain: str, request: Request) -> JSONResponse:
 @app.get("/targets/{target_id}/tech-stack")
 async def admin_target_tech_stack(target_id: int) -> dict:
     """KL-75 — stack DETALHADO de um alvo (admin; prefixo /targets → JWT admin). Nomes,
-    versões, fonte de detecção, provedores e histórico de status."""
+    versões, fonte de detecção, provedores, tipo de site, subdomínios e histórico de status."""
     store = get_target_store()
     target = await store.get_target(target_id)
     if not target:
@@ -2942,6 +2966,8 @@ async def admin_target_tech_stack(target_id: int) -> dict:
     stack = await api_site_tech_stack(target.get("domain") or "")
     stack["status_history"] = (await api_site_status_history(
         target_id=target_id, limit=10)).get("history", [])
+    stack["subdomains"] = (await api_site_subdomains(
+        target.get("domain") or "", limit=100)).get("subdomains", [])
     return stack
 
 

@@ -25,8 +25,17 @@ async def get_tech_adoption(tech: str, sector: Optional[str] = None) -> dict:
 async def get_site_tech_stack(domain: str) -> dict:
     """Tech stack completo de um domínio (KL-75): tecnologias detectadas (nome,
     categoria, versão, fonte), provedor de e-mail (via MX), domínios relacionados
-    (via SSL SAN) e status atual do site. Ex.: 'hotel.com.br'."""
+    (via SSL SAN), status atual, **tipo de site** (institucional/ecommerce/saas/portal/
+    blog/parked/abandonado) e **nº de subdomínios**. Ex.: 'hotel.com.br'."""
     return await _guard(lambda: _api().api_site_tech_stack(domain))
+
+
+@mcp.tool()
+async def get_site_subdomains(domain: str, limit: int = 50) -> dict:
+    """Subdomínios de um domínio vistos nos CT logs (KL-75 P2): nome, tipo (app/api/
+    admin/staging/mail/shop/docs/status/cdn/blog), quando visto e a CA do certificado.
+    Só a existência é registrada — subdomínios NUNCA são escaneados. Ex.: 'empresa.com.br'."""
+    return await _guard(lambda: _api().api_site_subdomains(domain, limit))
 
 
 @mcp.tool()

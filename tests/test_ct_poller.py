@@ -91,5 +91,6 @@ def test_buffer_cap_respected():
 def test_get_stats_shape():
     p = CTLogPoller()
     s = p.get_stats()
-    assert set(s) == {"connected", "last_event_at", "total_seen", "total_matched", "buffer_size"}
+    assert set(s) == {"connected", "last_event_at", "total_seen", "total_matched",
+                      "buffer_size", "subdomain_buffer_size"}
     assert s["connected"] is False

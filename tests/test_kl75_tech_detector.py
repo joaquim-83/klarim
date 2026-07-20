@@ -235,8 +235,10 @@ class _CapturingStore:
         self.calls["save_tech_stack"] = (target_id, scan_id, technologies)
         return len(technologies)
 
-    async def update_target_tech_fields(self, target_id, email_provider, related_domains):
-        self.calls["update_target_tech_fields"] = (target_id, email_provider, related_domains)
+    async def update_target_tech_fields(self, target_id, email_provider, related_domains,
+                                        site_type=None):
+        self.calls["update_target_tech_fields"] = (target_id, email_provider,
+                                                   related_domains, site_type)
 
     async def fill_empty_company_name(self, target_id, company_name):
         self.calls["fill_empty_company_name"] = (target_id, company_name)

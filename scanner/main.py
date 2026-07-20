@@ -42,7 +42,8 @@ async def persist_tech_detection(store, target_id, scan_id, response_data: dict)
     if not response_data:
         return {}
     try:
-        from scanner.tech_detector import detect_tech_stack, classify_site_status
+        from scanner.tech_detector import (
+            detect_tech_stack, classify_site_status, classify_site_type)
         result = detect_tech_stack(
             headers=response_data.get("headers") or {},
             html=response_data.get("html") or "",
@@ -51,22 +52,28 @@ async def persist_tech_detection(store, target_id, scan_id, response_data: dict)
         )
         if result.get("technologies"):
             await store.save_tech_stack(target_id, scan_id, result["technologies"])
-        if result.get("email_provider") or result.get("related_domains"):
-            await store.update_target_tech_fields(
-                target_id, result.get("email_provider"), result.get("related_domains"))
-        if result.get("company_name"):
-            await store.fill_empty_company_name(target_id, result["company_name"])
         # Status autoritativo: usa o http_status REAL (o detector só vê conteúdo).
         html = response_data.get("html") or ""
         status = classify_site_status(
             response_data.get("http_status"), html,
             response_data.get("response_time_ms"), has_scripts="<script" in html.lower())
+        # KL-75 P2: reclassifica o site_type com o status AUTORITATIVO (o detector usou o
+        # status por conteúdo). Assim parked/abandonado/dominio_inativo refletem o real.
+        signals = {s["signal"] for s in result.get("site_type_signals") or []}
+        site_type = classify_site_type(result.get("technologies") or [], html, status, signals)
+        result["site_type"] = site_type
+        # site_type sempre vem preenchido (default institucional) → sempre atualiza.
+        await store.update_target_tech_fields(
+            target_id, result.get("email_provider"), result.get("related_domains"),
+            site_type=site_type)
+        if result.get("company_name"):
+            await store.fill_empty_company_name(target_id, result["company_name"])
         await store.save_site_status(
             target_id, status, http_code=response_data.get("http_status"),
             response_time_ms=response_data.get("response_time_ms"))
         n = len(result.get("technologies") or [])
         print(f"[tech] target {target_id}: {n} techs · email={result.get('email_provider')} "
-              f"status={status}", flush=True)
+              f"status={status} type={site_type}", flush=True)
         return result
     except Exception as exc:  # noqa: BLE001 - enriquecimento nunca derruba o scan
         print(f"[tech] falha em target {target_id}: {exc!r}", flush=True)

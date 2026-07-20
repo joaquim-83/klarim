@@ -456,6 +456,98 @@ def classify_site_status(http_status, html: str, response_time_ms=None,
     return "ativo"
 
 
+# --------------------------------------------------------------------------- #
+# Grupo 7 (KL-75 P2) — sinais de tipo de site (login/OAuth/pricing/API/registro/footer)
+# --------------------------------------------------------------------------- #
+# Cada sinal: (chave, regex, peso). Detectados no MESMO HTML já em memória (sem 2ª
+# passagem) — a lista alimenta `classify_site_type`. OAuth vem das technologies já
+# detectadas (google/apple/facebook signin), sem novo regex.
+
+_SITE_TYPE_SIGNAL_PATTERNS = [
+    # Formulário de login (campo de senha) → portal/SaaS.
+    ("login_form", r'<input[^>]*type\s*=\s*["\']?password', "strong"),
+    # Link de pricing/planos → SaaS.
+    ("pricing_link",
+     r'href\s*=\s*["\'][^"\']*/(pricing|planos|precos|pre[çc]os|assinar|plans)\b', "strong"),
+    # Link de API/documentação → SaaS.
+    ("api_docs_link",
+     r'href\s*=\s*["\'][^"\']*/(api|api-docs|docs|swagger|documenta[çc][aã]o)\b', "strong"),
+    # Botões de registro/trial → SaaS.
+    ("register_button",
+     r'(criar\s+conta|cadastre-se|cadastrar|sign\s*up|comece\s+gr[áa]tis|'
+     r'teste\s+gr[áa]tis|inscreva-se)', "medium"),
+    # Título de autenticação → portal.
+    ("auth_title",
+     r'<title[^>]*>[^<]*(login|painel|dashboard|[áa]rea\s+do\s+cliente|minha\s+conta)', "medium"),
+    # Footer de produto (changelog / página de status) → SaaS maduro.
+    ("product_footer",
+     r'(href\s*=\s*["\'][^"\']*/(changelog|status)\b|>\s*changelog\s*<)', "medium"),
+]
+
+# Tecnologias (Grupo 2) que também são sinal de login social → sinal `oauth_button`.
+_OAUTH_TECH_NAMES = {"google_signin", "apple_signin", "facebook_sdk"}
+
+
+def _detect_site_type_signals(html: str, technologies: list) -> tuple:
+    """Detecta os sinais de tipo de site no HTML já em memória (sem 2ª passagem sobre
+    a página). Retorna (set de chaves, lista `[{signal, weight}]` para debug/admin)."""
+    signals: set = set()
+    detail: list = []
+    for key, regex, weight in _SITE_TYPE_SIGNAL_PATTERNS:
+        if re.search(regex, html, re.I):
+            signals.add(key)
+            detail.append({"signal": key, "weight": weight})
+    # OAuth reaproveita as technologies já detectadas — não duplica regex.
+    if any((t.get("name") in _OAUTH_TECH_NAMES) for t in technologies):
+        signals.add("oauth_button")
+        detail.append({"signal": "oauth_button", "weight": "strong"})
+    return signals, detail
+
+
+# Ordem de prioridade da classificação (só para documentação/legibilidade):
+# parked > abandonado > saas > ecommerce > portal > blog > institucional.
+SITE_TYPES = ("institucional", "ecommerce", "saas", "portal", "blog", "parked", "abandonado")
+
+
+def classify_site_type(technologies: list, html: str, site_status: str, signals: set) -> str:
+    """Classifica o tipo de site (KL-75 P2) a partir dos sinais + tecnologias + status.
+    Chamada DENTRO de `detect_tech_stack`, após os grupos 1–6. Puro/testável.
+
+    Prioridade: parked > abandonado > saas > ecommerce > portal > blog > institucional.
+    """
+    if site_status in ("parked", "dominio_inativo"):
+        return "parked"
+    if site_status == "abandonado":
+        return "abandonado"
+
+    signals = signals or set()
+    has_login = ("login_form" in signals) or ("oauth_button" in signals)
+    has_pricing = "pricing_link" in signals
+    has_api_docs = "api_docs_link" in signals
+    has_product_footer = "product_footer" in signals
+    has_register = "register_button" in signals
+    has_ecommerce_tech = any(t.get("category") == "ecommerce" for t in technologies)
+    has_payment_tech = any(t.get("category") == "pagamento" for t in technologies)
+    has_blog_tech = any(t.get("name") == "rss_feed" for t in technologies)
+
+    # SaaS: login + pricing + (API/docs OU footer de produto).
+    if has_login and has_pricing and (has_api_docs or has_product_footer):
+        return "saas"
+    # SaaS simplificado: login + pricing + registro.
+    if has_login and has_pricing and has_register:
+        return "saas"
+    # E-commerce: tecnologia de e-commerce, ou pagamento sem pricing de SaaS.
+    if has_ecommerce_tech or (has_payment_tech and not has_pricing):
+        return "ecommerce"
+    # Portal: login sem pricing (sistema interno, área do cliente).
+    if has_login and not has_pricing:
+        return "portal"
+    # Blog: RSS sem login e sem e-commerce.
+    if has_blog_tech and not has_login and not has_ecommerce_tech:
+        return "blog"
+    return "institucional"
+
+
 # Extração de @type do JSON-LD (Schema.org) — confirma o tipo de negócio (setor).
 _JSONLD_TYPE_RE = re.compile(r'"@type"\s*:\s*"([^"]+)"', re.I)
 
@@ -477,14 +569,17 @@ def detect_tech_stack(headers: dict, html: str, dns: dict, ssl: dict) -> dict:
     """Detecta o tech stack a partir do response bruto (função pura, sem I/O).
 
     Retorna ``{technologies, email_provider, dns_provider, related_domains,
-    site_status, verified_platforms, company_name, schema_types}``. ``technologies`` é
-    uma lista de dicts ``{name, category, subcategory, version, source, confidence}``
-    deduplicada por ``name``. Nunca levanta: entradas ausentes/malformadas viram vazio.
+    site_status, site_type, site_type_signals, verified_platforms, company_name,
+    schema_types}``. ``technologies`` é uma lista de dicts ``{name, category,
+    subcategory, version, source, confidence}`` deduplicada por ``name``. Nunca levanta:
+    entradas ausentes/malformadas viram vazio.
 
     ``site_status`` aqui é derivado só do CONTEÚDO (parked/abandonado/ativo) — os estados
     que dependem do código HTTP (``dominio_inativo``/``fora_do_ar``/``bloqueado``) o
     chamador resolve com :func:`classify_site_status` (ele tem o ``http_status`` real);
-    o scan worker persiste esse valor autoritativo.
+    o scan worker persiste esse valor autoritativo. ``site_type`` (KL-75 P2) classifica o
+    site (institucional/ecommerce/saas/portal/blog/parked/abandonado) a partir dos sinais
+    detectados no MESMO HTML — sem 2ª passagem.
     """
     headers = _lower_headers(headers or {})
     html = html or ""
@@ -497,18 +592,25 @@ def detect_tech_stack(headers: dict, html: str, dns: dict, ssl: dict) -> dict:
     _detect_meta(html, acc, platforms)
     email_provider, dns_provider = _detect_dns(dns or {}, acc, platforms)
     related_domains, company_name = _detect_ssl(ssl or {}, acc)
+    technologies = list(acc.values())
 
     # Status por conteúdo: assume que a homepage respondeu (o worker refina com o
     # http_status real). Sem http_status, os estados de código HTTP não se aplicam.
     has_scripts = bool(re.search(r"<script", html, re.I))
     site_status = classify_site_status(200, html, None, has_scripts)
 
+    # Grupo 7 — tipo de site (mesmo HTML já parseado; OAuth vem das technologies).
+    signals, signal_detail = _detect_site_type_signals(html, technologies)
+    site_type = classify_site_type(technologies, html, site_status, signals)
+
     return {
-        "technologies": list(acc.values()),
+        "technologies": technologies,
         "email_provider": email_provider,
         "dns_provider": dns_provider,
         "related_domains": related_domains,
         "site_status": site_status,
+        "site_type": site_type,
+        "site_type_signals": signal_detail,
         "verified_platforms": sorted(platforms),
         "company_name": company_name,
         "schema_types": _schema_types(html),
