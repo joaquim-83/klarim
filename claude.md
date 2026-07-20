@@ -207,6 +207,12 @@ Valide com `nginx -t` (há job de CI); config inválida **derruba o site**.
   VM**), enriquece perfil + IA inline (~US$0,001/site) e **arquiva o response bruto no GCS**
   (KL-77 Fase 2, ver abaixo).
 - Heartbeat no Redis (TTL 600s) + watchdog `os._exit(1)` + `restart:unless-stopped`.
+- **Backfill de enriquecimento (cron root, 2026-07-20)** — o discovery cria ~2.500 alvos/dia e o
+  enrich inline do scan worker não acompanha (backlog ~16,7k sem perfil). `scripts/enrich_all.py`
+  roda por **cron root na VM: batch 2.000, 6×/dia (a cada 4h — `0,4,8,12,16,20`)** ≈ 12.000/dia,
+  guardado por `flock -n /tmp/klarim_enrich.lock` (sem overlap), no container `api`, log em
+  `/var/log/klarim_enrich.log`. Custo ~US$12/dia OpenAI enquanto durar o backlog — **monitorar
+  CPU/RAM**; sob pressão, baixar o batch p/ 1.500. Reclassificação retroativa de setores em §9 (KL-84).
 
 ### Arquivamento de responses brutos (KL-77 Fase 2)
 Cada scan comprime (gzip) o **response bruto** já em memória do enrich (headers, html,
@@ -323,9 +329,13 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
 
 ---
 
-## 7. Estado atual (atualizado em 2026-07-19)
+## 7. Estado atual (atualizado em 2026-07-20)
 
 - Alvos: ~25.400 · Scans: ~8.100 · Perfis públicos: ~7.200
+- **Backlog drain (2026-07-20, KL-75+KL-84):** ~16,7k alvos sem enriquecimento + 48% em `outro`.
+  Enrich acelerado por cron (batch 2.000, 6×/dia — §4). Reclassificação retroativa dos ~2,2k `outro`
+  com descrição rodando (`reclassify_sectors.py --scope outro`, ~26% saem de `outro`, preserva
+  `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
 - Testes: **1307 passed** (backend pytest) + **74 node --test** (frontend `test:unit`, KL-64: +26)

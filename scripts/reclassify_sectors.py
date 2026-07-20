@@ -24,8 +24,15 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
+import sys
 import time
 from collections import Counter
+
+# Permite `python scripts/reclassify_sectors.py` fora do módulo (adiciona a raiz do projeto ao
+# path — igual ao enrich_all.py). Sem isto, `from scanner…`/`from discovery…` dava
+# ModuleNotFoundError quando o script era chamado direto no container.
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 _MAX_PER_HOUR = 500
 _MIN_INTERVAL = 3600.0 / _MAX_PER_HOUR  # ~7.2s entre chamadas
