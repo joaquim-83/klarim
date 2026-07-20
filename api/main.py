@@ -3728,16 +3728,22 @@ def _build_categories(checks: list) -> list:
 
 
 def _full_scan_result(report: ScanReport, url: str, sector: Optional[str] = None) -> dict:
-    """Monta o resultado COMPLETO (todos os 48 checks com detalhe + categorias + riscos +
-    privacidade). Ainda NÃO filtrado — `_filter_scan_result` corta por nível de acesso."""
+    """Monta o resultado COMPLETO (checks com detalhe + categorias + riscos + privacidade).
+    Ainda NÃO filtrado — `_filter_scan_result` corta por nível de acesso.
+
+    KL-89 P0: inclui SÓ os checks que REALMENTE rodaram. O scan do worker de discovery é FREE
+    (15 checks); ao servi-lo instantâneo, os 33 pagos NÃO devem virar 33 "INCONCLUSO" (a tela
+    parecia quebrada: "DNS 0/7", "OSINT 0/7"). `partial=True` sinaliza o tier free → o front
+    convida a "Atualizar" para as 48. (Num scan completo, os 48 rodam → nada é filtrado.)"""
     sp = _summary_payload(report, full=True)
     by_result = {r.check_id: r for r in report.results}
     checks = []
     for c in (sp["free_checks"] + sp["paid_checks"]):
-        cid = c.get("check_id")
-        r = by_result.get(cid)
-        checks.append({**c, "category": _check_category(cid),
-                       "severity": getattr(r, "severity", None) if r is not None else None})
+        r = by_result.get(c.get("check_id"))
+        if r is None:
+            continue  # check não rodou (tier free) — não pad com inconclusivo fantasma
+        checks.append({**c, "category": _check_category(c.get("check_id")),
+                       "severity": getattr(r, "severity", None)})
     try:
         from reporter.risk_messages import build_risk_summary
         risk = build_risk_summary(report.results, sector=sector, limit=99)
@@ -3749,7 +3755,8 @@ def _full_scan_result(report: ScanReport, url: str, sector: Optional[str] = None
         "score": sp["score"], "semaphore": sp["semaphore"], "grade_icon": sp["grade_icon"],
         "scan_date": str(getattr(report, "finished_at", "") or ""),
         "fail_count": sp["fail_count"], "passed": sp["passed"],
-        "inconclusive": sp["inconclusive"], "total_checks": sp["total_checks"],
+        "inconclusive": sp["inconclusive"], "total_checks": len(checks),
+        "partial": len(report.results) < len(ALL_CHECKS),  # scan free (não rodou os 48)
         "checks": checks,
         "categories": _build_categories(checks),
         "risk_summary": risk,
@@ -3777,6 +3784,8 @@ def _filter_scan_result(full: dict, level: str) -> dict:
         "profile_domain": full.get("profile_domain"),
         # Benchmark: agregado nacional público (já exposto em /estatisticas e /setores) — todos.
         "benchmark": full.get("benchmark"),
+        # KL-89 P0: True quando o resultado veio de um scan FREE (15) — o front convida a Atualizar.
+        "partial": full.get("partial", False),
     }
     risks = (full.get("risk_summary") or {}).get("risks", [])
     # TODOS os riscos para TODOS os níveis (linguagem de negócio = conteúdo que converte).

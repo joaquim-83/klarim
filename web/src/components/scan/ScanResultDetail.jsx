@@ -136,16 +136,17 @@ function ScoreHero({ result, flags, domain, url, onRefresh }) {
 
       <ShareRow result={result} domain={profileDomain} flags={flags} url={url} />
 
-      {/* KL-89 P0: data do último scan + "Atualizar" (ação secundária, não dominante). */}
+      {/* KL-89 P0: data do último scan + "Atualizar" (ação secundária, não dominante).
+          Quando o resultado é parcial (scan rápido/free), o CTA convida à análise completa. */}
       {result.scan_date && fmtScanDate(result.scan_date) && (
         <p className="mt-4 text-xs text-slate-500">
-          Última análise: {fmtScanDate(result.scan_date)}
+          {result.partial ? 'Análise rápida' : 'Última análise'}: {fmtScanDate(result.scan_date)}
           {onRefresh && (
             <>
               {' · '}
               <button type="button" onClick={onRefresh}
                 className="text-brand-400 underline-offset-2 hover:text-brand-300 hover:underline">
-                Atualizar análise →
+                {result.partial ? 'Ver análise completa (48 verificações) →' : 'Atualizar análise →'}
               </button>
             </>
           )}

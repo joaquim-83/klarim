@@ -255,7 +255,10 @@ def test_scan_result_confirmed_gets_full(client):
     j = r.json()
     assert j["access_level"] == "confirmed"
     assert j["pdf_available"] is True and j["report_urls"]["executive"].startswith("/report/executive")
-    assert isinstance(j["checks"], list) and len(j["checks"]) == 48
+    # KL-89 P0: `checks` traz SÓ os que rodaram (o fake tem 8) — sem pad de inconclusivo fantasma.
+    assert isinstance(j["checks"], list) and len(j["checks"]) == 8
+    assert j["total_checks"] == 8 and j["partial"] is True  # scan free/parcial sinalizado
+    assert all(c["status"] in ("PASS", "FAIL", "INCONCLUSO") for c in j["checks"])  # nada "não rodado"
     assert any("ev-check_" in (c.get("evidence") or "") for c in j["checks"])  # evidência presente
 
 

@@ -367,6 +367,18 @@ hora. Instantâneo > completo; o botão "Atualizar análise →" roda os 48. Reg
 `test_scan_result_serves_free_tier_worker_scan_no_rescan` (tenta full → cai no free → não re-escaneia).
 
 - **1288 passed** (backend) · Build Astro **verde**.
+
+**2º problema descoberto na verificação em produção:** servir o scan free (15) pelo builder de
+resultado padrava os 33 checks pagos como **INCONCLUSO** → a tela parecia quebrada ("DNS 0/7",
+"OSINT 0/7", 34 inconclusivos). **Fix:** `_full_scan_result` agora inclui **só os checks que
+rodaram** (`by_result`) — 15 no free, 48 no completo — e marca `partial=True` no free. O front
+troca o rótulo para "Análise rápida · **Ver análise completa (48 verificações) →**". Assim o
+resultado instantâneo é limpo (15 checks reais + score + riscos), e o "Atualizar" entrega os 48.
+
+**Verificado em produção** (`curl https://klarim.net/api/scan/result?url=https://gopneuspr.com.br`):
+`from_cache: true`, **HTTP 200 em 0,79s**, `scan_date` = o scan original (não "agora"), score 73
+batendo. Confirmado: NÃO re-escaneia.
+
 - Follow-up possível (KL-90): fazer o alerta disparar/garantir um scan FULL do alvo antes de enviar,
-  para o visitante ver os 48 checks já na 1ª tela (hoje vê 15 + "Atualizar"). Mais custo de scan;
-  fora do escopo urgente do P0.
+  para o visitante ver os 48 checks reais já na 1ª tela (hoje vê 15 + "Atualizar"). Custo baixo
+  (alertas são throttled), mas mexe no alert worker — fora do escopo urgente do P0.
