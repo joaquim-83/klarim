@@ -142,9 +142,25 @@ dispara após interação; sessões só-ação contam como visitante sem page_vi
 - Analytics: confirmado por query + MCP (521 humano vs 4895 com bots).
 - Cache flush: `analytics:*` (vazio) + `bounce_domain:<provedores>` (7 chaves).
 
-## Validação (Problema 1) — após o deploy
-1. Próximo ciclo do alert worker deve enviar bem mais que 3,5% (os free com bom score agora passam).
-2. `_domain_bounced("gmail.com")` → False; `calculate_alert_score` gmail+bounce sem -40; gmail
-   score 70 → 20 (passa). ✅ (testes)
-3. **Monitorar `get_email_health`** do `klarim.net` (bounce/complaint) — o volume sobe; se degradar,
-   subir `MISMATCH_FREE_PENALTY` (ex.: -10) ou o threshold.
+## Validação (Problema 1) — simulação no pool CORRETO
+O worker só considera `status IN ('scanned','alerted') AND last_scan_score IS NOT NULL`
+(store.py:3293) — não alvos `discovered` não-escaneados. Simulando o score NOVO nesse pool real:
+
+```
+ tipo |  n   | passam_novo(>=20) | pct
+------+------+-------------------+------
+ corp | 6094 |        1551       | 25,5
+ free | 1752 |        1554       | 88,7   ← era 0%
+```
+
+**Os leads de e-mail comercial gmail estão desbloqueados: free 0% → 88,7%.** Corp fica em 25,5%
+(filtragem correta de role-based/bounce-próprio/urgência-baixa >85 — nada disso mudou). Volume real
+de envio limitado pelo `ALERT_DAILY_LIMIT` (sem enchente).
+
+**Nota:** o backlog de alvos `discovered` (não escaneados, ~140 free com score NULL) NÃO é resolvido
+por scoring — precisa de SCAN (a fila do scan worker é o gargalo desses). Fora do escopo deste fix.
+
+1. `_domain_bounced("gmail.com")` → False; gmail+bounce sem -40; gmail score 70 → 20 (passa). ✅ testes.
+2. Próximo ciclo do worker: `skipped_low_quality` deve cair muito (de ~93% p/ ~1x menor).
+3. **Monitorar `get_email_health`** do `klarim.net` — o volume sobe; se degradar, subir
+   `MISMATCH_FREE_PENALTY` (ex.: -10) ou o threshold.
