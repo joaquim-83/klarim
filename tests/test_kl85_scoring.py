@@ -33,9 +33,11 @@ def test_subdomain_match():
     assert "email_matches_domain" in _sig(r)   # email domain é sufixo do site domain
 
 
-def test_free_third_party_minus_20():
+def test_free_third_party_no_penalty():
+    # 2026-07-20: e-mail genérico que não casa NÃO penaliza mais (MISMATCH_FREE_PENALTY=0) — muitas
+    # PMEs BR usam gmail como e-mail comercial; o -20 barrava leads legítimos.
     r = calculate_alert_score({"domain": "hotel.com.br", "last_scan_score": None}, "zezinho@gmail.com")
-    assert r["score"] == -20 and "email_mismatch_free" in _sig(r)
+    assert r["score"] == 0 and "email_mismatch_free" not in _sig(r)
     assert "corporate_email" not in _sig(r)    # gmail é free → não corporativo
 
 
@@ -91,7 +93,7 @@ def test_edge_no_at():
 
 def test_edge_empty_domain_target():
     r = calculate_alert_score({"domain": "", "last_scan_score": None}, "a@gmail.com")
-    assert r["score"] == -20   # free, não bate domínio vazio
+    assert r["score"] == 0   # free sem penalidade (2026-07-20); domínio vazio não casa
 
 
 def test_edge_score_none_no_band():
@@ -150,7 +152,7 @@ def test_worker_filters_below_threshold(monkeypatch):
     w = _worker(monkeypatch, store)
     targets = [
         {"id": 1, "domain": "hotel.com.br", "last_scan_score": 70, "contact_email": "dono@hotel.com.br"},  # 60 → passa
-        {"id": 2, "domain": "hotel.com.br", "last_scan_score": None, "contact_email": "x@gmail.com"},       # -20 → filtra
+        {"id": 2, "domain": "hotel.com.br", "last_scan_score": None, "contact_email": "x@gmail.com"},       # 0 (sem score) → filtra
     ]
     kept, skipped, avg = _run(w._apply_alert_scoring(targets))
     assert [t["id"] for t in kept] == [1] and skipped == 1
@@ -165,7 +167,7 @@ def test_worker_writes_score_for_all_even_skipped(monkeypatch):
         {"id": 2, "domain": "hotel.com.br", "last_scan_score": None, "contact_email": "x@gmail.com"},
     ]
     _run(w._apply_alert_scoring(targets))
-    assert store.scores == {1: 60, 2: -20}   # gravou o score de TODOS, mesmo o filtrado
+    assert store.scores == {1: 60, 2: 0}   # gravou o score de TODOS, mesmo o filtrado (gmail sem score = 0)
 
 
 def test_worker_bounce_penalizes(monkeypatch):
@@ -201,15 +203,16 @@ def test_calc_score_bounce_applies_for_corporate_domain():
     assert "bounce_domain" in _sig(r)
 
 
-def test_worker_gmail_bounce_not_double_penalized(monkeypatch):
-    # E2E: alvo com e-mail gmail (mismatch) + gmail com bounce no banco → NÃO leva -40; fica em
-    # -20 (mismatch_free) +20 (zona de ação) = 0 (antes do fix era -40). Documenta que o fix do
-    # bounce sozinho leva o alvo a 0 — ainda abaixo do threshold 20 (o -20/threshold é o outro gargalo).
+def test_worker_gmail_good_lead_now_passes(monkeypatch):
+    # E2E dos DOIS fixes (2026-07-20): alvo gmail (mismatch) score 70 + gmail COM bounce no banco.
+    # (1) bounce não penaliza (provedor genérico) e (2) mismatch_free=0 → 0 + 20 (zona de ação) = 20
+    # → PASSA o threshold 20. Antes era -20-40+20 = -40 (massivamente filtrado). Este é o desbloqueio
+    # do backlog de leads de e-mail comercial gmail.
     store = FakeStore(bounce_domains={"gmail.com"})
     w = _worker(monkeypatch, store)
     targets = [{"id": 9, "domain": "hotel.com.br", "last_scan_score": 70, "contact_email": "x@gmail.com"}]
-    _run(w._apply_alert_scoring(targets))
-    assert store.scores[9] == 0
+    kept, skipped, _ = _run(w._apply_alert_scoring(targets))
+    assert store.scores[9] == 20 and [t["id"] for t in kept] == [9] and skipped == 0
 
 
 def test_worker_scoring_failsafe_keeps_target(monkeypatch):

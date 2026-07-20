@@ -19,6 +19,14 @@ FREE_EMAIL_DOMAINS = {
     "protonmail.com", "zoho.com",
 }
 
+# Penalidade p/ e-mail genérico que NÃO casa o domínio do site. 2026-07-20: reduzida de -20 → 0.
+# A premissa "gmail = terceiro (não é o dono)" é FALSA para muitas PMEs brasileiras, que usam
+# gmail como e-mail comercial — o -20 barrava leads legítimos (0/258 targets free passavam do
+# threshold). 0 = desligado; mantido nomeado para retomar (ex.: -10) se a reputação do klarim.net
+# (dom. recém-migrado) pedir. Só afeta o SINAL negativo; o bônus corporativo (+10) segue exclusivo
+# de domínio próprio.
+MISMATCH_FREE_PENALTY = 0
+
 # Prefixos genéricos (caixas de função, não uma pessoa) — taxa de resposta pior.
 ROLE_BASED_PREFIXES = {
     "sac", "suporte", "atendimento", "vendas", "comercial", "financeiro",
@@ -94,8 +102,8 @@ def calculate_alert_score(target: Dict[str, Any], contact_email: Optional[str],
         add(15, "high_click_sector")
 
     # --- negativos ---
-    if valid_email and not matches and edomain in FREE_EMAIL_DOMAINS:
-        add(-20, "email_mismatch_free")           # e-mail genérico de terceiro
+    if MISMATCH_FREE_PENALTY and valid_email and not matches and edomain in FREE_EMAIL_DOMAINS:
+        add(MISMATCH_FREE_PENALTY, "email_mismatch_free")   # e-mail genérico de terceiro (hoje 0)
     if valid_email and local in ROLE_BASED_PREFIXES:
         add(-15, "role_based_prefix")
     if target.get("status") == "descartado" or (sc is not None and sc < 40):

@@ -38,10 +38,17 @@ corrige a super-penalização (score fica menos errado), mas não desbloqueia os
 
 O gargalo REAL dos leads de e-mail genérico é o `-20 email_mismatch_free` + threshold 20 — não o
 bounce. A premissa "gmail = terceiro (não é o dono)" é frequentemente FALSA para PMEs brasileiras,
-que usam gmail como e-mail comercial. Para enviar ~60-70% desse batch é preciso um 2º ajuste
-(reduzir o `email_mismatch_free` OU baixar o threshold) — **decisão sensível de reputação**, ainda
-mais porque os alertas ACABARAM de migrar para `klarim.net`. **Levado ao dono para decidir** (não
-apliquei unilateralmente).
+que usam gmail como e-mail comercial.
+
+### 2º ajuste (decisão do dono): `email_mismatch_free` -20 → 0
+Levei as opções ao dono (reduzir a penalidade / baixar o threshold / só o bounce) dado o
+trade-off de reputação no `klarim.net` recém-migrado. **Decisão: reduzir `email_mismatch_free` de
+-20 → 0** — o mais cirúrgico/principled (corrige a premissa errada; só os free com BOM score
+(50-85) e sem prefixo genérico passam; volume ainda limitado pelo `ALERT_DAILY_LIMIT`).
+Implementado como constante nomeada `MISMATCH_FREE_PENALTY = 0` (retomável, ex.: -10, se a
+reputação pedir). **Efeito:** um alvo gmail com score 50-85 (sem role/abandono) agora faz
+`0 + 20 = 20` → **passa** o threshold (antes -40, filtrado). O bônus corporativo (+10) segue
+exclusivo de domínio próprio, então corp continua diferenciado. Corp não é afetado.
 
 ---
 
@@ -135,6 +142,9 @@ dispara após interação; sessões só-ação contam como visitante sem page_vi
 - Analytics: confirmado por query + MCP (521 humano vs 4895 com bots).
 - Cache flush: `analytics:*` (vazio) + `bounce_domain:<provedores>` (7 chaves).
 
-## Pendente de decisão do dono (Problema 1)
-Para o alert worker enviar mais e drenar o backlog, é preciso um 2º ajuste além do bounce (reduzir
-`email_mismatch_free` ou baixar o threshold) — trade-off de reputação no `klarim.net` recém-migrado.
+## Validação (Problema 1) — após o deploy
+1. Próximo ciclo do alert worker deve enviar bem mais que 3,5% (os free com bom score agora passam).
+2. `_domain_bounced("gmail.com")` → False; `calculate_alert_score` gmail+bounce sem -40; gmail
+   score 70 → 20 (passa). ✅ (testes)
+3. **Monitorar `get_email_health`** do `klarim.net` (bounce/complaint) — o volume sobe; se degradar,
+   subir `MISMATCH_FREE_PENALTY` (ex.: -10) ou o threshold.
