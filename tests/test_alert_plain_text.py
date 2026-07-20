@@ -27,7 +27,8 @@ def test_alert_text_normal():
     assert ("https://klarim.net/site/movenegocios.com.br"
             "?utm_source=klarim&utm_medium=email&utm_campaign=alerta") in t
     assert "48 pontos" in t
-    assert "klarimscan.com" in t
+    assert "klarim.net" in t                 # rodapé migrado p/ klarim.net (2026-07-20)
+    assert "klarimscan.com" not in t         # não usa mais o domínio de warmup falho
     assert UNSUB in t                        # unsubscribe presente
     assert "R$" not in t and "<" not in t    # sem preço, sem tag HTML
 

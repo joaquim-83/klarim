@@ -22,7 +22,7 @@ def test_alert_score100_template(monkeypatch):
     assert "html" not in p and "text" in p                        # plain text agora
     assert "Parabéns" in p["subject"] and "nota máxima" in p["subject"]
     assert "/site/empresa.com.br" in p["text"] and "alerta_score100" in p["text"]
-    assert "100/100" in p["text"] and "klarimscan.com" in p["text"]
+    assert "100/100" in p["text"] and "klarim.net" in p["text"]  # rodapé migrado (2026-07-20)
     assert "R$" not in p["text"]  # nunca menciona preço no fluxo de score 100
 
 

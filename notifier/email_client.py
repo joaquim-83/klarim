@@ -230,7 +230,7 @@ def build_alert_text(domain: str, score: int, unsubscribe_url: Optional[str],
             "Isso é raro — menos de 2% dos sites analisados atingem essa nota.\n\n"
             "Se este é o seu site, crie uma conta gratuita para monitorar\n"
             "e manter a nota máxima.\n\n"
-            "--\nKlarim Scanner\nklarimscan.com"
+            "--\nKlarim\nklarim.net"
         )
         return body + _unsub_line(unsubscribe_url, "Não quer receber mais avisos?")
 
@@ -262,7 +262,7 @@ def build_alert_text(domain: str, score: int, unsubscribe_url: Optional[str],
               "sites brasileiros de forma passiva — sem acessar dados nem instalar nada.",
               "A verificação cobre certificado SSL, headers de proteção, e-mail e mais 48 pontos.",
               "", "Se este é o seu site, crie uma conta gratuita para monitorar o score",
-              "e receber alertas quando algo mudar.", "", "--\nKlarim Scanner\nklarimscan.com"]
+              "e receber alertas quando algo mudar.", "", "--\nKlarim\nklarim.net"]
     return "\n".join(lines) + _unsub_line(unsubscribe_url, "Não quer receber mais avisos?")
 
 
@@ -290,7 +290,7 @@ def build_profile_view_text(domain: str, score: int,
         f"{proactive_profile_link(domain, 'profile_view')}\n\n"
         "O Klarim é uma plataforma gratuita de segurança web.\n"
         "A análise é 100% passiva — nenhum dado do site foi acessado.\n\n"
-        "--\nKlarim Scanner\nklarimscan.com"
+        "--\nKlarim\nklarim.net"
     )
     return body + _unsub_line(unsubscribe_url, "Não deseja receber avisos?")
 
@@ -366,11 +366,12 @@ class KlarimMailer:
         self._store = store
 
     def _proactive_from(self) -> str:
-        """Remetente dos e-mails **PROATIVOS** (cold: alerta + perfil consultado).
-        Migração de reputação: sai de `ALERT_FROM_EMAIL`/`ALERT_FROM_NAME`
-        (`alerta@klarimscan.com`), isolando o domínio principal. **Fail-safe:** sem a
-        var, cai para `self.from_address` (o remetente normal) — nunca quebra. Lido do
-        env a cada envio, então a troca vale sem reiniciar."""
+        """Remetente dos e-mails **PROATIVOS** (cold: alerta + perfil consultado), de
+        `ALERT_FROM_EMAIL`/`ALERT_FROM_NAME`. **2026-07-20:** migrado de
+        `alerta@klarimscan.com` → `alerta@klarim.net` — o warmup do klarimscan.com falhou
+        (alertas no spam); klarim.net é aged e entrega na inbox. **Fail-safe:** sem a var,
+        cai para `self.from_address` (o remetente normal) — nunca quebra. Lido do env a cada
+        envio, então a troca do `.env` vale ao recriar o container (sem rebuild)."""
         email = (os.environ.get("ALERT_FROM_EMAIL") or "").strip()
         if not email:
             return self.from_address
@@ -618,7 +619,7 @@ class KlarimMailer:
             secret = os.environ.get("JWT_SECRET", "") or os.environ.get("UNSUBSCRIBE_SECRET", "")
             if secret:
                 result_link = build_alert_access_link(to_email, target_id, site, secret)
-        # PROATIVO (cold) → remetente do domínio de warmup (klarimscan.com), plain text.
+        # PROATIVO (cold) → remetente do domínio dedicado (klarim.net, ex-klarimscan.com), plain text.
         params = {
             "from": self._proactive_from(),
             "to": [to_email],
@@ -1007,7 +1008,7 @@ class KlarimMailer:
             if secret:
                 unsubscribe_link = build_unsubscribe_link(to_email, secret)
         params = {
-            "from": self._proactive_from(),  # PROATIVO → domínio de warmup (klarimscan.com)
+            "from": self._proactive_from(),  # PROATIVO → domínio dedicado (klarim.net)
             "to": [to_email],
             "subject": f"Alguém consultou a segurança do site {domain}",
             "text": build_profile_view_text(domain, score, unsubscribe_link),
