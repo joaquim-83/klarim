@@ -30,7 +30,9 @@ class FakeStore:
         self.status_calls = []
 
     async def get_target_by_url(self, url):
-        return None
+        # KL-93: monitoring/offer agora exige que o alvo exista (404 se None). Devolve um
+        # alvo com scan para o fluxo de oferta prosseguir aos guards de auth/score.
+        return {"id": 9, "last_scan_at": "2026-07-10T10:00:00", "last_scan_score": 100}
 
     async def upsert_monitoring_offer(self, **kw):
         return self._upsert
@@ -76,14 +78,23 @@ def test_public_monitored_strips_sensitive():
         assert leaked not in pub
 
 
-def test_monitoring_sites_endpoint_is_safe(monkeypatch):
+def _admin(monkeypatch):
+    monkeypatch.setenv("JWT_SECRET", "k" * 64)
+    monkeypatch.setenv("ADMIN_USER", "op")
+    return {"Authorization": f"Bearer {m._create_token('op')}"}
+
+
+def test_monitoring_sites_requires_admin(monkeypatch):
+    # KL-93: /monitoring/sites deixou de ser público → 401 sem token de admin.
     store = FakeStore(active=[{
         "id": 1, "target_id": 9, "domain": "x.com.br", "url": "https://x.com.br",
         "display_name": "X", "logo_url": "https://x.com.br/favicon.ico",
         "contact_email": "a@x.com.br", "approval_token": "tok", "last_check_score": 100,
         "last_check_at": None, "approved_at": None}])
+    hdr = _admin(monkeypatch)
     c = _client(monkeypatch, store)
-    r = c.get("/monitoring/sites")
+    assert c.get("/monitoring/sites").status_code == 401           # sem token
+    r = c.get("/monitoring/sites", headers=hdr)                    # com token admin
     assert r.status_code == 200
     body = r.json()
     assert body["total"] == 1
@@ -185,5 +196,5 @@ def test_admin_monitoring_requires_jwt(monkeypatch):
     c = _client(monkeypatch, FakeStore())
     assert c.get("/monitoring/admin/list").status_code == 401
     assert c.get("/monitoring/admin/stats").status_code == 401
-    # público continua livre
-    assert c.get("/monitoring/sites").status_code == 200
+    # KL-93: /monitoring/sites também deixou de ser público (era 200) → 401 sem token.
+    assert c.get("/monitoring/sites").status_code == 401

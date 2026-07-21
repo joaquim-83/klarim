@@ -59,6 +59,21 @@ Na dúvida, trate o alvo como site de terceiro que só autorizou olhar o que é 
   p/ anonymous). `signup-from-alert` cria conta só com senha (e-mail do cookie, `source='hmac'`).
   `contact_email` **nunca em claro** — só hint mascarado. Tokens `typ`-isolados (um alert-access
   não vale como sessão nem como confirm/scan token). Rate limit: alert-access 30/h, signup 5/h/IP.
+- **Endpoints públicos sensíveis (KL-93 — hardening).** A varredura achou o `POST /payment/create`
+  criando cobrança PIX **real** sem auth/validação/rate limit. Política por endpoint (todos por
+  `CF-Connecting-IP`; `_redis_allow` com fallback in-memory, exceto onde marcado `_rl_ok`):
+
+  | Endpoint | Proteção |
+  |---|---|
+  | `POST /payment/create` | e-mail obrigatório (422) · **3/h por IP** (429) · domínio precisa existir na base **com scan** (`_domain_scanned` → 404). Só então cria a cobrança (inclui o modo demo). |
+  | `POST /notify/profile-view` | **1/h por (IP, domínio)** (`_rl_ok`, 429) + o teto interno de 1/domínio/24h do `_profile_view_notify` (defesa em profundidade). |
+  | `POST /monitoring/offer` | **3/h por IP** (era 10) + **404** se o domínio não existe + authz (scan completo comprovado) + score-100 (já existentes). |
+  | `GET /monitoring/sites` | **JWT admin** (401 sem token) — deixou de ser público (a vitrine migrou p/ Astro/KL-74; só páginas Vite legadas consumiam). |
+  | `GET /report/{executive,technical}` | **5/h por IP** compartilhado (`report_dl`, 429) — o PDF é público (paywall off) mas cada chamada dispara um `_safe_scan` full (caro) → anti-crawling. |
+  | `GET /scan/result` | **Sem mudança** — não há param `tier` client-controlável; o nível vem só da sessão (`_access_level`) e o corte é server-side (`_filter_scan_result`, KL-82/89). Anonymous vê nome+status dos 48 checks (padrão de scanner passivo), nunca evidência/LGPD. |
+
+  Cleanup: `scripts/cleanup_phantom_payments.py` (idempotente, `store.delete` por charge_id) remove
+  as 2 cobranças fantasma criadas no teste de segurança.
 - **Anti stored-XSS no `/events`:** `_sanitize_str`/`_sanitize_metadata` removem tags e
   esquemas (`javascript:`/`data:`), limitam tamanho/profundidade. React escapa `{}` (sem
   `dangerouslySetInnerHTML`).

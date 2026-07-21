@@ -358,7 +358,7 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1428 passed** (backend pytest, KL-92: +115) + **85 node --test** (frontend `test:unit`, KL-92: +11)
+- Testes: **1444 passed** (backend pytest, KL-93: +16) + **85 node --test** (frontend `test:unit`, KL-92: +11)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - Workers: **5/5 ativos** (discovery, alert, scan, vigília, rescan)
 - Planos: 8 contas Pro trial · Vigílias: 35 (30 ok, 5 error)
@@ -760,6 +760,21 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   são `/api`); o parser pular `/api` já evita duplicata. **+27 testes** (parse_line puro, classify_simple,
   parser incremental/rotação/truncação, guardas do fix P0). SQL validado contra Postgres 16 real + `nginx -t`
   local (HTTP+HTTPS) + contrato log_format↔regex validado end-to-end.
+- **KL-93** — Hardening de endpoints públicos expostos sem auth ✅. Varredura de segurança achou o
+  **`POST /payment/create` criando cobrança PIX REAL** sem nenhuma proteção. **Fixes:** (P0)
+  `/payment/create` agora exige **e-mail** (422), **rate limit 3/h por IP** (429, via `_redis_allow`),
+  e **domínio existente na base + com scan** (`_domain_scanned` checa `last_scan_at`/`last_scan_score`
+  → 404) — validações rodam ANTES do demo/cobrança. Script `scripts/cleanup_phantom_payments.py`
+  (idempotente, apaga por charge_id via `store.delete`) remove as 2 cobranças fantasma do teste.
+  (P1) `/notify/profile-view` → rate limit 1/h por (IP,domínio); `/monitoring/offer` → RL 10→3/h + 404
+  se o domínio não existe (já tinha authz + score-100); **`/monitoring/sites` → agora exige JWT admin**
+  (401; era "público" mas só páginas Vite legadas o usavam — a vitrine migrou p/ Astro/KL-74);
+  `/report/{executive,technical}` → rate limit **5/h por IP** compartilhado (`report_dl`, cada chamada
+  dispara `_safe_scan` full, caro). **Decisão (mantida KL-89):** `/scan/result` **NÃO** foi alterado —
+  não existe param `tier` client-controlável (o nível vem só da sessão via `_access_level`; a filtragem
+  `_filter_scan_result` é server-side/autoritativa). Downgrade p/ 15 checks reverteria a correção de
+  conversão do KL-89 (mostrar valor antes de pedir conta) — o "bypass" do card não existe. +16 testes
+  (com/sem auth, rate limit, domínio inexistente). Política por endpoint em `docs/SECURITY.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

@@ -385,6 +385,10 @@ _sub_webhook_attempts: dict = {}   # KL-44 P6: webhook de pagamento de assinatur
 _scan_get_attempts: dict = {}      # KL-78 item 8: rate limit do GET /scan (anti-abuso)
 _scan_anon_hour: dict = {}         # KL-82: scan anônimo 5/hora por IP
 _scan_anon_day: dict = {}          # KL-82: scan anônimo 20/dia por IP
+# KL-93 (hardening de segurança): rate limits dos endpoints públicos sensíveis.
+_payment_create_hits: dict = {}    # KL-93: cobrança PIX 3/hora por IP (cria cobrança REAL)
+_notify_view_hits: dict = {}       # KL-93: notify/profile-view 1/hora por (IP, domínio)
+_report_dl_hits: dict = {}         # KL-93: /report/{executive,technical} 5/hora por IP
 
 
 def _mask_email(email: str) -> str:
@@ -3053,10 +3057,19 @@ async def _profile_view_notify(domain: str, utm_campaign: str = "") -> None:
 
 
 @app.post("/notify/profile-view")
-async def notify_profile_view(body: ProfileViewBody) -> dict:
+async def notify_profile_view(body: ProfileViewBody, request: Request = None) -> dict:
     """DEPRECATED (KL-64): o gatilho passou para o evento `profile_view` humano-verificado
     (`/events`) — bots que fazem pre-fetch/crawl de /site/ NÃO geram mais e-mail ao dono
-    (eram ~7000/dia). Mantido por compatibilidade; hoje o SSR do perfil não o chama mais."""
+    (eram ~7000/dia). Mantido por compatibilidade; hoje o SSR do perfil não o chama mais.
+
+    KL-93 (hardening) — como pode disparar e-mail ao dono sem auth, ganha **rate limit
+    1/hora por (IP, domínio)** (429). O `_profile_view_notify` já tem o teto de 1/domínio/24h
+    (defesa em profundidade)."""
+    domain = _norm_domain(body.domain)
+    ip = _client_ip(request) if request is not None else "?"
+    if not _rl_ok(_notify_view_hits, f"{ip}:{domain}", 1, 3600):
+        raise HTTPException(status_code=429, detail="Muitas solicitações. Aguarde.",
+                            headers={"Retry-After": "3600"})
     # anti-loop (KL-44): visita do próprio dono via link de alerta não notifica.
     if not (body.utm_campaign or "").startswith("alerta"):
         _spawn(_profile_view_notify(body.domain, body.utm_campaign))
@@ -4038,10 +4051,48 @@ class PaymentCreateBody(BaseModel):
     buyer_email: Optional[str] = None
 
 
+async def _domain_scanned(url: str) -> bool:
+    """KL-93 — o domínio existe na base `targets` E já tem um scan válido? Bloqueia a
+    criação de cobrança para URLs aleatórias (o /payment/create criava PIX REAL sem
+    validar). Usa `last_scan_at` (setado pelo scan) como prova de scan."""
+    try:
+        store = get_target_store()
+        target = await store.get_target_by_url(url)
+        if not target:
+            target = await store.get_target_by_domain(_norm_domain(domain_of(url)))
+        if not target:
+            return False
+        return target.get("last_scan_at") is not None or target.get("last_scan_score") is not None
+    except Exception:  # noqa: BLE001 - falha de banco não deve liberar cobrança
+        return False
+
+
 @app.post("/payment/create")
-async def payment_create(body: PaymentCreateBody) -> dict:
-    """Cria uma cobrança PIX para liberar o relatório da URL escaneada."""
+async def payment_create(body: PaymentCreateBody, request: Request = None) -> dict:
+    """Cria uma cobrança PIX para liberar o relatório da URL escaneada.
+
+    KL-93 (hardening) — o endpoint criava cobrança PIX **real** sem qualquer proteção.
+    Agora exige: **e-mail** no body (422), **rate limit 3/hora por IP** (429) e que o
+    **domínio exista na base com um scan válido** (404) — evita gerar cobranças fantasma
+    para URLs aleatórias."""
     buyer_email = (body.buyer_email or "").strip() or None
+
+    # 1. E-mail obrigatório (422) — sem e-mail não há para quem cobrar/entregar.
+    if not buyer_email or not _SCAN_EMAIL_RE.match(buyer_email):
+        raise HTTPException(status_code=422, detail="E-mail é obrigatório para gerar a cobrança.")
+
+    # 2. Rate limit 3/hora por IP (429) — anti-abuso de criação de cobrança.
+    ip = _client_ip(request) if request is not None else "?"
+    allowed, retry = await _redis_allow("payment_create", ip, 3, 3600, _payment_create_hits)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Muitas cobranças. Tente novamente mais tarde.",
+                            headers={"Retry-After": str(retry)})
+
+    # 3. Domínio precisa existir na base + ter scan (404) — não cobra URL aleatória.
+    norm_url = _norm_scan_url(body.url)
+    if not await _domain_scanned(norm_url):
+        raise HTTPException(status_code=404,
+                            detail="Site não encontrado. Faça o scan do site antes de gerar a cobrança.")
 
     # Modo demo (Fix pós-KL-27): cobrança PAID instantânea, sem AbacatePay nem PIX.
     if _is_demo(email=buyer_email, url=body.url):
@@ -4344,12 +4395,25 @@ def _has_full_scan_token(url: str, scan_token: Optional[str]) -> bool:
                 and _norm_scan_url(payload.get("url", "")) == _norm_scan_url(url))
 
 
+async def _report_rate_limit(request: Optional[Request]) -> None:
+    """KL-93 (hardening) — o PDF é público (paywall off), então não exige auth, mas ganha
+    **rate limit 5/hora por IP** (429) para impedir crawling massivo (cada chamada dispara
+    um `_safe_scan` full — caro)."""
+    ip = _client_ip(request) if request is not None else "?"
+    allowed, retry = await _redis_allow("report_dl", ip, 5, 3600, _report_dl_hits)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Muitos relatórios. Tente novamente mais tarde.",
+                            headers={"Retry-After": str(retry)})
+
+
 @app.get("/report/executive")
 async def report_executive(
+    request: Request = None,
     url: str = Query(..., description="URL alvo."),
     charge_id: Optional[str] = Query(default=None, description="ID da cobrança paga."),
     scan_token: Optional[str] = Query(default=None, description="Token de re-verificação (full)."),
 ) -> Response:
+    await _report_rate_limit(request)
     if not _has_full_scan_token(url, scan_token):
         await _require_paid(charge_id)
     report = await _safe_scan(url, full=True)
@@ -4359,10 +4423,12 @@ async def report_executive(
 
 @app.get("/report/technical")
 async def report_technical(
+    request: Request = None,
     url: str = Query(..., description="URL alvo."),
     charge_id: Optional[str] = Query(default=None, description="ID da cobrança paga."),
     scan_token: Optional[str] = Query(default=None, description="Token de re-verificação (full)."),
 ) -> Response:
+    await _report_rate_limit(request)
     if not _has_full_scan_token(url, scan_token):
         await _require_paid(charge_id)
     report = await _safe_scan(url, full=True)
@@ -6541,10 +6607,16 @@ async def monitoring_offer(body: MonitorOfferBody, request: Request = None) -> d
     if not url or not _SCAN_EMAIL_RE.match(email):
         raise HTTPException(status_code=422, detail="URL ou e-mail inválido.")
 
+    # KL-93 (hardening): rate limit por IP endurecido 10→3/hora.
     ip = _client_ip(request) if request is not None else "?"
-    if not _rl_ok(_monitor_hits, ip, 10, 3600):
+    if not _rl_ok(_monitor_hits, ip, 3, 3600):
         raise HTTPException(status_code=429, detail="Muitas solicitações. Aguarde.",
                             headers={"Retry-After": "3600"})
+
+    # KL-93: o domínio precisa existir na base de targets (404) — falha cedo, antes das
+    # verificações caras. O score-100 abaixo já garante que há scan, mas o 404 é explícito.
+    if not await get_target_store().get_target_by_url(url):
+        raise HTTPException(status_code=404, detail="Site não encontrado na base.")
 
     # Só quem comprovadamente fez o scan completo da URL pode ofertá-la (anti-abuso).
     if not await _authorized_for_url(request, url, body.charge_id):
@@ -6629,8 +6701,13 @@ def _unsubscribe_html_generic(title: str, msg: str) -> str:
 
 
 @app.get("/monitoring/sites")
-async def monitoring_sites() -> dict:
-    """Lista pública dos sites monitorados `active` (sem dados sensíveis)."""
+async def monitoring_sites(request: Request = None) -> dict:
+    """Sites monitorados `active`. KL-93 (hardening) — deixou de ser público: exige JWT de
+    admin (401 sem token). O prefixo `/monitoring` não está na allowlist do middleware, então
+    a auth é checada aqui explicitamente. (A vitrine pública migrou para o Astro/KL-74, que não
+    consome este endpoint; só páginas Vite legadas o chamavam.)"""
+    if not (request is not None and _is_admin_request(request)):
+        raise HTTPException(status_code=401, detail="Não autorizado.")
     try:
         rows = await get_target_store().get_active_monitored_sites()
     except Exception:  # noqa: BLE001

@@ -115,6 +115,10 @@ class MemoryStore:
         if c:
             c.email_status = status
 
+    async def delete(self, charge_id: str) -> int:
+        """KL-93 — remove uma cobrança (idempotente). Retorna 1 se removeu, 0 se não existia."""
+        return 1 if self._d.pop(charge_id, None) is not None else 0
+
     # --- admin (KL-14) ----------------------------------------------------- #
 
     async def list_charges(self, status: Optional[str] = None, limit: int = 50,
@@ -239,6 +243,21 @@ class PostgresStore:
                     "UPDATE payments SET email_status = %s WHERE charge_id = %s",
                     (status, charge_id),
                 )
+        finally:
+            conn.close()
+
+    async def delete(self, charge_id: str) -> int:
+        """KL-93 — remove uma cobrança pelo charge_id. Retorna o nº de linhas apagadas
+        (0 se não existia). Usado no cleanup das cobranças fantasma criadas em teste de
+        segurança (`scripts/cleanup_phantom_payments.py`)."""
+        return await asyncio.to_thread(self._delete_sync, charge_id)
+
+    def _delete_sync(self, charge_id: str) -> int:
+        conn = self._connect()
+        try:
+            with conn, conn.cursor() as cur:
+                cur.execute("DELETE FROM payments WHERE charge_id = %s", (charge_id,))
+                return cur.rowcount
         finally:
             conn.close()
 

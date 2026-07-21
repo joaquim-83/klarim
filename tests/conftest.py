@@ -28,6 +28,10 @@ def _reset_api_rate_limits():
         m._rotate_attempts.clear()
         m._public_content_attempts.clear()   # KL-74 endpoints públicos de conteúdo
         m._scan_get_attempts.clear()         # KL-78 item 8: rate limit do GET /scan
+        m._payment_create_hits.clear()       # KL-93: cobrança PIX 3/h por IP
+        m._notify_view_hits.clear()          # KL-93: notify/profile-view 1/h por (IP,domínio)
+        m._report_dl_hits.clear()            # KL-93: /report/* 5/h por IP
+        m._monitor_hits.clear()              # KL-93: monitoring/offer 3/h por IP
         import api.admin_analytics as _aa     # KL-83/KL-92: rate bucket do analytics admin
         _aa._rl_bucket.clear()
     except Exception:  # noqa: BLE001 - testes que não tocam a API seguem normais
