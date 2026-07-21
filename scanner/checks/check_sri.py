@@ -31,6 +31,20 @@ NAME = "SRI ausente em scripts externos"
 # FAIL when the share of external scripts without SRI exceeds this fraction.
 MISSING_SRI_THRESHOLD = 0.5
 
+# KL-92 P4 — CDNs de analytics/tag que atualizam o bundle SEM aviso: SRI (hash fixo) quebraria o
+# script a cada release do provedor, então NÃO é viável e não deve contar como FAIL. Casa por
+# sufixo de host (cobre subdomínios). Não é isenção genérica — só provedores de analytics.
+SRI_ALLOWLIST_DOMAINS = (
+    "googletagmanager.com",
+    "google-analytics.com",
+    "static.cloudflareinsights.com",
+)
+
+
+def _sri_allowlisted(host: str) -> bool:
+    h = (host or "").lower()
+    return any(h == d or h.endswith("." + d) for d in SRI_ALLOWLIST_DOMAINS)
+
 
 async def check(url: str) -> CheckResult:
     https_url = with_scheme(url, "https")
@@ -45,15 +59,19 @@ async def check(url: str) -> CheckResult:
         )
 
     scripts = extract_script_refs(resp.text, str(resp.url))
-    external = [s for s in scripts if s.is_external]
+    external_all = [s for s in scripts if s.is_external]
+    # KL-92 P4: CDNs de analytics dinâmicos (gtag/GA/CF) NÃO entram no cálculo — SRI é inviável neles.
+    allowlisted = sorted({s.host for s in external_all if _sri_allowlisted(s.host)})
+    external = [s for s in external_all if not _sri_allowlisted(s.host)]
 
     if not external:
+        note = (f" (allowlisted, CDN dinâmico: {', '.join(allowlisted)})" if allowlisted else "")
         return CheckResult(
             name=NAME,
             status=Status.PASS,
             severity=Severity.ALTA,
-            evidence="Nenhum script externo encontrado (nada a proteger com SRI).",
-            details={"external_scripts": 0},
+            evidence=f"Nenhum script externo exige SRI{note}.",
+            details={"external_scripts": 0, "allowlisted_domains": allowlisted},
         )
 
     without_sri = [s for s in external if not s.has_sri]
@@ -80,6 +98,8 @@ async def check(url: str) -> CheckResult:
     evidence = headline
     if affected_domains:
         evidence += " Domínios sem SRI: " + ", ".join(affected_domains) + "."
+    if allowlisted:
+        evidence += f" Ignorados (CDN dinâmico): {', '.join(allowlisted)}."
 
     return CheckResult(
         name=NAME,
@@ -92,5 +112,6 @@ async def check(url: str) -> CheckResult:
             "ratio_without_sri": round(ratio, 3),
             "affected_domains": affected_domains,
             "without_sri_urls": without_sri_urls,
+            "allowlisted_domains": allowlisted,
         },
     )

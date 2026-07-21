@@ -260,6 +260,23 @@ async def _incr_rate(ip: str) -> int:
         return 0
 
 
+async def _domains_count(ip: str, domain: Optional[str]) -> int:
+    """KL-92 P4 — nº de domínios DISTINTOS consultados pelo IP na última hora (set Redis
+    ``access_domains:{ip}``, TTL 1h). >20 = pre-fetch de e-mail (`classify_bot`). 0 = sem info
+    (Redis fora / sem domínio) → a regra simplesmente pula."""
+    redis = _redis()
+    if redis is None or not ip or not domain:
+        return 0
+    try:
+        key = f"access_domains:{ip}"
+        n = await redis.sadd(key, domain)
+        if n:  # domínio novo no set → (re)arma o TTL de 1h
+            await redis.expire(key, 3600)
+        return int(await redis.scard(key))
+    except Exception:  # noqa: BLE001 - Redis instável → fail-open
+        return 0
+
+
 # --------------------------------------------------------------------------- #
 # Processamento em background + o middleware
 # --------------------------------------------------------------------------- #
@@ -296,10 +313,11 @@ async def _process_access(ctx: Dict[str, Any]) -> None:
         if not is_valid_ip(ip):
             return  # sem IP válido → não loga (ip_address é INET NOT NULL)
         count = await _incr_rate(ip)
+        n_domains = await _domains_count(ip, ctx.get("domain_queried"))  # KL-92 P4
         is_bot, reason = classify_bot(
             ip, ctx.get("user_agent"), ctx.get("country_code"), ctx.get("endpoint"),
             request_count_last_hour=count, user_id=ctx.get("user_id"),
-            has_other_requests=(count > 1))
+            has_other_requests=(count > 1), distinct_domains_last_hour=n_domains)
         human = is_human_action(ctx.get("http_method"), ctx.get("endpoint"))
         if human:
             is_bot, reason = False, None

@@ -105,6 +105,13 @@ const allJsonLd = [ORG_JSONLD, WEBSITE_JSONLD, ...extraLd];
       <script type="application/ld+json" set:html={JSON.stringify(ld)} is:inline />
     ))}
 
+    {/* Google Analytics 4 (KL-92 P4) — substitui o Cloudflare Web Analytics: o beacon.min.js era o
+        ÚNICO script externo sem SRI (travava o score 100 do próprio klarim.net). O loader externo é
+        coberto pela CSP (`script-src https://www.googletagmanager.com`); o inline abaixo tem o hash
+        SHA-256 na CSP (security_headers.conf). NÃO editar o inline sem recalcular o hash. */}
+    <script async src="https://www.googletagmanager.com/gtag/js?id=G-7WPZN66JTB"></script>
+    <script is:inline>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('js',new Date());gtag('config','G-7WPZN66JTB');</script>
+
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   </head>
   <body class="min-h-screen bg-slate-950 text-slate-100 antialiased selection:bg-brand-500/30">
@@ -117,11 +124,7 @@ const allJsonLd = [ORG_JSONLD, WEBSITE_JSONLD, ...extraLd];
          uma entrada de cache do Cloudflare envenenada (o /theme.js caiu no fallback SSR — HTML
          com max-age=14400 — enquanto NÃO estava na allowlist do Nginx; já corrigido). -->
     <script src="/theme.js?v=2" is:inline></script>
-    <!-- Cloudflare Web Analytics — só nas páginas Astro (públicas + conta), NUNCA no
-         /painel (AdminLayout). Externo → coberto pela CSP (`script-src` inclui o host).
-         `is:inline` = Astro renderiza verbatim (não processa/bundle). -->
-    <script type="module" src="https://static.cloudflareinsights.com/beacon.min.js"
-      data-cf-beacon='{"token": "5f28e636bcda47a6af21724c223f6e55"}' is:inline></script>
-    <!-- End Cloudflare Web Analytics -->
+    {/* KL-92 P4: Cloudflare Web Analytics (beacon.min.js) REMOVIDO — era o único script externo
+        sem SRI (travava o score 100). Substituído pelo Google Analytics 4 no <head>. */}
   </body>
 </html>

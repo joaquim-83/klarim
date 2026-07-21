@@ -102,7 +102,14 @@ standalone) + **React** (islands) + **Tailwind v4** (CSS-first, sem config) +
 - **CSP relaxada no `/painel`** (decisão KL-51: `script-src 'unsafe-inline'`, painel é
   noindex/operator-only). O **público** usa CSP estrita (scripts inline por hash SHA-256).
   **Ao adicionar/alterar um script inline público, recompute o hash e atualize
-  `frontend/nginx/security_headers.conf`** (hoje: 3 do Astro + 1 anti-FOUC de tema do KL-87).
+  `frontend/nginx/security_headers.conf`** (hoje: **5 hashes** — 3 do Astro + 1 anti-FOUC de tema
+  do KL-87 + 1 do init do GA4/gtag do KL-92 P4). **KL-92 P4:** o Cloudflare Web Analytics
+  (`static.cloudflareinsights.com/beacon.min.js`) foi **removido** — era o único script externo
+  SEM SRI (travava o score 100) — e trocado por **Google Analytics 4** (`G-7WPZN66JTB`): loader
+  `www.googletagmanager.com` no `script-src` + hash do init inline; `connect-src`/`img-src` liberam
+  `*.google-analytics.com`. O check 13 (SRI) ganhou uma **allowlist de CDN dinâmico**
+  (`SRI_ALLOWLIST_DOMAINS`: googletagmanager/google-analytics/cloudflareinsights) — esses não contam
+  como FAIL (SRI inviável em bundle que o provedor atualiza sem aviso) → `klarim.net` volta a 100.
 - **Tema light/dark (KL-87):** **light é o padrão**. Mecanismo: os tokens `--color-slate-*` e
   `--color-white` do Tailwind são **sobrescritos por tema** em `web/src/styles/global.css`
   (`:root`=light com a escala slate INVERTIDA; `[data-theme='dark']`=defaults). Como todo
@@ -388,7 +395,7 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1487 passed** (backend pytest, KL-94: +19) + **96 node --test** (frontend `test:unit`, +11 scanTitle)
+- Testes: **1503 passed** (backend pytest, KL-92 P4: +16) + **96 node --test** (frontend `test:unit`)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - Workers: **5/5 ativos** (discovery, alert, scan, vigília, rescan)
 - Planos: 8 contas Pro trial · Vigílias: 35 (30 ok, 5 error)
@@ -733,7 +740,7 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   + linha de aviso), anti CSV-injection, admin-only; front usa `adminDownload` (Bearer+blob). 26 testes
   (19 backend + 7 tracker via `vm`). **Gotcha:** a data de análise do funil já era correta — o card
   supunha bug de período; o real era o volume de e-mail bot.
-- **KL-92** — Tracking server-side por IP (Prompt 1 ✅ + Prompt 2 ✅ + Prompt 3 ✅). A defesa client-side do KL-64 depende
+- **KL-92** — Tracking server-side por IP (Prompt 1 ✅ + 2 ✅ + 3 ✅ + 4 ✅). A defesa client-side do KL-64 depende
   de código que roda no browser do bot — insuficiente. A fonte de verdade das métricas de visitante
   passa a ser o **servidor**. Tabela **`access_log`** (IP INET, país, endpoint, método, status,
   domain_queried, user_id, UA, referrer, response_time, is_bot/bot_reason) + 6 índices, no
@@ -795,6 +802,18 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   são `/api`); o parser pular `/api` já evita duplicata. **+27 testes** (parse_line puro, classify_simple,
   parser incremental/rotação/truncação, guardas do fix P0). SQL validado contra Postgres 16 real + `nginx -t`
   local (HTTP+HTTPS) + contrato log_format↔regex validado end-to-end.
+  **Prompt 4 ✅** (fecha o KL-92 — 5 pendências): (1) **Cloudflare Web Analytics → GA4** (o
+  `beacon.min.js` era o único script externo sem SRI → travava o score 100): removido do
+  `Base.astro` + CSP; GA4 `G-7WPZN66JTB` no `<head>` (loader `googletagmanager.com` + init inline
+  hasheado); check 13 (SRI) com **allowlist de CDN dinâmico** → klarim.net volta a 100. (2)
+  **Pre-fetch de e-mail** no `bot_classifier`: `_EMAIL_PREFETCH_CIDRS` (66.102/66.249/40.9x/104.47
+  Gmail/Outlook/EOP) + regra **>20 domínios distintos/h** (set Redis `access_domains:{ip}`) →
+  `email_prefetch` (antes de datacenter; em `classify_bot` e `classify_bot_simple`). (3) **Parser
+  Nginx** já entregue no Prompt 3 (40k linhas capturadas em prod; visitors_br 26→56, pega `/`,
+  `/site/*`, `/setor/*`) — mantido o hybrid (não desliguei o middleware: sem duplicata + preserva
+  user_id/retroatividade). (4) **LGPD IPv6**: `anonymize_old_access_logs` trunca IPv4→/24 **e
+  IPv6→/48** (>90d). (5) **Tendência com zeros** já entregue no Prompt 2 (`assemble_daily_series`
+  densifica os dias). +16 testes. GA4-hash e IPv6-SQL validados; CSP via `nginx -t` local.
 - **KL-93** — Hardening de endpoints públicos expostos sem auth ✅. Varredura de segurança achou o
   **`POST /payment/create` criando cobrança PIX REAL** sem nenhuma proteção. **Fixes:** (P0)
   `/payment/create` agora exige **e-mail** (422), **rate limit 3/h por IP** (429, via `_redis_allow`),

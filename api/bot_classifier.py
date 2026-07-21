@@ -67,6 +67,37 @@ _DATACENTER_NETWORKS = [ipaddress.ip_network(c) for c in dict.fromkeys(_DATACENT
 
 
 # --------------------------------------------------------------------------- #
+# KL-92 P4 — ranges de PRE-FETCH de e-mail (link protection do Gmail/Outlook/EOP). Um IP
+# desses "visita" centenas de sites (todos os links dos e-mails) e apareceria como humano.
+# São bots por definição (não interagem). 40.x já cai no datacenter Azure — mas checamos os
+# de e-mail ANTES para dar o motivo específico `email_prefetch`.
+# --------------------------------------------------------------------------- #
+_EMAIL_PREFETCH_CIDRS = (
+    "66.102.0.0/20",     # Google/Gmail link protection
+    "66.249.64.0/19",    # Googlebot
+    "40.94.0.0/16",      # Microsoft/Outlook (safe links)
+    "40.92.0.0/15",      # Microsoft/Outlook
+    "104.47.0.0/17",     # Microsoft Exchange Online Protection (EOP)
+)
+_EMAIL_PREFETCH_NETWORKS = [ipaddress.ip_network(c) for c in _EMAIL_PREFETCH_CIDRS]
+
+# Um IP que consulta MAIS de N domínios distintos numa hora é pre-fetch (nenhum humano pesquisa
+# tantos sites/hora). Complementa os ranges (pega prefetchers desconhecidos).
+_EMAIL_PREFETCH_DOMAIN_THRESHOLD = 20
+
+
+def is_email_prefetch_ip(ip: str) -> bool:
+    """True se o IP pertence a um range conhecido de pre-fetch de e-mail (Gmail/Outlook/EOP)."""
+    if not ip:
+        return False
+    try:
+        addr = ipaddress.ip_address(ip.strip())
+    except ValueError:
+        return False
+    return any(addr in net for net in _EMAIL_PREFETCH_NETWORKS if addr.version == net.version)
+
+
+# --------------------------------------------------------------------------- #
 # User-Agents de crawler/cliente automatizado declarado. Comparação case-insensitive
 # por substring — barata e suficiente (crawlers se identificam honestamente).
 # --------------------------------------------------------------------------- #
@@ -131,25 +162,28 @@ def is_human_action(method: str, endpoint: str) -> bool:
 def classify_bot(ip: str, user_agent: Optional[str], country: Optional[str],
                  endpoint: str, request_count_last_hour: int = 0,
                  user_id: Optional[int] = None,
-                 has_other_requests: bool = True) -> Tuple[bool, Optional[str]]:
+                 has_other_requests: bool = True,
+                 distinct_domains_last_hour: int = 0) -> Tuple[bool, Optional[str]]:
     """Classifica um request como bot/humano. Função PURA (sem I/O).
 
-    Retorna ``(is_bot, bot_reason)`` — ``bot_reason`` ∈ {``datacenter_ip``, ``crawler_ua``,
-    ``high_rate``, ``prefetch_pattern``} ou ``None`` quando humano.
+    Retorna ``(is_bot, bot_reason)`` — ``bot_reason`` ∈ {``email_prefetch``, ``datacenter_ip``,
+    ``crawler_ua``, ``high_rate``, ``prefetch_pattern``} ou ``None`` quando humano.
 
     Ordem (a 1ª regra que casa vence):
       1. **IP próprio** (self-scan/healthcheck/cron) → humano.
       2. **Usuário autenticado** (``user_id`` presente) → humano por definição (logou com
          senha); evita falso-positivo de dev/cliente atrás de VPN ou nuvem.
-      3. **Datacenter** (nuvem) → ``datacenter_ip``.
-      4. **Crawler declarado** no User-Agent → ``crawler_ua``.
-      5. **Rate anormal** (>50 req/h) sem conta → ``high_rate``.
-      6. **Padrão de pré-fetch** (EUA + ``/site/*`` sem sequência de navegação) →
+      3. **Pre-fetch de e-mail** (range conhecido Gmail/Outlook/EOP, OU >20 domínios distintos/h)
+         → ``email_prefetch`` (KL-92 P4).
+      4. **Datacenter** (nuvem) → ``datacenter_ip``.
+      5. **Crawler declarado** no User-Agent → ``crawler_ua``.
+      6. **Rate anormal** (>50 req/h) sem conta → ``high_rate``.
+      7. **Padrão de pré-fetch** (EUA + ``/site/*`` sem sequência de navegação) →
          ``prefetch_pattern``.
 
-    ``request_count_last_hour`` vem de um contador Redis (``access_rate:{ip}``, TTL 1h);
-    ``has_other_requests`` indica se o IP já apareceu antes (contador > 1). A retroatividade
-    (``is_human_action``) corrige, no banco, IPs de datacenter que fizeram ação humana."""
+    ``request_count_last_hour``/``distinct_domains_last_hour`` vêm de Redis (por IP, TTL 1h);
+    ``has_other_requests`` indica se o IP já apareceu antes. A retroatividade (``is_human_action``)
+    corrige, no banco, IPs que fizeram ação humana."""
     ip = (ip or "").strip()
     if not ip or ip == "unknown":
         return False, None  # sem IP confiável → não acusa (fail-open)
@@ -159,6 +193,9 @@ def classify_bot(ip: str, user_agent: Optional[str], country: Optional[str],
 
     if user_id is not None:
         return False, None
+
+    if is_email_prefetch_ip(ip) or distinct_domains_last_hour > _EMAIL_PREFETCH_DOMAIN_THRESHOLD:
+        return True, "email_prefetch"
 
     if is_datacenter_ip(ip):
         return True, "datacenter_ip"
@@ -188,6 +225,8 @@ def classify_bot_simple(ip: str, user_agent: Optional[str],
         return False, None
     if ip in _own_ips():
         return False, None
+    if is_email_prefetch_ip(ip):   # KL-92 P4: Gmail/Outlook/EOP link-protection
+        return True, "email_prefetch"
     if is_datacenter_ip(ip):
         return True, "datacenter_ip"
     if is_crawler_ua(user_agent):

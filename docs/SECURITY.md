@@ -101,10 +101,19 @@ Na dúvida, trate o alvo como site de terceiro que só autorizou olhar o que é 
   em cada `location` com `add_header` próprio (snippet `security_headers.conf`).
 - **Resolver dinâmico no proxy** (`/api/`, `/mcp/`): evita o 502 quando o container `api`
   é recriado com IP novo. `resolver 127.0.0.11` + upstream em variável.
-- **CSP:** público **estrito** (`script-src 'self'` + hashes SHA-256 dos scripts inline
-  do Astro — ao mexer neles, recalcule os hashes); `/painel` **relaxado**
-  (`unsafe-inline`, é noindex/operator-only). `style-src` mantém `unsafe-inline`. COOP
-  `same-origin`, COEP `require-corp`, CORP `same-origin`, Permissions-Policy restritiva.
+- **CSP:** público **estrito** (`script-src 'self'` + **5 hashes** SHA-256 dos scripts inline —
+  ao mexer neles, recalcule os hashes); `/painel` **relaxado** (`unsafe-inline`, é noindex/
+  operator-only). `style-src` mantém `unsafe-inline`. COOP `same-origin`, COEP `require-corp`,
+  CORP `same-origin`, Permissions-Policy restritiva. **KL-92 P4:** Cloudflare Web Analytics
+  (`beacon.min.js`, único script externo SEM SRI → travava o score 100) → **Google Analytics 4**:
+  `script-src` inclui `www.googletagmanager.com` + o hash do init inline; `connect-src`/`img-src`
+  liberam `*.google-analytics.com`. Check 13 (SRI) tem **allowlist** de CDN dinâmico
+  (googletagmanager/google-analytics/cloudflareinsights) — SRI é inviável em bundle que o provedor
+  atualiza sem aviso, então não conta como FAIL.
+- **Anonimização LGPD do access_log (KL-92):** IP retido 90d; depois `anonymize_old_access_logs`
+  trunca IPv4 → `/24` **e IPv6 → `/48`** (KL-92 P4). Pre-fetchers de e-mail (Gmail/Outlook/EOP,
+  ranges `66.102`/`66.249`/`40.9x`/`104.47`, ou >20 domínios distintos/h) são classificados
+  `email_prefetch` (não inflam visitantes).
 
 ## 4. Autenticação e autorização
 

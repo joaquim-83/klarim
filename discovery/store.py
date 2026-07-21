@@ -6120,16 +6120,22 @@ class TargetStore:
         return await asyncio.to_thread(self._run, _fn)
 
     async def anonymize_old_access_logs(self, days: int = 90) -> int:
-        """LGPD — trunca o último octeto dos IPs com >`days` dias (192.168.1.42 →
-        192.168.1.0). Idempotente (só toca IPv4 /32 ainda não mascarados). Roda 1x/dia
-        (worker/cron). Retorna o nº de linhas anonimizadas."""
+        """LGPD — anonimiza os IPs com >`days` dias: IPv4 → trunca o último octeto (`/24`,
+        192.168.1.42 → 192.168.1.0); IPv6 → trunca para `/48` (KL-92 P4). Idempotente (só toca
+        endereços ainda em máscara cheia — /32 v4, /128 v6). Roda 1x/dia. Retorna o total
+        anonimizado."""
         def _fn(cur):
+            cutoff = "created_at < NOW() - (%s || ' days')::interval"
             cur.execute(
-                "UPDATE access_log SET ip_address = set_masklen(ip_address::cidr, 24)::inet "
-                "WHERE created_at < NOW() - (%s || ' days')::interval "
-                "  AND family(ip_address) = 4 AND masklen(ip_address::cidr) = 32",
+                f"UPDATE access_log SET ip_address = set_masklen(ip_address::cidr, 24)::inet "
+                f"WHERE {cutoff} AND family(ip_address) = 4 AND masklen(ip_address::cidr) = 32",
                 (days,))
-            return cur.rowcount
+            n4 = cur.rowcount
+            cur.execute(
+                f"UPDATE access_log SET ip_address = set_masklen(ip_address::cidr, 48)::inet "
+                f"WHERE {cutoff} AND family(ip_address) = 6 AND masklen(ip_address::cidr) = 128",
+                (days,))
+            return n4 + cur.rowcount
 
         return await asyncio.to_thread(self._run, _fn)
 
