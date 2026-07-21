@@ -5,6 +5,7 @@
 // do arquivo como fallback (regra 9 do card — não remover, apenas despriorizar).
 import { useEffect, useRef, useState } from 'react';
 import { SCAN_CATEGORIES, getCategoryStatus } from '../../lib/scanView.js';
+import { safeScanDomain } from '../../lib/scanTitle.js';
 import ScanResultDetail from './ScanResultDetail.jsx';
 
 const TIPS = [
@@ -38,13 +39,9 @@ async function apiPost(path, body, token) {
   return { ok: res.ok, status: res.status, data };
 }
 
-function domainOf(url) {
-  try {
-    return new URL(url.includes('://') ? url : `https://${url}`).hostname.replace(/^www\./, '');
-  } catch {
-    return url;
-  }
-}
+// Sanitização defensiva do domínio exibido: usa `safeScanDomain` (hostname limpo ou '' se
+// inválido) — NUNCA reflete o input cru (fix 2026-07-21). Substitui o antigo `domainOf` que
+// caía em `return url` (refletia `<script>…`).
 
 function maskEmail(e) {
   const [u, d] = (e || '').split('@');
@@ -70,12 +67,14 @@ export default function ScanFlow({ url: initialUrl = '', user = null }) {
   const [error, setError] = useState('');
   const [limitMsg, setLimitMsg] = useState('');
   const [completing, setCompleting] = useState(false); // KL-89 fix 6: beat de 100% antes do resultado
+  const [invalid, setInvalid] = useState(false);        // fix 2026-07-21: input não é domínio
   const startedRef = useRef(false);
 
-  const domain = domainOf(url);
+  const domain = safeScanDomain(url); // '' se o input não for um domínio válido
 
   useEffect(() => {
-    if (url && !startedRef.current) {
+    // Só escaneia se o input for um domínio VÁLIDO (barreira de UX; o backend também rejeita).
+    if (url && domain && !startedRef.current) {
       startedRef.current = true;
       window.klarimTrack?.('scan_started', {}, url);
       runScan();
@@ -86,7 +85,19 @@ export default function ScanFlow({ url: initialUrl = '', user = null }) {
   if (!url) {
     return (
       <div className={card}>
-        <p className="text-slate-300">Nenhum site informado.</p>
+        <p className="text-slate-300">Digite um domínio para pesquisar (ex: exemplo.com.br).</p>
+        <a href="/" className="mt-4 inline-block text-brand-400 hover:text-brand-300">← Voltar ao início</a>
+      </div>
+    );
+  }
+
+  // Input presente mas NÃO é um domínio válido → não escaneia; mostra erro claro.
+  if (invalid || !domain) {
+    return (
+      <div className={card}>
+        <p className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-amber-200">
+          Informe um domínio válido (ex: exemplo.com.br).
+        </p>
         <a href="/" className="mt-4 inline-block text-brand-400 hover:text-brand-300">← Voltar ao início</a>
       </div>
     );
@@ -95,6 +106,10 @@ export default function ScanFlow({ url: initialUrl = '', user = null }) {
   async function runScan(attempt = 0, refresh = false) {
     try {
       const { ok, status, data } = await fetchResult(url, refresh);
+      if (status === 400 && data?.error === 'invalid_domain') {
+        setInvalid(true); // backend rejeitou o domínio (barreira real) → mostra o card de inválido
+        return;
+      }
       if (status === 429) {
         window.klarimTrack?.('scan_limit_reached', {}, url);
         setLimitMsg(data.detail || 'Limite de pesquisas atingido. Crie uma conta gratuita para pesquisas ilimitadas.');

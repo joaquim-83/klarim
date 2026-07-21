@@ -39,6 +39,13 @@ Na dúvida, trate o alvo como site de terceiro que só autorizou olhar o que é 
   IP**; estourou → 429 com CTA de conta. Conta logada é ilimitada. O resultado é **filtrado
   server-side por nível de acesso** — anonymous/unconfirmed **nunca** recebem evidência/detalhe
   de check no payload (corte no backend, não blur cosmético no front).
+- **Validação de domínio antes do scan (2026-07-21):** `_valid_scan_domain` rejeita input que
+  não é domínio real — o scanner aceitava qualquer string (ex.: `<script>alert(1)</script>`) e
+  gerava score, **refletindo o payload** no corpo da página. Extrai o hostname (tira protocolo/
+  path/query), valida por regex (labels `[a-z0-9-]`, TLD alfabético ≥2, ≤253, ASCII) → **400
+  `{"error":"invalid_domain"}`** em `/scan/result` e `/scan/summary` **antes de escanear**
+  (barreira real; o front também valida por UX e usa `safeScanDomain` para NUNCA exibir input
+  cru — só o hostname limpo). Rejeita tags/aspas/espaços, sem TLD, IPs e domínios de 1 char.
 - **IP real atrás do Cloudflare (KL-82):** `_client_ip` usa **`CF-Connecting-IP`** (o `X-Real-IP`
   do Nginx é `$remote_addr` = IP do **edge** do CF, não do visitante — tornava TODOS os rate
   limits por IP inefetivos). Ordem: CF-Connecting-IP → X-Real-IP → peer.

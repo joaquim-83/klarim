@@ -14,6 +14,7 @@ import { useEffect, useState } from 'react';
 import {
   viewFlags, scoreHeadline, shareLabel, ctaCopy, maskedEmailOf, reportUrls,
 } from '../../lib/scanView.js';
+import { safeScanDomain } from '../../lib/scanTitle.js';
 
 const card = 'rounded-2xl border border-slate-800 bg-slate-900/60 p-6 sm:p-8';
 const btn =
@@ -53,7 +54,10 @@ function fmtScanDate(s) {
 
 export default function ScanResultDetail({ result, url = '', onRefresh = null }) {
   const flags = viewFlags(result);
-  const domain = result.domain || result.profile_domain || '';
+  // Sanitização defensiva (fix 2026-07-21): NUNCA exibe input cru no corpo — só o hostname limpo.
+  // O backend já rejeita input inválido, mas o `domain` usado em todo o card/CTA/breadcrumb passa
+  // por `safeScanDomain` (retorna '' se não for domínio → cai nos fallbacks "este site").
+  const domain = safeScanDomain(result.domain || result.profile_domain || '');
 
   // Coluna do relatório. Ordem (KL-89 fix 1): RISCOS primeiro (linguagem de negócio, converte)
   // → benchmark (contextualiza o score) → detalhes técnicos → indicadores de privacidade.

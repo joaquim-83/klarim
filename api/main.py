@@ -3123,6 +3123,35 @@ def _norm_scan_url(url: str) -> str:
     path = (p.path or "").rstrip("/")
     return f"{scheme}://{host}{path}"
 
+
+# Domínio válido: labels [a-z0-9-] (sem hífen no começo/fim), separados por ponto, TLD alfabético
+# ≥2. Total ≤253. ASCII-only (rejeita input com <>"'/espaços e domínios sem TLD).
+_SCAN_DOMAIN_RE = re.compile(
+    r"^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
+
+
+def _valid_scan_domain(raw: str) -> Optional[str]:
+    """Fix de segurança (2026-07-21) — barreira REAL contra input lixo/XSS refletido: o scanner
+    aceitava qualquer string (ex.: `<script>alert(1)</script>`) e gerava score. Extrai o hostname
+    (tira protocolo/path/query), valida o formato (regex de domínio + TLD) e devolve o domínio
+    limpo, ou None se inválido (sem TLD, com tags/aspas/espaços, sem ponto)."""
+    if not raw:
+        return None
+    try:
+        raw = raw.strip()
+        host = (urlparse(raw if "://" in raw else "https://" + raw).hostname or "").lower()
+    except Exception:  # noqa: BLE001 - input malformado → inválido
+        return None
+    if host.startswith("www."):
+        host = host[4:]
+    if not host or "." not in host or not _SCAN_DOMAIN_RE.match(host):
+        return None
+    return host
+
+
+_INVALID_DOMAIN_RESPONSE = {"error": "invalid_domain",
+                            "detail": "Informe um domínio válido (ex: exemplo.com.br)"}
+
 # Rate limits in-memory (anti brute-force/spam) — o teto real é o crédito no banco.
 _CODE_RL_EMAIL_MAX, _CODE_RL_EMAIL_WIN = 3, 3600      # 3 códigos/e-mail/hora
 _CODE_RL_IP_MAX, _CODE_RL_IP_WIN = 5, 3600            # 5 códigos/IP/hora
@@ -3499,6 +3528,8 @@ async def scan_summary(url: str = Query(..., description="URL alvo."),
     Autorização para o resultado **completo** (29): JWT admin, `charge_id` pago,
     **bônus de score 100** (KL-31, `use_bonus` + crédito no banco) ou scan token
     ``full`` (re-verificação). Sem autorização, devolve o gratuito existente (KL-25)."""
+    if not _valid_scan_domain(url):  # fix 2026-07-21: barreira contra input inválido antes do scan
+        return JSONResponse(status_code=400, content=_INVALID_DOMAIN_RESPONSE)
     url = _norm_scan_url(url)
     scanned_by = None
     scan_token = ""
@@ -3915,6 +3946,10 @@ async def scan_result(url: str = Query(..., description="URL alvo."),
     na hora SEM re-escanear (o link do alerta é enviado DEPOIS do scan → o resultado já existe).
     ``refresh=1`` (botão "Atualizar análise") força um scan novo. Rate limit anônimo (5/h + 20/dia
     por IP) só conta quando um scan REAL é disparado; carregar do cache não consome cota."""
+    # Fix de segurança (2026-07-21): rejeita input inválido ANTES de escanear (não gera score
+    # para `<script>…`/domínio inexistente/sem TLD). Barreira real (o front também valida por UX).
+    if not _valid_scan_domain(url):
+        return JSONResponse(status_code=400, content=_INVALID_DOMAIN_RESPONSE)
     url = _norm_scan_url(url)
     level, ctx = await _access_level(request)
 
