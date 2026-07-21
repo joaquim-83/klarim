@@ -123,7 +123,7 @@ R$49 (4900). **Nenhum dado de cartão/PIX é armazenado.**
 | Var | Uso |
 |---|---|
 | `RESEND_API_KEY` | chave send-only |
-| `RESEND_FROM` | remetente transacional (`seguranca@klarim.net`) |
+| `RESEND_FROM` | remetente transacional (`Klarim <klarim@klarim.net>` — migrado de `seguranca@` em 2026-07-21; a palavra "seguranca" elevava o spam score, confirmação caía no spam) |
 | `ALERT_FROM_EMAIL` / `ALERT_FROM_NAME` | remetente proativo (`alerta@klarim.net` — migrado de `alerta@klarimscan.com` em 2026-07-20; o warmup do klarimscan.com falhou/spam) |
 | `RESEND_WEBHOOK_SECRET` | webhook Resend (Svix, bounce/complaint) |
 | `UNSUBSCRIBE_SECRET` | HMAC do link de descadastro (`openssl rand -hex 32`) |

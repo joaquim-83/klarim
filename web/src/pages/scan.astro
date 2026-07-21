@@ -6,6 +6,7 @@ import Header from '../components/Header.astro';
 import Footer from '../components/Footer.astro';
 import ScanFlow from '../components/scan/ScanFlow.jsx';
 import { PAGE_CONTAINER } from '../lib/layout.js';
+import { scanTitle } from '../lib/scanTitle.js';
 
 const url = Astro.url.searchParams.get('url') || '';
 
@@ -13,19 +14,13 @@ const url = Astro.url.searchParams.get('url') || '';
 // nível de acesso a partir do cookie de sessão (enviado com credentials:'include'). Não é
 // mais preciso resolver o usuário no SSR — reduz a latência do render.
 
-function safeDomain(u) {
-  if (!u) return '';
-  try {
-    return new URL(u.includes('://') ? u : `https://${u}`).hostname.replace(/^www\./, '');
-  } catch {
-    return u;
-  }
-}
-const domain = safeDomain(url);
+// Fix de segurança (2026-07-21): o `?url=` NUNCA é refletido cru no <title> — só o hostname
+// sanitizado (ou "um site" se não parsear). Lógica pura e testada em lib/scanTitle.js.
+const pageTitle = scanTitle(url);
 ---
 
 <Base
-  title={domain ? `Analisando ${domain}` : 'Análise de segurança'}
+  title={pageTitle}
   description="Pesquise a segurança de qualquer site — 48 verificações, score e relatório, gratuito e sem cadastro."
   path="/scan"
 >

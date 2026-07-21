@@ -31,8 +31,9 @@ _env = Environment(
 # Remetente padrão que funciona SEM domínio verificado (bom para testes).
 DEFAULT_FROM = "Klarim <onboarding@resend.dev>"
 SITE_BASE = "https://klarim.net"
-# KL-67 — Reply-To de TODOS os e-mails: o `seguranca@`/`alerta@` são só-envio (Resend,
-# sem inbox); as respostas caem em `scan@klarim.net` (inbox Hostinger, painel Inbox).
+# KL-67 — Reply-To de TODOS os e-mails: o `klarim@` (transacional) / `alerta@` (batch) são
+# só-envio (Resend, sem inbox); as respostas caem em `scan@klarim.net` (inbox Hostinger, painel
+# Inbox). 2026-07-21: o transacional migrou de `seguranca@` → `klarim@` (anti-spam).
 REPLY_TO_DEFAULT = "scan@klarim.net"
 
 SEMAPHORE_COLOR = {"verde": "#00D26A", "amarelo": "#F2C744", "vermelho": "#FF4D4D"}
@@ -831,8 +832,8 @@ class KlarimMailer:
     async def send_ownership_verification(self, to_email: str, domain: str,
                                           code: str) -> Dict[str, Any]:
         """Envia o código de verificação de PROPRIEDADE ao contact_email do site (KL-68).
-        Transacional (via `seguranca@klarim.net`, o remetente normal) — o dono do site
-        pediu para provar a posse. Ignora a blocklist, mas é registrado (KL-62)."""
+        Transacional (via `klarim@klarim.net`, o remetente normal — `RESEND_FROM`) — o dono
+        do site pediu para provar a posse. Ignora a blocklist, mas é registrado (KL-62)."""
         html = _env.get_template("ownership_verification.html").render(code=code, domain=domain)
         return await self._send({
             "from": self.from_address,
@@ -913,8 +914,10 @@ class KlarimMailer:
 
     async def send_welcome_confirmation(self, to_email: str, confirm_url: str) -> Dict[str, Any]:
         """KL-82 Slice 2 — e-mail de boas-vindas com LINK de confirmação (signup sem código).
-        **Transacional** (o usuário criou a conta): remetente normal (`seguranca@klarim.net`),
-        Reply-To scan@ (via _send), TEXTO PURO, ignora blocklist mas é registrado (KL-62)."""
+        **Transacional** (o usuário criou a conta): remetente normal (`klarim@klarim.net`,
+        `RESEND_FROM`), Reply-To scan@ (via _send), TEXTO PURO, ignora blocklist mas é
+        registrado (KL-62). 2026-07-21: remetente migrado de `seguranca@` (a palavra elevava
+        o score de spam → confirmação caindo no spam)."""
         return await self._send({
             "from": self.from_address,
             "to": [to_email],
@@ -944,7 +947,7 @@ class KlarimMailer:
 
     async def send_site_removed(self, to_email: str, domain: str) -> Dict[str, Any]:
         """Avisa o usuário que um site foi removido do monitoramento (KL-69, admin/
-        limpeza). Transacional (`seguranca@klarim.net`), registrado no email_log."""
+        limpeza). Transacional (`klarim@klarim.net`, `RESEND_FROM`), registrado no email_log."""
         html = _env.get_template("site_removed.html").render(domain=domain)
         return await self._send({
             "from": self.from_address, "to": [to_email],
@@ -979,7 +982,7 @@ class KlarimMailer:
     async def send_bulletin_technician(self, to_email: str, domain: str, subject: str,
                                        text: str, target_id: Optional[int] = None) -> Dict[str, Any]:
         """Laudo técnico ao técnico vinculado (KL-44 P3). Plain text, **transacional**
-        (seguranca@klarim.net), ignora blocklist mas registra (`bulletin_technician`)."""
+        (`klarim@klarim.net`, `RESEND_FROM`), ignora blocklist mas registra (`bulletin_technician`)."""
         return await self._send({
             "from": self.from_address, "to": [to_email], "subject": subject, "text": text,
         }, email_type="bulletin_technician", target_id=target_id, domain=domain,

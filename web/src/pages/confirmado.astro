@@ -1,0 +1,53 @@
+---
+export const prerender = false; // SSR: lê ?status= (sem JS no cliente). O TOKEN nunca chega aqui.
+
+// Fix 2026-07-21 — página de feedback da confirmação de e-mail. O /confirmar processa o token
+// server-side e redireciona para cá com um `status` claro (ok | already | invalid); esta página
+// só renderiza o estado — sem token na URL, sem JavaScript. Botão sempre visível para /entrar.
+import Base from '../layouts/Base.astro';
+import Header from '../components/Header.astro';
+import Footer from '../components/Footer.astro';
+
+const status = Astro.url.searchParams.get('status') || 'invalid';
+
+const STATES = {
+  ok: {
+    icon: '✅', tone: 'ok',
+    title: 'E-mail confirmado!',
+    body: 'Sua conta está ativa. Agora você tem acesso completo aos relatórios de segurança e ao monitoramento.',
+    cta: 'Entrar na minha conta →',
+  },
+  already: {
+    icon: '✅', tone: 'ok',
+    title: 'E-mail já confirmado',
+    body: 'Sua conta já está ativa. Pode fazer login normalmente.',
+    cta: 'Entrar na minha conta →',
+  },
+  invalid: {
+    icon: '⚠️', tone: 'warn',
+    title: 'Link inválido ou expirado',
+    body: 'Este link de confirmação não é mais válido (vale 30 dias e é de uso único). Faça login e solicite um novo link de confirmação pelo painel.',
+    cta: 'Ir para login →',
+  },
+};
+const s = STATES[status] || STATES.invalid;
+const toneClass = s.tone === 'ok' ? 'text-green-500' : 'text-amber-500';
+---
+
+<Base title="Confirmação de e-mail" description="Confirmação de e-mail — Klarim." path="/confirmado" noindex={true}>
+  <Header />
+  <main class="mx-auto flex min-h-[60vh] max-w-md flex-col items-center justify-center px-5 pt-28 pb-20 text-center sm:pt-32">
+    <div class="w-full rounded-2xl border border-slate-800 bg-slate-900/60 p-6 sm:p-8">
+      <p class={`text-4xl ${toneClass}`} aria-hidden="true">{s.icon}</p>
+      <h1 class="mt-3 text-xl font-bold text-white">{s.title}</h1>
+      <p class="mt-2 text-sm text-slate-400">{s.body}</p>
+      <a
+        href="/entrar"
+        class="mt-6 inline-flex min-h-[44px] w-full items-center justify-center rounded-xl bg-brand-500 px-6 py-3 text-base font-semibold text-[var(--accent-text)] transition-colors hover:bg-brand-400 active:scale-[0.98] sm:w-auto"
+      >
+        {s.cta}
+      </a>
+    </div>
+  </main>
+  <Footer />
+</Base>

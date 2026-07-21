@@ -125,7 +125,7 @@ server {
         include /etc/nginx/klarim_security_headers.conf;
         add_header Cache-Control "no-store" always;
     }
-    location ~ ^/(termos|privacidade|sobre|contato|scan|cadastrar|entrar|confirmar|recuperar-senha|dashboard|laudo|planos|favicon\.svg|robots\.txt|track\.js|theme\.js)(/|$) {
+    location ~ ^/(termos|privacidade|sobre|contato|scan|cadastrar|entrar|confirmar|confirmado|recuperar-senha|dashboard|laudo|planos|favicon\.svg|robots\.txt|track\.js|theme\.js)(/|$) {
         resolver 127.0.0.11 valid=10s ipv6=off;
         set $klarim_astro astro:4321;
         proxy_pass http://$klarim_astro;

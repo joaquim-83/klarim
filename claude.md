@@ -136,7 +136,11 @@ standalone) + **React** (islands) + **Tailwind v4** (CSS-first, sem config) +
   (bounce/complaint em `get_email_health`); se degradar o transacional, reavaliar. O
   `ALERT_DAILY_LIMIT=30` (warmup) pode ser relaxado num domínio aged. `_proactive_from` lê o
   env a cada envio; a troca do `.env` vale ao **recriar o container** (sem rebuild).
-- **Transacionais:** `seguranca@klarim.net` (`RESEND_FROM`).
+- **Transacionais:** `klarim@klarim.net` (`RESEND_FROM`). **2026-07-21:** MIGRADO de
+  `seguranca@klarim.net` → `klarim@klarim.net` — a palavra "seguranca" é keyword de phishing e,
+  com domínio aged, elevava o spam score (a confirmação de conta caía no spam). `_mailer()` lê
+  `RESEND_FROM` a cada envio → a troca do `.env` vale ao **recriar o container**. Reply-To
+  (`scan@`) e o proativo (`alerta@`) **não mudam**.
 - **Proativo respeita a blocklist; transacional pode ignorá-la mas SEMPRE registra**
   (todo e-mail passa por `KlarimMailer._send` → `email_log`).
 - **E-mails proativos (alerta + "perfil consultado") = TEXTO PURO** (`text`, sem
@@ -198,7 +202,7 @@ Valide com `nginx -t` (há job de CI); config inválida **derruba o site**.
   todo o buffer de CT logs (`is_typosquat`) → grava `typosquat_alerts` (event-driven).
 - **Bulletin** (KL-44 P3) — ciclo 1 h, envia às `BULLETIN_HOUR_UTC` (13h) o boletim por
   frequência do plano (free=mensal · pro=semanal · agency=diário útil); plain text via
-  `alerta@klarim.net` (proativo), + laudo técnico ao técnico vinculado via `seguranca@klarim.net`.
+  `alerta@klarim.net` (proativo), + laudo técnico ao técnico vinculado via `klarim@klarim.net`.
 - **Trial** (KL-44 P6) — ciclo 1 h, **age 1x/dia** às `TRIAL_HOUR_UTC` (6h): avisa 7d/1d
   antes e, no vencimento, faz **downgrade silencioso para Free** (desativa vigílias, dados
   preservados) + e-mail. Flag `TRIAL_EXPIRATION_ENABLED`. (Também há expiração *lazy* na
@@ -487,7 +491,7 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   `/dashboard?confirmed=1`), `POST /account/resend-confirmation` (3/h/conta), banner no dashboard
   p/ conta não confirmada. Se o e-mail já foi verificado no scan (KL-25) nasce confirmada.
   **KL-85:** blocklist de descartáveis (`api/disposable_emails.py`, só no signup) + rate limit
-  **3/h & 5/dia por IP** (via `CF-Connecting-IP`). Welcome = transacional `seguranca@klarim.net`
+  **3/h & 5/dia por IP** (via `CF-Connecting-IP`). Welcome = transacional `klarim@klarim.net`
   (NÃO o `alerta@` de warmup — regra de isolamento). Cleanup diário no `trial` worker
   (`delete_unconfirmed_inactive_accounts`: não-confirmada +30d, sem site e sem re-login; FK CASCADE).
   **Slice 3 ✅** (fecha o KL-82 — Fluxo 2 do alerta): o CTA do e-mail de alerta vira link HMAC

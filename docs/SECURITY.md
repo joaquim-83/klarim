@@ -148,7 +148,7 @@ Na dúvida, trate o alvo como site de terceiro que só autorizou olhar o que é 
   (gmail.com, google.com, `.gov.br`, `.edu.br`…) **não** podem ser monitorados nem
   reivindicados (422 no `POST /account/sites`; sem CTA no perfil público). O **scan
   continua livre** (vitrine da plataforma) — só o monitoramento/reivindicação é bloqueado.
-- Email de verificação é **transacional** (`seguranca@klarim.net`), nunca proativo.
+- Email de verificação é **transacional** (`klarim@klarim.net`), nunca proativo.
 
 ### Laudo compartilhável + técnico vinculado (KL-44 P3)
 
@@ -159,7 +159,7 @@ Na dúvida, trate o alvo como site de terceiro que só autorizou olhar o que é 
 - **E-mail do dono mascarado** para o técnico (`d***o@x.com.br`); `technician/search` só
   devolve `{found, user_id, name}` de quem é `role='technician'`, nunca outros dados.
 - **Boletim do dono** = plain text via `alerta@klarimscan.com` (proativo, respeita blocklist);
-  **laudo/convite ao técnico** = transacional via `seguranca@klarim.net`. Todos com
+  **laudo/convite ao técnico** = transacional via `klarim@klarim.net`. Todos com
   Reply-To `scan@klarim.net` e registrados no `email_log`. Endpoints novos: rate limit
   Redis+fallback (invite 10/h, shared-report 20/h, laudo 30/h).
 
@@ -175,7 +175,7 @@ Na dúvida, trate o alvo como site de terceiro que só autorizou olhar o que é 
   fallback). `_PLAN_RANK` garante que upgrade só sobe e downgrade só desce (servidor-
   autoritativo). **Downgrade preserva dados** (sites/scans/histórico) — só desativa features.
 - **Trial expira → downgrade silencioso p/ Free** (worker `trial`): nunca bloqueia nem
-  apaga dados; e-mails de aviso/expiração são **transacionais** (`seguranca@klarim.net`,
+  apaga dados; e-mails de aviso/expiração são **transacionais** (`klarim@klarim.net`,
   Reply-To `scan@klarim.net`, registrados no `email_log`).
 
 ### Posicionamento legal — indicadores de privacidade (KL-44 P5)
@@ -214,19 +214,29 @@ Na dúvida, trate o alvo como site de terceiro que só autorizou olhar o que é 
 
 - **Enforcement de `is_active` no login:** `POST /account/login` retorna **403** para conta
   desativada (`is_active=false`), mesmo com senha correta — mensagem aponta para
-  `seguranca@klarim.net`.
+  `klarim@klarim.net`.
 - **Ações admin** (`/admin/users/{id}/remove-site|deactivate|reactivate`, `/admin/clean-
   blocked-sites`) exigem **JWT admin** (prefixo `/admin`) + **rate limit** 30/min/IP
   (Redis + fallback). Remover um site **não** apaga a conta (segue ativa); revoga a posse
   (`ownership_verifications.status='revoked'`, auditoria).
 - **Notificações** de site removido / conta desativada / reativada são **transacionais**
-  (`seguranca@klarim.net`), registradas no `email_log` (`site_removed` / `account_deactivated`
+  (`klarim@klarim.net`), registradas no `email_log` (`site_removed` / `account_deactivated`
   / `account_reactivated`).
 
 ## 6. Reputação de e-mail (anti-bounce, KL-24/62)
 
-- **Isolamento de reputação:** proativo de `alerta@klarimscan.com` (domínio separado, em
-  warmup); transacional de `seguranca@klarim.net`. **Nunca misturar.**
+- **Mapa de remetentes (2026-07-21).** Nunca misturar transacional e proativo.
+
+  | Endereço | Uso | Env |
+  |---|---|---|
+  | `klarim@klarim.net` | **Transacional** — confirmação/boas-vindas, convites, vigílias/boletim ao técnico, senha, avisos de conta | `RESEND_FROM` |
+  | `alerta@klarim.net` | **Proativo (cold)** — alertas em batch ao dono, "perfil consultado", boletim ao dono | `ALERT_FROM_EMAIL` |
+  | `scan@klarim.net` | **Reply-To de TODOS** os e-mails + inbox (Hostinger, painel Inbox) | `REPLY_TO_DEFAULT` |
+
+  **`klarim@` (transacional) migrou de `seguranca@` em 2026-07-21:** "seguranca" é keyword de
+  phishing e elevava o spam score (confirmação caía no spam). `_mailer()` lê `RESEND_FROM` a
+  cada envio → trocar o `.env` + **recriar o container**. O proativo (`alerta@klarim.net`, migrado
+  de `alerta@klarimscan.com` em 2026-07-20) e o Reply-To (`scan@`) **não mudaram**.
 - **Validação de MX na captação** (`contact.py`): só aceita e-mail com registro MX
   (tri-estado `ok|no_mx|unknown`, fail-open no timeout).
 - **Blocklist central** (`email_blocklist`, por e-mail). **Webhook Resend** (Svix):
