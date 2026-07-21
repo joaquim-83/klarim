@@ -299,6 +299,28 @@ depender de código no client.
   `get_ip_behavior`/`get_ip_detail`. O tracker.js **continua** para eventos de interação.
   ⚠️ O Nginx faz `rewrite ^/api/(.*)$ /$1` → o middleware vê os paths **sem** o prefixo `/api`.
 
+**Duas fontes (KL-92 P3) — cobertura completa sem duplicar.** O middleware só vê o tráfego que
+chega ao FastAPI (`/api`, `/mcp` ≈ 12% do total); as páginas SSR do Astro (landing, `/scan`,
+`/site/*`, `/setor/*`) passam pelo Nginx **direto** ao container Astro. Como o Nginx vê 100%,
+**`api/nginx_log_parser.py`** lê o access_log dele e insere na MESMA tabela `access_log`:
+
+- O Nginx loga em `frontend/nginx/log_format.conf` (`log_format klarim` + `access_log
+  /var/log/klarim/access.log`, contexto http via conf.d — os **server blocks ficam intactos**,
+  o stdout p/ `docker logs` continua). Volume `klarim-nginx-logs` compartilha o arquivo
+  web(rw)→api(rw). O IP real vem do `CF-Connecting-IP`, o país do `CF-IPCountry`.
+- O parser roda a cada 30s (loop no lifespan), lê **incrementalmente** (offset + inode p/
+  detectar rotação), e ao passar de 50 MB **trunca** o arquivo (seguro: o Nginx abre logs em
+  `O_APPEND`, a próxima escrita vai para o offset 0). Fail-safe.
+- **Disjunção:** o parser **pula assets + `/api` + `/mcp`** (já cobertos pelo middleware) →
+  nenhuma duplicata. Registros do parser levam `source='nginx'`; os do middleware,
+  `source='middleware'` (coluna `access_log.source`). Classifica com `classify_bot_simple`
+  (sem rate/endpoint — só IP próprio → datacenter → crawler → US=`prefetch_likely`); a
+  retroatividade do middleware (quando o MESMO IP faz uma ação humana em `/api`) corrige.
+- O middleware **não** foi desligado (mantém `user_id` + retroatividade para o funil, cujas
+  etapas — `/scan/result`, `/account/signup` — são `/api`). **P0 fix:** `al_hourly_heatmap`
+  usava `hour` (palavra-chave do Postgres) como alias sem aspas → 500 no server-metrics; agora
+  `AS hr` + `GROUP BY 1, 2` (posicional).
+
 ### Reivindicação de site + verificação de propriedade em tiers (KL-68)
 
 Do perfil público `/site/{domain}`, o dono reivindica o site (CTA condicional ao login,

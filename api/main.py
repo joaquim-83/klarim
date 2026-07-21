@@ -224,6 +224,12 @@ async def lifespan(app: FastAPI):
         _spawn(_access_log_anonymize_loop())
     except Exception as exc:  # noqa: BLE001 - access log é best-effort; API sobe mesmo assim
         print(f"[access_log] não iniciado ({exc!r})", flush=True)
+    # KL-92 P3: parser do access_log do Nginx (cobertura das páginas Astro que não tocam a API).
+    try:
+        from api.nginx_log_parser import start_parse_task
+        start_parse_task()
+    except Exception as exc:  # noqa: BLE001 - best-effort; se o volume não existir, é no-op
+        print(f"[nginx_parser] não iniciado ({exc!r})", flush=True)
     yield
 
 

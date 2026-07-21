@@ -678,3 +678,25 @@ def test_ip_behavior_includes_p2_fields(client):
     assert j["post_signup_retention"]["day_1"]["returned"] == 3
     assert j["typical_journey"]["most_common_first_action"] == "/site/hotel.com.br"
     assert j["pre_signup_journey"][0]["user_id"] == 19
+
+
+# =========================================================================== #
+# 8. Prompt 3 — P0: fix do alias SQL reservado (`hour`) no heatmap
+# =========================================================================== #
+
+def test_heatmap_sql_avoids_reserved_alias():
+    # `hour` é palavra-chave do PostgreSQL → como alias sem aspas dá syntax error (500).
+    # O fix usa `AS hr` + GROUP BY POSICIONAL. Garante que não regrida para `int hour`/`BY hour`.
+    import inspect
+    from discovery.store import TargetStore
+    src = inspect.getsource(TargetStore.al_hourly_heatmap)
+    assert "::int hour" not in src and "GROUP BY dow, hour" not in src
+    assert "AS hr" in src and "GROUP BY 1, 2" in src
+
+
+def test_log_access_batch_includes_source():
+    # KL-92 P3: a coluna `source` (middleware|nginx) precisa entrar no INSERT.
+    import inspect
+    from discovery.store import TargetStore
+    src = inspect.getsource(TargetStore.log_access_batch)
+    assert "source" in src and 'or "middleware"' in src

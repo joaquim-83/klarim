@@ -755,6 +755,10 @@ CREATE INDEX IF NOT EXISTS idx_access_domain ON access_log(domain_queried);
 CREATE INDEX IF NOT EXISTS idx_access_user ON access_log(user_id);
 CREATE INDEX IF NOT EXISTS idx_access_bot ON access_log(is_bot, created_at);
 CREATE INDEX IF NOT EXISTS idx_access_country ON access_log(country_code, created_at);
+-- KL-92 P3: origem do registro — 'middleware' (FastAPI, tráfego /api+/mcp, com user_id) ou
+-- 'nginx' (parser do access_log do Nginx, páginas Astro que não tocam a API). Fontes
+-- disjuntas (o parser pula /api e /mcp) → cobertura completa sem duplicar.
+ALTER TABLE access_log ADD COLUMN IF NOT EXISTS source VARCHAR(20) DEFAULT 'middleware';
 """
 
 # --------------------------------------------------------------------------- #
@@ -6023,14 +6027,15 @@ class TargetStore:
                 (r.get("ip_address"), r.get("country_code"), r.get("endpoint"),
                  r.get("http_method"), r.get("http_status"), r.get("domain_queried"),
                  r.get("user_id"), r.get("user_agent"), r.get("referrer"),
-                 r.get("response_time_ms"), bool(r.get("is_bot")), r.get("bot_reason"))
+                 r.get("response_time_ms"), bool(r.get("is_bot")), r.get("bot_reason"),
+                 r.get("source") or "middleware")  # KL-92 P3: origem (middleware|nginx)
                 for r in records
             ]
             execute_values(
                 cur,
                 "INSERT INTO access_log (ip_address, country_code, endpoint, http_method, "
                 "http_status, domain_queried, user_id, user_agent, referrer, response_time_ms, "
-                "is_bot, bot_reason) VALUES %s",
+                "is_bot, bot_reason, source) VALUES %s",
                 rows)
             return len(rows)
 
@@ -6299,11 +6304,14 @@ class TargetStore:
         calor 7×24. `dow` 0=domingo..6=sábado (padrão Postgres). A grade densa é derivação
         pura no módulo."""
         def _fn(cur):
+            # `hour` é palavra-chave do PostgreSQL — como ALIAS sem aspas quebra o parser
+            # (syntax error → 500 no server-metrics). Alias `hr` + GROUP BY POSICIONAL (1,2)
+            # é à prova de reservada (não depende do nome do alias).
             cur.execute(
-                "SELECT EXTRACT(DOW FROM created_at)::int dow, "
-                "  EXTRACT(HOUR FROM created_at)::int hour, COUNT(*) n "
+                "SELECT EXTRACT(DOW FROM created_at)::int AS dow, "
+                "  EXTRACT(HOUR FROM created_at)::int AS hr, COUNT(*) AS n "
                 "FROM access_log WHERE created_at >= %s AND created_at < %s AND is_bot=false "
-                "GROUP BY dow, hour",
+                "GROUP BY 1, 2",
                 (start, end))
             return [{"dow": int(r[0]), "hour": int(r[1]), "count": int(r[2])}
                     for r in cur.fetchall()]

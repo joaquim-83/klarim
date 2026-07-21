@@ -18,6 +18,11 @@ COPY --from=build /app/dist /usr/share/nginx/html
 # Templates de config e o hook que escolhe HTTP x HTTPS em runtime.
 COPY nginx/http.conf /klarim/http.conf
 COPY nginx/https.conf.template /klarim/https.conf.template
+# KL-92 P3: log_format `klarim` + access_log parseável em /var/log/klarim (contexto http, via
+# conf.d — coexiste com o default.conf escrito pelo entrypoint). O dir precisa existir p/ o
+# nginx abrir o log; o volume `klarim-nginx-logs` do compose o compartilha com o container api.
+COPY nginx/log_format.conf /etc/nginx/conf.d/00-klarim-log.conf
+RUN mkdir -p /var/log/klarim
 # Security headers compartilhados (incluídos pelo server block e pelos locations).
 COPY nginx/security_headers.conf /etc/nginx/klarim_security_headers.conf
 # Policy MTA-STS (servida em mta-sts.<domínio>/.well-known/mta-sts.txt).

@@ -64,6 +64,9 @@ services:
     # (os workers leem o mesmo arquivo pelo mount ro).
     volumes:
       - ./:/klarim-control
+      # KL-92 P3: lê o access_log do Nginx (parser api/nginx_log_parser.py). RW para poder
+      # truncar o arquivo ao passar de 50MB (bound; o Nginx abre logs em O_APPEND → seguro).
+      - klarim-nginx-logs:/var/log/klarim
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-klarim}:${POSTGRES_PASSWORD:-change-me}@db:5432/${POSTGRES_DB:-klarim}
       REDIS_URL: redis://redis:6379/0
@@ -114,6 +117,8 @@ services:
       # Certificados Let's Encrypt (host) e webroot do ACME challenge.
       - /etc/letsencrypt:/etc/letsencrypt:ro
       - /var/www/certbot:/var/www/certbot:ro
+      # KL-92 P3: grava o access_log parseável aqui; o container api lê (cobertura completa).
+      - klarim-nginx-logs:/var/log/klarim
     depends_on:
       - api
       - astro
@@ -179,3 +184,4 @@ services:
 volumes:
   pgdata:
   redisdata:
+  klarim-nginx-logs:   # KL-92 P3: access_log do Nginx compartilhado web(rw)→api(rw, parser)

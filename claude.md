@@ -358,7 +358,7 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1401 passed** (backend pytest, KL-92: +88) + **85 node --test** (frontend `test:unit`, KL-92: +11)
+- Testes: **1428 passed** (backend pytest, KL-92: +115) + **85 node --test** (frontend `test:unit`, KL-92: +11)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - Workers: **5/5 ativos** (discovery, alert, scan, vigília, rescan)
 - Planos: 8 contas Pro trial · Vigílias: 35 (30 ok, 5 error)
@@ -698,7 +698,7 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   + linha de aviso), anti CSV-injection, admin-only; front usa `adminDownload` (Bearer+blob). 26 testes
   (19 backend + 7 tracker via `vm`). **Gotcha:** a data de análise do funil já era correta — o card
   supunha bug de período; o real era o volume de e-mail bot.
-- **KL-92** — Tracking server-side por IP (Prompt 1 ✅ + Prompt 2 ✅). A defesa client-side do KL-64 depende
+- **KL-92** — Tracking server-side por IP (Prompt 1 ✅ + Prompt 2 ✅ + Prompt 3 ✅). A defesa client-side do KL-64 depende
   de código que roda no browser do bot — insuficiente. A fonte de verdade das métricas de visitante
   passa a ser o **servidor**. Tabela **`access_log`** (IP INET, país, endpoint, método, status,
   domain_queried, user_id, UA, referrer, response_time, is_bot/bot_reason) + 6 índices, no
@@ -740,6 +740,26 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   `get_server_metrics` MCP omite `hourly_distribution`/`daily_series`/`hourly_heatmap`; `get_ip_behavior`
   omite a lista detalhada de jornadas (economia de tokens). access_log é a **fonte primária**;
   site_events/tracker.js segue como **complemento** das interações frontend (as duas coexistem).
+  **Prompt 3 ✅** (fix bloqueador + cobertura completa): **P0** — `al_hourly_heatmap` usava `hour` (palavra-chave
+  do Postgres) como alias sem aspas → **syntax error → 500 no server-metrics** (5/6 cards quebrados); fix
+  `AS hr` + **GROUP BY POSICIONAL** (`1, 2`). **P1 (gap de cobertura)** — o middleware FastAPI só vê o tráfego
+  da API (~12%); as páginas Astro (landing, `/scan`, `/site/*`, `/setor/*`) passam pelo Nginx **direto** ao
+  container Astro sem tocar no FastAPI → visitantes subcontados (~12 vs ~100 reais). Solução **hybrid** (o
+  Nginx vê 100%): **`api/nginx_log_parser.py`** lê incrementalmente o access_log do Nginx e insere na MESMA
+  tabela `access_log`. O middleware **continua** cobrindo `/api`+`/mcp` (com `user_id` + retroatividade); o
+  parser cobre **só** páginas não-`/api`/`/mcp` → conjuntos **disjuntos, zero duplicata**. Coluna
+  `access_log.source` (`middleware`|`nginx`). Nginx ganhou `log_format klarim` +
+  `access_log /var/log/klarim/access.log` (contexto http via `frontend/nginx/log_format.conf` → conf.d; os
+  **server blocks ficam intactos** → CI `nginx -t` segue verde; o stdout p/ docker logs continua). Volume
+  `klarim-nginx-logs` compartilha o log web(rw)→api(rw). Parser: regex do `log_format`, **pula assets +
+  `/api` + `/mcp`**, extrai domínio (reusa `extract_domain`), classifica com **`classify_bot_simple`**
+  (sem rate/endpoint: IP próprio→datacenter→crawler→**US=`prefetch_likely`**; a retroatividade do middleware
+  corrige), `source='nginx'`. Leitura **incremental** (offset+inode p/ rotação); ao passar de 50MB **trunca**
+  (seguro: Nginx abre logs em `O_APPEND`). Loop 30s no lifespan; fail-safe. **⚠️ Não desliguei o middleware**
+  (o card sugeria) — mantê-lo preserva `user_id`+retroatividade para o funil (`/scan/result`,`/account/signup`
+  são `/api`); o parser pular `/api` já evita duplicata. **+27 testes** (parse_line puro, classify_simple,
+  parser incremental/rotação/truncação, guardas do fix P0). SQL validado contra Postgres 16 real + `nginx -t`
+  local (HTTP+HTTPS) + contrato log_format↔regex validado end-to-end.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

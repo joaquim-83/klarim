@@ -174,3 +174,27 @@ def classify_bot(ip: str, user_agent: Optional[str], country: Optional[str],
         return True, "prefetch_pattern"
 
     return False, None
+
+
+def classify_bot_simple(ip: str, user_agent: Optional[str],
+                        country: Optional[str]) -> Tuple[bool, Optional[str]]:
+    """KL-92 P3 — classificação SEM contexto de request (sem rate counter Redis, sem
+    endpoint). Usada pelo parser do access_log do Nginx, que processa em batch offline e
+    não tem o request-scope. Ordem: IP próprio → datacenter → crawler → tráfego US (pré-fetch
+    provável). A retroatividade (`mark_ip_human_today`, disparada pelo middleware quando o
+    MESMO IP faz uma ação humana em `/api`) corrige um eventual falso-positivo."""
+    ip = (ip or "").strip()
+    if not ip or ip == "unknown" or ip == "-":
+        return False, None
+    if ip in _own_ips():
+        return False, None
+    if is_datacenter_ip(ip):
+        return True, "datacenter_ip"
+    if is_crawler_ua(user_agent):
+        return True, "crawler_ua"
+    # Público-alvo é PME brasileira; tráfego dos EUA em página pública é quase sempre
+    # pre-fetch de e-mail / crawler não declarado. Marca como provável — a retroatividade
+    # reverte se o IP fizer uma ação humana no mesmo dia.
+    if (country or "").upper() == "US":
+        return True, "prefetch_likely"
+    return False, None

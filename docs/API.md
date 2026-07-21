@@ -249,6 +249,13 @@ Gravação fire-and-forget (buffer + flush batch 5s). Retroatividade: ação hum
 no dia. LGPD: IP retido 90d depois anonimizado (trunca último octeto); **IP mascarado em todo
 response** (1 octeto em ip-behavior, 2 em ip-detail), completo só no banco.
 
+**P3 — duas fontes (cobertura completa):** o middleware só vê `/api`+`/mcp` (~12% do tráfego). O
+parser `api/nginx_log_parser.py` lê o access_log do Nginx (páginas Astro: `/`, `/scan`, `/site/*`,
+`/setor/*`) e insere na MESMA tabela — pulando `/api`/`/mcp`/assets (disjunto → sem duplicar).
+Coluna `access_log.source` (`middleware`|`nginx`). Classificação do parser via `classify_bot_simple`
+(sem contexto de request). Sem novos endpoints/params — os 3 endpoints acima passam a refletir 100%
+do tráfego. **Fix P0:** `hourly_heatmap` usava alias SQL reservado (`hour`) → 500; corrigido.
+
 | Método | Path | Descrição |
 |---|---|---|
 | GET | `/admin/analytics/server-metrics` | `?period=today\|7d\|30d\|90d` — visitantes BR/total (IPs únicos, `is_bot=false`), `bots_filtered`, scans, contas, PDFs, `alert_clicks_br`, `profiles_viewed_br`, `unique_domains_queried`, `top_countries`, `top_endpoints`, `hourly_distribution` (24h densa). **P2:** + `server_funnel` (visitante→perfil→scan→conta→PDF + `conversion_rates`), `top_domains` (≤20), `daily_series` (tendência), `hourly_heatmap` (grade 7×24) |
