@@ -193,17 +193,28 @@ async def test_parser_skips_api_and_assets(logfile):
 
 
 @pytest.mark.asyncio
-async def test_parser_detects_rotation(logfile):
+async def test_parser_detects_shrink(logfile):
+    # rotação/truncação externa deixa o arquivo MENOR que o offset → reset determinístico
+    # (independe de o inode ser reusado ou não pelo SO — o que quebrava no CI Linux).
+    store = _FakeStore()
+    _write(logfile, _line(path="/", ip="189.1.1.1"), _line(path="/site/x.com", ip="189.9.9.9"))
+    p = nlp.NginxLogParser(store=store, log_path=logfile)
+    await p.parse_new_lines()
+    assert p.offset > 0
+    _write(logfile, _line(path="/site/new.com", ip="189.2.2.2"), mode="w")  # 1 linha < offset
+    assert os.path.getsize(logfile) < p.offset
+    assert await p.parse_new_lines() == 1           # size < offset → releu do 0
+
+
+@pytest.mark.asyncio
+async def test_parser_detects_inode_rotation(logfile):
+    # exercita o ramo de rotação por INODE de forma determinística (força p.inode inválido).
     store = _FakeStore()
     _write(logfile, _line(path="/", ip="189.1.1.1"))
     p = nlp.NginxLogParser(store=store, log_path=logfile)
     await p.parse_new_lines()
-    assert p.offset > 0
-    # simula rotação: recria o arquivo (novo inode) menor que o offset antigo
-    os.remove(logfile)
-    _write(logfile, _line(path="/site/new.com", ip="189.2.2.2"), mode="w")
-    n = await p.parse_new_lines()
-    assert n == 1                                   # releu do 0 (rotação detectada)
+    p.inode = -1                                    # inode impossível → != st_ino → rotação
+    assert await p.parse_new_lines() == 1           # releu do 0 (inode mudou)
 
 
 @pytest.mark.asyncio
