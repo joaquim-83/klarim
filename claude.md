@@ -395,7 +395,7 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1503 passed** (backend pytest, KL-92 P4: +16) + **96 node --test** (frontend `test:unit`)
+- Testes: **1510 passed** (backend pytest, KL-95: +7) + **96 node --test** (frontend `test:unit`)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - Workers: **5/5 ativos** (discovery, alert, scan, vigília, rescan)
 - Planos: 8 contas Pro trial · Vigílias: 35 (30 ok, 5 error)
@@ -829,6 +829,20 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   `_filter_scan_result` é server-side/autoritativa). Downgrade p/ 15 checks reverteria a correção de
   conversão do KL-89 (mostrar valor antes de pedir conta) — o "bypass" do card não existe. +16 testes
   (com/sem auth, rate limit, domínio inexistente). Política por endpoint em `docs/SECURITY.md`.
+- **KL-95** — Corrige 4 divergências de métricas do dashboard Analytics (contavam requests à API em
+  vez de ações reais) ✅. **Definição das métricas (fonte autoritativa, não o access_log):**
+  **"Contas criadas"** = `COUNT(*) FROM users` no período (não POST /signup, que incluía tentativas/
+  rate-limits); **"Scans"** = `COUNT(*) FROM scans WHERE source IS DISTINCT FROM 'discovery'` (scans
+  MANUAIS — exclui o worker automático e o ruído de MCP/bots do access_log). Aplicado em
+  `al_server_metrics` (KPIs) e `al_daily_series` (tendência — cada métrica da sua tabela: visitantes
+  do access_log, scans de `scans`, contas de `users`). **Reclassificação retroativa** de pre-fetch de
+  e-mail (o classificador do KL-92 P4 só marca IPs novos): `store.reclassify_prefetch_bots(ranges)`
+  (`UPDATE … is_bot=true WHERE is_bot=false AND ip_address <<= ANY(ranges::cidr[])`, idempotente) via
+  `scripts/reclassify_prefetch_bots.py` (one-off) **e no boot da API** (`_reclassify_prefetch_bots_bg`,
+  pega ranges recém-adicionados). **Jornada pré-signup** exclui polling/admin no SQL
+  (`_JOURNEY_EXCLUDE`: `/admin/%`,`/painel/%`,`/mcp/%`,`/account/me`,`/events`,`/health` — some o
+  `/admin/inbox/unread-count`) + **dedup de passos consecutivos** iguais na derivação (10x o mesmo
+  path → 1). +7 testes; SQL (`<<= ANY(::cidr[])`, scans/users) validado contra Postgres 16.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

@@ -315,6 +315,22 @@ depender de código no client.
   `get_ip_behavior`/`get_ip_detail`. O tracker.js **continua** para eventos de interação.
   ⚠️ O Nginx faz `rewrite ^/api/(.*)$ /$1` → o middleware vê os paths **sem** o prefixo `/api`.
 
+**Definição das métricas (KL-95) — cada KPI vem da sua fonte autoritativa, NÃO do access_log.**
+O access_log conta *requests* HTTP (inclui MCP, bots, tentativas com rate-limit); usá-lo para "Contas"
+e "Scans" inflava/deturpava os números. Fontes corretas:
+- **"Contas criadas"** = `COUNT(*) FROM users` no período (`al_server_metrics` / `al_daily_series`).
+  Antes contava POST `/signup` no access_log (incluía tentativas bloqueadas → subcontava contas reais).
+- **"Scans"** = `COUNT(*) FROM scans WHERE source IS DISTINCT FROM 'discovery'` = scans **manuais**
+  (público + admin + `sync`), excluindo o worker de discovery (que gera milhares/dia) e o ruído de
+  MCP/bots do access_log. Casa com o evento `scan_completed` da aba Eventos.
+- **"Visitantes"** segue do access_log (é a métrica certa ali), já com o filtro de bot.
+- **Jornada pré-signup** (`al_pre_signup_journeys`) exclui paths de sistema no SQL (`_JOURNEY_EXCLUDE`:
+  `/admin/%`, `/painel/%`, `/mcp/%`, `/account/me`, `/events`, `/health`) e a derivação
+  (`assemble_pre_signup_journeys` → `_dedup_consecutive`) colapsa passos consecutivos iguais (polling).
+- **Reclassificação retroativa** de pre-fetch de e-mail: o classificador do KL-92 P4 só marca IPs novos;
+  `store.reclassify_prefetch_bots(ranges)` (idempotente, `is_bot=false` + `ip <<= ANY(cidr[])`) reprocessa
+  o histórico — roda no boot da API (`_reclassify_prefetch_bots_bg`) e via `scripts/reclassify_prefetch_bots.py`.
+
 **Duas fontes (KL-92 P3) — cobertura completa sem duplicar.** O middleware só vê o tráfego que
 chega ao FastAPI (`/api`, `/mcp` ≈ 12% do total); as páginas SSR do Astro (landing, `/scan`,
 `/site/*`, `/setor/*`) passam pelo Nginx **direto** ao container Astro. Como o Nginx vê 100%,

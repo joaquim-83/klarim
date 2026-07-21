@@ -6105,6 +6105,23 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    async def reclassify_prefetch_bots(self, ranges: List[str]) -> int:
+        """KL-95 — marca retroativamente `is_bot=true`/`email_prefetch` os registros de IPs em
+        ranges de pre-fetch de e-mail (Gmail/Outlook/EOP) que estavam `is_bot=false` — o
+        classificador só marca IPs NOVOS. **Idempotente** (só toca `is_bot=false`). Retorna o nº
+        reclassificado. Roda no script one-off e no boot da API (pega ranges recém-adicionados)."""
+        if not ranges:
+            return 0
+
+        def _fn(cur):
+            cur.execute(
+                "UPDATE access_log SET is_bot = true, bot_reason = 'email_prefetch' "
+                "WHERE is_bot = false AND ip_address <<= ANY(%s::cidr[])",
+                (list(ranges),))
+            return cur.rowcount
+
+        return await asyncio.to_thread(self._run, _fn)
+
     async def mark_ip_human_today(self, ip: str) -> int:
         """KL-92 retroatividade — ao detectar uma AÇÃO HUMANA de um IP, marca como
         não-bot TODOS os registros daquele IP HOJE que estavam como bot. Corrige o
@@ -6142,11 +6159,9 @@ class TargetStore:
     async def al_server_metrics(self, start: Any, end: Any) -> Dict[str, Any]:
         """KL-92 — agregações brutas do access_log para /admin/analytics/server-metrics.
         Visitantes = COUNT(DISTINCT ip_address). Tudo com `is_bot = false`, exceto
-        `bots_filtered` (volume de requests classificados como bot). A DERIVAÇÃO (shape
+        `bots_filtered` (volume de requests classificados como bot). KL-95: `scans`/`accounts`
+        vêm das tabelas de negócio (`scans`/`users`), não do access_log. A DERIVAÇÃO (shape
         final) é no módulo. SQL validado na VM (como os demais aa_*)."""
-        _SCAN_EP = "('/scan/result','/scan/summary')"
-        _ACC_EP = "('/account/signup','/account/signup-from-alert')"
-
         def _fn(cur):
             p = (start, end)
             human = "is_bot = false AND created_at >= %s AND created_at < %s"
@@ -6163,11 +6178,15 @@ class TargetStore:
             bots_filtered = scalar(
                 "SELECT COUNT(*) FROM access_log WHERE is_bot = true "
                 "AND created_at >= %s AND created_at < %s")
+            # KL-95: "Scans" e "Contas criadas" contam AÇÕES REAIS (tabelas de negócio), não
+            # requests à API no access_log (que incluíam MCP/bots/testes/rate-limits).
+            # Scans MANUAIS = tabela `scans` menos o worker automático (`source='discovery'`).
             scans = scalar(
-                f"SELECT COUNT(*) FROM access_log WHERE {human} AND endpoint IN {_SCAN_EP}")
+                "SELECT COUNT(*) FROM scans WHERE scanned_at >= %s AND scanned_at < %s "
+                "AND source IS DISTINCT FROM 'discovery'")
+            # Contas criadas = tabela `users` (contas REAIS), não tentativas de POST /signup.
             accounts = scalar(
-                f"SELECT COUNT(*) FROM access_log WHERE {human} AND http_method = 'POST' "
-                f"AND endpoint IN {_ACC_EP}")
+                "SELECT COUNT(*) FROM users WHERE created_at >= %s AND created_at < %s")
             pdfs = scalar(
                 f"SELECT COUNT(*) FROM access_log WHERE {human} AND endpoint LIKE '/report/pdf%%'")
             alert_clicks_br = scalar(
@@ -6352,20 +6371,29 @@ class TargetStore:
         return await asyncio.to_thread(self._run, _fn)
 
     async def al_daily_series(self, start: Any, end: Any) -> List[Dict[str, Any]]:
-        """KL-92 P2 — série diária (visitantes BR / scans / contas) para o gráfico de
-        tendência server-side. 1 linha por dia COM dados; a densificação (dias sem dado → 0)
-        é derivação pura no módulo."""
+        """KL-92 P2 / KL-95 — série diária (visitantes BR / scans / contas) para o gráfico de
+        tendência. Cada métrica vem da sua fonte AUTORITATIVA (igual aos KPIs): visitantes do
+        access_log; scans manuais da tabela `scans` (exceto worker); contas da tabela `users`.
+        A densificação (dias sem dado → 0) é derivação pura no módulo."""
         def _fn(cur):
+            p = (start, end)
             cur.execute(
-                f"SELECT created_at::date d, "
-                f"  COUNT(DISTINCT ip_address) FILTER (WHERE is_bot=false AND country_code='BR') visitors_br, "
-                f"  COUNT(*) FILTER (WHERE {self._AL_SCAN_LIKE} AND is_bot=false) scans, "
-                f"  COUNT(*) FILTER (WHERE {self._AL_SIGNUP}) accounts "
-                f"FROM access_log WHERE created_at >= %s AND created_at < %s "
-                f"GROUP BY d ORDER BY d",
-                (start, end))
-            return [{"day": str(r[0]), "visitors_br": int(r[1]), "scans": int(r[2]),
-                     "accounts": int(r[3])} for r in cur.fetchall()]
+                "SELECT created_at::date d, COUNT(DISTINCT ip_address) "
+                "FILTER (WHERE is_bot=false AND country_code='BR') "
+                "FROM access_log WHERE created_at >= %s AND created_at < %s GROUP BY d", p)
+            vis = {str(r[0]): int(r[1] or 0) for r in cur.fetchall()}
+            cur.execute(
+                "SELECT scanned_at::date d, COUNT(*) FROM scans "
+                "WHERE scanned_at >= %s AND scanned_at < %s AND source IS DISTINCT FROM 'discovery' "
+                "GROUP BY d", p)
+            sc = {str(r[0]): int(r[1]) for r in cur.fetchall()}
+            cur.execute(
+                "SELECT created_at::date d, COUNT(*) FROM users "
+                "WHERE created_at >= %s AND created_at < %s GROUP BY d", p)
+            acc = {str(r[0]): int(r[1]) for r in cur.fetchall()}
+            days = sorted(set(vis) | set(sc) | set(acc))
+            return [{"day": d, "visitors_br": vis.get(d, 0), "scans": sc.get(d, 0),
+                     "accounts": acc.get(d, 0)} for d in days]
 
         return await asyncio.to_thread(self._run, _fn)
 
@@ -6388,12 +6416,20 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    # KL-95: a jornada é NAVEGAÇÃO humana — exclui polling do painel (`/admin/inbox/unread-count`
+    # etc.), páginas admin, MCP, health e checks de sessão/tracker (não são passos de usuário).
+    _JOURNEY_EXCLUDE = (
+        "al.endpoint NOT LIKE '/admin/%%' AND al.endpoint NOT LIKE '/painel/%%' "
+        "AND al.endpoint NOT LIKE '/mcp/%%' "
+        "AND al.endpoint NOT IN ('/account/me', '/events', '/health', '/favicon.ico')")
+
     async def al_pre_signup_journeys(self, start: Any, end: Any, limit: int = 2000
                                      ) -> List[Dict[str, Any]]:
         """KL-92 P2 — atividade em torno de cada signup, chaveada por **IP** (não user_id: no
         momento do POST /signup a conta ainda não tem cookie → user_id é NULL; o user_id é
         recolhido das requests PÓS-signup). Para cada IP que criou conta no período, devolve a
-        atividade de -24h a +7d (só humanos). O agrupamento/jornada típica é derivação pura."""
+        atividade de -24h a +7d (só humanos). KL-95: exclui polling/admin/system. O agrupamento e
+        a jornada típica (com dedup de passos repetidos) são derivação pura."""
         def _fn(cur):
             cur.execute(
                 f"WITH signups AS ("
@@ -6406,7 +6442,7 @@ class TargetStore:
                 f"FROM signups s JOIN access_log al ON al.ip_address = s.ip_address "
                 f"WHERE al.created_at BETWEEN s.signup_at - INTERVAL '24 hours' "
                 f"                        AND s.signup_at + INTERVAL '7 days' "
-                f"  AND al.is_bot = false "
+                f"  AND al.is_bot = false AND {self._JOURNEY_EXCLUDE} "
                 f"ORDER BY s.ip_address, al.created_at LIMIT %s",
                 (start, end, limit))
             return [{"ip_address": str(r[0]), "endpoint": r[1], "domain_queried": r[2],

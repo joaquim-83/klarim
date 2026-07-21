@@ -714,9 +714,21 @@ def _is_via_alert(steps: List[dict]) -> bool:
     return False
 
 
+def _dedup_consecutive(steps: List[dict]) -> List[dict]:
+    """KL-95 — colapsa passos consecutivos no MESMO endpoint (polling que passou pelo filtro do
+    SQL vira 1 passo, não 10). Mantém a ordem e o 1º timestamp de cada bloco."""
+    out: List[dict] = []
+    for s in steps:
+        if out and out[-1]["endpoint"] == s["endpoint"]:
+            continue
+        out.append(s)
+    return out
+
+
 def assemble_pre_signup_journeys(rows: List[dict], limit: int = _JOURNEY_MAX) -> Dict[str, Any]:
     """Agrupa a atividade por IP em jornadas pré/pós signup + calcula a jornada típica. Puro.
-    `rows` já vêm ordenados por (ip, created_at) do store."""
+    `rows` já vêm ordenados por (ip, created_at) do store (KL-95: sem polling/admin — filtrado no
+    SQL — e com passos consecutivos idênticos colapsados aqui)."""
     by_ip: Dict[str, list] = {}
     for r in rows:
         by_ip.setdefault(r["ip_address"], []).append(r)
@@ -724,10 +736,12 @@ def assemble_pre_signup_journeys(rows: List[dict], limit: int = _JOURNEY_MAX) ->
     journeys = []
     for ip, steps in by_ip.items():
         uid = next((s.get("user_id") for s in steps if s.get("user_id")), None)
-        before = [{"endpoint": s["endpoint"], "minutes_before": int(round(s["minutes_relative"]))}
-                  for s in steps if s["minutes_relative"] <= 0]
-        after = [{"endpoint": s["endpoint"], "minutes_after": int(round(s["minutes_relative"]))}
-                 for s in steps if s["minutes_relative"] > 0]
+        before = _dedup_consecutive(
+            [{"endpoint": s["endpoint"], "minutes_before": int(round(s["minutes_relative"]))}
+             for s in steps if s["minutes_relative"] <= 0])
+        after = _dedup_consecutive(
+            [{"endpoint": s["endpoint"], "minutes_after": int(round(s["minutes_relative"]))}
+             for s in steps if s["minutes_relative"] > 0])
         returned = any(s["minutes_relative"] > _RETURN_MINUTES for s in steps)
         journeys.append({
             "user_id": uid, "steps_before": before[:10], "steps_after": after[:5],

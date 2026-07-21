@@ -230,6 +230,9 @@ async def lifespan(app: FastAPI):
         start_parse_task()
     except Exception as exc:  # noqa: BLE001 - best-effort; se o volume não existir, é no-op
         print(f"[nginx_parser] não iniciado ({exc!r})", flush=True)
+    # KL-95: reclassificação retroativa de pre-fetchers de e-mail (pega ranges recém-adicionados
+    # ao classificador). Idempotente, fire-and-forget — não bloqueia o boot.
+    _spawn(_reclassify_prefetch_bots_bg())
     yield
 
 
@@ -281,6 +284,18 @@ async def _admin_auth_mw(request: Request, call_next):
 from api.access_log_middleware import access_log_middleware  # noqa: E402
 
 app.middleware("http")(access_log_middleware)
+
+
+async def _reclassify_prefetch_bots_bg() -> None:
+    """KL-95 — no boot, marca retroativamente is_bot os IPs de pre-fetch de e-mail que estavam
+    is_bot=false (pega ranges recém-adicionados ao classificador). Idempotente; best-effort."""
+    try:
+        from api.bot_classifier import _EMAIL_PREFETCH_CIDRS
+        n = await get_target_store().reclassify_prefetch_bots(list(_EMAIL_PREFETCH_CIDRS))
+        if n:
+            print(f"[boot] {n} IPs reclassificados como email_prefetch (KL-95)", flush=True)
+    except Exception as exc:  # noqa: BLE001 - best-effort; nunca derruba o boot
+        print(f"[boot] reclassificação de pre-fetch falhou ({exc!r})", flush=True)
 
 
 async def _access_log_anonymize_loop() -> None:
