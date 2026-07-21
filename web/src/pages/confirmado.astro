@@ -1,52 +1,71 @@
 ---
-export const prerender = false; // SSR: lê ?status= (sem JS no cliente). O TOKEN nunca chega aqui.
+export const prerender = false; // SSR: lê ?token= / ?status= — mas NÃO chama a API no load.
 
-// Fix 2026-07-21 — página de feedback da confirmação de e-mail. O /confirmar processa o token
-// server-side e redireciona para cá com um `status` claro (ok | already | invalid); esta página
-// só renderiza o estado — sem token na URL, sem JavaScript. Botão sempre visível para /entrar.
+// Confirmação de e-mail — página anti pre-fetch (2026-07-21). Servidores de e-mail (Gmail,
+// Outlook, scanners) fazem GET dos links → se a confirmação acontecesse no load (SSR ou fetch),
+// o pre-fetch confirmaria a conta sem o usuário. Por isso:
+//   - com ?token=  → mostra um BOTÃO num <form method="POST"> (só o submit humano confirma;
+//                     pre-fetchers fazem GET, nunca POST). Esta página NÃO chama a API.
+//   - com ?status= → estado de feedback (após o POST redirecionar para cá).
+// O token nunca vai à URL final (o POST redireciona para ?status=), nem é logado.
 import Base from '../layouts/Base.astro';
 import Header from '../components/Header.astro';
 import Footer from '../components/Footer.astro';
 
-const status = Astro.url.searchParams.get('status') || 'invalid';
+const token = Astro.url.searchParams.get('token') || '';
+const status = Astro.url.searchParams.get('status') || '';
 
-const STATES = {
-  ok: {
-    icon: '✅', tone: 'ok',
-    title: 'E-mail confirmado!',
-    body: 'Sua conta está ativa. Agora você tem acesso completo aos relatórios de segurança e ao monitoramento.',
-    cta: 'Entrar na minha conta →',
-  },
-  already: {
-    icon: '✅', tone: 'ok',
-    title: 'E-mail já confirmado',
-    body: 'Sua conta já está ativa. Pode fazer login normalmente.',
-    cta: 'Entrar na minha conta →',
-  },
-  invalid: {
-    icon: '⚠️', tone: 'warn',
-    title: 'Link inválido ou expirado',
-    body: 'Este link de confirmação não é mais válido (vale 30 dias e é de uso único). Faça login e solicite um novo link de confirmação pelo painel.',
-    cta: 'Ir para login →',
-  },
+// Estados de FEEDBACK (após o POST). O botão sempre leva ao /entrar.
+const RESULT = {
+  ok: { icon: '✅', tone: 'ok', title: 'E-mail confirmado!',
+        body: 'Sua conta está ativa. Agora você tem acesso completo aos relatórios de segurança e ao monitoramento.',
+        cta: 'Entrar na minha conta →', href: '/entrar' },
+  already: { icon: '✅', tone: 'ok', title: 'E-mail já confirmado',
+        body: 'Sua conta já está ativa. Pode fazer login normalmente.',
+        cta: 'Entrar na minha conta →', href: '/entrar' },
+  invalid: { icon: '⚠️', tone: 'warn', title: 'Link inválido ou expirado',
+        body: 'Este link de confirmação não é mais válido (vale 30 dias e é de uso único). Faça login e solicite um novo link de confirmação pelo painel.',
+        cta: 'Ir para login →', href: '/entrar' },
 };
-const s = STATES[status] || STATES.invalid;
-const toneClass = s.tone === 'ok' ? 'text-green-500' : 'text-amber-500';
+
+// Modo: 'result' (tem status), 'confirm' (tem token, mostra botão), ou 'invalid' (nada).
+const mode = status ? 'result' : (token ? 'confirm' : 'invalid');
+const r = mode === 'result' ? (RESULT[status] || RESULT.invalid) : null;
+const btnClass = 'mt-6 inline-flex min-h-[44px] w-full items-center justify-center rounded-xl bg-brand-500 px-6 py-3 text-base font-semibold text-[var(--accent-text)] transition-colors hover:bg-brand-400 active:scale-[0.98] sm:w-auto';
 ---
 
 <Base title="Confirmação de e-mail" description="Confirmação de e-mail — Klarim." path="/confirmado" noindex={true}>
   <Header />
   <main class="mx-auto flex min-h-[60vh] max-w-md flex-col items-center justify-center px-5 pt-28 pb-20 text-center sm:pt-32">
     <div class="w-full rounded-2xl border border-slate-800 bg-slate-900/60 p-6 sm:p-8">
-      <p class={`text-4xl ${toneClass}`} aria-hidden="true">{s.icon}</p>
-      <h1 class="mt-3 text-xl font-bold text-white">{s.title}</h1>
-      <p class="mt-2 text-sm text-slate-400">{s.body}</p>
-      <a
-        href="/entrar"
-        class="mt-6 inline-flex min-h-[44px] w-full items-center justify-center rounded-xl bg-brand-500 px-6 py-3 text-base font-semibold text-[var(--accent-text)] transition-colors hover:bg-brand-400 active:scale-[0.98] sm:w-auto"
-      >
-        {s.cta}
-      </a>
+      {mode === 'confirm' && (
+        <>
+          <p class="text-4xl" aria-hidden="true">📧</p>
+          <h1 class="mt-3 text-xl font-bold text-white">Confirme seu e-mail</h1>
+          <p class="mt-2 text-sm text-slate-400">Clique no botão abaixo para ativar sua conta.</p>
+          {/* POST-only: o pre-fetch (GET) não submete o formulário → não confirma. */}
+          <form method="POST" action="/api/account/confirm">
+            <input type="hidden" name="token" value={token} />
+            <button type="submit" class={btnClass}>Confirmar meu e-mail →</button>
+          </form>
+        </>
+      )}
+      {mode === 'result' && (
+        <>
+          <p class={`text-4xl ${r.tone === 'ok' ? 'text-green-500' : 'text-amber-500'}`} aria-hidden="true">{r.icon}</p>
+          <h1 class="mt-3 text-xl font-bold text-white">{r.title}</h1>
+          <p class="mt-2 text-sm text-slate-400">{r.body}</p>
+          <a href={r.href} class={btnClass}>{r.cta}</a>
+        </>
+      )}
+      {mode === 'invalid' && (
+        <>
+          <p class="text-4xl text-amber-500" aria-hidden="true">⚠️</p>
+          <h1 class="mt-3 text-xl font-bold text-white">Link inválido</h1>
+          <p class="mt-2 text-sm text-slate-400">Este link de confirmação está incompleto. Faça login e solicite um novo link pelo painel.</p>
+          <a href="/entrar" class={btnClass}>Ir para login →</a>
+        </>
+      )}
     </div>
   </main>
   <Footer />

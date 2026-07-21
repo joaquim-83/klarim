@@ -49,8 +49,14 @@ Na dúvida, trate o alvo como site de terceiro que só autorizou olhar o que é 
 - **Criação de conta (KL-82 S2 + KL-85):** `POST /account/signup` = **3/h & 5/dia por IP**
   (`CF-Connecting-IP`) + **blocklist de e-mails descartáveis** (`api/disposable_emails.py`, 400;
   só no signup, não afeta o scan anônimo). Conta nasce `email_confirmed=false`; confirma por
-  **link** (`/account/confirm`, token JWT-HMAC 30d, `typ=confirm`, idempotente — nunca logado).
-  Reenvio (`/account/resend-confirmation`) 3/h por conta. Contas não confirmadas +30d sem
+  **link** (token JWT-HMAC 30d, `typ=confirm`, idempotente — nunca logado). **Anti pre-fetch
+  (2026-07-21):** o e-mail linka a **página** `/confirmado?token=` (não a API); a confirmação é
+  **POST-only** (`POST /account/confirm`) — o usuário clica "Confirmar meu e-mail" (form submit).
+  Servidores de e-mail (Gmail/Outlook/scanners) fazem **GET** dos links → o pre-fetch renderiza só
+  o formulário, **nunca confirma** (só um humano que submete o POST confirma). O POST redireciona
+  para `/confirmado?status=ok` (sem o token na URL). O `GET /account/confirm` (JSON) fica só por
+  compat e não é linkado em lugar nenhum. Reenvio (`/account/resend-confirmation`) 3/h por conta.
+  Contas não confirmadas +30d sem
   atividade (sem site monitorado e sem re-login) são **removidas** pelo worker `trial` (1x/dia).
 - **Sessão do alerta / Fluxo 2 (KL-82 S3):** o link do alerta carrega um token **HMAC-SHA256**
   (`email|target_id|domain`, 30d) — infalsificável. `/alert-access` valida e emite um cookie

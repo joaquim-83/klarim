@@ -25,7 +25,7 @@ from email.utils import parseaddr
 from typing import Any, Optional
 from urllib.parse import urlparse, quote
 
-from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse, Response, HTMLResponse, RedirectResponse
 from pydantic import BaseModel
 
@@ -780,20 +780,39 @@ async def account_verify(body: VerifySignupBody, request: Request) -> JSONRespon
     return _account_session_response(user, claim)
 
 
-@app.get("/account/confirm")
-async def account_confirm(token: str = Query(default="")) -> dict:
-    """KL-82 Slice 2 — confirma o e-mail pelo LINK do e-mail de boas-vindas. Chamado pela
-    página SSR `/confirmar`. Idempotente (uso único de fato: confirmar 2x não muda nada).
-    NUNCA loga o token — só o resultado. Retorna `{status: confirmed|already|invalid}`."""
+async def _do_confirm_email(token: str) -> str:
+    """Valida o token de confirmação e confirma o e-mail. Idempotente. NUNCA loga o token.
+    Retorna `confirmed` | `already` | `invalid`. Compartilhado por GET (legado) e POST."""
     payload = _verify_confirm_token(token)
     if not payload:
-        return {"status": "invalid"}
+        return "invalid"
     store = get_target_store()
     user = await store.get_user_by_id(int(payload["uid"]))
     if not user or (user.get("email") or "").lower() != (payload.get("email") or "").lower():
-        return {"status": "invalid"}
+        return "invalid"
     confirmed_now = await store.confirm_user_email(user["id"], source="link")
-    return {"status": "confirmed" if confirmed_now else "already"}
+    return "confirmed" if confirmed_now else "already"
+
+
+@app.get("/account/confirm")
+async def account_confirm(token: str = Query(default="")) -> dict:
+    """KL-82 Slice 2 — validação do e-mail (legado/JSON). Idempotente. NUNCA loga o token.
+    Retorna `{status: confirmed|already|invalid}`. **A confirmação do fluxo por e-mail agora
+    é POST-only** (anti pre-fetch, 2026-07-21) — ver `account_confirm_post`. Este GET fica
+    para compatibilidade; NENHUM e-mail/página o linka mais (pre-fetch não o alcança)."""
+    return {"status": await _do_confirm_email(token)}
+
+
+@app.post("/account/confirm")
+async def account_confirm_post(token: str = Form(default="")) -> Response:
+    """Confirma o e-mail — **só via POST** (o clique/submit do usuário na página /confirmado).
+    Anti pre-fetch (2026-07-21): servidores de e-mail (Gmail/Outlook/scanners) fazem **GET** dos
+    links, nunca POST → o pre-fetch não confirma a conta; só um humano que submete o formulário.
+    Confirma no banco e redireciona (303) para a página de feedback SEM o token na URL. O token
+    (HMAC, uso único) é a própria credencial — sem CSRF token adicional."""
+    status = await _do_confirm_email(token)
+    qs = {"confirmed": "ok", "already": "already"}.get(status, "invalid")
+    return RedirectResponse(url=f"/confirmado?status={qs}", status_code=303)
 
 
 @app.post("/account/resend-confirmation")
@@ -3205,7 +3224,9 @@ async def _send_welcome_confirmation(user_id: int, email: str) -> None:
     """Envia o e-mail de boas-vindas com link de confirmação (fire-and-forget)."""
     try:
         token = _make_confirm_token(user_id, email)
-        confirm_url = f"{_SITE}/confirmar?token={token}"
+        # Anti pre-fetch (2026-07-21): linka para a PÁGINA (botão), não para a API. O
+        # /confirmado?token= renderiza um formulário POST — o GET do pre-fetch não confirma.
+        confirm_url = f"{_SITE}/confirmado?token={token}"
         await _mailer().send_welcome_confirmation(email, confirm_url)
     except Exception as exc:  # noqa: BLE001 - nunca derruba o signup; o usuário pode reenviar
         print(f"[signup] falha ao enviar boas-vindas ({email}): {exc!r}", flush=True)

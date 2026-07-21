@@ -162,6 +162,36 @@ def test_confirm_token_wrong_email_rejected(client, store):
     assert store.by_id[u["id"]]["email_confirmed"] is False
 
 
+# --- Anti pre-fetch (2026-07-21): confirmação por POST (clique humano) ------- #
+
+def test_confirm_post_confirms_and_redirects(client, store):
+    u = client.post("/account/signup", json={"email": "p@x.com.br", "password": "segredo123"}).json()["user"]
+    tok = m._make_confirm_token(u["id"], "p@x.com.br")
+    r = client.post("/account/confirm", data={"token": tok}, follow_redirects=False)
+    assert r.status_code == 303
+    assert r.headers["location"] == "/confirmado?status=ok"
+    assert store.by_id[u["id"]]["email_confirmed"] is True
+    # idempotente: 2º POST → already
+    r2 = client.post("/account/confirm", data={"token": tok}, follow_redirects=False)
+    assert r2.headers["location"] == "/confirmado?status=already"
+
+
+def test_confirm_post_invalid_redirects_invalid(client, store):
+    r = client.post("/account/confirm", data={"token": "nonsense"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/confirmado?status=invalid"
+
+
+def test_confirm_get_does_not_run_on_the_email_flow(client, store):
+    # O e-mail agora linka /confirmado?token= (página), não a API. O GET segue existindo
+    # (compat) mas NÃO é o que o pre-fetch alcança. Aqui só garantimos que POST é o caminho
+    # de confirmação e o GET continua idempotente (sem quebrar compat).
+    u = client.post("/account/signup", json={"email": "g@x.com.br", "password": "segredo123"}).json()["user"]
+    tok = m._make_confirm_token(u["id"], "g@x.com.br")
+    # POST confirma
+    client.post("/account/confirm", data={"token": tok}, follow_redirects=False)
+    assert store.by_id[u["id"]]["email_confirmed"] is True
+
+
 # --------------------------------------------------------------------------- #
 # 4. Reenvio de confirmação
 # --------------------------------------------------------------------------- #

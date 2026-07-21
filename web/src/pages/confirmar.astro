@@ -1,25 +1,9 @@
 ---
-export const prerender = false; // SSR: valida o token no backend e redireciona
+export const prerender = false; // SSR: só redireciona — NÃO chama a API (anti pre-fetch).
 
-// KL-82 Slice 2 — confirmação de e-mail por LINK. Lê ?token=, chama o backend server-side e
-// redireciona para /confirmado?status=... (página de feedback). Fix 2026-07-21: antes o sucesso
-// ia para /dashboard (auth-gated) → o usuário sem sessão caía no /entrar sem feedback. Agora
-// TODOS os casos vão para /confirmado com um status claro. O TOKEN nunca vai à URL final (só o
-// status), e nunca ao cliente (a chamada é server-side).
+// Rota LEGADA (e-mails antigos linkavam /confirmar?token=). 2026-07-21: não confirma mais no
+// load (o pre-fetch do e-mail confirmaria a conta sem o usuário). Apenas repassa o token para a
+// página /confirmado, que mostra o botão (a confirmação só ocorre no POST do clique humano).
 const token = Astro.url.searchParams.get('token') || '';
-const API = process.env.KLARIM_API_URL || 'http://api:8000';
-
-let status = 'invalid';
-if (token) {
-  try {
-    const res = await fetch(`${API}/account/confirm?token=${encodeURIComponent(token)}`, {
-      signal: AbortSignal.timeout(5000),
-    });
-    if (res.ok) status = (await res.json()).status || 'invalid';
-  } catch { status = 'invalid'; } // erro de rede → trata como inválido (usuário reenvia no login)
-}
-
-// confirmed → ok · already → already · qualquer outro (invalid/error) → invalid.
-const qs = status === 'confirmed' ? 'ok' : status === 'already' ? 'already' : 'invalid';
-return Astro.redirect(`/confirmado?status=${qs}`);
+return Astro.redirect(token ? `/confirmado?token=${encodeURIComponent(token)}` : '/confirmado?status=invalid');
 ---
