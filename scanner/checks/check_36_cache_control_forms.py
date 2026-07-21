@@ -12,7 +12,7 @@ import re
 
 import httpx
 
-from .base import CheckResult, Status, Severity, fetch, with_scheme
+from .base import CheckResult, Status, Severity, fetch, with_scheme, content_guard
 
 ORDER = 36
 CHECK_ID = "check_36_cache_control_forms"
@@ -31,6 +31,10 @@ async def check(url: str) -> CheckResult:
     except (httpx.HTTPError, OSError) as exc:
         return CheckResult(name=NAME, status=Status.INCONCLUSO, severity=Severity.MEDIA,
                            evidence=f"Falha ao obter resposta HTTPS: {exc!r}")
+
+    guard = content_guard(resp, NAME, Severity.MEDIA)
+    if guard:
+        return guard
 
     html = resp.text or ""
     has_password = bool(_PASSWORD_RE.search(html))

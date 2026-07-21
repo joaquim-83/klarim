@@ -175,6 +175,22 @@ headers do `server` — **repita os headers de segurança** ao adicionar um `loc
 Valide com `nginx -t` (há job de CI); config inválida **derruba o site**.
 
 ### Scanner
+- **Gate de acessibilidade (KL-94):** ANTES dos 48 checks, `run_scan` confere se o site é
+  acessível (`scanner/runner.py::_accessibility_gate`) — um domínio inexistente/offline NÃO pode
+  receber score (os checks Tipo B dariam PASS falsos). (1) DNS resolve A/AAAA? NXDOMAIN →
+  `domain_not_found`; timeout/erro → `dns_error`. (2) HTTP responde? QUALQUER resposta (200/301/
+  403/503) = acessível → segue (SSL inválido NÃO aborta: `verify=False`, o check_ssl marca FAIL);
+  falha de conexão → `unreachable`. Aborta com `ScanReport.status` != `ok` (score=None, results=[]).
+  A API (`/scan/result`, `/scan/summary`) devolve **200** com `{status, error_detail, score:null,
+  checks:[]}` (domínio válido, só inacessível — o front mostra o card certo). **Persistência:** só
+  cacheia (Redis) scan `ok`; `unreachable` é gravado no Postgres (`scans.status`, score NULL) p/
+  analytics de disponibilidade (KL-57); `domain_not_found`/`dns_error` NÃO são salvos.
+- **Auditoria dos checks Tipo B (KL-94):** todo check que verifica a AUSÊNCIA de algo ruim usa
+  `base.content_guard(resp, NAME, sev)` → **INCONCLUSO** (nunca PASS falso) se o servidor deu **5xx**
+  ou o corpo é **vazio/mínimo** (<100 chars); `except` de conexão já retornava INCONCLUSO. Os checks
+  multi-sonda (20/dirlist/sensitive/sourcemaps) contam respostas: **zero respostas → INCONCLUSO**
+  (um arquivo ausente num site acessível segue PASS legítimo). Checks Tipo A (presença de proteção:
+  SPF/HSTS/CSP/DNSSEC/… — ausência = FAIL) NÃO mudam.
 - **Runner paralelizado** (`asyncio.gather` + `Semaphore(SCAN_MAX_CONCURRENCY=12)`);
   seguro porque o rate limit de `base.fetch` é **por-domínio** (1 req/s preservado).
 - **48 checks passivos** = **15 grátis (ORDER≤15)** + **33 pagos** (OWASP/CWE/LGPD,
@@ -209,7 +225,17 @@ Valide com `nginx -t` (há job de CI); config inválida **derruba o site**.
   leitura de `plans.get_subscription`.)
 - **Scan worker** — consome a fila Redis, `WORKER_MAX_SCANS_PER_HOUR` (**KL-77: 200 na
   VM**), enriquece perfil + IA inline (~US$0,001/site) e **arquiva o response bruto no GCS**
-  (KL-77 Fase 2, ver abaixo).
+  (KL-77 Fase 2, ver abaixo). **KL-94 (complemento):** trata o `ScanReport.status` do gate
+  (`_persist_scan_report`, testável): `ok` → salva + **zera** `gate_fail_count`; `unreachable` →
+  grava `scans.status='unreachable'` (score NULL, analytics) + conta falha; `domain_not_found` →
+  conta falha (não salva); `dns_error` → transitório (no-op). **Retry backoff** por falha de gate
+  (`targets.gate_fail_count`/`gate_next_retry`): 1ª +7d, 2ª +30d, 3ª **descarta** — MAS só se o alvo
+  NUNCA teve score (`last_scan_score IS NULL`); um site que já teve score é **preservado** (nunca
+  descartado, `last_scan_score` intacto — a `update_scan_result` só roda no `ok`). O worker **pula**
+  o alvo enquanto `gate_next_retry` está no futuro (`gate_retry_pending`). O **alert worker exclui**
+  inacessíveis (`gate_fail_count>0` / `last_scan_score IS NULL` no `_ALERT_ELIGIBLE_WHERE`) — a
+  vigília (KL-44 P2) cobre uptime. Estimado: 30-50% dos ~3.000 alvos/dia falham o gate (certs CT sem
+  site) → ~1.500 scans/dia a menos, fila drena mais rápido, scores mais confiáveis.
 - Heartbeat no Redis (TTL 600s) + watchdog `os._exit(1)` + `restart:unless-stopped`.
 - **Backfill de enriquecimento (cron root, 2026-07-20)** — o discovery cria ~2.500 alvos/dia e o
   enrich inline do scan worker não acompanha (backlog ~16,7k sem perfil). `scripts/enrich_all.py`
@@ -362,7 +388,7 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1444 passed** (backend pytest, KL-93: +16) + **85 node --test** (frontend `test:unit`, KL-92: +11)
+- Testes: **1487 passed** (backend pytest, KL-94: +19) + **96 node --test** (frontend `test:unit`, +11 scanTitle)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - Workers: **5/5 ativos** (discovery, alert, scan, vigília, rescan)
 - Planos: 8 contas Pro trial · Vigílias: 35 (30 ok, 5 error)
@@ -486,10 +512,15 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   share `<a>`/JS-ilha); fluxo de código KL-25 fica **dormente** (fallback). Linguagem neutra pública
   ("Este site", não "Seu site").
   **Slice 2 ✅** (+ KL-85 P2/P3): signup **sem código** — e-mail+senha → conta na hora
-  (`email_confirmed=false`) + e-mail de boas-vindas com **link** (`/confirmar?token=`, JWT-HMAC 30d,
-  `typ=confirm`, idempotente). `GET /account/confirm` (SSR `confirmar.astro` → redirect
-  `/dashboard?confirmed=1`), `POST /account/resend-confirmation` (3/h/conta), banner no dashboard
-  p/ conta não confirmada. Se o e-mail já foi verificado no scan (KL-25) nasce confirmada.
+  (`email_confirmed=false`) + e-mail de boas-vindas com **link** (JWT-HMAC 30d, `typ=confirm`,
+  idempotente). **Anti pre-fetch (2026-07-21):** o e-mail linka a **página** `/confirmado?token=`
+  (não a API); a confirmação é **POST-only** (`POST /account/confirm`, o clique "Confirmar meu
+  e-mail" num `<form method=POST>`) → o pre-fetch dos servidores de e-mail (GET) renderiza só o
+  botão, **nunca confirma**; o POST confirma + redireciona p/ `/confirmado?status=ok|already|invalid`
+  (feedback claro, sem token na URL). `/confirmar?token=` (legado) só redireciona p/ `/confirmado?
+  token=` (não chama a API). `GET /account/confirm` (JSON) fica só por compat. `POST /account/resend-
+  confirmation` (3/h/conta), banner no dashboard p/ conta não confirmada. Se o e-mail já foi
+  verificado no scan (KL-25) nasce confirmada.
   **KL-85:** blocklist de descartáveis (`api/disposable_emails.py`, só no signup) + rate limit
   **3/h & 5/dia por IP** (via `CF-Connecting-IP`). Welcome = transacional `klarim@klarim.net`
   (NÃO o `alerta@` de warmup — regra de isolamento). Cleanup diário no `trial` worker

@@ -125,6 +125,57 @@ def _parse_queue_item(raw: str):
     return None, raw, "discovery"
 
 
+async def _persist_scan_report(store, cache, client, report, url: str,
+                               target_id, source: str, full: bool) -> None:
+    """KL-94 (complemento) — dispatch por status do gate de acessibilidade do scan worker.
+    Testável (recebe as deps). ``ok`` = fluxo normal + zera falhas de gate; ``unreachable`` =
+    registra indisponibilidade (analytics) + conta falha; ``domain_not_found`` = conta falha
+    (não salva scan); ``dns_error`` = transitório (no-op). Nunca sobrescreve `last_scan_score`
+    com NULL (a `update_scan_result` só roda no `ok`)."""
+    st = report.status
+    s = report.score
+    if st == "ok":
+        await cache.set(url, report, full=full)  # cache do KL-9 (por tier)
+        if store is not None and target_id is not None:
+            await store.reset_gate_failure(target_id)  # site voltou → zera falhas
+        if store is not None and target_id is not None and s is not None:
+            scan_id = await store.save_scan(
+                target_id, url, s.score, s.semaphore, s.passed, s.failed,
+                s.inconclusive, report.to_dict(), source=source)
+            await store.update_scan_result(target_id, scan_id, s.score)
+            # KL-50/77: perfil + response bruto p/ GCS (sem request extra).
+            raw = await enrich_profile(store, target_id, url, s.score if s else None,
+                                       capture_raw=True)
+            if scan_id is not None and raw is not None:
+                # KL-75: tech stack do MESMO response (após enrich, antes do GCS).
+                await persist_tech_detection(store, target_id, scan_id, raw)
+                from scanner.gcs_archive import archive_scan_response
+                from scanner.checks.base import domain_of
+                await archive_scan_response(
+                    scan_id, target_id, url, domain_of(url), raw, redis=client)
+        print(f"[klarim-worker] {url} -> score {s.score if s else 'n/a'}"
+              f"{' (target ' + str(target_id) + ')' if target_id else ''}", flush=True)
+    elif st == "unreachable":
+        # Registra a indisponibilidade (analytics KL-57, score NULL) + conta a falha de gate
+        # (retry/descartar). NÃO cacheia (deve re-testar); NÃO toca last_scan_score.
+        if store is not None and target_id is not None:
+            await store.save_scan(target_id, url, None, None, 0, 0, 0, report.to_dict(),
+                                  source=source, status="unreachable")
+            r = await store.record_gate_failure(target_id, st)
+            print(f"[klarim-worker] {url} unreachable (gate_fail={r['gate_fail_count']}"
+                  f"{', descartado' if r['discarded'] else ''})", flush=True)
+    elif st == "domain_not_found":
+        # Domínio inexistente: NÃO salva scan/GCS; conta a falha (descarta na 3ª se nunca teve score).
+        if store is not None and target_id is not None:
+            r = await store.record_gate_failure(target_id, st)
+            print(f"[klarim-worker] {url} domain_not_found (gate_fail={r['gate_fail_count']}"
+                  f"{', descartado' if r['discarded'] else ''})", flush=True)
+    elif st == "dns_error":
+        # Transitório: NÃO salva, NÃO conta falha. Re-tentativa no próximo ciclo de discovery/
+        # rescan (não re-enfileira aqui p/ evitar loop apertado num DNS instável).
+        print(f"[klarim-worker] {url} dns_error (transitório; sem contar falha)", flush=True)
+
+
 async def _worker_loop() -> None:
     import redis.asyncio as aioredis
 
@@ -182,6 +233,14 @@ async def _worker_loop() -> None:
         if not item:
             continue
         target_id, url, source = _parse_queue_item(item[1])
+        # KL-94 (complemento): pula alvos em BACKOFF de gate (ainda não é hora de re-tentar).
+        # Best-effort — falha de banco não trava o worker.
+        if store is not None and target_id is not None:
+            try:
+                if await store.gate_retry_pending(target_id):
+                    continue
+            except Exception:  # noqa: BLE001
+                pass
         if last and min_interval:
             wait = min_interval - (loop.time() - last)
             if wait > 0:
@@ -191,30 +250,8 @@ async def _worker_loop() -> None:
             # KL-27: discovery/público = tier gratuito (15); admin/manual = completo (29).
             full = source not in ("discovery", "public")
             report = await run_scan(url, full=full)
-            await cache.set(url, report, full=full)  # cache do KL-9 (por tier)
-            s = report.score
-            if store is not None and target_id is not None and s is not None:
-                scan_id = await store.save_scan(
-                    target_id, url, s.score, s.semaphore, s.passed, s.failed,
-                    s.inconclusive, report.to_dict(), source=source)
-                await store.update_scan_result(target_id, scan_id, s.score)
-                # KL-50: extrai o perfil comercial (best-effort, não afeta o scan).
-                # KL-77 (Fase 2): capture_raw devolve o response bruto (headers/html/dns/ssl)
-                # já buscado no enrich — sem request extra — para arquivarmos no GCS.
-                raw = await enrich_profile(store, target_id, url, s.score if s else None,
-                                           capture_raw=True)
-                if scan_id is not None and raw is not None:
-                    # KL-75: extrai o tech stack do MESMO response (após o enrich, antes do
-                    # GCS) — parse em memória, resiliente, não trava o scan.
-                    await persist_tech_detection(store, target_id, scan_id, raw)
-                    # Fire-and-forget: o upload nunca trava nem derruba o scan (já persistido).
-                    from scanner.gcs_archive import archive_scan_response
-                    from scanner.checks.base import domain_of
-                    await archive_scan_response(
-                        scan_id, target_id, url, domain_of(url), raw, redis=client)
+            await _persist_scan_report(store, cache, client, report, url, target_id, source, full)
             last_scan_at = datetime.now(timezone.utc).isoformat()
-            print(f"[klarim-worker] {url} -> score {s.score if s else 'n/a'}"
-                  f"{' (target ' + str(target_id) + ')' if target_id else ''}", flush=True)
         except Exception as exc:  # noqa: BLE001 - mantém o worker vivo
             print(f"[klarim-worker] erro em {url}: {exc!r}", file=sys.stderr, flush=True)
 

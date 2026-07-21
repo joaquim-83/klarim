@@ -25,6 +25,29 @@ def _resolver(timeout: float):
     return r
 
 
+def resolve_host_status(name: str, timeout: float = 5.0) -> str:
+    """KL-94 — gate de acessibilidade: o domínio tem endereço web (A/AAAA)?
+    Retorna ``found`` (resolve A ou AAAA), ``nxdomain`` (domínio não existe / sem endereço)
+    ou ``error`` (timeout/sem nameserver — transitório). Síncrono e mockável nos testes."""
+    try:
+        import dns.resolver  # noqa: F401
+    except ImportError:
+        return "error"
+    import dns.resolver as _r
+    r = _resolver(timeout)
+    for rtype in ("A", "AAAA"):
+        try:
+            r.resolve(name, rtype)
+            return "found"
+        except _r.NXDOMAIN:
+            return "nxdomain"          # definitivo: o domínio não existe
+        except _r.NoAnswer:
+            continue                   # sem esse tipo → tenta o próximo (A→AAAA)
+        except Exception:              # noqa: BLE001 - timeout / no nameservers → incerto
+            return "error"
+    return "nxdomain"                  # nem A nem AAAA → sem endereço web (nada a escanear)
+
+
 def resolve_txt(name: str, timeout: float = 5.0) -> Optional[List[str]]:
     try:
         import dns.resolver  # noqa: F401

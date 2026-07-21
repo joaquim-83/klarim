@@ -20,8 +20,18 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+# Padding inerte (>100 chars, sem markers de comentário/debug/redirect/senha) para
+# que o ``content_guard`` (KL-94) não trate estes fixtures curtos como "resposta
+# vazia/mínima". Não altera a lógica de detecção testada em cada caso.
+_BODY_PAD = (
+    "<p>Conteudo institucional de exemplo para uma pagina real com texto "
+    "suficiente para representar um site legitimo em producao com varios "
+    "paragrafos sobre a empresa.</p>"
+)
+
+
 def _resp(text="", headers=None):
-    return httpx.Response(200, headers=headers or {}, text=text,
+    return httpx.Response(200, headers=headers or {}, text=text + _BODY_PAD,
                           request=httpx.Request("GET", URL + "/"))
 
 

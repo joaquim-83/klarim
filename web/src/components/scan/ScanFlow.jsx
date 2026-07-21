@@ -68,6 +68,7 @@ export default function ScanFlow({ url: initialUrl = '', user = null }) {
   const [limitMsg, setLimitMsg] = useState('');
   const [completing, setCompleting] = useState(false); // KL-89 fix 6: beat de 100% antes do resultado
   const [invalid, setInvalid] = useState(false);        // fix 2026-07-21: input não é domínio
+  const [inaccessible, setInaccessible] = useState(null); // KL-94: site inexistente/offline
   const startedRef = useRef(false);
 
   const domain = safeScanDomain(url); // '' se o input não for um domínio válido
@@ -110,6 +111,12 @@ export default function ScanFlow({ url: initialUrl = '', user = null }) {
         setInvalid(true); // backend rejeitou o domínio (barreira real) → mostra o card de inválido
         return;
       }
+      // KL-94: gate de acessibilidade (200 com status != ok) → site inexistente/offline, sem score.
+      if (data?.status && data.status !== 'ok') {
+        window.klarimTrack?.('scan_inaccessible', { status: data.status }, url);
+        setInaccessible({ status: data.status, detail: data.error_detail });
+        return;
+      }
       if (status === 429) {
         window.klarimTrack?.('scan_limit_reached', {}, url);
         setLimitMsg(data.detail || 'Limite de pesquisas atingido. Crie uma conta gratuita para pesquisas ilimitadas.');
@@ -149,6 +156,11 @@ export default function ScanFlow({ url: initialUrl = '', user = null }) {
 
   // KL-89: o resultado usa layout de 2 colunas no desktop → preenche o container expandido da
   // página (não fica preso a max-w-3xl). Os demais passos são um card único, centralizado estreito.
+  // KL-94: site inexistente/offline → NÃO mostra score nem checks; só o card de feedback.
+  if (inaccessible) {
+    return <div className="mx-auto max-w-2xl"><InaccessibleCard {...inaccessible} url={url}
+      onRetry={() => { setInaccessible(null); setStep('progress'); startedRef.current = false; runScan(); }} /></div>;
+  }
   if (step === 'result' && result) {
     return <ScanResultDetail result={result} url={url} onRefresh={refreshScan} />;
   }
@@ -235,6 +247,30 @@ function ErrorCard({ message, onRetry }) {
     <div className={card}>
       <p className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-red-300">{message}</p>
       <button type="button" onClick={onRetry} className={`${btn} mt-4 w-full sm:w-auto`}>Tentar de novo</button>
+    </div>
+  );
+}
+
+// --- KL-94: site inexistente/offline (gate de acessibilidade) --------------- #
+function InaccessibleCard({ status, detail, onRetry }) {
+  // domain_not_found → "não encontrado" (não adianta tentar de novo); os demais → "inacessível".
+  const notFound = status === 'domain_not_found';
+  return (
+    <div className={`${card} text-center`}>
+      <p className="text-3xl" aria-hidden="true">{notFound ? '🔍' : '⚠️'}</p>
+      <p className="mt-2 text-xl font-bold text-white">
+        {notFound ? 'Domínio não encontrado' : 'Site inacessível'}
+      </p>
+      <p className="mx-auto mt-2 max-w-md text-slate-300">
+        {detail || (notFound
+          ? 'Este domínio não foi encontrado no DNS. Verifique se o endereço está correto.'
+          : 'O site não respondeu à nossa análise. Pode estar fora do ar temporariamente.')}
+      </p>
+      {notFound ? (
+        <a href="/" className={`${btn} mt-5 w-full sm:w-auto`}>Tentar outro domínio →</a>
+      ) : (
+        <button type="button" onClick={onRetry} className={`${btn} mt-5 w-full sm:w-auto`}>Tentar novamente →</button>
+      )}
     </div>
   );
 }

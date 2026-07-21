@@ -3608,6 +3608,10 @@ async def scan_summary(url: str = Query(..., description="URL alvo."),
     else:
         ingest = None
     report = await _safe_scan(url, full=full, ingest_source=ingest, scanned_by_email=scanned_by)
+    if getattr(report, "status", "ok") != "ok":  # KL-94: site inexistente/offline → sem score
+        return JSONResponse(status_code=200, content={
+            "status": report.status, "error_detail": report.error_detail,
+            "url": report.url, "score": None, "checks": []})
     data = _summary_payload(report, full=full)
     if full:
         data.update(await _full_extras(url, scanned_by, charge_id, scan_token))
@@ -3993,6 +3997,13 @@ async def scan_result(url: str = Query(..., description="URL alvo."),
         ingest = "demo" if _is_demo(email=scanned_by, url=url) else "public"
         report = await _safe_scan(url, full=True, ingest_source=ingest,
                                   scanned_by_email=scanned_by, force=refresh)
+
+    # KL-94: gate de acessibilidade — site inexistente/offline não tem score. Devolve o status
+    # (200; o domínio é válido, só não está acessível) e o front mostra o card apropriado.
+    if getattr(report, "status", "ok") != "ok":
+        return JSONResponse(status_code=200, content={
+            "status": report.status, "error_detail": report.error_detail,
+            "url": report.url, "score": None, "checks": []})
 
     sector = None
     try:
@@ -7466,9 +7477,12 @@ async def get_or_scan(url: str, full: bool = True, ingest_source: Optional[str] 
 
     # 3. Scan novo (do tier pedido).
     report = await run_scan(url, full=full)
-    if _cache is not None:
+    # KL-94: só cacheia scan OK (gate/erro não vira cache: dns_error é transitório, unreachable
+    # deve re-testar). Só ingere ok/unreachable (domain_not_found/dns_error não registram nada —
+    # domínio inexistente/erro transitório).
+    if _cache is not None and report.status == "ok":
         await _cache.set(url, report, full)
-    if ingest_source:
+    if ingest_source and report.status in ("ok", "unreachable"):
         _spawn(_ingest_scan_bg(url, report, ingest_source, scanned_by_email))
     return report
 

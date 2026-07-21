@@ -84,6 +84,16 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+# Corpo de página realista (>100 chars) para que o ``content_guard`` (KL-94) não
+# marque o fixture como "resposta vazia/mínima". Só enche a página; não altera a
+# lógica de detecção testada por cada caso.
+_BODY_PAD = (
+    "<p>Conteudo institucional de exemplo para uma pagina real com texto "
+    "suficiente para representar um site legitimo em producao com varios "
+    "paragrafos e informacoes sobre a empresa.</p>"
+)
+
+
 # --------------------------------------------------------------------------- #
 # Check 16 — API docs exposed
 # --------------------------------------------------------------------------- #
@@ -373,21 +383,21 @@ def test_check23_inconclusive_on_dns_error(monkeypatch):
 # --------------------------------------------------------------------------- #
 
 def test_check24_fail_http_resource(monkeypatch):
-    html = '<html><head><script src="http://cdn.insecure.net/x.js"></script></head></html>'
+    html = '<html><head><script src="http://cdn.insecure.net/x.js"></script></head><body>' + _BODY_PAD + '</body></html>'
     monkeypatch.setattr(check_24_mixed_content, "fetch", _fetch_const(FakeResp(200, html)))
     r = _run(check_24_mixed_content.check(URL))
     assert r.status == Status.FAIL and r.severity == Severity.MEDIA
 
 
 def test_check24_pass_all_https(monkeypatch):
-    html = '<html><head><script src="https://cdn.ok.net/x.js"></script></head></html>'
+    html = '<html><head><script src="https://cdn.ok.net/x.js"></script></head><body>' + _BODY_PAD + '</body></html>'
     monkeypatch.setattr(check_24_mixed_content, "fetch", _fetch_const(FakeResp(200, html)))
     r = _run(check_24_mixed_content.check(URL))
     assert r.status == Status.PASS
 
 
 def test_check24_pass_localhost_ignored(monkeypatch):
-    html = '<html><head><img src="http://localhost:3000/dev.png"></head></html>'
+    html = '<html><head><img src="http://localhost:3000/dev.png"></head><body>' + _BODY_PAD + '</body></html>'
     monkeypatch.setattr(check_24_mixed_content, "fetch", _fetch_const(FakeResp(200, html)))
     r = _run(check_24_mixed_content.check(URL))
     assert r.status == Status.PASS
@@ -398,21 +408,21 @@ def test_check24_pass_localhost_ignored(monkeypatch):
 # --------------------------------------------------------------------------- #
 
 def test_check25_fail_http_action(monkeypatch):
-    html = '<form method="post" action="http://insecure.net/submit"></form>'
+    html = '<form method="post" action="http://insecure.net/submit"></form>' + _BODY_PAD
     monkeypatch.setattr(check_25_form_security, "fetch", _fetch_const(FakeResp(200, html)))
     r = _run(check_25_form_security.check(URL))
     assert r.status == Status.FAIL and r.severity == Severity.ALTA
 
 
 def test_check25_fail_cross_origin(monkeypatch):
-    html = '<form method="post" action="https://other-site.org/submit"></form>'
+    html = '<form method="post" action="https://other-site.org/submit"></form>' + _BODY_PAD
     monkeypatch.setattr(check_25_form_security, "fetch", _fetch_const(FakeResp(200, html)))
     r = _run(check_25_form_security.check(URL))
     assert r.status == Status.FAIL
 
 
 def test_check25_pass_relative_action(monkeypatch):
-    html = '<form method="post" action="/submit"></form>'
+    html = '<form method="post" action="/submit"></form>' + _BODY_PAD
     monkeypatch.setattr(check_25_form_security, "fetch", _fetch_const(FakeResp(200, html)))
     r = _run(check_25_form_security.check(URL))
     assert r.status == Status.PASS
@@ -420,7 +430,7 @@ def test_check25_pass_relative_action(monkeypatch):
 
 def test_check25_pass_no_forms(monkeypatch):
     monkeypatch.setattr(check_25_form_security, "fetch",
-                        _fetch_const(FakeResp(200, "<html></html>")))
+                        _fetch_const(FakeResp(200, "<html><body>" + _BODY_PAD + "</body></html>")))
     r = _run(check_25_form_security.check(URL))
     assert r.status == Status.PASS
 

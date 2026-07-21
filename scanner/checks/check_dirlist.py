@@ -38,6 +38,7 @@ async def check(url: str) -> CheckResult:
     root = base_url(url) + "/"
     listable: list[str] = []
     probed: list[str] = []
+    responded = 0  # quantas sondas obtiveram resposta HTTP (não exceção)
 
     for d in _DIRS:
         target = urljoin(root, d.lstrip("/"))
@@ -46,11 +47,22 @@ async def check(url: str) -> CheckResult:
             resp = await fetch(target, method="GET", follow_redirects=False)
         except (httpx.HTTPError, OSError):
             continue
+        responded += 1
         if resp.status_code != 200:
             continue
         body = resp.text[:8192]
         if any(sig.search(body) for sig in _SIGNATURES):
             listable.append(target)
+
+    # Nenhuma sonda respondeu (site inacessível) → não dá para afirmar PASS.
+    if responded == 0:
+        return CheckResult(
+            name=NAME,
+            status=Status.INCONCLUSO,
+            severity=Severity.ALTA,
+            evidence="Não foi possível acessar o conteúdo para verificação.",
+            details={"probed": probed},
+        )
 
     if listable:
         return CheckResult(

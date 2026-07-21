@@ -12,7 +12,7 @@ from urllib.parse import urljoin
 
 import httpx
 
-from .base import CheckResult, Status, Severity, fetch, with_scheme
+from .base import CheckResult, Status, Severity, fetch, with_scheme, content_guard
 
 ORDER = 24
 CHECK_ID = "check_24_mixed_content"
@@ -61,6 +61,10 @@ async def check(url: str) -> CheckResult:
     except (httpx.HTTPError, OSError) as exc:
         return CheckResult(name=NAME, status=Status.INCONCLUSO, severity=Severity.MEDIA,
                            evidence=f"Falha ao obter a página: {exc!r}")
+
+    guard = content_guard(resp, NAME, Severity.MEDIA)
+    if guard:
+        return guard
 
     parser = _ResourceExtractor()
     try:

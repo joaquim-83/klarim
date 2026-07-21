@@ -50,12 +50,14 @@ async def check(url: str) -> CheckResult:
     https_url = with_scheme(url, "https")
     exposed: list[str] = []
     probed: list[str] = []
+    responded = 0  # quantas sondas obtiveram resposta HTTP (não exceção)
 
     # 1) asset-manifest.json (CRA).
     manifest_url = urljoin(root + "/", "asset-manifest.json")
     probed.append(manifest_url)
     try:
         resp = await fetch(manifest_url, method="GET", follow_redirects=True)
+        responded += 1
         if resp.status_code == 200 and not looks_like_html(resp):
             if _is_json_manifest(resp.text):
                 exposed.append(manifest_url)
@@ -66,6 +68,7 @@ async def check(url: str) -> CheckResult:
     js_urls: list[str] = []
     try:
         home = await fetch(https_url, method="GET", follow_redirects=True)
+        responded += 1
         if home.status_code == 200:
             for m in _SCRIPT_SRC_RE.findall(home.text):
                 abs_js = urljoin(str(home.url), m.split("?")[0])
@@ -81,9 +84,20 @@ async def check(url: str) -> CheckResult:
             resp = await fetch(map_url, method="GET", follow_redirects=True)
         except (httpx.HTTPError, OSError):
             continue
+        responded += 1
         if resp.status_code == 200 and not looks_like_html(resp):
             if _is_sourcemap(resp.text):
                 exposed.append(map_url)
+
+    # Nenhuma sonda respondeu (site inacessível) → não dá para afirmar PASS.
+    if responded == 0:
+        return CheckResult(
+            name=NAME,
+            status=Status.INCONCLUSO,
+            severity=Severity.CRITICA,
+            evidence="Não foi possível acessar o conteúdo para verificação.",
+            details={"probed": probed},
+        )
 
     if exposed:
         return CheckResult(

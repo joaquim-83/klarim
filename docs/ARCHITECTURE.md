@@ -96,10 +96,21 @@ tráfego) que conduz ao scanner. Camadas:
 
 ## 5. Scanner engine (`scanner/`)
 
+- **Gate de acessibilidade (KL-94, `runner.py::_accessibility_gate`)** — ANTES dos 48 checks,
+  confirma que o site é acessível: um domínio inexistente/offline não pode receber score (os
+  checks Tipo B dariam PASS falsos). (1) DNS A/AAAA? NXDOMAIN → `domain_not_found`; timeout/erro →
+  `dns_error`. (2) HTTP responde (qualquer status, incl. 4xx/5xx)? Não → `unreachable`. Aborta com
+  `ScanReport.status` != `ok` (score None, results []). A API responde **200** com `{status,
+  error_detail, score:null, checks:[]}`. Persistência: só `ok` vai ao cache Redis; `unreachable`
+  é gravado (`scans.status`, score NULL) p/ analytics de disponibilidade; `domain_not_found`/
+  `dns_error` não são salvos.
 - **`runner.py`** roda os 48 checks em **paralelo** (`asyncio.gather` +
   `Semaphore(SCAN_MAX_CONCURRENCY=12)`), preservando ordem; carimba OWASP/CWE/LGPD por
   `check_id`. Seguro porque o rate limit de `base.fetch` é **por-domínio** (`asyncio.Lock`,
   1 req/s) — só domínios distintos se sobrepõem.
+- **Robustez dos checks Tipo B (KL-94)** — checks que verificam a AUSÊNCIA de algo ruim usam
+  `base.content_guard` → **INCONCLUSO** (não PASS falso) em resposta 5xx ou corpo vazio/mínimo; os
+  multi-sonda (info-disclosure/dirlist/sensitive/sourcemaps) só afirmam PASS se ≥1 sonda respondeu.
 - **48 checks** (`checks/check_*.py`, descoberta dinâmica): 15 grátis (ORDER≤15) + 33
   pagos. Categorias: headers, HTTPS/HSTS/TLS/cert (+ TLS profundo 41–44 via
   `tls_analyzer` compartilhando 1 handshake), supply-chain (SRI/fontes), CORS/cookies,
@@ -214,8 +225,13 @@ Auth própria (`MCPAuthMiddleware`, fail-closed, constant-time) — fora do JWT 
    → `register_target` (UPSERT) → enfileira scan.
 2. **Scan worker** escaneia (48 checks) → `scoring` → cacheia → salva em `scans` +
    atualiza `targets` → **enriquece** perfil + IA + CNAE inline → **detecta o tech stack**
-   (KL-75) → **arquiva o response bruto no GCS** (KL-77).
-3. **Alert worker** pega alvos escaneados com falhas (ou score 100) → alerta proativo.
+   (KL-75) → **arquiva o response bruto no GCS** (KL-77). **KL-94:** trata o `status` do gate
+   (`scanner/main.py::_persist_scan_report`): `ok` zera `gate_fail_count`; `unreachable` grava
+   analytics (score NULL) + conta falha; `domain_not_found` conta falha; `dns_error` é no-op.
+   **Retry backoff** (`targets.gate_fail_count`/`gate_next_retry`): 1ª +7d, 2ª +30d, 3ª descarta
+   (só se NUNCA teve score — site já-scoreado é preservado); o worker pula alvos em backoff.
+3. **Alert worker** pega alvos escaneados com falhas (ou score 100) → alerta proativo. **KL-94:**
+   exclui inacessíveis (`gate_fail_count>0` / `last_scan_score IS NULL`) — a vigília cobre uptime.
 4. **Perfil público** `/site/{dominio}` fica indexável (sitemap, og:image, Schema.org).
 5. Visitante escaneia (verificação por e-mail, KL-25) → vira **lead** (PQL, fire-and-
    forget) → **conta** (signup vincula histórico) → **monitoramento** (vigílias por plano).

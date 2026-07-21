@@ -41,6 +41,10 @@ class ScanReport:
     results: List[CheckResult] = field(default_factory=list)
     score: Optional[ScoreBreakdown] = None
     privacy: Optional[dict] = None   # KL-44 P5: indicadores de privacidade (score SEPARADO)
+    # KL-94: gate de acessibilidade. `ok` = escaneou; senão o scan foi ABORTADO antes dos checks
+    # (sem score falso). Valores: ok | domain_not_found | dns_error | unreachable.
+    status: str = "ok"
+    error_detail: str = ""
 
     def to_dict(self) -> dict:
         return {
@@ -51,6 +55,8 @@ class ScanReport:
             "score": self.score.to_dict() if self.score else None,
             "results": [r.to_dict() for r in self.results],
             "privacy": self.privacy,
+            "status": self.status,
+            "error_detail": self.error_detail,
         }
 
     @classmethod
@@ -65,7 +71,35 @@ class ScanReport:
             results=[CheckResult.from_dict(r) for r in d.get("results", [])],
             score=ScoreBreakdown.from_dict(d["score"]) if d.get("score") else None,
             privacy=d.get("privacy"),
+            status=d.get("status", "ok"),
+            error_detail=d.get("error_detail", ""),
         )
+
+
+async def _accessibility_gate(target: str):
+    """KL-94 — o site é acessível? Retorna ``None`` se SIM (segue o scan), ou
+    ``(status, error_detail)`` se NÃO. Duas etapas:
+      1. **DNS** — o domínio resolve A/AAAA? NXDOMAIN → ``domain_not_found``; timeout/erro
+         → ``dns_error`` (transitório).
+      2. **HTTP** — o site responde? QUALQUER resposta (200/301/403/503) = acessível → segue
+         (o `fetch` usa `verify=False`, então SSL inválido não aborta: o check_ssl marca FAIL).
+         Falha de conexão (timeout/refused/DNS) → ``unreachable``.
+    """
+    from .checks.base import domain_of, fetch
+    from .checks import dns_util
+
+    domain = domain_of(target)
+    dns_status = await asyncio.to_thread(dns_util.resolve_host_status, domain)
+    if dns_status == "nxdomain":
+        return ("domain_not_found", "Este domínio não foi encontrado no DNS.")
+    if dns_status == "error":
+        return ("dns_error", "Não foi possível consultar o DNS deste domínio.")
+
+    try:
+        await fetch(target, timeout=10)  # qualquer resposta HTTP = acessível
+    except Exception:  # noqa: BLE001 - timeout/refused/erro de conexão → fora do ar
+        return ("unreachable", "O site não respondeu. Pode estar fora do ar.")
+    return None
 
 
 async def run_scan(url: str, full: bool = True) -> ScanReport:
@@ -84,6 +118,18 @@ async def run_scan(url: str, full: bool = True) -> ScanReport:
     loop = asyncio.get_event_loop()
     started_at = datetime.now(timezone.utc)
     t0 = loop.time()
+
+    # KL-94 — GATE DE ACESSIBILIDADE: antes de rodar os 48 checks, confirma que o site é
+    # acessível. Um domínio inexistente/offline NÃO pode receber score (os checks Tipo B
+    # retornariam PASS falsos). Aborta cedo com um `status` claro.
+    gate = await _accessibility_gate(target)
+    if gate is not None:
+        status, detail = gate
+        finished_at = datetime.now(timezone.utc)
+        return ScanReport(
+            url=target, started_at=started_at.isoformat(),
+            finished_at=finished_at.isoformat(), duration_s=loop.time() - t0,
+            results=[], score=None, status=status, error_detail=detail)
 
     checks = ALL_CHECKS if full else FREE_CHECKS
     sem = asyncio.Semaphore(SCAN_MAX_CONCURRENCY)

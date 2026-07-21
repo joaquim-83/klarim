@@ -14,7 +14,7 @@ import re
 
 import httpx
 
-from .base import CheckResult, Status, Severity, fetch, with_scheme
+from .base import CheckResult, Status, Severity, fetch, with_scheme, content_guard
 
 ORDER = 12
 CHECK_ID = "check_12_metatags"
@@ -58,6 +58,10 @@ async def check(url: str) -> CheckResult:
             severity=Severity.BAIXA,
             evidence=f"Falha ao obter o HTML da página: {exc!r}",
         )
+
+    guard = content_guard(resp, NAME, Severity.BAIXA)
+    if guard:
+        return guard
 
     html = resp.text
     description = _first(_META_DESC_RE, html)

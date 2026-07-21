@@ -37,8 +37,18 @@ MOCK_RETIRE = {
 }
 
 
+# Padding inerte (>100 chars, sem strings de versão de biblioteca) para que o
+# ``content_guard`` (KL-94) não trate estes fixtures curtos como "resposta
+# vazia/mínima". Não introduz nenhuma detecção de versão nem muda a lógica.
+_BODY_PAD = (
+    "<p>Conteudo institucional de exemplo para uma pagina real com texto "
+    "suficiente para representar um site legitimo em producao com varios "
+    "paragrafos sobre a empresa.</p>"
+)
+
+
 def _resp(html: str, headers=None, url="https://x.com.br/") -> httpx.Response:
-    return httpx.Response(200, headers=headers or {}, text=html,
+    return httpx.Response(200, headers=headers or {}, text=html + _BODY_PAD,
                           request=httpx.Request("GET", url))
 
 

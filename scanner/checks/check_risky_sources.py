@@ -25,6 +25,7 @@ from .base import (
     fetch,
     with_scheme,
     extract_script_refs,
+    content_guard,
 )
 
 ORDER = 14
@@ -64,6 +65,10 @@ async def check(url: str) -> CheckResult:
             severity=Severity.ALTA,
             evidence=f"Falha ao obter o HTML da página: {exc!r}",
         )
+
+    guard = content_guard(resp, NAME, Severity.ALTA)
+    if guard:
+        return guard
 
     scripts = extract_script_refs(resp.text, str(resp.url))
 

@@ -51,12 +51,19 @@ async def ingest_scan(store, url: str, report, source: str,
 
     scan_id = None
     s = report.score
+    status = getattr(report, "status", "ok")
     if s is not None:
         scan_id = await store.save_scan(
             target_id, url, s.score, s.semaphore, s.passed, s.failed,
             s.inconclusive, report.to_dict(), source=source,
             scanned_by_email=scanned_by_email)
         await store.update_scan_result(target_id, scan_id, s.score)
+    elif status == "unreachable":
+        # KL-94/KL-57: registra a indisponibilidade (score NULL) para analytics de disponibilidade.
+        # Não atualiza `update_scan_result` (não sobrescreve o último score válido com NULL).
+        scan_id = await store.save_scan(
+            target_id, url, None, None, 0, 0, 0, report.to_dict(), source=source,
+            scanned_by_email=scanned_by_email, status="unreachable")
 
     return {
         "target_id": target_id, "scan_id": scan_id,

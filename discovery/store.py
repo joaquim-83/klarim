@@ -42,6 +42,14 @@ ALTER TABLE targets ADD COLUMN IF NOT EXISTS classification_source VARCHAR(20) D
 ALTER TABLE targets ADD COLUMN IF NOT EXISTS alert_quality_score INTEGER;
 CREATE INDEX IF NOT EXISTS idx_targets_alert_quality ON targets(alert_quality_score)
     WHERE alert_quality_score IS NOT NULL;
+-- KL-94 (complemento) — gate de acessibilidade no scan worker. Um domínio inexistente/offline
+-- falha o gate: incrementa gate_fail_count com backoff (1ª +7d, 2ª +30d) e, na 3ª, descarta
+-- (só se NUNCA teve score — um site que já teve score é preservado, nunca descartado). O worker
+-- pula o alvo enquanto gate_next_retry está no futuro. Scan OK zera os dois campos.
+ALTER TABLE targets ADD COLUMN IF NOT EXISTS gate_fail_count INTEGER DEFAULT 0;
+ALTER TABLE targets ADD COLUMN IF NOT EXISTS gate_next_retry TIMESTAMP;
+CREATE INDEX IF NOT EXISTS idx_targets_gate_retry ON targets(gate_next_retry)
+    WHERE gate_next_retry IS NOT NULL;
 -- KL-75 — enriquecimento tecnográfico. Provedor de e-mail (via MX) e domínios relacionados
 -- (via SAN do SSL) direto em `targets` para query rápida (o stack detalhado vai em
 -- `site_tech_stack`). `related_domains` é JSONB array; ambos são dado público.
@@ -92,6 +100,9 @@ CREATE INDEX IF NOT EXISTS idx_scans_target ON scans(target_id);
 CREATE INDEX IF NOT EXISTS idx_scans_date ON scans(scanned_at);
 -- Origem do scan (KL-17): public | discovery | admin | manual | rescan.
 ALTER TABLE scans ADD COLUMN IF NOT EXISTS source VARCHAR(20) DEFAULT 'discovery';
+-- KL-94: gate de acessibilidade. 'ok' = escaneado; 'unreachable' = site fora do ar (score NULL,
+-- registrado para analytics de disponibilidade). domain_not_found/dns_error NÃO são salvos.
+ALTER TABLE scans ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'ok';
 
 CREATE TABLE IF NOT EXISTS alert_log (
     id SERIAL PRIMARY KEY,
@@ -1531,22 +1542,72 @@ class TargetStore:
     # --- scans ------------------------------------------------------------- #
 
     async def save_scan(
-        self, target_id: Optional[int], url: str, score: int, semaphore: str,
+        self, target_id: Optional[int], url: str, score: Optional[int], semaphore: Optional[str],
         pass_count: int, fail_count: int, inconclusive_count: int, checks_json: dict,
         source: str = "discovery", scanned_by_email: Optional[str] = None,
+        status: str = "ok",   # KL-94: 'ok' | 'unreachable' (score NULL nesse caso)
     ) -> int:
         def _fn(cur):
             cur.execute(
                 """
                 INSERT INTO scans (target_id, url, score, semaphore, pass_count,
                                    fail_count, inconclusive_count, checks_json, source,
-                                   scanned_by_email)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
+                                   scanned_by_email, status)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id
                 """,
                 (target_id, url, score, semaphore, pass_count, fail_count,
-                 inconclusive_count, json.dumps(checks_json), source, scanned_by_email),
+                 inconclusive_count, json.dumps(checks_json), source, scanned_by_email, status),
             )
             return cur.fetchone()[0]
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- KL-94 (complemento): falhas de gate de acessibilidade + retry backoff ---- #
+
+    async def record_gate_failure(self, target_id: int, gate_status: str) -> Dict[str, Any]:
+        """Registra uma falha de gate (`unreachable`/`domain_not_found`): incrementa
+        `gate_fail_count` e agenda o retry com backoff (1ª +7d, 2ª +30d). Na 3ª falha
+        **descarta** — MAS só se o alvo NUNCA teve score (`last_scan_score IS NULL`): um site
+        que já teve score real é preservado (nunca descartado; segue re-testando a cada 30d).
+        Retorna ``{gate_fail_count, discarded, had_score}``. `dns_error` (transitório) NÃO
+        chama isto (não conta como falha)."""
+        def _fn(cur):
+            cur.execute("SELECT COALESCE(gate_fail_count, 0), last_scan_score "
+                        "FROM targets WHERE id = %s", (target_id,))
+            row = cur.fetchone()
+            if not row:
+                return {"gate_fail_count": 0, "discarded": False, "had_score": False}
+            n = int(row[0]) + 1
+            had_score = row[1] is not None
+            if n >= 3 and not had_score:
+                cur.execute("UPDATE targets SET gate_fail_count = %s, gate_next_retry = NULL, "
+                            "status = 'descartado' WHERE id = %s", (n, target_id))
+                return {"gate_fail_count": n, "discarded": True, "had_score": False}
+            days = 7 if n == 1 else 30
+            cur.execute("UPDATE targets SET gate_fail_count = %s, "
+                        "gate_next_retry = NOW() + (%s || ' days')::interval WHERE id = %s",
+                        (n, str(days), target_id))
+            return {"gate_fail_count": n, "discarded": False, "had_score": had_score}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def reset_gate_failure(self, target_id: int) -> None:
+        """Scan OK (site voltou) → zera `gate_fail_count`/`gate_next_retry`. No-op se já zerado."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE targets SET gate_fail_count = 0, gate_next_retry = NULL "
+                "WHERE id = %s AND (COALESCE(gate_fail_count,0) > 0 OR gate_next_retry IS NOT NULL)",
+                (target_id,))
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def gate_retry_pending(self, target_id: int) -> bool:
+        """True se o alvo está em **backoff** de gate (gate_next_retry no futuro) → o worker
+        pula o scan (ainda não é hora de re-tentar)."""
+        def _fn(cur):
+            cur.execute("SELECT 1 FROM targets WHERE id = %s AND gate_next_retry > NOW()",
+                        (target_id,))
+            return cur.fetchone() is not None
 
         return await asyncio.to_thread(self._run, _fn)
 
@@ -4950,7 +5011,10 @@ class TargetStore:
     _ALERT_ELIGIBLE_WHERE = (
         "t.status = 'scanned' AND t.contact_email IS NOT NULL "
         "AND (s.fail_count > 0 OR (s.score = 100 AND s.semaphore = 'verde')) "
-        "AND (t.last_alert_at IS NULL OR t.last_alert_at < NOW() - INTERVAL '30 days')")
+        "AND (t.last_alert_at IS NULL OR t.last_alert_at < NOW() - INTERVAL '30 days') "
+        # KL-94: não alerta site inacessível (em falha de gate) nem sem score — a vigília (KL-44 P2)
+        # cobre uptime separadamente. Um site que voltou tem gate_fail_count zerado (reset_gate_failure).
+        "AND COALESCE(t.gate_fail_count, 0) = 0 AND t.last_scan_score IS NOT NULL")
 
     async def get_eligible_targets_for_alert(self, limit: int = 50) -> List[Dict[str, Any]]:
         """Alvos escaneados com e-mail, sem alerta nos últimos 30d: com FALHAS

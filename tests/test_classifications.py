@@ -104,6 +104,9 @@ def test_runner_stamps_classification(monkeypatch):
     async def fake_csp(url):  # não faz rede
         return CheckResult("CSP", Status.FAIL, Severity.ALTA, "sem CSP")
 
+    async def _gate_ok(target):  # KL-94: bypassa o gate de acessibilidade (sem rede no teste)
+        return None
+    monkeypatch.setattr(runner, "_accessibility_gate", _gate_ok)
     monkeypatch.setattr(runner, "ALL_CHECKS", [("check_05_csp", fake_csp)])
     report = asyncio.run(runner.run_scan("https://x.com.br", full=True))
     r = report.results[0]

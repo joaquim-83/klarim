@@ -13,7 +13,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 
 from .base import (CheckResult, Status, Severity, fetch, with_scheme,
-                   domain_of, registrable_domain)
+                   domain_of, registrable_domain, content_guard)
 
 ORDER = 25
 CHECK_ID = "check_25_form_security"
@@ -40,6 +40,10 @@ async def check(url: str) -> CheckResult:
     except (httpx.HTTPError, OSError) as exc:
         return CheckResult(name=NAME, status=Status.INCONCLUSO, severity=Severity.ALTA,
                            evidence=f"Falha ao obter a página: {exc!r}")
+
+    guard = content_guard(resp, NAME, Severity.ALTA)
+    if guard:
+        return guard
 
     parser = _FormExtractor()
     try:

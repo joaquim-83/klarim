@@ -28,6 +28,7 @@ from .base import (
     fetch,
     with_scheme,
     extract_script_refs,
+    content_guard,
 )
 from ..cve_db import get_cve_db, severity_from_cves, max_cvss, NVD_ENABLED
 
@@ -218,6 +219,10 @@ async def check(url: str) -> CheckResult:
             name=NAME, status=Status.INCONCLUSO, severity=Severity.MEDIA,
             evidence=f"Falha ao obter o HTML da página: {exc!r}",
         )
+
+    guard = content_guard(resp, NAME, Severity.MEDIA)
+    if guard:
+        return guard
 
     html = resp.text or ""
     script_urls = [s.src for s in extract_script_refs(html, str(resp.url))]

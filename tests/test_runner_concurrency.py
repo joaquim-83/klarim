@@ -21,10 +21,16 @@ from scanner.checks.base import CheckResult, Status, Severity
 @pytest.fixture(autouse=True)
 def _no_privacy_fetch(monkeypatch):
     """KL-44 P5: os indicadores de privacidade fazem 1 GET próprio. Estes testes medem a
-    concorrência dos CHECKS — sem rede — então neutralizamos o fetch de privacidade."""
+    concorrência dos CHECKS — sem rede — então neutralizamos o fetch de privacidade.
+    KL-94: também neutralizamos o gate de acessibilidade (DNS+HTTP reais) — aqui só medimos
+    a concorrência dos checks mockados, não o gate."""
     async def _noop(url):
         return None
     monkeypatch.setattr(privacy_checks, "scan_privacy", _noop)
+
+    async def _gate_ok(target):
+        return None  # gate passa sem tocar em rede
+    monkeypatch.setattr(runner, "_accessibility_gate", _gate_ok)
 
 
 def _mk(cid: str, delay: float):

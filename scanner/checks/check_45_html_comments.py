@@ -13,7 +13,7 @@ from typing import List, Tuple
 
 import httpx
 
-from .base import CheckResult, Status, Severity, fetch, with_scheme
+from .base import CheckResult, Status, Severity, fetch, with_scheme, content_guard
 
 ORDER = 45
 CHECK_ID = "check_45_html_comments"
@@ -68,6 +68,10 @@ async def check(url: str) -> CheckResult:
     except (httpx.HTTPError, OSError) as exc:
         return CheckResult(name=NAME, status=Status.INCONCLUSO, severity=Severity.MEDIA,
                            evidence=f"Falha ao obter o HTML da página: {exc!r}")
+
+    guard = content_guard(resp, NAME, Severity.MEDIA)
+    if guard:
+        return guard
 
     findings = analyze_comments(resp.text or "")
     if not findings:

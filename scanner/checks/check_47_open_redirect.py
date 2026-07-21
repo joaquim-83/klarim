@@ -12,7 +12,7 @@ from typing import List
 
 import httpx
 
-from .base import CheckResult, Status, Severity, fetch, with_scheme
+from .base import CheckResult, Status, Severity, fetch, with_scheme, content_guard
 
 ORDER = 47
 CHECK_ID = "check_47_open_redirect"
@@ -43,6 +43,10 @@ async def check(url: str) -> CheckResult:
     except (httpx.HTTPError, OSError) as exc:
         return CheckResult(name=NAME, status=Status.INCONCLUSO, severity=Severity.BAIXA,
                            evidence=f"Falha ao obter o HTML da página: {exc!r}")
+
+    guard = content_guard(resp, NAME, Severity.BAIXA)
+    if guard:
+        return guard
 
     html = resp.text or ""
     matches = _REDIRECT_RE.findall(html)

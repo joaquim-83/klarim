@@ -253,6 +253,29 @@ async def fetch(
         _rate_limiter.release(domain)
 
 
+def content_guard(response: "httpx.Response", name: str, severity: str,
+                  min_len: int = 100) -> "Optional[CheckResult]":
+    """KL-94 — guard universal dos checks Tipo B (que verificam a AUSÊNCIA de algo ruim no
+    conteúdo): se a resposta não é confiável para análise, devolve um ``INCONCLUSO`` (nunca um
+    PASS falso); senão devolve ``None`` (segue a análise).
+
+    Dois casos de "não confiável":
+      - **5xx** — o servidor errou; não dá para confiar no corpo.
+      - **corpo vazio/mínimo** (``< min_len`` chars) — não há o que analisar.
+
+    Uso: ``guard = content_guard(resp, NAME, Severity.X); if guard: return guard``.
+    """
+    if response.status_code >= 500:
+        return CheckResult(name=name, status=Status.INCONCLUSO, severity=severity,
+                           evidence=(f"Servidor retornou erro (HTTP {response.status_code}); "
+                                     "não foi possível verificar o conteúdo com confiança."))
+    body = response.text or ""
+    if len(body.strip()) < min_len:
+        return CheckResult(name=name, status=Status.INCONCLUSO, severity=severity,
+                           evidence="Resposta vazia ou mínima; sem conteúdo para analisar.")
+    return None
+
+
 def looks_like_html(response: httpx.Response) -> bool:
     """Heuristic: is this response an HTML page (likely an SPA fallback)?
 

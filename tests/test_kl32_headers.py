@@ -20,6 +20,15 @@ from scanner.checks.classifications import classify
 
 URL = "https://x.com.br"
 
+# Padding inerte (>100 chars, sem <form>/<input>) para que o ``content_guard``
+# (KL-94) do check_36 (Tipo B) não trate estes fixtures curtos como "resposta
+# vazia/mínima". Não altera a detecção de formulário/senha.
+_BODY_PAD = (
+    "<p>Conteudo institucional de exemplo para uma pagina real com texto "
+    "suficiente para representar um site legitimo em producao com varios "
+    "paragrafos sobre a empresa.</p>"
+)
+
 
 def _resp(headers=None, text=""):
     return httpx.Response(200, headers=headers or {}, text=text,
@@ -193,17 +202,17 @@ def test_referrer_absent_fails_baixa(monkeypatch):
 # --- check_36 Cache-Control em formulários --------------------------------- #
 
 def test_cache_form_with_no_store_pass(monkeypatch):
-    _patch(monkeypatch, cache, {"cache-control": "no-store"}, text="<form><input type='password'></form>")
+    _patch(monkeypatch, cache, {"cache-control": "no-store"}, text="<form><input type='password'></form>" + _BODY_PAD)
     assert _run(cache.check(URL)).status == Status.PASS
 
 
 def test_cache_form_without_header_fails(monkeypatch):
-    _patch(monkeypatch, cache, {}, text="<form action='/login'>...</form>")
+    _patch(monkeypatch, cache, {}, text="<form action='/login'>...</form>" + _BODY_PAD)
     assert _run(cache.check(URL)).status == Status.FAIL
 
 
 def test_cache_no_form_pass(monkeypatch):
-    _patch(monkeypatch, cache, {}, text="<html><body>sem formulário</body></html>")
+    _patch(monkeypatch, cache, {}, text="<html><body>sem formulário</body></html>" + _BODY_PAD)
     assert _run(cache.check(URL)).status == Status.PASS
 
 

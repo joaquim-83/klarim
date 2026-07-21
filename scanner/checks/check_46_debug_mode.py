@@ -12,7 +12,7 @@ from typing import List
 
 import httpx
 
-from .base import CheckResult, Status, Severity, fetch, with_scheme, base_url
+from .base import CheckResult, Status, Severity, fetch, with_scheme, base_url, content_guard
 
 ORDER = 46
 CHECK_ID = "check_46_debug_mode"
@@ -53,6 +53,10 @@ async def check(url: str) -> CheckResult:
     except (httpx.HTTPError, OSError) as exc:
         return CheckResult(name=NAME, status=Status.INCONCLUSO, severity=Severity.ALTA,
                            evidence=f"Falha ao obter o HTML da página: {exc!r}")
+
+    guard = content_guard(resp, NAME, Severity.ALTA)
+    if guard:
+        return guard
 
     reasons = scan_debug(resp.text or "")
 
