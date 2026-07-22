@@ -1,7 +1,7 @@
 # KL-99 — Conta sem senha + 3 níveis de confiança + verificação de domínio
 
-**Prioridade:** Highest · **Status:** implementado e validado localmente · **Deploy:** PENDENTE
-de validação do dono (regra do card + CLAUDE.md — não deploiar sem aprovação).
+**Prioridade:** Highest · **Status:** ✅ **DEPLOYADO EM PRODUÇÃO** (2026-07-22, commit `9ea8927`,
+CI **4/4 verde**). TTL do HMAC do alerta reduzido de 30 → **7 dias** antes do deploy (2ª iteração).
 
 ## Problema
 
@@ -179,9 +179,16 @@ Testes: `web/src/lib/scanView.test.js` atualizado (copy nova) — **98 `node --t
 - Docker exec ficou intermitente no host de dev ("failed to change user ID") — validei tudo por
   HTTP; não afeta o código.
 
-## Pendências
+## Deploy em produção (2026-07-22)
 
-- **Deploy** — bloqueado por validação do dono (walkthrough dos 8 fluxos no navegador). Não
-  transicionei o Jira KL-99 para Done.
-- Ao deployar: `docs` já atualizadas (SECURITY/ARCHITECTURE/CLAUDE); NÃO precisa flush `scan:*`
-  (nenhum check/scoring mudou).
+- **Commit** `9ea8927` na `main` → GitHub Actions **4/4 verde** (Build web · Nginx config check ·
+  Test · Deploy to GCP VM). As migrations do KL-99 rodaram no boot da API (`ensure_schema`).
+- **Validação pós-deploy (klarim.net):** `/api/health` 200 `{ok}` · `/` 200 · **`/cadastrar` 200
+  com 1 campo (sem senha)** · `/dashboard` 302 · workers **discovery/alert/scan/rescan alive** +
+  deps (postgres/redis/ct_logs/resend/abacatepay) ok · **score klarim.net = 100 🟢 (0 FAIL)**.
+- **Endpoints novos live (probes sem efeito colateral):** `signup-inline` com e-mail descartável →
+  400; `set-password` / `verify/start` sem auth → 401.
+- **TTL do HMAC = 7 dias** confirmado (token `exp = now + 604800s`).
+- **Redis:** **não** precisou flush — `dashboard-summary` não é cacheado (KL-90) e nenhum
+  check/scoring mudou (`scan:*` intacto).
+- **Jira:** não transicionei o KL-99 para Done automaticamente — a critério do dono.
