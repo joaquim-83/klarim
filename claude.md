@@ -866,8 +866,14 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   (`_JOURNEY_EXCLUDE`: `/admin/%`,`/painel/%`,`/mcp/%`,`/account/me`,`/events`,`/health` — some o
   `/admin/inbox/unread-count`) + **dedup de passos consecutivos** iguais na derivação (10x o mesmo
   path → 1). +7 testes; SQL (`<<= ANY(::cidr[])`, scans/users) validado contra Postgres 16.
-- **KL-90** — Dashboard v2 (**P0 dev local ✅**, **P1 endpoint ✅**, **P2 frontend ✅**, **iteração de UX ✅**;
-  P3 = swap). **Iteração de UX (2026-07-22, 9 itens, tudo em `/dashboard/v2` + Header/Planos/Conta):**
+- **KL-90** — Dashboard v2 (**P0 dev local ✅**, **P1 endpoint ✅**, **P2 frontend ✅**, **iteração de UX ✅**,
+  **P3 swap → produção ✅**). **P3 (2026-07-22, commit `6bbf1d2`, CI 4/4 verde):** o v2 assumiu
+  **`/dashboard`** (`index.astro` monta `DashboardV2`; o antigo `account/Dashboard.jsx` foi removido;
+  `SiteDetail` mantido). **`/dashboard/v2` → 301 `/dashboard`** via `middleware.js` (antes da auth).
+  Header global (avatar+busca) já em todas as páginas públicas. Validado em prod: públicas 200, health ok,
+  redirect 301, dashboard-summary 401 sem auth, **zero erro/CSP no console**, **workers 4/4 alive**,
+  **score klarim.net=100 🟢**. Sem flush Redis (o dashboard-summary não é cacheado). Scripts externos
+  `header.js`/`planos-auth.js` (CSP `script-src 'self'`, sem hash inline). **Iteração de UX (2026-07-22, 9 itens, tudo em `/dashboard/v2` + Header/Planos/Conta):**
   (1) **Header global logado** — avatar + dropdown (nome/e-mail, Meu dashboard, Minha conta, Sair) +
   **busca persistente**; a lógica saiu do `<script>` inline (era 1 dos 5 hashes da CSP) p/ **externo
   `web/public/header.js`** (coberto por `script-src 'self'`, sem hash). (2) `AddSiteModal` (`POST
