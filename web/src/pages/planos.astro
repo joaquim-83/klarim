@@ -54,10 +54,16 @@ const card = 'rounded-2xl border p-6 flex flex-col';
       <p class="mt-3 text-slate-400">Verifique qualquer site à vontade. Monitore os que importam. Trial de 30 dias sem cartão.</p>
     </div>
 
+    <!-- KL-90 item 7: banner do plano atual (preenchido pelo /script quando logado). -->
+    <div id="plan-status" class="mx-auto mt-6 hidden max-w-xl rounded-2xl border border-brand-500/40 bg-brand-500/10 px-5 py-4 text-center">
+      <p class="text-sm text-slate-200">Seu plano: <strong id="plan-status-name" class="text-white"></strong> <span id="plan-status-extra" class="text-slate-400"></span></p>
+    </div>
+
     <div class="mt-10 grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
       {PLANS.map((p) => (
-        <div class={`${card} ${p.highlight ? 'border-brand-500 bg-brand-500/5 ring-1 ring-brand-500/40' : 'border-slate-800 bg-slate-900/60'}`}>
-          {p.badge && <span class="mb-2 inline-flex w-fit rounded-full bg-brand-500 px-2.5 py-0.5 text-xs font-bold text-[var(--accent-text)]">{p.badge}</span>}
+        <div data-plan-card={p.id} class={`${card} ${p.highlight ? 'border-brand-500 bg-brand-500/5 ring-1 ring-brand-500/40' : 'border-slate-800 bg-slate-900/60'}`}>
+          <span data-plan-badge class="mb-2 hidden w-fit rounded-full bg-green-500 px-2.5 py-0.5 text-xs font-bold text-slate-950">✓ Seu plano</span>
+          {p.badge && <span data-popular-badge class="mb-2 inline-flex w-fit rounded-full bg-brand-500 px-2.5 py-0.5 text-xs font-bold text-[var(--accent-text)]">{p.badge}</span>}
           <h2 class="text-xl font-bold text-white">{p.name}</h2>
           <p class="mt-1"><span class="text-3xl font-extrabold text-white">{p.price}</span><span class="text-sm text-slate-400">{p.period}</span></p>
           <ul class="mt-5 flex-1 space-y-2 text-sm">
@@ -96,16 +102,4 @@ const card = 'rounded-2xl border p-6 flex flex-col';
   <Footer />
 </Base>
 
-<script>
-  // Se o usuário já está logado, os botões Pro/Agency vão para o upgrade no painel.
-  (async () => {
-    try {
-      const r = await fetch('/api/account/me', { credentials: 'include' });
-      if (!r.ok) return;
-      document.querySelectorAll('a[data-plan]').forEach((a) => {
-        const plan = a.getAttribute('data-plan');
-        a.setAttribute('href', plan === 'free' ? '/dashboard' : `/dashboard?upgrade=${plan}`);
-      });
-    } catch { /* deslogado → mantém /cadastrar */ }
-  })();
-</script>
+<script src="/planos-auth.js" is:inline></script>

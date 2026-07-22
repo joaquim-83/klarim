@@ -384,6 +384,29 @@ pytest                                                           # offline
 KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan real
 ```
 
+### Desenvolvimento local (KL-90 P0) — testar antes de subir
+Stack Docker **isolada da produção** para desenvolver frontend + API localmente (o
+sistema nunca rodava local — era deploy direto). **Não faz deploy/push/CI; nenhum
+e-mail/pagamento real sai** (`DRY_RUN_EMAIL=true`, Resend/AbacatePay/GCS off). Guia
+completo em **`docs/DEV.md`**.
+```bash
+docker compose -f docker-compose.dev.yml up --build                    # sobe db/redis/api/astro/web
+docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   # dados de teste
+```
+- **Arquivos** (todos gitignored/ignorados p/ prod): `docker-compose.dev.yml` (db :5433,
+  redis :6380, api hot-reload `--reload`, astro `npm run dev` :4321, web Nginx :3000 — **sem
+  workers**), `.env.dev` (`.env.*` já no `.gitignore`), `frontend/nginx/dev.conf` (HTTP puro,
+  sem SSL/CSP/rate limit), `scripts/seed_dev.py`. A produção segue em `docker-compose.yml` +
+  `frontend/nginx/{http.conf,https.conf.template}` — os `*dev*` **nunca** vão para a VM.
+- **Acesso:** browser http://localhost:3000 (Nginx) · Astro http://localhost:4321 · API
+  http://localhost:8000 (`/docs` liga com `KLARIM_DEV_MODE=true`) · Postgres :5433 · Redis :6380.
+- **A API cria o schema no boot** (`ensure_schema` no lifespan) — é o único container que "migra".
+- **Seed** (idempotente): 3 users (`dono@exemplo.com.br`/`dev123456` = 5 sites Pro trial ·
+  `tecnico@agencia.com.br` · `novo@teste.com.br` não-confirmado), 5 sites (score 20–100), 50 scans
+  (histórico + 48 checks no mais recente), 10 vigílias, perfis públicos + fillers p/ benchmark.
+  Riscos derivam dos checks FAIL (KL-20); `loja-exemplo` (score 42) falha SPF/HSTS/CSP com fix
+  por plataforma. `scripts/seed_dev.py` recusa rodar fora de dev (guard `KLARIM_DEV_MODE`/host).
+
 ---
 
 ## 7. Estado atual (atualizado em 2026-07-20)
@@ -843,6 +866,77 @@ KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan r
   (`_JOURNEY_EXCLUDE`: `/admin/%`,`/painel/%`,`/mcp/%`,`/account/me`,`/events`,`/health` — some o
   `/admin/inbox/unread-count`) + **dedup de passos consecutivos** iguais na derivação (10x o mesmo
   path → 1). +7 testes; SQL (`<<= ANY(::cidr[])`, scans/users) validado contra Postgres 16.
+- **KL-90** — Dashboard v2 (**P0 dev local ✅**, **P1 endpoint ✅**, **P2 frontend ✅**, **iteração de UX ✅**;
+  P3 = swap). **Iteração de UX (2026-07-22, 9 itens, tudo em `/dashboard/v2` + Header/Planos/Conta):**
+  (1) **Header global logado** — avatar + dropdown (nome/e-mail, Meu dashboard, Minha conta, Sair) +
+  **busca persistente**; a lógica saiu do `<script>` inline (era 1 dos 5 hashes da CSP) p/ **externo
+  `web/public/header.js`** (coberto por `script-src 'self'`, sem hash). (2) `AddSiteModal` (`POST
+  /account/sites`). (3) **`MonitoredSitesPanel`** fixo/sticky (fim do dropdown) + histórico de
+  pesquisados (`/account/scan-history`). (4) **`ScoreCard` consolidado** — score+status+ações+perfil
+  público+landing+**Vincular Técnico** (`TechnicianModal`→`/account/technician/invite`); StatusPanel
+  removido. (5) **`MonitoringSection`** — status das vigílias (`/account/vigilias`) + o-que-monitoramos
+  (derivado, honesto: `/account/vigilias` é read-only → sem toggle-save, liga ao plano) + boletim.
+  (6) **`Collapsible`** — Riscos/Checklist recolhidos por padrão. (7) **Planos logado** (`planos.astro`
+  + externo `web/public/planos-auth.js`): banner do plano atual + "✓ Seu plano" + upgrade/downgrade/
+  atual. (8) **Conta** `max-w-2xl`→`max-w-4xl` (o resto de `AccountSettings` já existia; lista-de-
+  sites/notificações/export deferidos). (9) **`ExploreSection`** (setor/ranking/estatísticas/melhores).
+  Layout novo do `DashboardV2`: painel de sites à esquerda (`lg:flex`+`lg:w-72`/`lg:flex-1`) + conteúdo
+  à direita. "Meu dashboard" aponta p/ `/dashboard/v2` (volta a `/dashboard` no swap). Validado no
+  navegador (temas, zero erro) + build + test:unit 96. **Ajustes visuais pós-validação:** gráfico de
+  evolução com **eixo Y auto-escalado** ao intervalo (sem espaço vazio) + altura compacta; `ExploreSection`
+  removida do dashboard (fica no repo p/ voltar depois); card do score com só **"Ver landing page"** (o
+  "Ver perfil público" era redundante). **Correção de regressões (v2 = superset da produção):** a produção
+  vive em 2 páginas (`/dashboard` Dashboard.jsx + `/dashboard/site/[id]` SiteDetail.jsx) e o v2 tinha
+  perdido features do site-detail. Restauradas **reusando os componentes de produção**: `PlanSection`
+  (checkout PIX/QR + countdown + downgrade + histórico) e `TechnicianSection` (convite/revogar/**laudo**
+  `/laudo/{code}`+WhatsApp) — este último no modal "Vincular Técnico"; + novos `SealSection` (selo
+  `/seal/widget.js`, gated por plano), `TechnicianClients` (role=technician → "Sites dos meus clientes" +
+  badge), `ConfirmEmailBanner`; **remover site** (✕ no painel → `DELETE /account/sites`), aviso
+  `has_other_owner` no add. **Affordance:** `Collapsible` com chevron que rotaciona + "expandir/recolher" +
+  hover; Riscos abre por padrão com o 1º risco expandido. **Não portadas** (dependem do backend
+  `dashboard-summary` expor mais dados; ficam no site-detail): indicadores de privacidade LGPD, 48 checks
+  com evidência, ownership verification. **P2:** Dashboard v2 em **`/dashboard/v2`** (`web/src/pages/dashboard/v2.astro`), rota
+  SEPARADA que coexiste com `/dashboard` (o antigo, **não modificado**; o swap é o P3). ⚠️ O prompt
+  dizia `/painel/dashboard-v2`, mas o dashboard do USUÁRIO vive em `/dashboard/*` (auth por cookie de
+  usuário via `src/middleware.js`); `/painel/*` é o painel do OPERADOR (admin) — como o endpoint é
+  user-auth, a página tem que ficar sob `/dashboard/`. 10 componentes React em
+  `web/src/components/dashboard-v2/` (+ `shared.js` tokens/helpers, `FixInline.jsx`): `DashboardV2`
+  (orquestrador: 1 fetch, seletor de site, skeleton, erro+retry, banners offline/score-100, toast,
+  scan+re-fetch), `SiteSelector`, `ScoreCard` (anel do semáforo + tendência PT + benchmark),
+  `StatusPanel` (riscos/SSL/online + PDF/Compartilhar/Escanear), `CategoryBar` (6 pills → checks
+  expandem), `RisksList` (accordion KL-20 por severidade → "Como corrigir"), `FixInline` (abas
+  WordPress/Nginx/Apache, auto-seleciona pelo `site_type`), `Checklist`, `ScoreHistory` (**gráfico
+  SVG, não recharts** — CSP estrita do público bloqueia libs que injetam estilo; mesma escolha do
+  KL-86), `PlanCard`, `EmptyDashboard`. Progressive disclosure em 3 camadas + F-pattern; tema
+  claro/escuro via utilitários theme-aware (KL-87) + `text-[var(--accent-text)]` nos botões laranja;
+  `client:load` (padrão do dashboard atual). PDF=`/api/report/executive?url=`; Escanear=`/scan/result?
+  refresh=1`. Validado no navegador (troca de site, accordion, temas, zero erro no console) + `npm run
+  build` + `test:unit` 96. **Gotcha do dev (P2):** o Astro entra em crash-loop no restart por causa do
+  lock `web/.astro/dev.json` (bind mount sobrevive ao restart) → o `command` do serviço `astro` agora
+  faz `rm -f .astro/dev.json` no boot. E o dev server pode ter **scan incompleto do Tailwind** para
+  classes NOVAS de arquivos recém-criados (reiniciar resolve; o build de produção gera tudo). **P0:**
+  stack Docker local (`docker-compose.dev.yml` + `.env.dev` + `frontend/nginx/
+  dev.conf` + `scripts/seed_dev.py`), detalhes na §6 e em `docs/DEV.md`. **P1 — `GET /account/
+  dashboard-summary?site_id={id}`** reescrito para a shape v2 (SUBSTITUI o payload do KL-86; o
+  front antigo `web/src/components/account/Dashboard.jsx` será reescrito no P2). Toda a lógica
+  vive em **`api/dashboard.py`** (funções `build_*` PURAS/testáveis + orquestrador
+  `build_dashboard_summary` com queries em paralelo via `asyncio.gather` → ~50ms). O handler em
+  `api/main.py` virou uma casca fina que delega. Response: `sites[]` (todos, p/ o seletor) +
+  `selected_site_id` (`?site_id=` ou primário = 1º; site de outro usuário → **404**) + `site`
+  (score/semáforo/trend PT subindo·caindo·estavel·primeiro/next_scan/is_online/site_type/
+  ssl_days) + `benchmark` (rank + média setorial, fallback global) + `risks[]` (FAIL em
+  linguagem de negócio KL-20, ordenados por severidade, com **`fix_inline` {wordpress,nginx,
+  apache}**) + `categories[]` (6 grupos fixos: tls/headers/supply/dns/content/osint com passed/
+  total/status + checks aninhados com evidence/risk_message/fix_inline) + `score_history` +
+  `checklist` (derivado dos FAIL alta/crítica + perfil/selo/compartilhar, máx 5) + `plan`
+  (features v2) + `monitoring` (vigílias/boletim/selo/técnico) + `profile`. **`fix_inline` é um
+  mapa CANÔNICO por nº de check em `api/dashboard.py::FIX_INLINE`** (~25 checks; produção, não
+  depende do seed) — `title`/`description`/`risk_message` vêm do `RISK_MESSAGES` (KL-20). Sem
+  site → payload reduzido (`has_site:false` + plano + checklist add_site/confirm_email).
+  `contact_email`/cnpj/whatsapp NUNCA no payload. Helpers KL-86 (`_dashboard_categories`/
+  `_build_checklist`/`_score_trend`/`_vigilia_summary`/`_new_user_checklist`) ficam órfãos (não
+  removidos — cleanup futuro); testes do endpoint migraram p/ `tests/test_kl90_dashboard_summary.py`
+  (20) + `tests/test_kl86_dashboard.py` reduzido aos 7 testes de helper puro.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

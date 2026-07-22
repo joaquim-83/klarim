@@ -63,6 +63,7 @@ from discovery.classifier import classify_sector, classify_by_domain, PRICE_TIER
 from api import health_checks
 from api import auth_users
 from api import plans
+from api import dashboard as dashboard_v2   # KL-90 — agregador do Dashboard v2
 from api import domain_guard
 from api.disposable_emails import is_disposable_email
 
@@ -1297,111 +1298,13 @@ def _build_checklist(user: dict, target: dict, latest: Optional[dict], prev: Opt
 
 
 @app.get("/account/dashboard-summary")
-async def account_dashboard_summary(request: Request) -> dict:
-    """KL-86 — agrega TUDO do dashboard num único request (6 blocos). Foca no site PRIMÁRIO
-    (1º monitorado). `contact_email`/cnpj/whatsapp NUNCA saem. Reusa os helpers já existentes
-    (build_risk_summary/KL-20, _build_categories/KL-82, sector_benchmark/get_sector_position)."""
+async def account_dashboard_summary(request: Request, site_id: Optional[int] = None) -> dict:
+    """KL-90 — payload agregado do **Dashboard v2** (substitui o do KL-86). `?site_id=`
+    seleciona o site (deve ser do usuário → 404 se não; ausente → primário = 1º monitorado).
+    Toda a agregação/derivação vive em `api/dashboard.py` (puro/testável, queries em
+    paralelo). `contact_email`/cnpj/whatsapp NUNCA saem no payload."""
     user = await auth_users.require_user(request)
-    store = get_target_store()
-    subscription = await plans.get_subscription(user["id"])
-    plan_block = {"name": subscription.get("plan_name"), "plan_id": subscription.get("plan_id"),
-                  "status": subscription.get("status"),
-                  "expires_at": _iso(subscription.get("trial_ends_at")),
-                  "trial_days_left": subscription.get("trial_days_left"),
-                  "features": _PLAN_FEATURES.get(subscription.get("plan_id"), _PLAN_FEATURES["free"])}
-
-    sites = await store.list_user_sites(user["id"])
-    if not sites:
-        return {"has_site": False, "sites_count": 0, "plan": plan_block,
-                "checklist": _new_user_checklist(user)}
-
-    primary = sites[0]   # site primário = 1º monitorado
-    tid = primary["target_id"]
-    target = await store.get_target(tid) or {}
-    sector = target.get("sector")
-    scans = await store.list_scans(target_id=tid, limit=30)
-    latest = scans[0] if scans else None
-    prev = scans[1] if len(scans) > 1 else None
-
-    checks: list = []
-    score = target.get("last_scan_score")
-    semaphore = primary.get("last_semaphore")
-    if latest:
-        full = await store.get_scan(latest["id"])
-        cj = (full or {}).get("checks_json") or {}
-        if isinstance(cj, dict):
-            checks = cj.get("checks") or cj.get("results") or []
-            score = (cj.get("score") or {}).get("score", score)
-            semaphore = (cj.get("score") or {}).get("semaphore") or semaphore
-        score = latest.get("score", score)
-
-    profile = await store.get_site_profile(tid)
-    # KL-20 riscos setorizados + benchmark (linguagem de negócio).
-    risk_summary = {"risks": [], "remaining_count": 0}
-    benchmark = None
-    try:
-        from reporter.risk_messages import build_risk_summary
-        risk_summary = build_risk_summary(checks, sector, limit=3)
-        if sector and sector != "outro":
-            benchmark = await store.sector_benchmark(sector, min_count=10)
-    except Exception:  # noqa: BLE001 - riscos/benchmark são complementares
-        pass
-    if not benchmark:
-        try:
-            g = await store.global_avg_score()
-            benchmark = {"sector": "global", "avg_score": g["avg_score"], "count": g["count"]}
-        except Exception:  # noqa: BLE001
-            benchmark = None
-    elif sector:
-        benchmark["sector_label"] = _sector_label(sector)
-
-    ranking = None
-    if sector and sector != "outro" and score is not None:
-        try:
-            pos = await store.get_sector_position(sector, tid)
-            if pos and pos.get("total", 0) > 0:
-                ranking = {"position": pos["position"], "total": pos["total"]}
-        except Exception:  # noqa: BLE001
-            ranking = None
-
-    vigilias = await store.get_user_vigilias(user["id"])
-    vig = _vigilia_summary(vigilias, primary.get("domain"))
-    trend, diff = _score_trend(latest, prev)
-    top_risk = (risk_summary.get("risks") or [None])[0]
-    checklist = _build_checklist(user, target, latest, prev, profile, vig, checks, top_risk)
-    score_history = [{"date": _iso(s.get("scanned_at")), "score": s.get("score")}
-                     for s in reversed(scans) if s.get("score") is not None]
-
-    return {
-        "has_site": True,
-        "sites_count": len(sites),
-        "other_sites": [{"target_id": s["target_id"], "domain": s.get("domain"),
-                         "score": s.get("last_scan_score"), "semaphore": s.get("last_semaphore")}
-                        for s in sites[1:]],
-        "site": {
-            "target_id": tid, "domain": target.get("domain"),
-            "score": score, "semaphore": semaphore, "trend": trend, "trend_diff": diff,
-            "rank_position": (ranking or {}).get("position"),
-            "rank_total": (ranking or {}).get("total"),
-            "sector": sector, "sector_label": _sector_label(sector) if sector else None,
-            "last_scan": _iso(target.get("last_scan_at")) or (_iso(latest.get("scanned_at")) if latest else None),
-            "next_scan": _estimate_next_scan(target.get("last_scan_at"), subscription.get("plan_id")),
-            "is_owner": bool(primary.get("is_owner")),
-        },
-        "risks": risk_summary.get("risks", []),
-        "checklist": checklist,
-        "score_history": score_history,
-        "check_categories": _dashboard_categories(checks),
-        "benchmark": benchmark,
-        "plan": plan_block,
-        "profile": {
-            "company_name": (profile or {}).get("company_name"),
-            "phone": (profile or {}).get("phone"),
-            "sector": sector, "sector_label": _sector_label(sector) if sector else None,
-            "confirmed": bool((profile or {}).get("edited_by_admin")),
-        },
-        "vigilias": vig,
-    }
+    return await dashboard_v2.build_dashboard_summary(get_target_store(), user, site_id)
 
 
 class ProfileConfirmBody(BaseModel):

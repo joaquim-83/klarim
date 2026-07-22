@@ -8,6 +8,9 @@ const COOKIE = 'klarim_session';
 
 export const onRequest = defineMiddleware(async (context, next) => {
   const { url, cookies, redirect, locals } = context;
+  // KL-90 Prompt 3 (swap): a rota antiga /dashboard/v2 virou /dashboard. Redirect 301
+  // ANTES da checagem de auth (vale logado ou não → sempre cai em /dashboard).
+  if (url.pathname === '/dashboard/v2') return redirect('/dashboard', 301);
   if (url.pathname === '/dashboard' || url.pathname.startsWith('/dashboard/')) {
     const token = cookies.get(COOKIE)?.value;
     const to = '/entrar?redirect=' + encodeURIComponent(url.pathname);

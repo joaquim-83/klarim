@@ -1,20 +1,21 @@
 ---
 export const prerender = false; // SSR + protegido pelo middleware (JWT no cookie)
 
+// KL-90 Prompt 3 (swap) — o Dashboard v2 assumiu a rota principal `/dashboard`. O antigo
+// (Dashboard.jsx) foi removido; `/dashboard/v2` redireciona 301 para cá (via middleware).
 import Base from '../../layouts/Base.astro';
 import Header from '../../components/Header.astro';
 import Footer from '../../components/Footer.astro';
-import Dashboard from '../../components/account/Dashboard.jsx';
+import DashboardV2 from '../../components/dashboard-v2/DashboardV2.jsx';
 
-// O middleware (src/middleware.js) já validou o JWT e injetou o usuário; se chegou
-// aqui, está autenticado.
+// O middleware (src/middleware.js) já validou o JWT e injetou Astro.locals.user.
 const user = Astro.locals.user || {};
 ---
 
 <Base title="Dashboard" description="Seus sites monitorados no Klarim." path="/dashboard" noindex={true}>
   <Header />
   <main class="mx-auto max-w-3xl md:max-w-5xl lg:max-w-7xl px-5 lg:px-8 pt-28 pb-20 sm:pt-32">
-    <Dashboard client:load user={user} />
+    <DashboardV2 client:load user={user} />
   </main>
   <Footer />
 </Base>

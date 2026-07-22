@@ -1,0 +1,134 @@
+# Klarim — stack de DESENVOLVIMENTO LOCAL (KL-90 P0).
+#
+# Só o necessário para desenvolver frontend + API. SEM workers de produção
+# (discovery/scan/alert/rescan/vigília) e SEM integrações externas (Resend,
+# AbacatePay, GCS, Cloudflare). NADA aqui faz deploy — tudo fica local.
+#
+#   docker compose -f docker-compose.dev.yml up --build
+#   docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev
+#
+# Portas escolhidas para NÃO conflitar com uma instalação local:
+#   3000 -> Nginx (acesso principal pelo browser)
+#   4321 -> Astro dev server (hot reload direto)
+#   8000 -> API FastAPI (direto)
+#   5433 -> PostgreSQL (host)   |   6380 -> Redis (host)
+
+services:
+  # PostgreSQL 16 — porta externa 5433 (5432 dentro da rede do compose).
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: klarim
+      POSTGRES_PASSWORD: klarim
+      POSTGRES_DB: klarim
+    ports:
+      - "5433:5432"
+    volumes:
+      - klarim-dev-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U klarim"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Redis 7 — só cache/rate-limit em dev; SEM persistência (--save "").
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--loglevel", "warning"]
+    ports:
+      - "6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  # API FastAPI com HOT RELOAD. A imagem já traz as dependências instaladas
+  # (site-packages); montamos ./ em /app para o código refletir ao vivo. O
+  # --reload-dir limita o watcher aos pacotes Python (evita watchar web/,
+  # .venv, node_modules do host — muito mais leve). A API roda ensure_schema
+  # no boot (lifespan) => cria o schema; é o único container que "migra".
+  api:
+    build: .
+    restart: unless-stopped
+    command:
+      - uvicorn
+      - api.main:app
+      - --host
+      - "0.0.0.0"
+      - --port
+      - "8000"
+      - --reload
+      - --reload-dir
+      - /app/api
+      - --reload-dir
+      - /app/scanner
+      - --reload-dir
+      - /app/discovery
+      - --reload-dir
+      - /app/reporter
+      - --reload-dir
+      - /app/notifier
+      - --reload-dir
+      - /app/payments
+      - --reload-dir
+      - /app/mcp_server
+    env_file: .env.dev
+    volumes:
+      # Código-fonte ao vivo (hot reload). site-packages ficam fora de /app.
+      - ./:/app
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Astro dev server (npm run dev) com HMR. node_modules mora num volume nomeado
+  # (não no bind mount) para não colidir com o node_modules do host e para
+  # persistir entre restarts — o npm install só roda quando o volume está vazio.
+  # Node 22: o Astro 7 exige >=22.12 (o node:20 é recusado no boot). Casa com a
+  # imagem de produção do web (web/Dockerfile também usa node:22).
+  astro:
+    image: node:22-slim
+    restart: unless-stopped
+    working_dir: /app
+    # Remove o lock `.astro/dev.json` (fica no bind mount ./web e sobrevive a restart
+    # do container → sem isto o Astro aborta com "dev server already running" e o
+    # container entra em crash-loop). Limpar no boot torna o restart robusto.
+    command: >
+      sh -c "[ -x node_modules/.bin/astro ] || npm install;
+             rm -f .astro/dev.json;
+             npm run dev -- --host 0.0.0.0 --port 4321"
+    environment:
+      HOST: 0.0.0.0
+      PORT: 4321
+      # URL interna da API (rede do compose) para os fetches SSR do Astro.
+      KLARIM_API_URL: http://api:8000
+    volumes:
+      - ./web:/app
+      - klarim-dev-node-modules:/app/node_modules
+    ports:
+      - "4321:4321"
+    depends_on:
+      - api
+
+  # Nginx simples: HTTP puro, sem SSL, sem headers do Cloudflare, sem rate limit
+  # (atrapalham o debug). Config montada direto (sem build). Acesso principal.
+  web:
+    image: nginx:alpine
+    restart: unless-stopped
+    volumes:
+      - ./frontend/nginx/dev.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "3000:80"
+    depends_on:
+      - api
+      - astro
+
+volumes:
+  klarim-dev-pgdata:
+  klarim-dev-node-modules:

@@ -1,22 +1,17 @@
-"""KL-86 — dashboard agregado (/account/dashboard-summary) + helpers. Offline (TestClient
-+ FakeStore).
+"""KL-86 — helpers puros do dashboard. Offline.
 
-Cobre:
-  * helpers puros: _dashboard_categories, _ssl_expiry_days, _score_trend, _build_checklist,
-    _vigilia_summary, _new_user_checklist.
-  * endpoint: com site (todos os campos) e sem site; checklist reage a e-mail/queda/SSL/tudo-ok.
-  * contact_email NUNCA no payload.
+⚠️ O ENDPOINT `/account/dashboard-summary` foi reescrito para o Dashboard v2 (KL-90) —
+os testes do endpoint agora vivem em `tests/test_kl90_dashboard_summary.py`. Este
+arquivo cobre só os helpers puros de `api/main.py` que continuam existindo:
+`_dashboard_categories`, `_ssl_expiry_days`, `_score_trend`, `_vigilia_summary`,
+`_new_user_checklist`, `_build_checklist`.
 """
 
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-import pytest
-from fastapi.testclient import TestClient
-
 import api.main as m
-from api import auth_users
 
 
 # --------------------------------------------------------------------------- #
@@ -96,125 +91,3 @@ def test_checklist_all_good():
     cl = m._build_checklist(user, {"id": 1}, {"score": 95}, {"score": 95},
                             {"company_name": "X"}, {"error": 0}, _checks(), top_risk=None)
     assert cl[0]["id"] == "all_good" and cl[0]["completed"] is True
-
-
-# --------------------------------------------------------------------------- #
-# Endpoint
-# --------------------------------------------------------------------------- #
-
-class FakeStore:
-    def __init__(self):
-        self.users = {}
-        self.by_id = {}
-        self.next_id = 1
-        self.sites = []          # list_user_sites rows
-        self.target = {"id": 7, "url": "https://x.com.br", "domain": "x.com.br",
-                       "sector": "hotel", "platform": "wordpress",
-                       "last_scan_score": 60, "last_scan_at": datetime(2026, 7, 18, tzinfo=timezone.utc),
-                       "contact_email": "dono@x.com.br"}  # NUNCA deve vazar
-        self._scans = [
-            {"id": 2, "score": 60, "semaphore": "amarelo", "fail_count": 2,
-             "scanned_at": datetime(2026, 7, 18, tzinfo=timezone.utc)},
-            {"id": 1, "score": 70, "semaphore": "amarelo", "fail_count": 1,
-             "scanned_at": datetime(2026, 6, 18, tzinfo=timezone.utc)},
-        ]
-        self._checks = _checks(fail_ids=("check_01_https",), ssl_days=20)
-
-    async def get_user_by_id(self, uid):
-        u = self.by_id.get(int(uid))
-        return {k: v for k, v in u.items() if k != "password_hash"} if u else None
-
-    async def list_user_sites(self, uid):
-        return list(self.sites)
-
-    async def get_target(self, tid):
-        return self.target if tid == 7 else None
-
-    async def list_scans(self, target_id=None, limit=50, **kw):
-        return list(self._scans)
-
-    async def get_scan(self, sid):
-        return {"id": sid, "checks_json": {"checks": self._checks,
-                                           "score": {"score": 60, "semaphore": "amarelo"}}}
-
-    async def get_site_profile(self, tid):
-        return {"company_name": "Hotel X", "phone": "(11) 90000-0000", "edited_by_admin": False}
-
-    async def sector_benchmark(self, sector, min_count=10):
-        return {"sector": sector, "avg_score": 64, "count": 120, "median": 65,
-                "min_score": 20, "max_score": 100, "distribution": {}}
-
-    async def global_avg_score(self):
-        return {"avg_score": 62, "count": 8000}
-
-    async def get_sector_position(self, sector, tid):
-        return {"position": 12, "total": 120}
-
-    async def get_user_vigilias(self, uid):
-        return []
-
-
-@pytest.fixture
-def store(monkeypatch):
-    monkeypatch.setenv("JWT_SECRET", "k" * 64)
-    s = FakeStore()
-    u = {"id": 1, "email": "dono@x.com.br", "name": None, "plan": "free", "max_sites": 1,
-         "is_active": True, "role": "owner", "email_confirmed": True}
-    s.users[u["email"]] = u
-    s.by_id[1] = u
-    monkeypatch.setattr(m, "get_target_store", lambda: s)
-    monkeypatch.setattr("discovery.store.get_target_store", lambda: s)
-    monkeypatch.setattr(auth_users, "_secret", lambda: "k" * 64)
-
-    async def _fake_sub(uid):
-        return {"plan_id": "free", "plan_name": "Free", "status": "free",
-                "trial_ends_at": None, "trial_days_left": None, "max_sites": 1,
-                "plan": {"max_sites": 1, "scan_frequency": "monthly"}}
-    monkeypatch.setattr(m.plans, "get_subscription", _fake_sub)
-    return s
-
-
-@pytest.fixture
-def client(store):
-    return TestClient(m.app, raise_server_exceptions=False)
-
-
-def _bearer(uid=1):
-    return {"Authorization": f"Bearer {auth_users.create_user_token({'id': uid, 'email': 'dono@x.com.br'})}"}
-
-
-def test_dashboard_summary_requires_auth(client):
-    assert client.get("/account/dashboard-summary").status_code == 401
-
-
-def test_dashboard_summary_no_site(client, store):
-    store.sites = []
-    j = client.get("/account/dashboard-summary", headers=_bearer()).json()
-    assert j["has_site"] is False and j["sites_count"] == 0
-    assert any(i["id"] == "add_site" for i in j["checklist"])
-    assert j["plan"]["name"] == "Free"
-
-
-def test_dashboard_summary_with_site(client, store):
-    store.sites = [{"target_id": 7, "domain": "x.com.br", "is_owner": True,
-                    "last_scan_score": 60, "last_semaphore": "amarelo", "sector": "hotel"}]
-    j = client.get("/account/dashboard-summary", headers=_bearer()).json()
-    assert j["has_site"] is True and j["sites_count"] == 1
-    assert j["site"]["domain"] == "x.com.br" and j["site"]["score"] == 60
-    assert j["site"]["trend"] == "down" and j["site"]["trend_diff"] == -10   # 60 vs 70
-    assert j["site"]["rank_position"] == 12 and j["site"]["rank_total"] == 120
-    assert len(j["check_categories"]) == 6
-    assert len(j["score_history"]) == 2 and j["score_history"][0]["score"] == 70  # ASC (antigo→novo)
-    assert isinstance(j["risks"], list)
-    assert j["profile"]["company_name"] == "Hotel X"
-    # contact_email NUNCA no payload
-    assert "dono@x.com.br" not in str(j) or "contact_email" not in str(j)
-    assert "contact_email" not in str(j)
-
-
-def test_dashboard_summary_checklist_has_ssl_item(client, store):
-    store.sites = [{"target_id": 7, "domain": "x.com.br", "is_owner": True,
-                    "last_semaphore": "amarelo"}]
-    # SSL a 20 dias (do FakeStore._checks) → item de expiração presente
-    j = client.get("/account/dashboard-summary", headers=_bearer()).json()
-    assert any(i["id"] == "ssl_expiry" for i in j["checklist"])

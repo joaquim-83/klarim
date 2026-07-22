@@ -1,60 +1,59 @@
 ---
 import Logo from './Logo.astro';
-// Contas de usuário (KL-51 f3). O cookie de sessão é HttpOnly (JS não lê), então o
-// header começa deslogado e um script consulta /api/account/me para alternar o nav.
+// Contas de usuário (KL-51 f3). O cookie de sessão é HttpOnly (JS não lê), então o header
+// começa deslogado e o /header.js consulta /api/account/me para revelar o menu do usuário
+// (avatar + dropdown) e a busca persistente (KL-90 item 1). Script EXTERNO (coberto por
+// script-src 'self' na CSP) — não precisa de hash inline.
 ---
 
-<header class="absolute inset-x-0 top-0 z-10">
-  <nav class="mx-auto flex max-w-7xl items-center justify-between px-5 py-5 lg:px-8">
-    <a href="/" aria-label="Página inicial do Klarim" class="rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500">
+<header class="absolute inset-x-0 top-0 z-30">
+  <nav class="mx-auto flex max-w-7xl items-center gap-3 px-5 py-5 lg:px-8">
+    <a href="/" aria-label="Página inicial do Klarim" class="shrink-0 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500">
       <Logo />
     </a>
 
-    <div class="flex items-center gap-1">
-    <!-- KL-87: alternar tema claro/escuro (sol/lua). Ícone da lua VISÍVEL por default (light
-         é o padrão) — se o /theme.js atrasar/falhar, o botão nunca fica em branco. O theme.js
-         troca para o sol quando data-theme=dark. -->
-    <button id="theme-toggle" type="button" aria-label="Alternar tema claro/escuro"
-      class="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-slate-300 transition-colors hover:bg-slate-800 hover:text-white">
-      <span id="theme-icon-light" class="text-lg" aria-hidden="true">🌙</span>
-      <span id="theme-icon-dark" class="hidden text-lg" aria-hidden="true">☀️</span>
-    </button>
+    <!-- KL-90 item 1: busca persistente (pesquisar qualquer site de qualquer página).
+         Começa oculta; o /header.js revela para o usuário logado. -->
+    <form action="/scan" method="GET" data-auth-search class="relative hidden max-w-xs flex-1">
+      <input type="text" name="url" placeholder="Pesquisar site…" aria-label="Pesquisar site"
+        class="h-11 w-full rounded-full border border-slate-700 bg-slate-800/60 pl-10 pr-3 text-sm text-white placeholder:text-slate-500 outline-none focus:border-brand-500" />
+      <span class="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" aria-hidden="true">🔍</span>
+    </form>
 
-    <!-- Estado deslogado (padrão) -->
-    <div data-auth="out" class="flex items-center gap-1">
-      <a href="/planos" class="inline-flex min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Planos</a>
-      <a href="/entrar" class="inline-flex min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Entrar</a>
-      <a href="/cadastrar" class="inline-flex min-h-[44px] items-center rounded-lg bg-brand-500 px-3.5 py-2 text-sm font-semibold text-[var(--accent-text)] transition-colors hover:bg-brand-400 active:scale-95">Cadastrar</a>
-    </div>
+    <div class="ml-auto flex items-center gap-1">
+      <!-- KL-87: alternar tema claro/escuro (sol/lua). Ícone da lua VISÍVEL por default. -->
+      <button id="theme-toggle" type="button" aria-label="Alternar tema claro/escuro"
+        class="inline-flex min-h-[44px] min-w-[44px] items-center justify-center rounded-lg text-slate-300 transition-colors hover:bg-slate-800 hover:text-white">
+        <span id="theme-icon-light" class="text-lg" aria-hidden="true">🌙</span>
+        <span id="theme-icon-dark" class="hidden text-lg" aria-hidden="true">☀️</span>
+      </button>
 
-    <!-- Estado logado (revelado pelo script). KL-78 item 7: "Planos" aponta para a página
-         pública /planos (3 cards comparativos) — o usuário logado precisa ver as opções, não
-         só o plano atual. O CTA de upgrade fica na PlanSection do dashboard. Nav curto no mobile. -->
-    <div data-auth="in" class="hidden items-center gap-1">
-      <a href="/planos" class="inline-flex min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Planos</a>
-      <a href="/dashboard" class="inline-flex min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Home</a>
-      <a href="/dashboard/conta" class="inline-flex min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Conta</a>
-      <button type="button" data-logout class="inline-flex min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-400 transition-colors hover:text-white">Sair</button>
-    </div>
+      <!-- Estado deslogado (padrão) -->
+      <div data-auth="out" class="flex items-center gap-1">
+        <a href="/planos" class="inline-flex min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Planos</a>
+        <a href="/entrar" class="inline-flex min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Entrar</a>
+        <a href="/cadastrar" class="inline-flex min-h-[44px] items-center rounded-lg bg-brand-500 px-3.5 py-2 text-sm font-semibold text-[var(--accent-text)] transition-colors hover:bg-brand-400 active:scale-95">Cadastrar</a>
+      </div>
+
+      <!-- Estado logado (revelado pelo /header.js): Planos + menu do usuário (avatar). -->
+      <div data-auth="in" class="relative hidden items-center gap-1">
+        <a href="/planos" class="inline-flex min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Planos</a>
+        <button type="button" id="user-menu-btn" aria-label="Menu do usuário"
+          class="inline-flex h-10 w-10 items-center justify-center rounded-full bg-brand-500 text-sm font-bold text-[var(--accent-text)] transition-transform hover:scale-105">
+          <span id="user-initial">👤</span>
+        </button>
+        <div id="user-menu" class="absolute right-0 top-full mt-2 hidden w-56 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 shadow-2xl">
+          <div class="border-b border-slate-800 px-4 py-3">
+            <p id="user-name" class="truncate text-sm font-semibold text-white">Minha conta</p>
+            <p id="user-email" class="truncate text-xs text-slate-400"></p>
+          </div>
+          <a href="/dashboard" class="flex min-h-[44px] items-center px-4 text-sm text-slate-200 hover:bg-slate-800">Meu dashboard</a>
+          <a href="/dashboard/conta" class="flex min-h-[44px] items-center px-4 text-sm text-slate-200 hover:bg-slate-800">Minha conta</a>
+          <button type="button" data-logout class="flex min-h-[44px] w-full items-center px-4 text-left text-sm text-slate-400 hover:bg-slate-800 hover:text-white">Sair</button>
+        </div>
+      </div>
     </div>
   </nav>
 </header>
 
-<script>
-  (async () => {
-    const out = document.querySelector('[data-auth="out"]');
-    const inn = document.querySelector('[data-auth="in"]');
-    try {
-      const res = await fetch('/api/account/me', { credentials: 'include' });
-      if (res.ok) {
-        out?.classList.add('hidden');
-        inn?.classList.remove('hidden');
-        inn?.classList.add('flex');
-      }
-    } catch { /* deslogado: mantém o padrão */ }
-    document.querySelector('[data-logout]')?.addEventListener('click', async () => {
-      try { await fetch('/api/account/logout', { method: 'POST', credentials: 'include' }); } catch {}
-      window.location.href = '/';
-    });
-  })();
-</script>
+<script src="/header.js" is:inline></script>

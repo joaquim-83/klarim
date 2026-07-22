@@ -12,7 +12,7 @@ const user = Astro.locals.user || {};
 
 <Base title="Minha conta" description="Gerencie os dados, a senha e o plano da sua conta Klarim." path="/dashboard/conta" noindex={true}>
   <Header />
-  <main class="mx-auto max-w-2xl px-5 pt-28 pb-20 sm:pt-32">
+  <main class="mx-auto max-w-4xl px-5 pt-28 pb-20 sm:pt-32">
     <a href="/dashboard" class="text-sm text-brand-400 hover:text-brand-300">← Voltar ao dashboard</a>
     <div class="mt-4">
       <AccountSettings client:load user={user} />
