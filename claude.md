@@ -436,6 +436,14 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   o `/painel` usa CSP relaxada; ilhas admin são `client:only="react"`.
 - **`parseUTC`:** timestamps do Postgres são naive — adicione `Z` antes de `new Date`.
 - **SPA fallback do Vite** serve `200` para paths desconhecidos (não é o arquivo real).
+- **Arquivo `.js` público novo (`web/public/*.js`) NÃO é servido em produção sem 2 passos** (KL-90
+  fix, 2026-07-22): (1) o `web` (nginx) tem um **allowlist explícito** de paths proxiados ao `astro`
+  (`https.conf.template`/`http.conf`, regex `…|track\.js|theme\.js|header\.js|planos-auth\.js`); um
+  arquivo fora da lista cai no `location / { try_files $uri /index.html }` (root do Vite) → serve o
+  **index.html do Vite (text/html)** → com `nosniff`, o browser **bloqueia o script**. **Adicione o
+  nome do arquivo ao allowlist.** (2) Referencie com **`?v=N`** (como `theme.js?v=2`) e **bump a cada
+  alteração** — senão o Cloudflare cacheia o HTML de erro por 4h. ⚠️ **Não requisite a URL `?v=N`
+  antes do fix estar no ar** (o CF cacheia o erro naquela chave → precisa de outra versão).
 - **Docker build na VM `e2-small` (2 vCPU, ~4GB) leva 10–50 min** — lento **≠**
   travado. Confira idade dos containers via SSH (build-then-recreate mantém o site no ar).
 - **Recharts só na Overview** (island `client:only`) — não pesa no bundle público.

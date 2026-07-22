@@ -72,9 +72,20 @@ E-mail do dono **mascarado** (regra inviolável). O badge "🔧 Profissional de 
 - `web/src/components/dashboard-v2/TechnicianClients.jsx` — prop `isTech` + self-hide por vínculos
 - `web/src/components/dashboard-v2/DashboardV2.jsx` — sempre renderiza `TechnicianClients`
 
+## Resolução final (produção)
+- Deploys: `1d8730f` (?v=2 + técnico) → `eaf736c` (**nginx allowlist**, a raiz) → `9090d06` (**?v=3**).
+  O `?v=2` do header.js ficou envenenado no Cloudflare porque foi requisitado DURANTE o diagnóstico
+  (antes do fix do nginx subir) → precisou de uma chave nova (`?v=3`). Lição: **não requisitar a
+  URL versionada antes do fix do origin estar no ar**, senão o CF cacheia o erro naquela chave.
+- **Prova em produção** (network trace em `/planos`, deslogado):
+  - `/header.js?v=3` → **200 text/javascript** (BYPASS) e **disparou `GET /api/account/me` (401)** →
+    o script EXECUTOU (antes era bloqueado por MIME/nosniff e nunca rodava).
+  - `/planos-auth.js?v=2` → 200 JS e disparou `GET /api/account/subscription` (401) → executou.
+  - Zero erro de MIME/CSP no console. Logado, o `/account/me` volta 200 → o avatar aparece → **login persiste**.
+- Fluxo do técnico validado end-to-end (curl, dev): convite → tecnico abre dashboard → auto-link → vê o site.
+
 ## Validação
-- Build ✅ · pytest (CI) ✅ · fluxo do técnico end-to-end ✅ (curl)
-- Bug 1 (cache) valida-se **pós-deploy** em produção (a URL `?v=2` é fresca no Cloudflare).
+- CI 4/4 verde (3 deploys) · workers 4/4 alive · **score klarim.net = 100 🟢** · públicas 200 · health ok.
 
 ## Regras
 - ✅ Deploy imediato · ✅ relatório PT-BR · ✅ e-mail do dono nunca exposto cru.
