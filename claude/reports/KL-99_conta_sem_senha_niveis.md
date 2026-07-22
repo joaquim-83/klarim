@@ -179,6 +179,33 @@ Testes: `web/src/lib/scanView.test.js` atualizado (copy nova) — **98 `node --t
 - Docker exec ficou intermitente no host de dev ("failed to change user ID") — validei tudo por
   HTTP; não afeta o código.
 
+## Fix crítico pós-deploy (2026-07-22, 2ª rodada — 4 bugs)
+
+Bugs relatados em produção + correções:
+
+- **Bug 1 — HMAC não deve criar conta automaticamente.** Revertido: `GET /alert-access` volta ao
+  comportamento KL-82 (só **sessão de visualização** `alert_session`, view-only; **NÃO** cria conta
+  nem loga). A criação de conta foi movida para o **consentimento**: novo `POST /account/monitor-
+  from-alert` — clicar "Sim, monitorar" cria a conta SEM senha (nível 1, hmac, confirmada) + vincula
+  o site + **ativa o monitoramento** (vigílias) + loga; e-mail já com conta → `{existing_account}`
+  (não auto-loga conta com senha). `MonitorConsent.jsx` ganhou `mode="alert"` (cria) vs
+  `mode="account"` (usuário logado adiciona site). Rate limit 5/h/IP.
+- **Bug 2 — conta sem senha ficava presa.** Novo **magic link**: `POST /account/magic-link {email}`
+  (token HMAC TTL **1h**, RL 3/h/e-mail + 10/h/IP; e-mail ausente → `{not_found}`) +
+  `GET /account/magic-access?token=` (valida → sessão real → `/dashboard`; inválido/expirado →
+  `/entrar?magic=expired`). `send_magic_link` no mailer (texto puro, transacional). `/entrar` ganhou
+  **"Enviar link de acesso"** + trata `?magic=expired`; **"Esqueci minha senha"** (`/recuperar-senha`)
+  já existia — link mantido.
+- **Bug 3+4 — layout.** `ScanResultDetail` reorganizado: **grid `md:grid-cols-2`** com score
+  **COMPACTO** (anel `h-28`, score `text-4xl`) à esquerda + CTA à direita, **ambos acima do fold**
+  no desktop/tablet; empilham no mobile (<768px: 1 coluna, score compacto → CTA); relatório completo
+  abaixo, largura total. Validado no navegador (desktop 2 colunas confirmado, zero erro no console).
+
+**Testes:** `test_kl99_levels.py` atualizado (alert-access não cria conta; monitor-from-alert;
+magic-link/magic-access) → **1562 backend + 98 frontend verdes**. Validado no stack dev por HTTP:
+alert-access só seta cookie de alerta (sem sessão/sem conta); monitor-from-alert cria+loga+monitora;
+magic-link sent/not_found/rate-limit; magic-access loga → /dashboard.
+
 ## Deploy em produção (2026-07-22)
 
 - **Commit** `9ea8927` na `main` → GitHub Actions **4/4 verde** (Build web · Nginx config check ·

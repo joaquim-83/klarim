@@ -1,8 +1,9 @@
-// KL-99 Fluxo C — consentimento de monitoramento para visitante JÁ logado (ex.: chegou pelo link
-// do alerta e a conta foi criada/logada automaticamente, ou é um usuário logado vendo um scan).
-// SEM campo de e-mail — só o botão "Sim, monitorar" → POST /account/sites {url}. O monitoramento
-// só começa com este consentimento explícito (nunca automático). Estados: idle → activating →
-// (active | error).
+// KL-99 — consentimento de monitoramento ("Quer monitorar este site?"). SEM campo de e-mail.
+// Dois modos:
+//  · mode="alert"  → visitante da SESSÃO DO ALERTA (view-only, sem conta): clicar cria a conta SEM
+//    senha + ativa o monitoramento + loga (`POST /account/monitor-from-alert`). É AQUI que a conta
+//    nasce (o clique no link do alerta só deu a sessão de visualização).
+//  · mode="account" → usuário JÁ logado (confirmed) adicionando um site (`POST /account/sites`).
 import { useState } from 'react';
 import { monitorConsentCopy } from '../../lib/scanView.js';
 
@@ -14,23 +15,30 @@ const btnGhost =
   'inline-flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl border border-slate-700 px-6 py-3.5 ' +
   'text-base font-semibold text-slate-200 transition-colors hover:bg-slate-800 active:scale-[0.98]';
 
-export default function MonitorConsent({ domain = '', url = '' }) {
+export default function MonitorConsent({ domain = '', url = '', mode = 'account' }) {
   const copy = monitorConsentCopy(domain);
-  const [state, setState] = useState('idle'); // idle | activating | active | error
+  const [state, setState] = useState('idle'); // idle | activating | active | exists | error
   const [msg, setMsg] = useState('');
 
   async function activate() {
     setState('activating'); setMsg('');
-    window.klarimTrack?.('monitor_consent_clicked', {}, url);
+    window.klarimTrack?.('monitor_consent_clicked', { mode }, url);
     try {
-      const res = await fetch('/api/account/sites', {
+      const path = mode === 'alert' ? '/api/account/monitor-from-alert' : '/api/account/sites';
+      const body = mode === 'alert' ? {} : { url: domain ? `https://${domain}` : url };
+      const res = await fetch(path, {
         method: 'POST', credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: domain ? `https://${domain}` : url }),
+        headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
       });
       const data = await res.json().catch(() => ({}));
+      if (mode === 'alert' && res.ok && data.status === 'existing_account') { setState('exists'); return; }
       if (res.ok) {
-        window.klarimTrack?.('monitoring_activated', { domain }, url);
+        window.klarimTrack?.('monitoring_activated', { domain, mode }, url);
+        if (mode === 'alert') {
+          // conta criada + logada no backend → vai para o dashboard.
+          window.location.href = `/dashboard?monitoring=${encodeURIComponent(domain)}`;
+          return;
+        }
         setState('active'); return;
       }
       setState('error');
@@ -45,10 +53,19 @@ export default function MonitorConsent({ domain = '', url = '' }) {
       <div className={card}>
         <p className="text-2xl" aria-hidden="true">✅</p>
         <h3 className="mt-2 text-lg font-bold text-white">Monitoramento ativo</h3>
-        <p className="mt-1 text-sm text-slate-300">
-          Vamos avisar você se algo mudar em {domain || 'seu site'}.
-        </p>
+        <p className="mt-1 text-sm text-slate-300">Vamos avisar você se algo mudar em {domain || 'seu site'}.</p>
         <a href="/dashboard" className={`${btn} mt-4`}>Ir para o dashboard →</a>
+      </div>
+    );
+  }
+
+  if (state === 'exists') {
+    const loginHref = `/entrar?redirect=${encodeURIComponent('/dashboard')}`;
+    return (
+      <div className={card}>
+        <h3 className="text-lg font-bold text-white">Você já tem conta.</h3>
+        <p className="mt-1 text-sm text-slate-300">Entre para monitorar {domain || 'este site'}.</p>
+        <a href={loginHref} className={`${btn} mt-4`}>Entrar →</a>
       </div>
     );
   }

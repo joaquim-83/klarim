@@ -980,9 +980,13 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   **Modelo:** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado por controle de
   domínio), eixo **distinto** do `access_level` do KL-82. Backfill: **toda conta existente → 2**
   (`ADD COLUMN … DEFAULT 2`). `password_hash` **nullable**; `users.source` (`signup`|`hmac`|`inline`).
-  **Fluxo C (`GET /alert-access`):** o clique no link HMAC loga a conta existente OU cria conta SEM
-  senha (nível 1, `source=hmac`, confirmada) e loga — rate limit 5/h/IP; **NÃO** ativa monitoramento
-  (consentimento = "Sim, monitorar" no resultado → `MonitorConsent.jsx` → `POST /account/sites`).
+  **Fluxo C (`GET /alert-access`):** o clique no link HMAC dá só uma **sessão de visualização**
+  (`alert_session`, view-only, 24h) — **NÃO** cria conta nem loga (fix 2ª rodada). A conta nasce no
+  **consentimento**: `POST /account/monitor-from-alert` ("Sim, monitorar") cria conta SEM senha
+  (nível 1, `source=hmac`, confirmada) + vincula site + ativa vigílias + loga; e-mail já com conta →
+  `{existing_account}`. `MonitorConsent.jsx` (`mode="alert"` cria · `mode="account"` = logado add site).
+  **Magic link** (conta sem senha volta / esqueceu senha): `POST /account/magic-link` (TTL 1h) +
+  `GET /account/magic-access` → sessão → `/dashboard`; botão "Enviar link de acesso" no `/entrar`.
   **Fluxo D (`POST /account/signup-inline {email,domain}`):** conta nível 1 (`source=inline`, não
   confirmada) + domínio vinculado como site PENDENTE (sem vigília) + e-mail de confirmação; 3/h/IP;
   `{status:confirmation_sent|already_exists}`. A **confirmação do e-mail ATIVA o monitoramento**
@@ -1004,9 +1008,11 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   (`useLevelGate` intercepta a ação e re-executa após o modal + `SetPasswordModal`/`VerifyDomainModal`/
   `LevelBadge`). **Testes:** +27 backend (`test_kl99_levels.py`) + 98 `node --test`. **Seed dev:**
   `nivel1@teste.com` (sem senha) · `dono3@teste.com`/`dev123456` (dono verificado nível 3). Relatório:
-  `claude/reports/KL-99_conta_sem_senha_niveis.md`. **Fluxo C** auto-loga conta EXISTENTE (com senha)
-  pelo link do alerta (magic-link); **TTL do `alert_access` reduzido 30→7 dias** (`_ALERT_ACCESS_TTL`
-  em `notifier/email_client.py` + `api/main.py`, em sincronia) p/ limitar risco de link vazado.
+  `claude/reports/KL-99_conta_sem_senha_niveis.md`. **TTL do `alert_access` = 7 dias**
+  (`_ALERT_ACCESS_TTL` em `notifier/email_client.py` + `api/main.py`, em sincronia). **2ª rodada
+  (fix crítico):** o link do alerta NÃO cria conta (só sessão view-only) — a conta nasce no
+  consentimento (`monitor-from-alert`); + magic link para conta sem senha voltar; + layout do
+  resultado em 2 colunas (score compacto + CTA acima do fold).
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

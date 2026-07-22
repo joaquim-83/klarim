@@ -69,29 +69,30 @@ export default function ScanResultDetail({ result, url = '', onRefresh = null })
     </div>
   );
 
-  // Bloco lateral (KL-99 — 2 variantes por SESSÃO, não por dispositivo):
-  //  · logado (confirmed — inclui quem chegou pelo alerta e foi auto-logado no Fluxo C) →
-  //    consentimento "Sim, monitorar" (SEM e-mail);
-  //  · logado mas não confirmado (unconfirmed) → confirme o e-mail;
-  //  · não logado (anonymous / alert_session sem auto-login) → cadastro SEM senha (só e-mail).
+  // Bloco lateral (KL-99 — variante por SESSÃO, não por dispositivo):
+  //  · alert_session (veio do link do alerta, view-only, SEM conta) → consentimento "Sim, monitorar"
+  //    que CRIA a conta (`mode="alert"`);
+  //  · confirmed (usuário logado) → adicionar o site ao monitoramento (`mode="account"`);
+  //  · unconfirmed (logado, e-mail não confirmado) → confirme o e-mail;
+  //  · anonymous (não logado) → cadastro SEM senha (só e-mail).
   const risksCount = result.risks_total ?? (result.risk_summary?.risks?.length || 0);
   let aside = null;
-  if (flags.level === 'confirmed') aside = <MonitorConsent domain={domain} url={url} />;
+  if (flags.level === 'alert_session') aside = <MonitorConsent domain={domain} url={url} mode="alert" />;
+  else if (flags.level === 'confirmed') aside = <MonitorConsent domain={domain} url={url} mode="account" />;
   else if (flags.level === 'unconfirmed') aside = <ConfirmEmailCTA />;
   else aside = <InlineSignup domain={domain} risksCount={risksCount} url={url} />;
 
   return (
     <div className="space-y-6">
-      <ScoreHero result={result} flags={flags} domain={domain} url={url} onRefresh={onRefresh} />
-
-      {/* 2 colunas no desktop (relatório + CTA fixo) — preenche telas largas sem linhas longas.
-          No mobile empilha na ordem do card: score → share (no hero) → CTA → detalhes. */}
-      <div className="grid gap-6 lg:grid-cols-3">
-        <aside className="order-1 lg:order-2 lg:col-span-1">
-          <div className="lg:sticky lg:top-24">{aside}</div>
-        </aside>
-        <div className="order-2 space-y-6 lg:order-1 lg:col-span-2">{details}</div>
+      {/* ACIMA DO FOLD (KL-99 Bug 3/4): score COMPACTO + CTA lado a lado no desktop/tablet (md+),
+          empilhados no mobile (score compacto → CTA), ambos visíveis na primeira tela. O relatório
+          completo vem ABAIXO, em largura total. As duas colunas alinham pelo topo (md:items-start). */}
+      <div className="grid gap-4 sm:gap-6 md:grid-cols-2 md:items-start">
+        <ScoreHero result={result} flags={flags} domain={domain} url={url} onRefresh={onRefresh} />
+        <div>{aside}</div>
       </div>
+
+      {details}
 
       <div className="text-center">
         <a href="/" className="inline-flex min-h-[44px] items-center px-1 text-sm text-brand-400 hover:text-brand-300">
@@ -122,44 +123,47 @@ function ScoreHero({ result, flags, domain, url, onRefresh }) {
   const profileDomain = result.profile_domain || domain;
   const head = scoreHeadline(result.score, flags.alertVisitor);
 
+  // KL-99 Bug 3/4 — score COMPACTO (anel menor, tipografia menor) para caber lado a lado com o CTA
+  // acima do fold (desktop) e deixar o CTA visível na primeira tela do mobile.
   return (
     <div className={`${card} text-center`}>
-      <p className="text-sm text-slate-400">{domain}</p>
-      <div className={`mx-auto mt-4 flex h-40 w-40 flex-col items-center justify-center rounded-full ring-4 ${sema.ring}`}>
-        <span className={`text-6xl font-extrabold ${sema.text}`}>{shown}</span>
-        <span className="text-sm text-slate-400">/100</span>
+      <p className="truncate text-sm text-slate-400">{domain}</p>
+      <div className={`mx-auto mt-3 flex h-28 w-28 flex-col items-center justify-center rounded-full ring-4 ${sema.ring}`}>
+        <span className={`text-4xl font-extrabold ${sema.text}`}>{shown}</span>
+        <span className="text-xs text-slate-400">/100</span>
       </div>
-      <p className="mt-4 text-2xl">{sema.dot}</p>
+      <p className="mt-2 text-xl">{sema.dot}</p>
       {/* Linguagem contextual (KL-89 item 4): alerta = "Seu site"; orgânico = "Este site. E o seu?". */}
-      <p className="mx-auto mt-3 max-w-md text-lg text-slate-200">
+      <p className="mx-auto mt-2 max-w-md text-base text-slate-200">
         {head.lead}{head.tail ? ` ${head.tail}` : ''}{' '}
         {head.question && <a href="/" className="text-brand-400 hover:text-brand-300">{head.question}</a>}
       </p>
 
-      {hasProfile && (
-        <div className="mt-5">
-          <a href={`/site/${profileDomain}`} className={`${btn} w-full sm:w-auto`}>Ver perfil completo →</a>
-        </div>
-      )}
-
       <ShareRow result={result} domain={profileDomain} flags={flags} url={url} />
 
-      {/* KL-89 P0: data do último scan + "Atualizar" (ação secundária, não dominante).
-          Quando o resultado é parcial (scan rápido/free), o CTA convida à análise completa. */}
-      {result.scan_date && fmtScanDate(result.scan_date) && (
-        <p className="mt-4 text-xs text-slate-500">
-          {result.partial ? 'Análise rápida' : 'Última análise'}: {fmtScanDate(result.scan_date)}
-          {onRefresh && (
-            <>
-              {' · '}
-              <button type="button" onClick={onRefresh}
-                className="text-brand-400 underline-offset-2 hover:text-brand-300 hover:underline">
-                {result.partial ? 'Ver análise completa (48 verificações) →' : 'Atualizar análise →'}
-              </button>
-            </>
-          )}
-        </p>
-      )}
+      {/* data do último scan + "Atualizar" (KL-89 P0) + link do perfil (compacto). */}
+      <p className="mt-4 text-xs text-slate-500">
+        {result.scan_date && fmtScanDate(result.scan_date) && (
+          <>
+            {result.partial ? 'Análise rápida' : 'Última análise'}: {fmtScanDate(result.scan_date)}
+            {onRefresh && (
+              <>
+                {' · '}
+                <button type="button" onClick={onRefresh}
+                  className="text-brand-400 underline-offset-2 hover:text-brand-300 hover:underline">
+                  {result.partial ? 'Ver análise completa (48) →' : 'Atualizar análise →'}
+                </button>
+              </>
+            )}
+          </>
+        )}
+        {hasProfile && (
+          <>
+            {result.scan_date && fmtScanDate(result.scan_date) ? ' · ' : ''}
+            <a href={`/site/${profileDomain}`} className="text-brand-400 hover:text-brand-300">Ver perfil completo →</a>
+          </>
+        )}
+      </p>
     </div>
   );
 }

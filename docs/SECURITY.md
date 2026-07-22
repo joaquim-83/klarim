@@ -148,11 +148,15 @@ Na dúvida, trate o alvo como site de terceiro que só autorizou olhar o que é 
   `current_level` do próprio caller.
 - **`set-password`** (nível 1→2) recusa se já há senha (não sobrescreve conta alheia); a sessão
   já prova identidade → não pede senha atual.
-- **⚠️ Fluxo C — auto-login por link do alerta:** o link HMAC loga em sessão COMPLETA, inclusive
-  contas com senha, sem digitar senha. Racional: posse do e-mail == posse do reset de senha
-  (magic-link). **TTL reduzido de 30 → 7 dias (KL-99)** para limitar a janela de link vazado /
-  inbox compartilhado (comum em PMEs) — `_ALERT_ACCESS_TTL` em `notifier/email_client.py` e
-  `api/main.py` (manter em sincronia).
+- **Fluxo C — link do alerta NÃO cria conta nem loga (fix 2ª rodada):** o clique dá só uma
+  **sessão de visualização** view-only (`alert_session`, 24h, escopada a 1 site) — não vira conta.
+  A conta só nasce com **consentimento explícito** ("Sim, monitorar" → `POST /account/monitor-from-
+  alert`, sem senha, nível 1). E-mail já com conta → `{existing_account}` (não auto-loga conta com
+  senha). TTL do `alert_access` = 7 dias.
+- **Magic link (KL-99, login sem senha):** `POST /account/magic-link` gera um token HMAC **TTL 1h**
+  (`typ='magic'`), enviado ao e-mail; `GET /account/magic-access` valida → sessão real. Rate limit
+  3/h por e-mail + 10/h por IP. Janela curta (1h) e escopo mínimo (só login) limitam link vazado.
+  Resolve a conta nível 1 (sem senha) que sai e precisa voltar.
 - **Verificação de domínio (nível 2→3):** `verify/start` gera `token_urlsafe(32)` (256-bit);
   `verify/check` (rate limit **10/h/IP**) busca meta tag / arquivo / DNS TXT. **Anti-SSRF:** o
   domínio vem de `targets` (site público já escaneado), não de input cru, e o corpo **nunca**

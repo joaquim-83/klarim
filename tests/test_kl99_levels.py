@@ -394,39 +394,97 @@ def test_require_level_blocks_level1_then_allows(client, store):
 
 
 # --------------------------------------------------------------------------- #
-# 6. Fluxo C — /alert-access (auto-cria conta sem senha + loga)
+# 6. Bug 1 fix — /alert-access NÃO cria conta; monitor-from-alert é quem cria
 # --------------------------------------------------------------------------- #
 
-def test_alert_access_autocreates_and_logs_in(client, store):
+def test_alert_access_does_not_create_account(client, store):
     tid = store.add_target("cliente.com.br")
     tok = alert_access_token("novo@cliente.com.br", tid, "cliente.com.br", SECRET)
     r = client.get(f"/alert-access?token={tok}", follow_redirects=False)
-    assert r.status_code == 302
-    assert "cliente.com.br" in r.headers["location"]
-    # conta sem senha criada + logada (cookie de sessão de usuário setado)
-    u = store.users["novo@cliente.com.br"]
-    assert u["account_level"] == 1 and u["source"] == "hmac" and u["email_confirmed"] is True
-    assert u["password_hash"] is None
-    assert auth_users.USER_COOKIE in r.cookies
-    # NÃO ativa monitoramento (nenhuma vigília; site não vinculado como monitorado)
+    assert r.status_code == 302 and "cliente.com.br" in r.headers["location"]
+    # sessão de VISUALIZAÇÃO (cookie de alerta), SEM conta e SEM login
+    assert m._ALERT_COOKIE in r.cookies
+    assert auth_users.USER_COOKIE not in r.cookies
+    assert "novo@cliente.com.br" not in store.users
     assert store.vigilias == []
 
 
-def test_alert_access_existing_account_logs_in(client, store):
+def _alert_cookie(email, tid, domain):
+    return {m._ALERT_COOKIE: m._make_alert_session_token(email, tid, domain)}
+
+
+def test_monitor_from_alert_creates_account_and_monitors(client, store, monkeypatch):
+    monkeypatch.setattr(m, "_vigilia_allowed_types", _fake_allowed_types)
+    tid = store.add_target("cliente.com.br", contact_email="dono@cliente.com.br")
+    r = client.post("/account/monitor-from-alert",
+                    cookies=_alert_cookie("dono@cliente.com.br", tid, "cliente.com.br"))
+    assert r.status_code == 200 and auth_users.USER_COOKIE in r.cookies  # logou
+    u = store.users["dono@cliente.com.br"]
+    assert u["account_level"] == 1 and u["source"] == "hmac" and u["email_confirmed"] is True
+    assert u["password_hash"] is None
+    # monitoramento ATIVO (site vinculado + vigílias) + dono verificado (e-mail == contato)
+    assert (u["id"], tid) in store.links and store.links[(u["id"], tid)]["is_owner"] is True
+    assert "cliente.com.br" in {d for (_u, d, _t) in store.vigilias}
+
+
+def test_monitor_from_alert_existing_account(client, store):
     tid = store.add_target("cliente2.com.br")
-    # conta existente COM senha
-    store.users["dono@cliente2.com.br"] = {"id": 500, "email": "dono@cliente2.com.br",
-                                           "password_hash": "h", "account_level": 2,
-                                           "plan": "free", "is_active": True}
-    store.by_id[500] = store.users["dono@cliente2.com.br"]
-    tok = alert_access_token("dono@cliente2.com.br", tid, "cliente2.com.br", SECRET)
-    r = client.get(f"/alert-access?token={tok}", follow_redirects=False)
-    assert r.status_code == 302 and auth_users.USER_COOKIE in r.cookies
+    store.users["ja@cliente2.com.br"] = {"id": 500, "email": "ja@cliente2.com.br",
+                                         "password_hash": "h", "account_level": 2}
+    store.by_id[500] = store.users["ja@cliente2.com.br"]
+    r = client.post("/account/monitor-from-alert",
+                    cookies=_alert_cookie("ja@cliente2.com.br", tid, "cliente2.com.br"))
+    assert r.status_code == 200 and r.json()["status"] == "existing_account"
+    assert auth_users.USER_COOKIE not in r.cookies  # NÃO auto-loga conta existente
+
+
+def test_monitor_from_alert_no_session_401(client, store):
+    assert client.post("/account/monitor-from-alert").status_code == 401
 
 
 def test_alert_access_invalid_token_home(client, store):
     r = client.get("/alert-access?token=lixo", follow_redirects=False)
     assert r.status_code == 302 and r.headers["location"] == "/"
+
+
+# --------------------------------------------------------------------------- #
+# 6b. Bug 2 — magic link (login sem senha)
+# --------------------------------------------------------------------------- #
+
+def test_magic_link_sent_for_existing_email(client, store):
+    store.users["m@x.com.br"] = {"id": 700, "email": "m@x.com.br", "password_hash": None,
+                                 "account_level": 1, "is_active": True}
+    store.by_id[700] = store.users["m@x.com.br"]
+    r = client.post("/account/magic-link", json={"email": "m@x.com.br"})
+    assert r.status_code == 200 and r.json()["status"] == "sent"
+
+
+def test_magic_link_not_found(client, store):
+    r = client.post("/account/magic-link", json={"email": "naoexiste@x.com.br"})
+    assert r.status_code == 200 and r.json()["status"] == "not_found"
+
+
+def test_magic_link_rate_limit_per_email(client, store):
+    store.users["r@x.com.br"] = {"id": 701, "email": "r@x.com.br", "account_level": 1, "is_active": True}
+    store.by_id[701] = store.users["r@x.com.br"]
+    for _ in range(3):
+        assert client.post("/account/magic-link", json={"email": "r@x.com.br"}).status_code == 200
+    assert client.post("/account/magic-link", json={"email": "r@x.com.br"}).status_code == 429
+
+
+def test_magic_access_logs_in_and_redirects_dashboard(client, store):
+    store.users["a@x.com.br"] = {"id": 702, "email": "a@x.com.br", "account_level": 1,
+                                 "is_active": True, "plan": "free"}
+    store.by_id[702] = store.users["a@x.com.br"]
+    tok = m._make_magic_token("a@x.com.br")
+    r = client.get(f"/account/magic-access?token={tok}", follow_redirects=False)
+    assert r.status_code == 302 and r.headers["location"] == "/dashboard"
+    assert auth_users.USER_COOKIE in r.cookies
+
+
+def test_magic_access_invalid_redirects_expired(client, store):
+    r = client.get("/account/magic-access?token=lixo", follow_redirects=False)
+    assert r.status_code == 302 and r.headers["location"] == "/entrar?magic=expired"
 
 
 # --------------------------------------------------------------------------- #

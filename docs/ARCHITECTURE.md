@@ -377,11 +377,15 @@ ilha React `ClaimSite`). A propriedade tem **2 tiers**, ambos server-authoritati
 NOVO, distinto do `access_level` do KL-82 (visibilidade do resultado). Contas legadas → 2.
 `password_hash` é nullable. `users.source` = origem (`signup`|`hmac`|`inline`).
 
-- **Fluxo C — auto-conta via HMAC (`GET /alert-access`):** o clique no link do alerta prova posse
-  do e-mail. E-mail com conta → **loga**; sem conta → cria conta **sem senha** (nível 1,
-  `source='hmac'`, confirmada) e loga (rate limit 5/h/IP). **NÃO** ativa monitoramento — o
-  consentimento é o "Sim, monitorar" no resultado (`MonitorConsent.jsx` → `POST /account/sites`).
-  A sessão de alerta view-only (24h) segue como fallback + analytics.
+- **Fluxo C — link do alerta = só sessão de VISUALIZAÇÃO (`GET /alert-access`):** o clique valida o
+  HMAC e dá uma sessão view-only (`alert_session`, cookie 24h, escopada a 1 site) — **NÃO cria conta
+  nem loga**. A conta nasce no **consentimento**: `POST /account/monitor-from-alert` ("Sim,
+  monitorar") cria conta **sem senha** (nível 1, `source='hmac'`, confirmada) + vincula o site
+  (Tier 1 se o e-mail bater) + ativa vigílias + loga; e-mail já com conta → `{existing_account}`.
+  Front: `MonitorConsent.jsx` (`mode='alert'` cria · `mode='account'` = logado adiciona site).
+- **Magic link (login sem senha):** `POST /account/magic-link {email}` (token `typ='magic'` TTL 1h,
+  RL 3/h·e-mail + 10/h·IP) → e-mail; `GET /account/magic-access?token=` valida → sessão →
+  `/dashboard` (expirado → `/entrar?magic=expired`). Resolve a conta nível 1 (sem senha) voltar.
 - **Fluxo D — `POST /account/signup-inline {email, domain}`:** conta nível 1 (`source='inline'`,
   não confirmada) + domínio vinculado como site **PENDENTE** (sem vigília) + e-mail de confirmação;
   `{status:confirmation_sent|already_exists}` (rate limit 3/h/IP). A **confirmação do e-mail ativa

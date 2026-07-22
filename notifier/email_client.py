@@ -927,6 +927,22 @@ class KlarimMailer:
             "text": build_welcome_confirmation_text(confirm_url),
         }, email_type="welcome_confirmation", source="account", skip_blocklist=True)
 
+    async def send_magic_link(self, to_email: str, magic_url: str) -> Dict[str, Any]:
+        """KL-99 — link de acesso SEM senha (magic link, TTL 1h). Para contas nível 1 (sem senha)
+        voltarem, ou quem esqueceu a senha. Transacional (`klarim@klarim.net`), TEXTO PURO,
+        registrado (KL-62). Ignora blocklist (o usuário pediu explicitamente)."""
+        text = (
+            "Você pediu um link para entrar no Klarim.\n\n"
+            f"Clique para acessar sua conta (o link vale por 1 hora):\n{magic_url}\n\n"
+            "Se você não pediu isto, ignore este e-mail — sua conta segue segura."
+        )
+        return await self._send({
+            "from": self.from_address,
+            "to": [to_email],
+            "subject": "Seu link de acesso ao Klarim",
+            "text": text,
+        }, email_type="magic_link", source="account", skip_blocklist=True)
+
     async def send_password_reset_code(self, to_email: str, code: str) -> Dict[str, Any]:
         """Envia o código de 6 dígitos para redefinir a senha da conta (KL-51 f3)."""
         html = _env.get_template("password_reset_code.html").render(code=code)

@@ -406,9 +406,11 @@ _payment_create_hits: dict = {}    # KL-93: cobrança PIX 3/hora por IP (cria co
 _notify_view_hits: dict = {}       # KL-93: notify/profile-view 1/hora por (IP, domínio)
 _report_dl_hits: dict = {}         # KL-93: /report/{executive,technical} 5/hora por IP
 # KL-99 (conta sem senha + níveis): rate limits dos novos fluxos.
-_alert_autocreate_hits: dict = {}  # KL-99 Fluxo C: auto-criação de conta via alerta 5/h por IP
+_alert_autocreate_hits: dict = {}  # KL-99: consentimento de monitoramento via alerta 5/h por IP
 _signup_inline_hits: dict = {}     # KL-99 Fluxo D: signup inline no resultado 3/h por IP
 _verify_check_hits: dict = {}      # KL-99: verificação de domínio (check) 10/h por IP
+_magic_email_hits: dict = {}       # KL-99: magic link 3/h por e-mail
+_magic_ip_hits: dict = {}          # KL-99: magic link 10/h por IP
 
 
 def _mask_email(email: str) -> str:
@@ -937,6 +939,53 @@ async def account_login(body: AccountLoginBody, request: Request) -> JSONRespons
 async def account_logout() -> JSONResponse:
     resp = JSONResponse({"ok": True})
     resp.delete_cookie(key=auth_users.USER_COOKIE, path="/")
+    return resp
+
+
+class MagicLinkBody(BaseModel):
+    email: str
+
+
+@app.post("/account/magic-link")
+async def account_magic_link(body: MagicLinkBody, request: Request) -> dict:
+    """KL-99 — envia um LINK de acesso sem senha (magic link, TTL 1h). Resolve o problema da conta
+    nível 1 (sem senha) que sai e não consegue voltar (o /entrar pede senha). Também serve a quem
+    esqueceu a senha. Rate limit 3/h por e-mail + 10/h por IP. E-mail inexistente → `{not_found}`
+    (aqui podemos revelar: o CTA orienta a cadastrar; não é um endpoint de enumeração sensível
+    além do que o próprio signup já revela em 409)."""
+    email = (body.email or "").lower().strip()
+    if not _ACCOUNT_EMAIL_RE.match(email):
+        raise HTTPException(status_code=400, detail="E-mail inválido.")
+    ok_ip, retry_ip = await _redis_allow("magic_ip", _client_ip(request), 10, 3600, _magic_ip_hits)
+    ok_em, retry_em = await _redis_allow("magic_email", email, 3, 3600, _magic_email_hits)
+    if not ok_ip or not ok_em:
+        raise HTTPException(status_code=429, detail="Muitos pedidos. Aguarde alguns minutos.",
+                            headers={"Retry-After": str(max(retry_ip, retry_em))})
+    store = get_target_store()
+    user = await store.get_user_by_email(email)
+    if not user:
+        return {"status": "not_found"}
+    if not user.get("is_active", True):
+        raise HTTPException(status_code=403, detail="Sua conta foi desativada.")
+    _spawn(_send_magic_link(email))
+    return {"status": "sent", "email": _mask_email(email)}
+
+
+@app.get("/account/magic-access")
+async def account_magic_access(token: str = Query(default="")) -> Response:
+    """KL-99 — valida o magic link e loga (cookie de sessão real) → `/dashboard`. Token expirado/
+    inválido → `/entrar?magic=expired` (o front mostra "Link expirado. Solicite um novo.")."""
+    payload = _verify_magic_token(token)
+    if not payload:
+        return RedirectResponse(url="/entrar?magic=expired", status_code=302)
+    email = (payload.get("email") or "").lower().strip()
+    store = get_target_store()
+    user = await store.get_user_by_email(email)
+    if not user or not user.get("is_active", True):
+        return RedirectResponse(url="/entrar?magic=expired", status_code=302)
+    await store.touch_user_login(user["id"])
+    resp = RedirectResponse(url="/dashboard", status_code=302)
+    _set_session_cookie(resp, auth_users.create_user_token(user))
     return resp
 
 
@@ -3436,6 +3485,32 @@ async def _send_welcome_confirmation(user_id: int, email: str) -> None:
         print(f"[signup] falha ao enviar boas-vindas ({email}): {exc!r}", flush=True)
 
 
+# --- KL-99 — magic link (login sem senha): conta nível 1 volta / esqueci a senha ------------- #
+_MAGIC_TOKEN_TTL = 3600  # 1 hora — janela curta (o link loga direto)
+
+
+def _make_magic_token(email: str) -> str:
+    """Token HMAC de acesso sem senha (base64(json).hmac[:32], `typ='magic'`, TTL 1h)."""
+    payload = {"typ": "magic", "email": (email or "").lower().strip(),
+               "exp": int(time.time()) + _MAGIC_TOKEN_TTL}
+    raw = base64.urlsafe_b64encode(json.dumps(payload, separators=(",", ":")).encode()).decode()
+    sig = hmac.new(_scan_token_secret().encode(), raw.encode(), hashlib.sha256).hexdigest()[:32]
+    return f"{raw}.{sig}"
+
+
+def _verify_magic_token(token: str) -> Optional[dict]:
+    return _verify_token_typed(token, "magic")
+
+
+async def _send_magic_link(email: str) -> None:
+    """Envia o e-mail com o link de acesso sem senha (fire-and-forget)."""
+    try:
+        magic_url = f"{_SITE}/api/account/magic-access?token={_make_magic_token(email)}"
+        await _mailer().send_magic_link(email, magic_url)
+    except Exception as exc:  # noqa: BLE001 - nunca derruba o request
+        print(f"[magic-link] falha ao enviar ({email}): {exc!r}", flush=True)
+
+
 # --- KL-82 Slice 3 — Fluxo 2 do alerta: alert-access (link do e-mail) + alert-session ----- #
 _ALERT_ACCESS_TTL = 7 * 86400    # KL-99: 30→7 dias (o link auto-loga a conta no Fluxo C)
 _ALERT_SESSION_TTL = 24 * 3600   # a sessão temporária (cookie) vale 24h
@@ -4215,36 +4290,15 @@ def _set_alert_cookie(resp: Response, token: str) -> None:
                     httponly=True, secure=True, samesite="lax", path="/")
 
 
-async def _alert_autocreate_account(store, email: str, ip: str) -> Optional[dict]:
-    """KL-99 Fluxo C — cria uma conta SEM senha (nível 1) para quem chega pelo link do alerta e
-    ainda não tem conta. O clique no link HMAC é a prova de posse do e-mail → conta nasce
-    `email_confirmed=true`, `source='hmac'`, sem senha. **NÃO** ativa monitoramento (o consentimento
-    é o botão "Sim, monitorar" no resultado). Rate limit 5 auto-criações/h por IP — ao estourar,
-    retorna None (o chamador cai na sessão de alerta view-only). `url=None` → sem auto-claim/vigília."""
-    allowed, _ = await _redis_allow("alert_autocreate", ip, 5, 3600, _alert_autocreate_hits)
-    if not allowed:
-        return None
-    try:
-        user, _ = await _create_account_record(
-            store, email, None, None, None,
-            email_confirmed=True, confirmation_source="hmac", source="hmac")
-        return user
-    except Exception as exc:  # noqa: BLE001 - nunca derruba o acesso ao resultado
-        print(f"[alert-access] auto-criar conta falhou {email}: {exc!r}", flush=True)
-        return None
-
-
 @app.get("/alert-access")
 async def alert_access(token: str = Query(default=""), request: Request = None) -> Response:
-    """KL-82 Slice 3 + KL-99 Fluxo C — handler do LINK do alerta (Fluxo 2). Valida o token HMAC
-    (prova de posse do e-mail) e redireciona ao resultado com acesso COMPLETO. Token inválido →
-    home (nunca 5xx).
+    """KL-82 Slice 3 — handler do LINK do alerta (Fluxo 2). Valida o token HMAC (prova de posse do
+    e-mail), cria a **sessão temporária de VISUALIZAÇÃO** (cookie 24h, escopada àquele site) e
+    redireciona ao resultado com acesso COMPLETO. Token inválido → home (nunca 5xx).
 
-    KL-99: quem clica no link JÁ provou identidade. Se o e-mail tem conta → **loga automaticamente**
-    (cookie de sessão de usuário). Se NÃO tem → cria uma conta sem senha (nível 1) e loga (rate
-    limit 5/h por IP). **Sem** ativar monitoramento — o consentimento é o "Sim, monitorar" no
-    resultado. A sessão de alerta (cookie 24h, view-only) continua sendo setada como fallback (se a
-    auto-criação estourar o limite) e para analytics de conversão."""
+    KL-99 fix: o clique **NÃO cria conta nem loga** — dá só a sessão de visualização. A conta só é
+    criada quando o usuário CONSENTE clicando "Sim, monitorar" no resultado (`POST /account/
+    monitor-from-alert`). Sem consentimento → nenhuma conta; a sessão temporária expira em 24h."""
     if request is not None:
         allowed, _ = await _redis_allow("alert_access", _client_ip(request), 30, 3600,
                                         _alert_access_attempts)
@@ -4264,21 +4318,57 @@ async def alert_access(token: str = Query(default=""), request: Request = None) 
         await get_target_store().create_alert_session(token_hash, email, tid, expires)
     except Exception as exc:  # noqa: BLE001 - registro nunca bloqueia o acesso
         print(f"[alert-access] create_alert_session falhou tid={tid}: {exc!r}", flush=True)
-    # KL-99 Fluxo C: loga a conta existente OU cria uma sem senha (nível 1) e loga.
-    user = None
-    try:
-        store = get_target_store()
-        user = await store.get_user_by_email(email) if email else None
-        if user is None and email and request is not None:
-            user = await _alert_autocreate_account(store, email, _client_ip(request))
-    except Exception as exc:  # noqa: BLE001 - o acesso ao resultado nunca depende disto
-        print(f"[alert-access] login/auto-criação falhou {email}: {exc!r}", flush=True)
-        user = None
     resp = RedirectResponse(url=f"/scan?url={quote('https://' + domain, safe='')}", status_code=302)
-    _set_alert_cookie(resp, sess_token)      # fallback view-only + analytics
-    if user:  # login real (nível 1/2/3): o resultado abre já logado (variante HMAC "Sim, monitorar")
-        _set_session_cookie(resp, auth_users.create_user_token(user))
+    _set_alert_cookie(resp, sess_token)      # sessão de visualização (view-only, 24h)
     return resp
+
+
+@app.post("/account/monitor-from-alert")
+async def monitor_from_alert(request: Request) -> JSONResponse:
+    """KL-99 fix — consentimento de monitoramento a partir da sessão do alerta ("Sim, monitorar").
+    **É AQUI que a conta é criada** (o clique no link do alerta só dá sessão de visualização): conta
+    SEM senha (nível 1, `source='hmac'`, `email_confirmed=true` — o clique no HMAC provou o e-mail),
+    vincula o site (auto-verifica posse Tier 1 se o e-mail bater) e **ativa o monitoramento**
+    (vigílias). Login automático. E-mail já com conta → `{existing_account}` (o front pede login).
+    Rate limit 5/h por IP."""
+    allowed, retry = await _redis_allow("monitor_from_alert", _client_ip(request), 5, 3600,
+                                        _alert_autocreate_hits)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Muitas tentativas. Tente mais tarde.",
+                            headers={"Retry-After": str(retry)})
+    sess = await _get_alert_session(request)
+    if not sess:
+        raise HTTPException(status_code=401, detail="Sessão do alerta inválida ou expirada.")
+    email = (sess.get("email") or "").lower().strip()
+    domain = (sess.get("domain") or "").lower()
+    tid = int(sess.get("tid") or 0)
+    store = get_target_store()
+    if await store.get_user_by_email(email):
+        return JSONResponse({"status": "existing_account", "email": _mask_email(email)})
+    # Cria a conta SEM senha (nível 1). url=None → sem claim automático; monitoramos explicitamente.
+    user, _ = await _create_account_record(
+        store, email, None, None, None,
+        email_confirmed=True, confirmation_source="hmac", source="hmac")
+    if user is None:
+        return JSONResponse({"status": "existing_account", "email": _mask_email(email)})
+    # Ativa o monitoramento do site do alerta (consentimento explícito): vincula + vigílias.
+    try:
+        tid_real = tid or await _resolve_or_create_target(f"https://{domain}", source="alert")
+        if tid_real:
+            method = await _ownership_method(email, tid_real)   # Tier 1 (e-mail == contato/domínio)
+            owner = method is not None and not await store.site_has_owner(tid_real)
+            await store.link_user_site(user["id"], tid_real, is_owner=owner)
+            if owner:
+                await store.mark_site_verified(user["id"], tid_real, method)
+            await _create_site_vigilias(user["id"], domain)
+    except Exception as exc:  # noqa: BLE001 - a conta já foi criada; monitoramento é best-effort
+        print(f"[monitor-from-alert] ativar monitoramento {domain}: {exc!r}", flush=True)
+    try:  # marca a sessão do alerta como convertida (analytics de funil)
+        token_hash = hashlib.sha256(request.cookies.get(_ALERT_COOKIE, "").encode()).hexdigest()
+        await store.mark_alert_session_converted(token_hash)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[monitor-from-alert] mark_converted falhou: {exc!r}", flush=True)
+    return _account_session_response(user, {"monitoring": True, "domain": domain})
 
 
 class SignupFromAlertBody(BaseModel):
