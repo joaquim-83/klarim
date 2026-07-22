@@ -18,25 +18,26 @@ Investigação (descartando hipóteses):
   script (MIME text/html + nosniff) → o `header.js` nunca roda → o toggle de login nunca acontece
   → o header fica em "Entrar" **em todas as páginas** (inclusive a que "parece logada").
 
-### Causa
-- Build local **inclui** `dist/client/header.js` corretamente. Via SSH, o **container astro em
-  produção serve `/header.js` como `text/javascript` 200 no ORIGIN**. Ou seja: o origin está certo.
-- O problema é **só o cache do Cloudflare**: durante a janela do deploy (o rebuild na VM leva 10-50
-  min; o `header.js` é um arquivo NOVO), uma requisição a `/header.js` pegou o HTML de fallback do
-  SSR (o astro ainda não tinha o arquivo) → o **Cloudflare cacheou esse `text/html`** (`cf-cache-status:
-  HIT`, `max-age=14400` = 4h) → passou a servir HTML para todos.
-- `theme.js`/`track.js` **não** sofrem isso porque (a) já existiam no origin há semanas e (b) são
-  referenciados com **versão** (`?v=2`, `?v=65`) — o padrão de cache-busting do projeto. Meus
-  `header.js`/`planos-auth.js` estavam **sem versão**.
+### Causa RAIZ (2 camadas)
+1. **nginx — o culpado principal.** O `web` (nginx) serve o root `/usr/share/nginx/html` (build **Vite**
+   do /painel) e tem um **allowlist explícito** de paths que são proxiados ao container `astro`
+   (`https.conf.template`): a regex inclui `favicon.svg|robots.txt|track.js|theme.js` — mas **NÃO**
+   `header.js` nem `planos-auth.js`. Então `/header.js` cai no `location / { try_files $uri /index.html }`
+   → não existe no dir do Vite → serve o **`index.html` do Vite (text/html)**. `theme.js`/`track.js`
+   funcionam porque **estão** no allowlist. (Confirmado: o astro serve o JS certo; o nginx é que não
+   proxiava.) Com `nosniff` + text/html, o browser bloqueia a execução → `header.js` nunca roda.
+2. **Cloudflare** cacheou esse `text/html` de `/header.js` (`cf-cache-status: HIT`, 4h), amplificando.
 
 ### Fix
-- **`Header.astro`**: `/header.js` → **`/header.js?v=2`** (chave de cache nova no Cloudflare → busca
-  do origin, que serve JS correto).
-- **`planos.astro`**: `/planos-auth.js` → **`/planos-auth.js?v=2`**.
-- Convenção documentada no código: **bump da versão a cada alteração** desses arquivos (como o theme.js).
+- **nginx (raiz):** adicionei `header\.js|planos-auth\.js` ao allowlist do astro em
+  **`https.conf.template`** e **`http.conf`** (mesmo mecanismo do theme.js). `nginx -t` ✅ nos dois.
+- **`Header.astro`/`planos.astro`:** `?v=2` nos scripts — chave de cache nova no Cloudflare (o
+  `/header.js` sem versão segue com o HTML envenenado por ~4h; a URL `?v=2` é fresca → busca do
+  origin, agora corretamente proxiado ao astro → JS). Convenção: bump da versão a cada alteração.
 
-> Não dá para purgar o cache do Cloudflare daqui (sem token da API). A versão nova sidestepa o cache
-> envenenado — a URL `?v=2` nunca foi cacheada, então é buscada fresca do origin (já correto).
+> **Fragilidade anotada:** todo novo `.js` público na raiz precisa entrar no allowlist do nginx
+> (como theme.js/track.js/header.js). Um follow-up seria uma regra `location ~ ^/[\w-]+\.js$` →
+> astro (anchorada na raiz p/ não colidir com `/assets/` do Vite).
 
 ---
 
