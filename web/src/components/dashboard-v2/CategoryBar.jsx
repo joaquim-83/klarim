@@ -8,7 +8,9 @@ import FixInline from './FixInline.jsx';
 const ST_ICON = { pass: '✅', fail: '❌', inconclusive: '➖' };
 const ST_COLOR = { pass: '#22c55e', fail: '#ef4444', inconclusive: '#94a3b8' };
 
-function CheckRow({ c, siteType, onForward }) {
+// `technical` (modo técnico): a EVIDÊNCIA vira o texto principal (mono) e o risk_message
+// vira "Impacto p/ o cliente" (secundário). Modo dono: o contrário.
+function CheckRow({ c, siteType, onForward, technical }) {
   const [open, setOpen] = useState(false);
   const canOpen = c.status === 'fail' && (c.evidence || c.risk_message || c.fix_inline);
   return (
@@ -21,8 +23,17 @@ function CheckRow({ c, siteType, onForward }) {
       </button>
       {open && canOpen && (
         <div className="pb-3 pl-6">
-          {c.risk_message && <p className="text-sm text-slate-400">{c.risk_message}</p>}
-          {c.evidence && <p className="mt-1 font-mono text-xs text-slate-500">{c.evidence}</p>}
+          {technical ? (
+            <>
+              {c.evidence && <p className="rounded bg-slate-950 px-2 py-1.5 font-mono text-xs text-slate-200">{c.evidence}</p>}
+              {c.risk_message && <p className="mt-1.5 text-xs text-slate-500">Impacto p/ o cliente: {c.risk_message}</p>}
+            </>
+          ) : (
+            <>
+              {c.risk_message && <p className="text-sm text-slate-400">{c.risk_message}</p>}
+              {c.evidence && <p className="mt-1 font-mono text-xs text-slate-500">{c.evidence}</p>}
+            </>
+          )}
           {c.fix_inline && <FixInline fix={c.fix_inline} siteType={siteType} onForward={onForward} />}
         </div>
       )}
@@ -30,7 +41,7 @@ function CheckRow({ c, siteType, onForward }) {
   );
 }
 
-export default function CategoryBar({ categories, siteType, onForward }) {
+export default function CategoryBar({ categories, siteType, onForward, technical = false }) {
   const [openSlug, setOpenSlug] = useState(null);
   if (!categories || categories.length === 0) return null;
   const open = categories.find((c) => c.slug === openSlug);
@@ -63,7 +74,7 @@ export default function CategoryBar({ categories, siteType, onForward }) {
           </div>
           <ul className="mt-2">
             {open.checks.map((c) => (
-              <CheckRow key={c.id} c={c} siteType={siteType} onForward={onForward} />
+              <CheckRow key={c.id} c={c} siteType={siteType} onForward={onForward} technical={technical} />
             ))}
           </ul>
         </div>

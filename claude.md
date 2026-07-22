@@ -951,6 +951,27 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `_build_checklist`/`_score_trend`/`_vigilia_summary`/`_new_user_checklist`) ficam órfãos (não
   removidos — cleanup futuro); testes do endpoint migraram p/ `tests/test_kl90_dashboard_summary.py`
   (20) + `tests/test_kl86_dashboard.py` reduzido aos 7 testes de helper puro.
+  **Fix login+técnico (2026-07-22, commits `1d8730f`…`c0e4531`):** persistência do login no header
+  (o allowlist do Nginx não proxyava `/header.js`/`/planos-auth.js` p/ o Astro → SPA fallback servia
+  HTML → o browser bloqueava o script; fix no allowlist + `?v=3` — a `?v=2` foi envenenada por ter
+  sido testada antes do deploy). **Experiência do técnico (2026-07-22):** o "Ver →" da lista "Sites
+  dos meus clientes" abre o **dashboard técnico** do site do cliente (não o perfil público). Backend:
+  `build_dashboard_summary` ganhou ramo **modo técnico** (`api/dashboard.py::_build_technician_view`)
+  — quando `site_id` não é site próprio, exige um `technician_link` **ativo** deste técnico (senão
+  **404**, nunca 500/vaza) e devolve a resposta técnica completa (48 checks com **evidência**
+  primária + `fix_inline` por plataforma + PDF técnico + benchmark + riscos + histórico + vigílias do
+  dono **read-only**), `technician_mode:true`, `owner_email` **mascarado** (`_mask_email`),
+  **sem** plan/checklist/conta do dono. Toggle "Receber alertas deste site":
+  `PUT /account/technician/notifications` + coluna `technician_links.receive_alerts` (default true);
+  a vigília (`_emit_alert`) faz **CC best-effort** aos técnicos que optaram
+  (`get_alert_technicians_for_domain`, só e-mail do técnico). Frontend:
+  `TechnicianView.jsx` (banner "🔧 Visualizando como técnico · {domain} · Dono: {mascarado}" +
+  "← Voltar"), `CategoryBar technical` (evidência primária), `ScoreCard technician` (PDF técnico, sem
+  Compartilhar/Vincular), `TechnicianClients` → `/dashboard?site_id={id}`. **Gotcha:** o mount do
+  `DashboardV2` lia sempre `load(null)` (ignorava `?site_id=`) → o deep-link caía no dashboard do
+  próprio técnico; fix: `initialSiteId` da URL → `load(initialSiteId || null)` (owner sem param
+  inalterado). +2 testes (`test_technician_mode`, `…_unlinked_404`); relatório em
+  `claude/reports/KL-90_experiencia_tecnico_dashboard.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

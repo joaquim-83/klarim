@@ -694,6 +694,9 @@ CREATE INDEX IF NOT EXISTS idx_tech_links_owner ON technician_links(owner_user_i
 CREATE INDEX IF NOT EXISTS idx_tech_links_tech_user ON technician_links(technician_user_id);
 CREATE INDEX IF NOT EXISTS idx_tech_links_email ON technician_links(technician_email);
 CREATE INDEX IF NOT EXISTS idx_tech_links_invite ON technician_links(invite_code);
+-- KL-90 — o técnico pode receber cópia dos alertas de vigília do site do cliente (toggle no
+-- dashboard técnico). Default TRUE (quem convida um técnico quer que ele acompanhe).
+ALTER TABLE technician_links ADD COLUMN IF NOT EXISTS receive_alerts BOOLEAN DEFAULT true;
 
 -- KL-44 P3 — laudos compartilháveis (link público /laudo/{code}, TTL 30 dias).
 CREATE TABLE IF NOT EXISTS shared_reports (
@@ -2594,7 +2597,7 @@ class TargetStore:
         def _fn(cur):
             cur.execute(
                 "SELECT tl.id AS link_id, tl.target_id, tl.status, tl.last_access_at, "
-                "       tl.owner_user_id, ou.email AS owner_email, "
+                "       tl.owner_user_id, ou.email AS owner_email, tl.receive_alerts, "
                 "       t.url, t.domain, t.last_scan_score, t.last_scan_at, "
                 "       s.semaphore AS last_semaphore, "
                 "       (SELECT MAX(sent_at) FROM bulletins b "
@@ -2626,6 +2629,35 @@ class TargetStore:
     async def touch_technician_access(self, link_id: int) -> None:
         await asyncio.to_thread(self._run, lambda cur: cur.execute(
             "UPDATE technician_links SET last_access_at = NOW() WHERE id = %s", (link_id,)))
+
+    async def set_technician_alerts(self, technician_user_id: int, target_id: int,
+                                    enabled: bool) -> bool:
+        """KL-90 — o técnico liga/desliga a cópia dos alertas de um site vinculado a ele.
+        Só afeta o vínculo ATIVO deste técnico (segurança). Retorna True se atualizou."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE technician_links SET receive_alerts = %s "
+                "WHERE technician_user_id = %s AND target_id = %s AND status = 'active'",
+                (bool(enabled), technician_user_id, target_id))
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_alert_technicians_for_domain(self, domain: str) -> List[Dict[str, Any]]:
+        """KL-90 — técnicos ATIVOS de um site (por domínio) que optaram por receber alertas
+        (para o CC da vigília). Devolve só o e-mail do técnico (da conta) — nunca dados do dono."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT DISTINCT tu.email AS technician_email "
+                "FROM technician_links tl "
+                "JOIN targets t ON t.id = tl.target_id "
+                "JOIN users tu ON tu.id = tl.technician_user_id "
+                "WHERE t.domain = %s AND tl.status = 'active' "
+                "  AND tl.receive_alerts = true AND tl.technician_user_id IS NOT NULL",
+                ((domain or "").lower().strip(),))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
 
     async def search_technician_by_email(self, email: str) -> Optional[Dict[str, Any]]:
         """Busca um usuário TÉCNICO por e-mail (só id/name/role — nunca outros dados)."""

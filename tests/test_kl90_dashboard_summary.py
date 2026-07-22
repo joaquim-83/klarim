@@ -110,6 +110,9 @@ class FakeStore:
     async def get_active_technician_for_target(self, uid, tid):
         return self.technician
 
+    async def get_technician_clients(self, uid):
+        return list(getattr(self, "_tech_clients", []))
+
     async def sector_benchmark(self, sector, min_count=10):
         return {"sector": sector, "avg_score": 72, "count": 120}
 
@@ -322,3 +325,35 @@ def test_performance_under_1s(client):
     t0 = time.perf_counter()
     r = client.get("/account/dashboard-summary", headers=_bearer())
     assert r.status_code == 200 and (time.perf_counter() - t0) < 1.0
+
+
+# --------------------------------------------------------------------------- #
+# Modo técnico (KL-90)
+# --------------------------------------------------------------------------- #
+
+def test_technician_mode(client, store):
+    """Técnico vê o dashboard TÉCNICO de um site de cliente vinculado: technician_mode,
+    dono mascarado, checks com evidência, SEM plano/checklist/conta do dono."""
+    store.sites = []  # o técnico não tem site próprio
+    store._tech_clients = [{
+        "link_id": 1, "target_id": 7, "status": "active", "owner_user_id": 99,
+        "owner_email": "dono@cliente.com.br", "domain": "hotel.com.br",
+        "last_scan_score": 83, "receive_alerts": True,
+    }]
+    j = client.get("/account/dashboard-summary?site_id=7", headers=_bearer()).json()
+    assert j["technician_mode"] is True
+    assert j["owner_email"] == "d***o@cliente.com.br"        # SEMPRE mascarado
+    assert j["can_receive_alerts"] is True
+    assert "plan" not in j and "checklist" not in j          # nunca a conta do dono
+    assert j["site"]["domain"] == "hotel.com.br" and j["site"]["score"] == 83
+    assert len(j["categories"]) == 6
+    # a evidência técnica está presente nos checks FAIL
+    fails = [c for cat in j["categories"] for c in cat["checks"] if c["status"] == "fail"]
+    assert any(c.get("evidence") for c in fails)
+
+
+def test_technician_mode_unlinked_404(client, store):
+    """Técnico NÃO pode ver um site que não é vinculado a ele (segurança)."""
+    store.sites = []
+    store._tech_clients = []   # nenhum vínculo
+    assert client.get("/account/dashboard-summary?site_id=7", headers=_bearer()).status_code == 404

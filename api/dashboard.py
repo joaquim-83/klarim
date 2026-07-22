@@ -463,13 +463,37 @@ async def _safe(coro):
         return None
 
 
+def _mask_email(email: str) -> str:
+    """Mascara o e-mail do dono (regra inviolável: nunca expor cru ao técnico). c***i@x.com."""
+    e = (email or "").strip()
+    if "@" not in e:
+        return e
+    local, _, domain = e.partition("@")
+    masked = (local[:1] + "***") if len(local) <= 2 else (local[0] + "***" + local[-1])
+    return f"{masked}@{domain}"
+
+
 async def build_dashboard_summary(store, user: dict, site_id: Optional[int] = None) -> dict:
     from api import plans  # import tardio: evita ciclo e respeita monkeypatch nos testes
 
     uid = user["id"]
-    sites, subscription = await asyncio.gather(
-        store.list_user_sites(uid), plans.get_subscription(uid))
+    sites = await store.list_user_sites(uid)
+    owned = {int(s["target_id"]) for s in sites}
 
+    # KL-90 — MODO TÉCNICO: `site_id` é um site VINCULADO (não próprio). O técnico vê o
+    # dashboard TÉCNICO do cliente (checks + evidência + fix), nunca dados da conta do dono.
+    # Segurança: só entra aqui se houver um technician_link ATIVO deste técnico p/ o alvo.
+    if site_id is not None and int(site_id) not in owned:
+        try:
+            clients = await store.get_technician_clients(uid) or []
+        except Exception:  # noqa: BLE001 - sem vínculo/método → 404 (nunca 500)
+            clients = []
+        link = next((c for c in clients if int(c.get("target_id")) == int(site_id)), None)
+        if not link:
+            raise HTTPException(status_code=404, detail="Site não encontrado.")
+        return await _build_technician_view(store, user, int(site_id), link)
+
+    subscription = await plans.get_subscription(uid)
     if not sites:
         return {
             "has_site": False, "sites": [], "selected_site_id": None,
@@ -556,6 +580,82 @@ async def build_dashboard_summary(store, user: dict, site_id: Optional[int] = No
             "sector": sector,
             "confirmed": bool((profile or {}).get("edited_by_admin")),
         },
+    }
+
+
+async def _build_technician_view(store, user: dict, tid: int, link: dict) -> dict:
+    """Dashboard TÉCNICO de um site de cliente (o técnico vê os dados técnicos completos —
+    checks + evidência + fix por plataforma + PDF técnico — mas NUNCA a conta do dono).
+    `link` = a linha de get_technician_clients (vínculo ativo, já validado pelo chamador)."""
+    domain = link.get("domain")
+    owner_uid = link.get("owner_user_id")
+
+    target, scans, profile, owner_vigilias = await asyncio.gather(
+        _safe(store.get_target(tid)),
+        _safe(store.list_scans(target_id=tid, limit=30)),
+        _safe(store.get_site_profile(tid)),
+        _safe(store.get_user_vigilias(owner_uid)) if owner_uid else _noop(),
+    )
+    target = target or {}
+    scans = scans or []
+    owner_vigilias = owner_vigilias or []
+
+    latest = scans[0] if scans else None
+    checks: list = []
+    scan_status = "ok"
+    if latest:
+        full_scan = await _safe(store.get_scan(latest["id"]))
+        checks = _extract_checks(full_scan)
+        cj = (full_scan or {}).get("checks_json") or {}
+        if isinstance(cj, dict):
+            scan_status = cj.get("status") or "ok"
+
+    sector = target.get("sector")
+    sector_valid = bool(sector) and sector != "outro"
+    bench, position, global_avg = await asyncio.gather(
+        _safe(store.sector_benchmark(sector)) if sector_valid else _noop(),
+        _safe(store.get_sector_position(sector, tid)) if sector_valid else _noop(),
+        _safe(store.global_avg_score()),
+    )
+
+    history = build_score_history(scans)
+    trend, trend_delta = build_trend(history)
+    score = (latest or {}).get("score", target.get("last_scan_score"))
+    semaphore = (latest or {}).get("semaphore")
+    ssl_days = _ssl_from_vigilias(owner_vigilias, domain)
+    if ssl_days is None:
+        ssl_days = ssl_days_from_checks(checks)
+    platform = target.get("platform")
+    site_type = platform if platform and platform != "unknown" else target.get("site_type")
+
+    return {
+        "has_site": True,
+        "technician_mode": True,                 # o front entra em modo técnico
+        "owner_email": _mask_email(link.get("owner_email") or ""),   # SEMPRE mascarado
+        "can_receive_alerts": bool(link.get("receive_alerts", True)),  # item 4 (toggle)
+        "sites": [],                             # sem seletor de sites próprios no modo técnico
+        "selected_site_id": tid,
+        "site": {
+            "domain": target.get("domain") or domain,
+            "score": score, "semaphore": semaphore,
+            "trend": trend, "trend_delta": trend_delta,
+            "last_scan_at": _iso(target.get("last_scan_at")) or _iso((latest or {}).get("scanned_at")),
+            "next_scan_estimate": next_scan_estimate(target.get("last_scan_at"), None),
+            "is_online": scan_status == "ok",
+            "site_type": site_type, "ssl_days_remaining": ssl_days,
+        },
+        "benchmark": build_benchmark(sector, score, bench, position, global_avg),
+        "risks": build_risks(checks),
+        "categories": build_categories(checks),   # já inclui evidence + fix_inline por check
+        "score_history": history,
+        # vigílias do DONO (read-only para o técnico acompanhar).
+        "monitoring": build_monitoring(owner_vigilias, domain, {}, False, True),
+        "profile": {
+            "company_name": (profile or {}).get("company_name"),
+            "sector": sector,
+            "confirmed": bool((profile or {}).get("edited_by_admin")),
+        },
+        # SEM plan, SEM checklist, SEM dados de conta do dono.
     }
 
 

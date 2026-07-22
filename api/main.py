@@ -1724,6 +1724,22 @@ async def technician_clients(request: Request) -> dict:
     return {"clients": rows}
 
 
+class TechnicianAlertsBody(BaseModel):
+    target_id: int
+    enabled: bool
+
+
+@app.put("/account/technician/notifications")
+async def technician_notifications(body: TechnicianAlertsBody, request: Request) -> dict:
+    """KL-90 — o técnico liga/desliga a cópia dos alertas de vigília de um site VINCULADO a ele.
+    `set_technician_alerts` só atualiza o vínculo ATIVO deste técnico (segurança) → 404 se não há."""
+    user = await auth_users.require_user(request)
+    ok = await get_target_store().set_technician_alerts(user["id"], body.target_id, body.enabled)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Vínculo de técnico não encontrado.")
+    return {"ok": True, "enabled": body.enabled}
+
+
 @app.post("/account/shared-report/create")
 async def shared_report_create(body: SharedReportBody, request: Request) -> dict:
     """Gera um laudo compartilhável (código + link + WhatsApp) do site do usuário."""

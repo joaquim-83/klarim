@@ -10,10 +10,13 @@ function Trend({ trend, delta }) {
   return <span className="text-sm text-slate-500">→ estável</span>;
 }
 
-export default function ScoreCard({ site, benchmark, scanning, onScan, onToast, onLinkTechnician }) {
+export default function ScoreCard({ site, benchmark, scanning, onScan, onToast, onLinkTechnician, technician = false }) {
   const color = SEMA_COLOR[site.semaphore] || SEMA_COLOR.amarelo;
   const b = benchmark || {};
-  const pdfUrl = site.score != null ? `/api/report/executive?url=${encodeURIComponent(site.domain)}` : null;
+  // Modo técnico → PDF TÉCNICO (48 checks + evidência); dono → executivo.
+  const kind = technician ? 'technical' : 'executive';
+  const pdfLabel = technician ? '📄 Relatório técnico' : '📄 Relatório PDF';
+  const pdfUrl = site.score != null ? `/api/report/${kind}?url=${encodeURIComponent(site.domain)}` : null;
 
   function share() {
     const url = profileUrl(site.domain);
@@ -63,22 +66,24 @@ export default function ScoreCard({ site, benchmark, scanning, onScan, onToast, 
       {/* ações */}
       <div className="mt-4 flex flex-wrap gap-2">
         {pdfUrl
-          ? <a href={pdfUrl} target="_blank" rel="noopener" className={brandBtn}>📄 Relatório PDF</a>
-          : <button type="button" disabled className={brandBtn}>📄 Relatório PDF</button>}
-        <button type="button" onClick={share} className={outlineBtn}>↗ Compartilhar</button>
+          ? <a href={pdfUrl} target="_blank" rel="noopener" className={brandBtn}>{pdfLabel}</a>
+          : <button type="button" disabled className={brandBtn}>{pdfLabel}</button>}
+        {!technician && <button type="button" onClick={share} className={outlineBtn}>↗ Compartilhar</button>}
         <button type="button" onClick={onScan} disabled={scanning} className={outlineBtn}>
           {scanning ? '⏳ Escaneando…' : '🔄 Escanear agora'}
         </button>
       </div>
 
-      {/* link externo + vincular técnico */}
+      {/* link externo + (só dono) vincular técnico */}
       <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-slate-800 pt-4">
         <a href={`https://${site.domain}`} target="_blank" rel="noopener"
           className="inline-flex min-h-[44px] items-center text-sm text-brand-400 hover:text-brand-300">Ver landing page →</a>
-        <button type="button" onClick={onLinkTechnician}
-          className="ml-auto inline-flex min-h-[44px] items-center gap-2 rounded-xl border border-brand-500 bg-brand-500/10 px-4 text-sm font-semibold text-brand-300 hover:bg-brand-500/20">
-          🔧 Vincular Técnico
-        </button>
+        {!technician && (
+          <button type="button" onClick={onLinkTechnician}
+            className="ml-auto inline-flex min-h-[44px] items-center gap-2 rounded-xl border border-brand-500 bg-brand-500/10 px-4 text-sm font-semibold text-brand-300 hover:bg-brand-500/20">
+            🔧 Vincular Técnico
+          </button>
+        )}
       </div>
     </div>
   );

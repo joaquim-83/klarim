@@ -32,7 +32,7 @@ export default function TechnicianClients({ isTech = false }) {
               </span>
               <span className="text-slate-400">{c.last_scan_score ?? '—'}/100</span>
               <span className="text-xs text-slate-500">Dono: {c.owner_email}</span>
-              <a href={`/site/${c.domain}`} className="text-xs text-brand-400 hover:text-brand-300">Ver →</a>
+              <a href={`/dashboard?site_id=${c.target_id}`} className="text-xs font-semibold text-brand-400 hover:text-brand-300">Ver dashboard técnico →</a>
             </div>
           ))}
         </div>

@@ -193,6 +193,23 @@ class VigiliaWorker:
         except Exception as exc:  # noqa: BLE001 - e-mail é best-effort
             print(f"[vigilia] e-mail falhou alert={alert_id}: {exc!r}", flush=True)
 
+        # KL-90 — CC os técnicos vinculados que optaram por receber alertas deste site.
+        # Best-effort e independente do envio ao dono; nunca expõe dados do dono ao técnico.
+        try:
+            techs = await self.store.get_alert_technicians_for_domain(vig["site_domain"])
+            for t in techs:
+                te = (t.get("technician_email") or "").strip()
+                if not te or te == to_email:
+                    continue
+                await mailer.send_vigilia_alert(
+                    to_email=te, tipo=vig["tipo"], domain=vig["site_domain"],
+                    subject=result.get("subject") or result.get("title") or "Alerta Klarim (técnico)",
+                    title=result.get("title", ""), message=result.get("message", ""),
+                    action_text=result.get("action_text"),
+                    severity=result.get("severity", "warning"), data=result.get("data") or {})
+        except Exception as exc:  # noqa: BLE001 - CC do técnico é best-effort
+            print(f"[vigilia] CC técnico falhou alert={alert_id}: {exc!r}", flush=True)
+
     # ----- ciclo de uptime (cadência própria, 5min) ------------------------ #
 
     async def run_uptime_cycle(self) -> Dict[str, Any]:

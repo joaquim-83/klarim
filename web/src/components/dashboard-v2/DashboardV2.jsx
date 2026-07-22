@@ -18,6 +18,7 @@ import Checklist from './Checklist.jsx';
 import ScoreHistory from './ScoreHistory.jsx';
 import EmptyDashboard from './EmptyDashboard.jsx';
 import TechnicianClients from './TechnicianClients.jsx';        // reg 5 — dashboard do técnico
+import TechnicianView from './TechnicianView.jsx';              // modo técnico — dashboard do cliente
 import ConfirmEmailBanner from './ConfirmEmailBanner.jsx';      // regressão: banner confirmar e-mail
 import Modal from './Modal.jsx';
 import AddSiteModal from './AddSiteModal.jsx';
@@ -32,6 +33,10 @@ export default function DashboardV2({ user = {} }) {
   const [addModal, setAddModal] = useState(false);
   const [upgradeParam] = useState(() =>
     (typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('upgrade') : '') || '');
+  // deep-link `?site_id=` — "Ver dashboard técnico →" abre o site do cliente já selecionado
+  // (sem isto, o mount fazia sempre load(null) e caía no dashboard do próprio técnico).
+  const [initialSiteId] = useState(() =>
+    (typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('site_id') : '') || '');
 
   const isTech = user.role === 'technician' || user.role === 'both';
 
@@ -43,7 +48,7 @@ export default function DashboardV2({ user = {} }) {
     else setError(err || 'Não foi possível carregar o dashboard.');
   }, []);
 
-  useEffect(() => { load(null); }, [load]);
+  useEffect(() => { load(initialSiteId || null); }, [load, initialSiteId]);
   useEffect(() => {
     if (!toast) return undefined;
     const t = setTimeout(() => setToast(''), 3000);
@@ -81,6 +86,16 @@ export default function DashboardV2({ user = {} }) {
     );
   }
   if (data === null) return <Skeleton />;
+
+  // Modo TÉCNICO: dashboard técnico de um site de cliente (dados técnicos, sem a conta do dono).
+  if (data.technician_mode) {
+    return (
+      <>
+        <TechnicianView data={data} scanning={scanning} onScan={onScan} onToast={setToast} />
+        <Toast toast={toast} />
+      </>
+    );
+  }
 
   // Sem site próprio: técnico vê os clientes; usuário comum vê o onboarding.
   if (!data.has_site) {
