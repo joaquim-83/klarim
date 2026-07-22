@@ -1,7 +1,11 @@
 # KL-99 — Conta sem senha + 3 níveis de confiança + verificação de domínio
 
-**Prioridade:** Highest · **Status:** ✅ **DEPLOYADO EM PRODUÇÃO** (2026-07-22, commit `9ea8927`,
-CI **4/4 verde**). TTL do HMAC do alerta reduzido de 30 → **7 dias** antes do deploy (2ª iteração).
+**Prioridade:** Highest · **Status:** ✅ **DEPLOYADO EM PRODUÇÃO** — 1ª rodada commit `9ea8927`;
+**2ª rodada (fix crítico dos 4 bugs) commit `c81c95c`, CI 4/4 verde**. TTL do HMAC = 7 dias.
+Validação prod da 2ª rodada: alert-access garbage → `/` sem sessão (não cria conta); monitor-from-
+alert sem sessão → 401; magic-link absent → `not_found`; magic-access garbage → `/entrar?magic=
+expired`; `/scan` 200 · `/entrar` 200 · workers discovery/alert/rescan/scan **alive** · score
+klarim.net **100 🟢**.
 
 ## Problema
 
