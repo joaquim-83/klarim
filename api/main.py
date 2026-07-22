@@ -405,6 +405,10 @@ _scan_anon_day: dict = {}          # KL-82: scan anônimo 20/dia por IP
 _payment_create_hits: dict = {}    # KL-93: cobrança PIX 3/hora por IP (cria cobrança REAL)
 _notify_view_hits: dict = {}       # KL-93: notify/profile-view 1/hora por (IP, domínio)
 _report_dl_hits: dict = {}         # KL-93: /report/{executive,technical} 5/hora por IP
+# KL-99 (conta sem senha + níveis): rate limits dos novos fluxos.
+_alert_autocreate_hits: dict = {}  # KL-99 Fluxo C: auto-criação de conta via alerta 5/h por IP
+_signup_inline_hits: dict = {}     # KL-99 Fluxo D: signup inline no resultado 3/h por IP
+_verify_check_hits: dict = {}      # KL-99: verificação de domínio (check) 10/h por IP
 
 
 def _mask_email(email: str) -> str:
@@ -473,8 +477,28 @@ def _user_public(user: dict) -> dict:
         "role": user.get("role", "owner"),   # KL-44 P3: owner|technician|both
         # KL-82 Slice 2: nível de confiança da conta. NULL (contas legadas) = confirmada.
         "email_confirmed": user.get("email_confirmed") is not False,
+        # KL-99: nível da conta (1=sem senha, 2=com senha, 3=dono verificado). Legado → 2.
+        "account_level": _account_level(user),
         "created_at": created.isoformat() if hasattr(created, "isoformat") else created,
     }
+
+
+def _account_level(user: dict) -> int:
+    """KL-99 — nível da conta (1=sem senha, 2=com senha, 3=dono verificado por domínio).
+    Contas legadas (sem a coluna, backfill DEFAULT 2) → 2."""
+    try:
+        return int(user.get("account_level") or 2)
+    except (TypeError, ValueError):
+        return 2
+
+
+def _require_level(user: dict, n: int) -> None:
+    """KL-99 — exige `account_level >= n`. 403 com corpo estruturado para o frontend decidir
+    o prompt certo (senha p/ nível 2, verificação de domínio p/ nível 3)."""
+    lvl = _account_level(user)
+    if lvl < n:
+        raise HTTPException(status_code=403, detail={
+            "error": "insufficient_level", "required_level": int(n), "current_level": lvl})
 
 
 def _set_session_cookie(resp: JSONResponse, token: str) -> None:
@@ -485,7 +509,7 @@ def _set_session_cookie(resp: JSONResponse, token: str) -> None:
 
 class SignupBody(BaseModel):
     email: str
-    password: str
+    password: Optional[str] = None   # KL-99: opcional — sem senha cria conta nível 1
     name: Optional[str] = None
     url: Optional[str] = None   # site recém-escaneado, para vincular no signup
     role: Optional[str] = None  # KL-44 P3: 'technician' cria perfil de profissional de TI
@@ -653,20 +677,26 @@ async def _process_claim(store, user: dict, email: str, url: Optional[str]) -> d
     return info
 
 
-async def _create_account_record(store, email: str, password_hash: str,
+async def _create_account_record(store, email: str, password_hash: Optional[str],
                                  name: Optional[str], url: Optional[str],
                                  role: str = "owner", invite: Optional[str] = None,
                                  plan: Optional[str] = None,
                                  email_confirmed: bool = True,
-                                 confirmation_source: Optional[str] = None) -> tuple:
+                                 confirmation_source: Optional[str] = None,
+                                 source: str = "signup") -> tuple:
     """Cria a conta + reivindica o site (KL-68) + histórico + Pro trial + lead + vínculo de
     técnico (KL-44 P3). Retorna ``(user, claim_info)`` — `user` é None se o e-mail já existe.
     `email_confirmed` (KL-82 Slice 2): False no signup sem código (confirma depois por link).
-    `confirmation_source` (Slice 3): 'hmac' no signup-from-alert. Compartilhado pelo signup,
-    pelo /account/verify (fallback de código) e pelo signup-from-alert."""
+    `confirmation_source` (Slice 3): 'hmac' no signup-from-alert. `password_hash` pode ser
+    ``None`` (KL-99: conta SEM senha → nível 1). `source` (KL-99): origem da conta
+    ('signup'|'hmac'|'inline'). Compartilhado pelo signup, pelo /account/verify (fallback de
+    código), pelo signup-from-alert e pelos Fluxos C/D do KL-99."""
+    # KL-99: só encaminha `source` quando difere do default — assim os FakeStore legados dos
+    # testes (cuja `create_user` não conhece o kwarg) seguem funcionando sem alteração.
+    extra = {"source": source} if source and source != "signup" else {}
     user = await store.create_user(email, password_hash, name=name, role=role,
                                    email_confirmed=email_confirmed,
-                                   confirmation_source=confirmation_source)
+                                   confirmation_source=confirmation_source, **extra)
     if user is None:
         return None, {}
     # KL-44 P3: vincula convites de técnico pendentes deste e-mail + o convite explícito.
@@ -715,12 +745,12 @@ def _account_session_response(user: dict, claim: Optional[dict] = None) -> JSONR
 
 @app.post("/account/signup")
 async def account_signup(body: SignupBody, request: Request) -> JSONResponse:
-    """Cria a conta na hora (KL-82 Slice 2, confiança progressiva) — **sem código**: e-mail +
-    senha → conta com `email_confirmed=false` + e-mail de boas-vindas com LINK de confirmação
-    (30 dias). Se o e-mail JÁ foi verificado no scan (KL-25), nasce confirmada (não precisa
-    re-confirmar). O fluxo de código de 6 dígitos (`/account/verify`) fica DORMENTE como
-    fallback. Anti-abuso (KL-85): blocklist de descartáveis + rate limit 3/h & 5/dia por IP
-    (via `CF-Connecting-IP`, fix do Slice 1)."""
+    """Cria a conta na hora (KL-82 Slice 2 + KL-99, confiança progressiva) — **sem código**.
+    KL-99: a senha é **opcional** — com senha → conta nível 2; sem senha → conta nível 1
+    (a senha pode ser definida depois). Em ambos os casos: `email_confirmed=false` + e-mail de
+    boas-vindas com LINK de confirmação (30 dias). Se o e-mail JÁ foi verificado no scan (KL-25),
+    nasce confirmada. O fluxo de código (`/account/verify`) fica DORMENTE. Anti-abuso (KL-85):
+    blocklist de descartáveis + rate limit 3/h & 5/dia por IP (via `CF-Connecting-IP`)."""
     ip = _client_ip(request)
     # (1) Blocklist de e-mail descartável (antes do rate limit — não gasta cota com lixo).
     email = (body.email or "").lower().strip()
@@ -736,12 +766,14 @@ async def account_signup(body: SignupBody, request: Request) -> JSONResponse:
                             headers={"Retry-After": str(max(retry_h, retry_d))})
     if not _ACCOUNT_EMAIL_RE.match(email):
         raise HTTPException(status_code=400, detail="E-mail inválido.")
-    if len(body.password or "") < _PW_MIN:
+    # KL-99: senha opcional. Se enviada, precisa ter ≥ 8 chars; se ausente → conta nível 1.
+    has_password = bool((body.password or "").strip())
+    if has_password and len(body.password) < _PW_MIN:
         raise HTTPException(status_code=400, detail="A senha precisa ter ao menos 8 caracteres.")
     store = get_target_store()
     if await store.get_user_by_email(email):
         raise HTTPException(status_code=409, detail="Já existe uma conta com este e-mail.")
-    pw_hash = auth_users.hash_password(body.password)
+    pw_hash = auth_users.hash_password(body.password) if has_password else None
     # E-mail já verificado no scan (KL-25) → nasce confirmada (não reenviamos link).
     try:
         already_verified = await store.email_has_verified_scan(email)
@@ -796,9 +828,26 @@ async def account_verify(body: VerifySignupBody, request: Request) -> JSONRespon
     return _account_session_response(user, claim)
 
 
+async def _activate_monitoring_on_confirm(user_id: int) -> None:
+    """KL-99 Fluxo D — ao confirmar o e-mail, ATIVA o monitoramento (cria as vigílias do plano)
+    dos sites vinculados à conta. O signup inline vincula o domínio como site PENDENTE (sem
+    vigílias); a confirmação do e-mail é o gatilho de ativação — assim alertas só saem para
+    e-mails confirmados (reputação). Idempotente (upsert) e best-effort."""
+    try:
+        store = get_target_store()
+        for s in await store.list_user_sites(user_id):
+            dom = (s.get("domain") or "").strip()
+            if dom:
+                await _create_site_vigilias(user_id, dom)
+    except Exception as exc:  # noqa: BLE001 - ativação nunca derruba a confirmação
+        print(f"[confirm] ativar monitoramento user={user_id}: {exc!r}", flush=True)
+
+
 async def _do_confirm_email(token: str) -> str:
     """Valida o token de confirmação e confirma o e-mail. Idempotente. NUNCA loga o token.
-    Retorna `confirmed` | `already` | `invalid`. Compartilhado por GET (legado) e POST."""
+    Retorna `confirmed` | `already` | `invalid`. Compartilhado por GET (legado) e POST.
+    KL-99: quando ESTE chamado confirma (era não-confirmado), ativa o monitoramento dos sites
+    pendentes (Fluxo D)."""
     payload = _verify_confirm_token(token)
     if not payload:
         return "invalid"
@@ -807,6 +856,8 @@ async def _do_confirm_email(token: str) -> str:
     if not user or (user.get("email") or "").lower() != (payload.get("email") or "").lower():
         return "invalid"
     confirmed_now = await store.confirm_user_email(user["id"], source="link")
+    if confirmed_now:  # KL-99: confirmação ativa o monitoramento dos sites pendentes.
+        _spawn(_activate_monitoring_on_confirm(user["id"]))
     return "confirmed" if confirmed_now else "already"
 
 
@@ -825,8 +876,21 @@ async def account_confirm_post(token: str = Form(default="")) -> Response:
     Anti pre-fetch (2026-07-21): servidores de e-mail (Gmail/Outlook/scanners) fazem **GET** dos
     links, nunca POST → o pre-fetch não confirma a conta; só um humano que submete o formulário.
     Confirma no banco e redireciona (303) para a página de feedback SEM o token na URL. O token
-    (HMAC, uso único) é a própria credencial — sem CSRF token adicional."""
+    (HMAC, uso único) é a própria credencial — sem CSRF token adicional.
+
+    KL-99: uma conta SEM senha (nível 1) só entra pela sessão — ao confirmar, ela é **logada** e
+    vai direto ao dashboard (senão ficaria presa: não há senha para o /entrar). Contas com senha
+    seguem no fluxo normal (página de feedback → login por senha)."""
     status = await _do_confirm_email(token)
+    if status in ("confirmed", "already"):
+        payload = _verify_confirm_token(token)
+        if payload:
+            store = get_target_store()
+            user = await store.get_user_by_id(int(payload.get("uid") or 0))
+            if user and _account_level(user) <= 1:  # conta sem senha → login + dashboard
+                resp = RedirectResponse(url="/dashboard?confirmed=1", status_code=303)
+                _set_session_cookie(resp, auth_users.create_user_token(user))
+                return resp
     qs = {"confirmed": "ok", "already": "already"}.get(status, "invalid")
     return RedirectResponse(url=f"/confirmado?status={qs}", status_code=303)
 
@@ -935,6 +999,7 @@ async def account_update(body: UpdateAccountBody, request: Request) -> dict:
     """Atualiza dados editáveis da conta (KL-57) — hoje só o nome. O e-mail é a
     identidade da conta e não muda por aqui."""
     user = await auth_users.require_user(request)
+    _require_level(user, 2)  # KL-99: alterar a conta exige senha (nível ≥ 2)
     name = _sanitize_str((body.name or ""), 120).strip() or None
     await get_target_store().update_user_name(user["id"], name)
     updated = {**user, "name": name}
@@ -958,6 +1023,31 @@ async def account_change_password(body: ChangePasswordBody, request: Request) ->
         raise HTTPException(status_code=401, detail="Senha atual incorreta.")
     await store.set_user_password(email, auth_users.hash_password(body.new_password))
     return {"ok": True}
+
+
+class SetPasswordBody(BaseModel):
+    password: str
+    confirm: str
+
+
+@app.post("/account/set-password")
+async def account_set_password(body: SetPasswordBody, request: Request) -> dict:
+    """KL-99 — define a PRIMEIRA senha de uma conta sem senha (nível 1 → nível 2). Requer
+    conta autenticada. 400 se já tem senha; 422 se as senhas não conferem ou < 8 chars.
+    Diferente de `/account/change-password` (que exige a senha atual)."""
+    user = await auth_users.require_user(request)
+    if len(body.password or "") < _PW_MIN:
+        raise HTTPException(status_code=422, detail="A senha precisa ter ao menos 8 caracteres.")
+    if body.password != body.confirm:
+        raise HTTPException(status_code=422, detail="As senhas não conferem.")
+    store = get_target_store()
+    full = await store.get_user_by_email(user["email"], with_hash=True)
+    if full and full.get("password_hash"):
+        raise HTTPException(status_code=400,
+                            detail="Sua conta já tem uma senha. Use 'alterar senha'.")
+    await store.set_user_password(user["email"], auth_users.hash_password(body.password))
+    await store.set_user_account_level(user["id"], 2)
+    return {"status": "ok", "account_level": 2}
 
 
 @app.delete("/account/me")
@@ -1317,8 +1407,10 @@ class ProfileConfirmBody(BaseModel):
 async def account_profile_confirm(body: ProfileConfirmBody, request: Request) -> dict:
     """KL-86 — o dono confirma/edita os dados do perfil (onboarding do checklist). Só o
     dono do site (user_sites) pode; marca `edited_by_admin=TRUE` (o enrich preserva).
-    `contact_email`/cnpj/whatsapp não são editáveis por aqui."""
+    `contact_email`/cnpj/whatsapp não são editáveis por aqui.
+    KL-99: editar o perfil PÚBLICO exige dono verificado por controle de domínio (nível 3)."""
     user = await auth_users.require_user(request)
+    _require_level(user, 3)  # KL-99: editar perfil público exige verificação de domínio (nível 3)
     store = get_target_store()
     link = await store.get_user_site(user["id"], body.target_id)
     if not link or not link.get("is_owner"):
@@ -1443,6 +1535,7 @@ async def account_remove_site(target_id: int, request: Request) -> dict:
     notificação (o próprio dono está removendo — diferente do remove-site admin, que
     notifica). Revoga a propriedade (se era dono) e desativa as vigílias desse site."""
     user = await auth_users.require_user(request)
+    _require_level(user, 2)  # KL-99: remover site exige senha (nível ≥ 2)
     store = get_target_store()
     link = await store.get_user_site(user["id"], target_id)
     if not link:
@@ -1484,6 +1577,144 @@ async def account_claim_site(target_id: int, request: Request) -> dict:
                    "corresponde ao contato público nem ao domínio do site.")
     await store.mark_site_verified(user["id"], target_id, method)
     return {"ok": True, "is_owner": True}
+
+
+# --------------------------------------------------------------------------- #
+# KL-99 — verificação de propriedade por CONTROLE DE DOMÍNIO (nível 2 → 3). Prova mais forte
+# que o Tier 1 (e-mail): meta tag / arquivo HTML / registro DNS TXT. Só nível ≥ 2 (com senha).
+# --------------------------------------------------------------------------- #
+
+_DOMAIN_VERIFY_METHODS = ("meta_tag", "html_file", "dns_txt")
+
+
+def _verify_instructions(method: str, token: str, domain: str) -> dict:
+    """Instruções específicas por método (o token não é segredo para o dono — é o desafio)."""
+    if method == "meta_tag":
+        return {"method": "meta_tag", "title": "Meta tag no HTML",
+                "snippet": f'<meta name="klarim-verify" content="kl-{token}">',
+                "help": "Adicione esta tag dentro do <head> da página inicial do seu site "
+                        "e clique em Verificar agora."}
+    if method == "html_file":
+        return {"method": "html_file", "title": "Arquivo HTML na raiz",
+                "path": f"/klarim-verify-{token}.html",
+                "content": f"klarim-verification={token}",
+                "help": f"Crie o arquivo klarim-verify-{token}.html na raiz do site "
+                        "com exatamente esse conteúdo e clique em Verificar agora."}
+    return {"method": "dns_txt", "title": "Registro DNS TXT", "record_type": "TXT",
+            "host": domain, "value": f"klarim-verify={token}",
+            "help": "Adicione um registro TXT com este valor no DNS do domínio "
+                    "(a propagação pode levar alguns minutos) e clique em Verificar agora."}
+
+
+async def _fetch_verify_page(url: str) -> str:
+    """GET honesto (UA do Klarim, timeout 10s) para checar a meta tag / arquivo de verificação.
+    O corpo NUNCA é devolvido ao usuário (só procuramos o token) → sem exfiltração. Erro → ''."""
+    import httpx
+    try:
+        from scanner.checks.base import USER_AGENT
+    except Exception:  # noqa: BLE001
+        USER_AGENT = "KlarimBot"
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True, max_redirects=3,
+                                     headers={"User-Agent": USER_AGENT}) as client:
+            resp = await client.get(url)
+            return (resp.text or "")[:200_000]  # cap defensivo
+    except Exception:  # noqa: BLE001 - site fora/erro → não verificado
+        return ""
+
+
+async def _dns_txt_records(domain: str) -> list:
+    """Registros TXT do domínio (dnspython, em thread). Erro/NXDOMAIN → lista vazia."""
+    def _query():
+        out: list = []
+        try:
+            import dns.resolver
+            for rec in dns.resolver.resolve(domain, "TXT", lifetime=10):
+                out.append(b"".join(getattr(rec, "strings", [])).decode("utf-8", "ignore"))
+        except Exception:  # noqa: BLE001
+            pass
+        return out
+
+    return await asyncio.to_thread(_query)
+
+
+async def _check_domain_control(method: str, token: str, domain: str) -> bool:
+    """Confere a prova de controle de domínio conforme o método. Nunca levanta."""
+    domain = (domain or "").strip().lower()
+    token = (token or "").strip()
+    if not domain or not token:
+        return False
+    if method == "dns_txt":
+        needle = f"klarim-verify={token}"
+        return any(needle in rec for rec in await _dns_txt_records(domain))
+    if method == "html_file":
+        body = await _fetch_verify_page(f"https://{domain}/klarim-verify-{token}.html")
+        return f"klarim-verification={token}" in body
+    if method == "meta_tag":
+        body = await _fetch_verify_page(f"https://{domain}/")
+        esc = re.escape(token)
+        # aceita as duas ordens de atributos (name/content e content/name).
+        if re.search(r'<meta[^>]+name=["\']klarim-verify["\'][^>]+content=["\']kl-' + esc + r'["\']',
+                     body, re.IGNORECASE):
+            return True
+        return bool(re.search(r'<meta[^>]+content=["\']kl-' + esc + r'["\'][^>]+name=["\']klarim-verify["\']',
+                              body, re.IGNORECASE))
+    return False
+
+
+class VerifyStartBody(BaseModel):
+    method: str
+
+
+@app.post("/account/sites/{target_id}/verify/start")
+async def account_verify_start(target_id: int, body: VerifyStartBody, request: Request) -> dict:
+    """KL-99 — inicia a verificação de propriedade por controle de domínio (nível 2 → 3). Gera
+    um token único e devolve as instruções do método escolhido. Requer conta com senha (nível ≥ 2)."""
+    user = await auth_users.require_user(request)
+    _require_level(user, 2)
+    method = (body.method or "").strip()
+    if method not in _DOMAIN_VERIFY_METHODS:
+        raise HTTPException(status_code=400, detail="Método de verificação inválido.")
+    store = get_target_store()
+    link = await store.get_user_site(user["id"], target_id)
+    if not link:
+        raise HTTPException(status_code=404, detail="Vincule o site à sua conta primeiro.")
+    target = await store.get_target(target_id)
+    domain = (target or {}).get("domain") or _norm_domain((target or {}).get("url") or "")
+    if not domain:
+        raise HTTPException(status_code=404, detail="Site não encontrado.")
+    token = secrets.token_urlsafe(32)
+    v = await store.create_domain_verification(user["id"], target_id, domain, method, token)
+    expires = v.get("expires_at")
+    return {"ok": True, "method": method, "domain": domain, "token": token,
+            "instructions": _verify_instructions(method, token, domain),
+            "expires_at": expires.isoformat() if hasattr(expires, "isoformat") else expires}
+
+
+@app.post("/account/sites/{target_id}/verify/check")
+async def account_verify_check(target_id: int, request: Request) -> dict:
+    """KL-99 — confere a prova de controle de domínio. Se comprovado: marca o vínculo como dono,
+    eleva a conta a nível 3 e marca `targets.owner_verified`. Requer nível ≥ 2. Rate limit 10/h/IP.
+    Retorna `{status: verified}` | `{status: not_found}` | `{status: no_pending}`."""
+    user = await auth_users.require_user(request)
+    _require_level(user, 2)
+    allowed, retry = await _redis_allow("verify_check", _client_ip(request), 10, 3600,
+                                        _verify_check_hits)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Muitas verificações. Aguarde um pouco.",
+                            headers={"Retry-After": str(retry)})
+    store = get_target_store()
+    v = await store.get_pending_domain_verification(user["id"], target_id)
+    if not v:
+        return {"status": "no_pending"}
+    ok = await _check_domain_control(v.get("method"), v.get("token"), v.get("domain"))
+    if not ok:
+        return {"status": "not_found"}
+    await store.mark_ownership_verified(v["id"])
+    await store.mark_site_verified(user["id"], target_id, v.get("method"))
+    await store.set_target_owner_verified(target_id, True)
+    await store.set_user_account_level(user["id"], 3)
+    return {"status": "verified", "account_level": 3}
 
 
 # --------------------------------------------------------------------------- #
@@ -1619,6 +1850,7 @@ async def technician_invite(body: TechnicianInviteBody, request: Request) -> dic
     """Convida um técnico para um site (KL-44 P3). Cria o vínculo (pending) + um laudo e
     envia o convite ao técnico. Rate limit 10/h/IP."""
     user = await auth_users.require_user(request)
+    _require_level(user, 2)  # KL-99: vincular técnico exige senha (nível ≥ 2)
     allowed, _ = await _redis_allow("tech_invite", _client_ip(request), 10, 3600, _technician_attempts)
     if not allowed:
         raise HTTPException(status_code=429, detail="Muitos convites. Aguarde um pouco.")
@@ -3205,7 +3437,7 @@ async def _send_welcome_confirmation(user_id: int, email: str) -> None:
 
 
 # --- KL-82 Slice 3 — Fluxo 2 do alerta: alert-access (link do e-mail) + alert-session ----- #
-_ALERT_ACCESS_TTL = 30 * 86400   # o link do alerta pode ser clicado semanas depois
+_ALERT_ACCESS_TTL = 7 * 86400    # KL-99: 30→7 dias (o link auto-loga a conta no Fluxo C)
 _ALERT_SESSION_TTL = 24 * 3600   # a sessão temporária (cookie) vale 24h
 _ALERT_COOKIE = "klarim_alert"   # cookie da sessão do alerta (distinto do klarim_session)
 
@@ -3983,11 +4215,36 @@ def _set_alert_cookie(resp: Response, token: str) -> None:
                     httponly=True, secure=True, samesite="lax", path="/")
 
 
+async def _alert_autocreate_account(store, email: str, ip: str) -> Optional[dict]:
+    """KL-99 Fluxo C — cria uma conta SEM senha (nível 1) para quem chega pelo link do alerta e
+    ainda não tem conta. O clique no link HMAC é a prova de posse do e-mail → conta nasce
+    `email_confirmed=true`, `source='hmac'`, sem senha. **NÃO** ativa monitoramento (o consentimento
+    é o botão "Sim, monitorar" no resultado). Rate limit 5 auto-criações/h por IP — ao estourar,
+    retorna None (o chamador cai na sessão de alerta view-only). `url=None` → sem auto-claim/vigília."""
+    allowed, _ = await _redis_allow("alert_autocreate", ip, 5, 3600, _alert_autocreate_hits)
+    if not allowed:
+        return None
+    try:
+        user, _ = await _create_account_record(
+            store, email, None, None, None,
+            email_confirmed=True, confirmation_source="hmac", source="hmac")
+        return user
+    except Exception as exc:  # noqa: BLE001 - nunca derruba o acesso ao resultado
+        print(f"[alert-access] auto-criar conta falhou {email}: {exc!r}", flush=True)
+        return None
+
+
 @app.get("/alert-access")
 async def alert_access(token: str = Query(default=""), request: Request = None) -> Response:
-    """KL-82 Slice 3 — handler do LINK do alerta (Fluxo 2). Valida o token HMAC (prova de
-    posse do e-mail), cria a **sessão temporária** (cookie 24h) escopada àquele site e
-    redireciona ao resultado com acesso COMPLETO. Token inválido → home (nunca 5xx)."""
+    """KL-82 Slice 3 + KL-99 Fluxo C — handler do LINK do alerta (Fluxo 2). Valida o token HMAC
+    (prova de posse do e-mail) e redireciona ao resultado com acesso COMPLETO. Token inválido →
+    home (nunca 5xx).
+
+    KL-99: quem clica no link JÁ provou identidade. Se o e-mail tem conta → **loga automaticamente**
+    (cookie de sessão de usuário). Se NÃO tem → cria uma conta sem senha (nível 1) e loga (rate
+    limit 5/h por IP). **Sem** ativar monitoramento — o consentimento é o "Sim, monitorar" no
+    resultado. A sessão de alerta (cookie 24h, view-only) continua sendo setada como fallback (se a
+    auto-criação estourar o limite) e para analytics de conversão."""
     if request is not None:
         allowed, _ = await _redis_allow("alert_access", _client_ip(request), 30, 3600,
                                         _alert_access_attempts)
@@ -4007,8 +4264,20 @@ async def alert_access(token: str = Query(default=""), request: Request = None) 
         await get_target_store().create_alert_session(token_hash, email, tid, expires)
     except Exception as exc:  # noqa: BLE001 - registro nunca bloqueia o acesso
         print(f"[alert-access] create_alert_session falhou tid={tid}: {exc!r}", flush=True)
+    # KL-99 Fluxo C: loga a conta existente OU cria uma sem senha (nível 1) e loga.
+    user = None
+    try:
+        store = get_target_store()
+        user = await store.get_user_by_email(email) if email else None
+        if user is None and email and request is not None:
+            user = await _alert_autocreate_account(store, email, _client_ip(request))
+    except Exception as exc:  # noqa: BLE001 - o acesso ao resultado nunca depende disto
+        print(f"[alert-access] login/auto-criação falhou {email}: {exc!r}", flush=True)
+        user = None
     resp = RedirectResponse(url=f"/scan?url={quote('https://' + domain, safe='')}", status_code=302)
-    _set_alert_cookie(resp, sess_token)
+    _set_alert_cookie(resp, sess_token)      # fallback view-only + analytics
+    if user:  # login real (nível 1/2/3): o resultado abre já logado (variante HMAC "Sim, monitorar")
+        _set_session_cookie(resp, auth_users.create_user_token(user))
     return resp
 
 
@@ -4050,6 +4319,53 @@ async def signup_from_alert(body: SignupFromAlertBody, request: Request) -> JSON
     except Exception as exc:  # noqa: BLE001
         print(f"[signup-from-alert] mark_converted falhou: {exc!r}", flush=True)
     return _account_session_response(user, claim)
+
+
+class SignupInlineBody(BaseModel):
+    email: str
+    domain: str
+
+
+@app.post("/account/signup-inline")
+async def signup_inline(body: SignupInlineBody, request: Request) -> dict:
+    """KL-99 Fluxo D — cadastro SEM senha no resultado do scan (chegada orgânica). `{email, domain}`
+    → cria conta nível 1 (`source='inline'`, `email_confirmed=false`), vincula o domínio como site
+    PENDENTE de monitoramento (consentimento explícito do usuário; **sem** vigílias — a confirmação
+    do e-mail as ativa) e envia o e-mail de confirmação (link POST-only anti pre-fetch, KL-82 S2).
+    Retorna `{status: confirmation_sent}` (NÃO loga — só após confirmar) ou `{status: already_exists}`.
+    Anti-abuso: blocklist de descartáveis + rate limit 3/h por IP."""
+    ip = _client_ip(request)
+    email = (body.email or "").lower().strip()
+    if is_disposable_email(email):
+        raise HTTPException(status_code=400,
+                            detail="Por favor, use um e-mail permanente para criar sua conta.")
+    allowed, retry = await _redis_allow("signup_inline", ip, 3, 3600, _signup_inline_hits)
+    if not allowed:
+        raise HTTPException(status_code=429,
+                            detail="Muitos cadastros deste dispositivo. Tente novamente em alguns minutos.",
+                            headers={"Retry-After": str(retry)})
+    if not _ACCOUNT_EMAIL_RE.match(email):
+        raise HTTPException(status_code=400, detail="E-mail inválido.")
+    store = get_target_store()
+    if await store.get_user_by_email(email):
+        return {"status": "already_exists", "email": _mask_email(email)}
+    user, _ = await _create_account_record(
+        store, email, None, None, None, email_confirmed=False, source="inline")
+    if user is None:  # corrida: e-mail criado entre o check e o insert
+        return {"status": "already_exists", "email": _mask_email(email)}
+    # Vincula o domínio como site PENDENTE (consentimento explícito). Domínio público/institucional
+    # NÃO é monitorável (o scan é livre; monitorar não). Vigílias só na confirmação do e-mail.
+    domain = _norm_domain(body.domain or "")
+    try:
+        blocked, _reason = domain_guard.is_blocked_domain(domain)
+        if domain and not blocked:
+            tid = await _resolve_or_create_target(f"https://{domain}", source="inline")
+            if tid:
+                await store.link_user_site(user["id"], tid, is_owner=False)
+    except Exception as exc:  # noqa: BLE001 - vínculo é best-effort; a conta já foi criada
+        print(f"[signup-inline] vincular {domain} falhou: {exc!r}", flush=True)
+    _spawn(_send_welcome_confirmation(user["id"], email))
+    return {"status": "confirmation_sent", "email": _mask_email(email)}
 
 
 # --------------------------------------------------------------------------- #
@@ -6948,6 +7264,7 @@ async def account_upgrade(body: UpgradeBody, request: Request) -> dict:
     """Cria uma cobrança PIX para subir de plano (free→pro/agency, pro→agency). Retorna o
     QR/copia-e-cola PIX (transparente, sem redirect). Rate limit 10/h/IP."""
     user = await auth_users.require_user(request)
+    _require_level(user, 2)  # KL-99: pagamento/upgrade exige senha (nível ≥ 2)
     allowed, retry = await _redis_allow("upgrade", _client_ip(request), 10, 3600, _upgrade_attempts)
     if not allowed:
         raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde um pouco.",

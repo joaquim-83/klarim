@@ -238,7 +238,10 @@ SITES = [
 # ficarem realistas. Não têm scans nem donos — só target + perfil público.
 FILLERS = {"hotelaria": 12, "saude": 12, "ecommerce": 10, "tecnologia": 8, "servicos": 8}
 
-SEED_EMAILS = ["dono@exemplo.com.br", "tecnico@agencia.com.br", "novo@teste.com.br"]
+SEED_EMAILS = ["dono@exemplo.com.br", "tecnico@agencia.com.br", "novo@teste.com.br",
+               "nivel1@teste.com", "dono3@teste.com"]   # KL-99: níveis de conta
+# KL-99: domínio dedicado do dono verificado (nível 3), limpo junto com os demais.
+KL99_VERIFIED_DOMAIN = "verificado-exemplo.com.br"
 
 
 def _sem_for(score: int) -> str:
@@ -312,7 +315,7 @@ def run() -> None:
     conn.autocommit = False
     cur = conn.cursor()
     try:
-        all_domains = [s["domain"] for s in SITES]
+        all_domains = [s["domain"] for s in SITES] + [KL99_VERIFIED_DOMAIN]  # KL-99
         for sector, n in FILLERS.items():
             all_domains += [f"filler-{sector}-{i}.com.br" for i in range(n)]
 
@@ -364,6 +367,8 @@ def run() -> None:
                 "VALUES (%s,%s,'wordpress',%s,'scanned','institucional','seed') RETURNING id",
                 (url, domain, s["sector"]))
             tid = cur.fetchone()[0]
+            if idx == 0:
+                first_site_tid = tid   # KL-99: alvo da verificação de domínio PENDENTE (teste)
 
             # 10 scans (mais antigo -> mais recente). O último tem os 48 checks.
             trend = s["trend"]
@@ -450,6 +455,63 @@ def run() -> None:
                      f"Site de exemplo do setor {sector} (preenchimento p/ benchmark).", sector))
                 n_fillers += 1
 
+        # ---- KL-99: usuários de teste dos níveis de conta --------------------- #
+        # Nível 1 — conta SEM senha (chegou pelo link do alerta → source hmac, e-mail confirmado).
+        cur.execute(
+            "INSERT INTO users (email, password_hash, name, max_sites, is_active, email_confirmed, "
+            "  email_confirmed_at, confirmation_source, role, account_level, source) "
+            "VALUES (%s, NULL, %s, 1, TRUE, TRUE, %s, 'hmac', 'owner', 1, 'hmac')",
+            ("nivel1@teste.com", "Ana Sem-Senha", NOW))
+
+        # Nível 3 — dono verificado por controle de domínio: conta + Pro trial + site próprio.
+        cur.execute(
+            "INSERT INTO users (email, password_hash, name, max_sites, is_active, email_confirmed, "
+            "  email_confirmed_at, confirmation_source, role, account_level, source) "
+            "VALUES (%s, %s, %s, 5, TRUE, TRUE, %s, 'link', 'owner', 3, 'signup') RETURNING id",
+            ("dono3@teste.com", pw, "Carlos Dono", NOW))
+        u_l3 = cur.fetchone()[0]
+        cur.execute(
+            "INSERT INTO subscriptions (account_id, plan_id, status, trial_ends_at, started_at) "
+            "VALUES (%s,'pro','trial',%s,%s)", (u_l3, NOW + timedelta(days=20), NOW))
+        vd = KL99_VERIFIED_DOMAIN
+        cur.execute(
+            "INSERT INTO targets (url, domain, platform, sector, status, site_type, source, "
+            "  last_scan_score, last_scan_at, owner_verified) "
+            "VALUES (%s,%s,'wordpress','servicos','scanned','institucional','seed',88,%s,TRUE) "
+            "RETURNING id", (f"https://{vd}", vd, NOW - timedelta(days=1)))
+        t_v = cur.fetchone()[0]
+        vr = _build_results([], [])
+        vcj = _checks_json(f"https://{vd}", 88, "amarelo", vr, NOW - timedelta(days=1))
+        vsb = vcj["score"]
+        cur.execute(
+            "INSERT INTO scans (target_id, url, score, semaphore, pass_count, fail_count, "
+            "  inconclusive_count, checks_json, source, status, scanned_at) "
+            "VALUES (%s,%s,88,'amarelo',%s,%s,%s,%s,'manual','ok',%s) RETURNING id",
+            (t_v, f"https://{vd}", vsb["passed"], vsb["failed"], vsb["inconclusive"],
+             json.dumps(vcj), NOW - timedelta(days=1)))
+        cur.execute("UPDATE targets SET last_scan_id=%s WHERE id=%s", (cur.fetchone()[0], t_v))
+        cur.execute(
+            "INSERT INTO site_profile (target_id, company_name, phone, description, business_type, "
+            "  public_visible, edited_by_admin, edited_by_admin_at) "
+            "VALUES (%s,%s,%s,%s,'servicos',TRUE,TRUE,%s)",
+            (t_v, "Serviços Verificados Ltda", "(11) 4000-0000",
+             "Empresa verificada de exemplo (dono nível 3).", NOW))
+        cur.execute(
+            "INSERT INTO user_sites (user_id, target_id, is_owner, added_at, verified_at, "
+            "  verification_method) VALUES (%s,%s,TRUE,%s,%s,'meta_tag')", (u_l3, t_v, NOW, NOW))
+        cur.execute(
+            "INSERT INTO ownership_verifications (user_id, target_id, method, token, domain, "
+            "  status, verified_at, expires_at) "
+            "VALUES (%s,%s,'meta_tag',%s,%s,'verified',%s, NOW() + INTERVAL '7 days')",
+            (u_l3, t_v, "seedtok-verified-000000000000000001", vd, NOW))
+
+        # ownership_verification PENDENTE (dono@exemplo no 1º site) — testa o fluxo de verificação.
+        cur.execute(
+            "INSERT INTO ownership_verifications (user_id, target_id, method, token, domain, "
+            "  status, expires_at) "
+            "VALUES (%s,%s,'dns_txt',%s,%s,'pending', NOW() + INTERVAL '7 days')",
+            (u1, first_site_tid, "seedtok-pending-0000000000000000002", SITES[0]["domain"]))
+
         conn.commit()
     except Exception:
         conn.rollback()
@@ -461,7 +523,9 @@ def run() -> None:
     print(f"Seed: {len(SEED_EMAILS)} users, {len(SITES)} sites, {n_scans} scans, "
           f"10 vigilias criados (+ {n_fillers} sites de preenchimento p/ benchmark).",
           flush=True)
-    print("Login de teste: dono@exemplo.com.br / senha dev123456", flush=True)
+    print("Login de teste: dono@exemplo.com.br / senha dev123456 (nível 2)", flush=True)
+    print("KL-99: nivel1@teste.com (sem senha, nível 1) · dono3@teste.com / dev123456 "
+          "(dono verificado, nível 3)", flush=True)
 
 
 if __name__ == "__main__":

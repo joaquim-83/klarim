@@ -370,3 +370,25 @@ ilha React `ClaimSite`). A propriedade tem **2 tiers**, ambos server-authoritati
 - **Domain guard** (`api/domain_guard.py`, puro): domínio público/institucional
   (gmail.com, `.gov.br`…) **não é monitorável** — 422 no add-site, sem CTA no perfil; o
   **scan continua livre**. Limpeza retroativa: `POST /admin/clean-blocked-sites`.
+
+### Conta sem senha + 3 níveis de confiança (KL-99)
+
+`users.account_level` (1 sem senha · 2 com senha · 3 dono verificado por domínio) é um eixo
+NOVO, distinto do `access_level` do KL-82 (visibilidade do resultado). Contas legadas → 2.
+`password_hash` é nullable. `users.source` = origem (`signup`|`hmac`|`inline`).
+
+- **Fluxo C — auto-conta via HMAC (`GET /alert-access`):** o clique no link do alerta prova posse
+  do e-mail. E-mail com conta → **loga**; sem conta → cria conta **sem senha** (nível 1,
+  `source='hmac'`, confirmada) e loga (rate limit 5/h/IP). **NÃO** ativa monitoramento — o
+  consentimento é o "Sim, monitorar" no resultado (`MonitorConsent.jsx` → `POST /account/sites`).
+  A sessão de alerta view-only (24h) segue como fallback + analytics.
+- **Fluxo D — `POST /account/signup-inline {email, domain}`:** conta nível 1 (`source='inline'`,
+  não confirmada) + domínio vinculado como site **PENDENTE** (sem vigília) + e-mail de confirmação;
+  `{status:confirmation_sent|already_exists}` (rate limit 3/h/IP). A **confirmação do e-mail ativa
+  o monitoramento** (`_activate_monitoring_on_confirm` cria as vigílias) e **loga** a conta sem
+  senha (senão ficaria presa) → dashboard. Front: `InlineSignup.jsx`.
+- **Escada de nível:** `POST /account/set-password` (1→2); `POST /account/sites/{id}/verify/{start,
+  check}` (2→3, meta_tag|html_file|dns_txt → `targets.owner_verified`). `@require_level(n)` gateia
+  ações sensíveis (403 estruturado → o dashboard `LevelPrompt.jsx` abre o modal certo e re-executa
+  a ação). Verificação estende a tabela `ownership_verifications` do KL-68 (colunas `token`/`domain`).
+- **`/cadastrar`** virou 1 campo (só e-mail) → `POST /account/signup` sem senha (nível 1).

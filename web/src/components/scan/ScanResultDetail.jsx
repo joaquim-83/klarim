@@ -12,9 +12,11 @@
 // senha), nunca pelo dispositivo.
 import { useEffect, useState } from 'react';
 import {
-  viewFlags, scoreHeadline, shareLabel, ctaCopy, maskedEmailOf, reportUrls,
+  viewFlags, scoreHeadline, shareLabel, reportUrls,
 } from '../../lib/scanView.js';
 import { safeScanDomain } from '../../lib/scanTitle.js';
+import InlineSignup from './InlineSignup.jsx';
+import MonitorConsent from './MonitorConsent.jsx';
 
 const card = 'rounded-2xl border border-slate-800 bg-slate-900/60 p-6 sm:p-8';
 const btn =
@@ -28,9 +30,6 @@ const btnGhost =
 const btnAccent =
   'inline-flex min-h-[44px] items-center justify-center gap-2 rounded-xl bg-brand-500 px-4 py-3 ' +
   'text-sm font-semibold text-[var(--accent-text)] transition-colors hover:bg-brand-400 active:scale-[0.98]';
-const inputCls =
-  'h-12 w-full rounded-xl border border-slate-700 bg-slate-800/80 px-4 text-base text-white ' +
-  'placeholder:text-slate-500 outline-none transition-colors focus:border-brand-500 focus:ring-2 focus:ring-brand-500/30';
 
 const SEMA = {
   verde: { dot: '🟢', ring: 'ring-emerald-500/40', text: 'text-emerald-400' },
@@ -70,11 +69,16 @@ export default function ScanResultDetail({ result, url = '', onRefresh = null })
     </div>
   );
 
-  // Bloco lateral: CTA de conta (quem não tem) / confirme e-mail (unconfirmed) / monitorar (confirmed).
+  // Bloco lateral (KL-99 — 2 variantes por SESSÃO, não por dispositivo):
+  //  · logado (confirmed — inclui quem chegou pelo alerta e foi auto-logado no Fluxo C) →
+  //    consentimento "Sim, monitorar" (SEM e-mail);
+  //  · logado mas não confirmado (unconfirmed) → confirme o e-mail;
+  //  · não logado (anonymous / alert_session sem auto-login) → cadastro SEM senha (só e-mail).
+  const risksCount = result.risks_total ?? (result.risk_summary?.risks?.length || 0);
   let aside = null;
-  if (flags.showCTA) aside = <AccountCTA flags={flags} result={result} domain={domain} url={url} />;
+  if (flags.level === 'confirmed') aside = <MonitorConsent domain={domain} url={url} />;
   else if (flags.level === 'unconfirmed') aside = <ConfirmEmailCTA />;
-  else aside = <MonitorNote domain={domain} />;
+  else aside = <InlineSignup domain={domain} risksCount={risksCount} url={url} />;
 
   return (
     <div className="space-y-6">
@@ -211,117 +215,6 @@ function ShareRow({ result, domain, flags, url }) {
   );
 }
 
-// --- Bloco CTA de conta (some para quem já tem conta) ---------------------------------------- #
-// Orgânico: e-mail + senha (signup inline). Alerta: só senha (e-mail confirmado via HMAC no
-// backend; mostrado mascarado). Benefícios em linguagem humana (KL-89 item 3/4).
-function AccountCTA({ flags, result, domain, url }) {
-  const copy = ctaCopy(flags.alertVisitor, domain);
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState('');
-  const [existing, setExisting] = useState(false);
-  const maskedEmail = maskedEmailOf(result);
-
-  async function submit(e) {
-    e.preventDefault();
-    setError(''); setExisting(false);
-    if (password.length < 8) return setError('A senha precisa ter ao menos 8 caracteres.');
-    window.klarimTrack?.('signup_inline_clicked', { via: flags.alertVisitor ? 'alert' : 'organic' }, url);
-    setBusy(true);
-    try {
-      if (flags.passwordOnly) {
-        // Fluxo 2 (KL-82 Slice 3): e-mail vem do cookie HMAC → só senha.
-        const res = await fetch('/api/account/signup-from-alert', {
-          method: 'POST', credentials: 'include',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ password }),
-        });
-        const data = await res.json().catch(() => ({}));
-        setBusy(false);
-        if (res.ok && data.existing_account) { setExisting(true); return; }
-        if (res.ok) {
-          window.klarimTrack?.('account_created_alert', {}, url);
-          window.klarimTrack?.('alert_session_converted', {}, url);
-          window.location.href = `/dashboard?claimed=${encodeURIComponent(domain)}`;
-          return;
-        }
-        setError(data.detail || 'Não foi possível criar a conta.');
-        return;
-      }
-      // Orgânico: e-mail + senha (KL-82 Slice 2). Sem código; conta na hora + e-mail de confirmação.
-      const res = await fetch('/api/account/signup', {
-        method: 'POST', credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password, url: url || undefined }),
-      });
-      const data = await res.json().catch(() => ({}));
-      setBusy(false);
-      if (res.ok) {
-        window.klarimTrack?.('account_created', {}, url);
-        const c = data.claim;
-        if (c?.site_added && c?.domain) {
-          window.location.href = `/dashboard?${c.is_owner ? 'claimed' : 'added'}=${encodeURIComponent(c.domain)}`;
-        } else {
-          window.location.href = '/dashboard';
-        }
-        return;
-      }
-      if (res.status === 409) { setExisting(true); return; }
-      if (res.status === 400 && /descart|permanente/i.test(data.detail || '')) {
-        return setError('Use um e-mail permanente para criar sua conta.');
-      }
-      if (res.status === 429) return setError('Limite de cadastros atingido. Tente novamente mais tarde.');
-      setError(data.detail || 'Não foi possível criar a conta.');
-    } catch {
-      setBusy(false);
-      setError('Falha de conexão. Tente novamente.');
-    }
-  }
-
-  const loginHref = `/entrar?redirect=${encodeURIComponent('/dashboard')}${!flags.passwordOnly && email ? `&email=${encodeURIComponent(email)}` : ''}`;
-
-  return (
-    <div className={`${card} border-brand-500/30 bg-brand-500/5`}>
-      <h3 className="text-lg font-bold text-white">📊 {copy.title}</h3>
-      <ul className="mt-3 space-y-1.5 text-sm text-slate-300">
-        {copy.benefits.map((b) => (
-          <li key={b} className="flex items-start gap-2"><span className="text-brand-400" aria-hidden="true">·</span>{b}</li>
-        ))}
-      </ul>
-
-      {existing ? (
-        <p className="mt-4 text-sm text-slate-300">
-          Já existe uma conta com este e-mail.{' '}
-          <a href={loginHref} className="text-brand-400 hover:text-brand-300">Entrar →</a>
-        </p>
-      ) : (
-        <form onSubmit={submit} className="mt-4 flex flex-col gap-3">
-          {flags.passwordOnly ? (
-            // E-mail read-only (mascarado) num hidden input — o valor real fica no cookie, nunca no HTML.
-            maskedEmail && (
-              <p className="text-sm text-slate-400">
-                Seu e-mail (<span className="font-medium text-slate-200">{maskedEmail}</span>) já está confirmado.
-              </p>
-            )
-          ) : (
-            <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)}
-              autoComplete="email" placeholder="seu@email.com.br" className={inputCls} />
-          )}
-          <input type="password" required minLength={8} value={password}
-            onChange={(e) => setPassword(e.target.value)} autoComplete="new-password"
-            placeholder="crie uma senha (mín. 8)" className={inputCls} />
-          {error && <p className="text-sm text-red-300">{error}</p>}
-          <button type="submit" disabled={busy} className={`${btn} w-full`}>
-            {busy ? 'Criando…' : copy.button}
-          </button>
-        </form>
-      )}
-      <p className="mt-3 text-xs text-slate-500">Sem cartão. Pesquisas ilimitadas.</p>
-    </div>
-  );
-}
-
 // unconfirmed — já tem conta, falta confirmar o e-mail (sem CTA de "criar conta").
 function ConfirmEmailCTA() {
   return (
@@ -332,22 +225,6 @@ function ConfirmEmailCTA() {
         indicadores de LGPD e baixar o relatório completo.
       </p>
       <a href="/dashboard" className={`${btn} mt-4 w-full`}>Ir para o painel →</a>
-    </div>
-  );
-}
-
-// confirmed — já tem conta e acesso completo; oferece adicionar o site ao monitoramento.
-function MonitorNote({ domain }) {
-  return (
-    <div className={card}>
-      <h3 className="text-base font-bold text-white">✅ Você tem acesso completo</h3>
-      <p className="mt-1 text-sm text-slate-400">
-        Adicione {domain || 'este site'} ao monitoramento para acompanhar a evolução do score e
-        receber alertas.
-      </p>
-      <a href={`/dashboard${domain ? `?add=${encodeURIComponent(domain)}` : ''}`} className={`${btn} mt-4 w-full`}>
-        + Adicionar ao monitoramento
-      </a>
     </div>
   );
 }
@@ -531,10 +408,3 @@ function LockedSection({ title, cta, url }) {
   );
 }
 
-// KL-82 Slice 3 mantido como export secundário para compatibilidade — o AccountCTA já cobre o
-// fluxo do alerta (só senha). Se algum ponto ainda importar AlertSignup, ele continua válido.
-export function AlertSignup({ emailHint, domain, url }) {
-  return <AccountCTA
-    flags={{ alertVisitor: true, passwordOnly: true, showPdf: true }}
-    result={{ alert_email_hint: emailHint }} domain={domain} url={url} />;
-}

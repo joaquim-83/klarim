@@ -418,8 +418,11 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1510 passed** (backend pytest, KL-95: +7) + **96 node --test** (frontend `test:unit`)
+- Testes: **1555 passed** (backend pytest, KL-99: +27) + **98 node --test** (frontend `test:unit`, KL-99: +2)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
+- **Níveis de conta (KL-99):** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado
+  por domínio); contas legadas → 2. Conta sem senha: Fluxo C (link do alerta) / Fluxo D (signup-inline)
+  / `/cadastrar` só e-mail. **Não deployado** (aguarda validação do dono).
 - Workers: **5/5 ativos** (discovery, alert, scan, vigília, rescan)
 - Planos: 8 contas Pro trial · Vigílias: 35 (30 ok, 5 error)
 - E-mail: alertas proativos migrados p/ `alerta@klarim.net` (2026-07-20; klarimscan.com falhou no spam)
@@ -972,6 +975,38 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   próprio técnico; fix: `initialSiteId` da URL → `load(initialSiteId || null)` (owner sem param
   inalterado). +2 testes (`test_technician_mode`, `…_unlinked_404`); relatório em
   `claude/reports/KL-90_experiencia_tecnico_dashboard.md`.
+- **KL-99** — Conta sem senha + 3 níveis de confiança + verificação de domínio ✅ (validado local;
+  **deploy pendente de validação do dono**). Elimina a fricção do `/cadastrar` (convertia 1,1%).
+  **Modelo:** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado por controle de
+  domínio), eixo **distinto** do `access_level` do KL-82. Backfill: **toda conta existente → 2**
+  (`ADD COLUMN … DEFAULT 2`). `password_hash` **nullable**; `users.source` (`signup`|`hmac`|`inline`).
+  **Fluxo C (`GET /alert-access`):** o clique no link HMAC loga a conta existente OU cria conta SEM
+  senha (nível 1, `source=hmac`, confirmada) e loga — rate limit 5/h/IP; **NÃO** ativa monitoramento
+  (consentimento = "Sim, monitorar" no resultado → `MonitorConsent.jsx` → `POST /account/sites`).
+  **Fluxo D (`POST /account/signup-inline {email,domain}`):** conta nível 1 (`source=inline`, não
+  confirmada) + domínio vinculado como site PENDENTE (sem vigília) + e-mail de confirmação; 3/h/IP;
+  `{status:confirmation_sent|already_exists}`. A **confirmação do e-mail ATIVA o monitoramento**
+  (`_activate_monitoring_on_confirm`) e **loga** a conta sem senha → dashboard (senão ficaria presa:
+  não há senha p/ o `/entrar`). `InlineSignup.jsx`. **`POST /account/signup`** com senha opcional
+  (sem senha → nível 1). **`/cadastrar`** virou 1 campo (só e-mail). **`POST /account/set-password`**
+  (1→2; 400 se já tem senha, 422 se não conferem). **`@require_level(n)`** (`_require_level`, 403
+  `{error:insufficient_level, required_level, current_level}`) gateia: nível ≥2 em `PUT /account/me`,
+  `DELETE /account/sites/{id}`, `technician/invite`, `upgrade`; nível ≥3 em `profile-confirm`.
+  **Verificação de domínio (2→3):** `POST /account/sites/{id}/verify/{start,check}` (meta_tag/
+  html_file/dns_txt; token `token_urlsafe(32)`; check 10/h/IP) → `mark_site_verified` + `account_
+  level=3` + `targets.owner_verified`. **Estende** a tabela `ownership_verifications` do KL-68
+  (colunas `token`/`domain`; TTL 7d no INSERT — o fluxo de código do KL-68 fica intacto). **Anti-SSRF:**
+  o fetch usa o domínio de `targets` (não input cru) e o corpo nunca volta ao usuário (só o match).
+  **Cleanup:** `delete_unconfirmed_passwordless_accounts` no `trial_worker` (nível 1 + sem senha +
+  não confirmada + >30d + sem re-login — o site PENDENTE do Fluxo D a isentava da limpeza do KL-82).
+  **Frontend:** `web/src/components/scan/{InlineSignup,MonitorConsent}.jsx` (2 variantes por SESSÃO,
+  não por dispositivo; `ctaCopy`/`AccountCTA` removidos), `dashboard-v2/LevelPrompt.jsx`
+  (`useLevelGate` intercepta a ação e re-executa após o modal + `SetPasswordModal`/`VerifyDomainModal`/
+  `LevelBadge`). **Testes:** +27 backend (`test_kl99_levels.py`) + 98 `node --test`. **Seed dev:**
+  `nivel1@teste.com` (sem senha) · `dono3@teste.com`/`dev123456` (dono verificado nível 3). Relatório:
+  `claude/reports/KL-99_conta_sem_senha_niveis.md`. **Fluxo C** auto-loga conta EXISTENTE (com senha)
+  pelo link do alerta (magic-link); **TTL do `alert_access` reduzido 30→7 dias** (`_ALERT_ACCESS_TTL`
+  em `notifier/email_client.py` + `api/main.py`, em sincronia) p/ limitar risco de link vazado.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

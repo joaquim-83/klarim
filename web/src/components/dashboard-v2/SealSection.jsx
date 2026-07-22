@@ -4,7 +4,7 @@
 import { useState } from 'react';
 import { card } from './shared.js';
 
-export default function SealSection({ domain, planName }) {
+export default function SealSection({ domain, planName, level = 3, onRequireVerify }) {
   const [theme, setTheme] = useState('auto');
   const [size, setSize] = useState('compact');
   const [copied, setCopied] = useState(false);
@@ -30,6 +30,23 @@ export default function SealSection({ domain, planName }) {
         <a href="/planos" className="mt-3 inline-flex min-h-[44px] items-center rounded-xl bg-brand-500 px-5 text-sm font-semibold text-[var(--accent-text)] hover:bg-brand-400">
           Fazer upgrade para liberar o selo →
         </a>
+      </div>
+    );
+  }
+
+  // KL-99 (card 3b) — exibir/copiar o selo exige DONO VERIFICADO (nível 3). Plano pago mas ainda
+  // não verificado → CTA de verificação (o selo é uma afirmação pública de posse do domínio).
+  if (level < 3) {
+    return (
+      <div className={`${card} border-brand-500/30 bg-brand-500/5`}>
+        <h2 className="text-lg font-bold text-white">🛡️ Selo "Monitorado por Klarim"</h2>
+        <p className="mt-1 text-sm text-slate-400">
+          Verifique que você é o dono de {domain || 'este site'} para exibir o selo no seu site.
+        </p>
+        <button type="button" onClick={onRequireVerify}
+          className="mt-3 inline-flex min-h-[44px] items-center rounded-xl bg-brand-500 px-5 text-sm font-semibold text-[var(--accent-text)] hover:bg-brand-400">
+          Verificar propriedade →
+        </button>
       </div>
     );
   }

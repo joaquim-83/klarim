@@ -115,6 +115,9 @@ class TrialWorker:
         # ou voltou a logar. Roda 1x/dia junto com o trial (já dentro do gate de hora).
         try:
             deleted = await self.store.delete_unconfirmed_inactive_accounts(older_than_days=30)
+            # KL-99 — contas SEM SENHA (nível 1) não confirmadas + abandonadas (o vínculo de site
+            # PENDENTE do signup inline as isenta da limpeza acima, que exige ausência de site).
+            deleted += await self.store.delete_unconfirmed_passwordless_accounts(older_than_days=30)
             stats["unconfirmed_cleaned"] = deleted
             if deleted:
                 print(f"[trial] cleanup: {deleted} conta(s) não confirmada(s) removida(s)", flush=True)

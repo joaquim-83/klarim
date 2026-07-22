@@ -122,6 +122,9 @@ class FakeStore:
         self.cleanup_called = getattr(self, "cleanup_called", 0) + 1
         return getattr(self, "cleanup_returns", 0)
 
+    async def delete_unconfirmed_passwordless_accounts(self, older_than_days=30):  # KL-99
+        return getattr(self, "cleanup_pwless_returns", 0)
+
     async def ensure_schema(self):
         pass
 

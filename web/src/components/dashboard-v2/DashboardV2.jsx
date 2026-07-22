@@ -22,6 +22,7 @@ import TechnicianView from './TechnicianView.jsx';              // modo técnico
 import ConfirmEmailBanner from './ConfirmEmailBanner.jsx';      // regressão: banner confirmar e-mail
 import Modal from './Modal.jsx';
 import AddSiteModal from './AddSiteModal.jsx';
+import { useLevelGate, LevelBadge } from './LevelPrompt.jsx';    // KL-99 — prompts de nível de conta
 
 export default function DashboardV2({ user = {} }) {
   const [data, setData] = useState(null);
@@ -39,6 +40,9 @@ export default function DashboardV2({ user = {} }) {
     (typeof window !== 'undefined' ? new URLSearchParams(window.location.search).get('site_id') : '') || '');
 
   const isTech = user.role === 'technician' || user.role === 'both';
+  // KL-99 — gate de nível de conta (sem senha → senha → dono verificado). Intercepta ações
+  // sensíveis e roda a ação original ao concluir o prompt certo.
+  const { ensureLevel, levelModal, level } = useLevelGate(user);
 
   const load = useCallback(async (siteId, keepData) => {
     setError(''); if (!keepData) setData(null);
@@ -66,8 +70,11 @@ export default function DashboardV2({ user = {} }) {
     load(selectedId, true);
   }
 
-  // reg 4 — remover site do monitoramento (com confirmação).
-  async function onRemove(site) {
+  // reg 4 — remover site do monitoramento (com confirmação). KL-99: exige senha (nível ≥ 2).
+  function onRemove(site) {
+    ensureLevel(2, {}, () => doRemove(site));
+  }
+  async function doRemove(site) {
     if (!window.confirm(`Remover ${site.domain} do monitoramento? As vigílias desse site serão desativadas (os dados e o histórico são mantidos).`)) return;
     const { ok } = await apiDelete(`/account/sites/${site.id}`);
     if (ok) { setToast(`${site.domain} removido do monitoramento`); load(null); }
@@ -134,13 +141,20 @@ export default function DashboardV2({ user = {} }) {
             <Banner tone="ok">🎉 Score perfeito! Compartilhe com seus clientes o selo de segurança do seu site.</Banner>
           )}
 
+          {/* KL-99 (card 3c) — indicador de nível: sem senha / verificada / dono verificado */}
+          <LevelBadge level={level}
+            onSetPassword={() => ensureLevel(2, {}, () => {})}
+            onVerify={() => ensureLevel(3, { targetId, domain: site.domain }, () => {})} />
+
           <ScoreCard site={site} benchmark={data.benchmark} scanning={scanning}
-            onScan={onScan} onToast={setToast} onLinkTechnician={() => setTechModal(true)} />
+            onScan={onScan} onToast={setToast}
+            onLinkTechnician={() => ensureLevel(2, {}, () => setTechModal(true))} />
 
           <MonitoringSection domain={site.domain} monitoring={data.monitoring} />
 
-          {/* reg 1 — selo Klarim */}
-          <SealSection domain={site.domain} planName={(data.plan || {}).name} />
+          {/* reg 1 — selo Klarim (KL-99: exibir/copiar o selo exige dono verificado, nível 3) */}
+          <SealSection domain={site.domain} planName={(data.plan || {}).name} level={level}
+            onRequireVerify={() => ensureLevel(3, { targetId, domain: site.domain }, () => {})} />
 
           <CategoryBar categories={data.categories} siteType={site.site_type}
             onForward={() => setTechModal(true)} />
@@ -172,6 +186,7 @@ export default function DashboardV2({ user = {} }) {
         <AddSiteModal onClose={() => setAddModal(false)}
           onAdded={() => { setToast('✅ Site adicionado ao monitoramento'); load(null); }} />
       )}
+      {levelModal}
       <Toast toast={toast} />
     </div>
   );

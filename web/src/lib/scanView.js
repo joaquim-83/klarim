@@ -67,27 +67,38 @@ export function shareLabel(alertVisitor) {
   return alertVisitor ? 'Compartilhe seu resultado' : 'Compartilhe este resultado';
 }
 
-// Copy do bloco CTA de conta (título/benefícios/botão), adaptada por origem. Benefícios em
-// linguagem HUMANA (não features técnicas): "sair do ar", "certificados vencendo", "evolução".
-export function ctaCopy(alertVisitor, domain) {
-  const benefits = [
-    'Saiba na hora se ele sair do ar',
-    'Receba alertas se os certificados vencerem',
-    'Acompanhe a evolução do score',
-  ];
-  if (alertVisitor) {
-    return {
-      title: 'Monitore seu site gratuitamente',
-      benefits,
-      button: 'Criar conta →',
-      passwordOnly: true, // e-mail já confirmado via HMAC → só falta a senha
-    };
-  }
+// KL-99 — benefícios do monitoramento em linguagem HUMANA (não features técnicas). Compartilhados
+// pelo CTA orgânico (InlineSignup) e pelo consentimento do logado (MonitorConsent).
+export const MONITOR_BENEFITS = [
+  'Saiba na hora se ele sair do ar',
+  'Alertas se os certificados vencerem',
+  'Acompanhe a evolução do score',
+];
+
+// KL-99 Fluxo D — copy do CTA de cadastro SEM senha (visitante orgânico, não logado). Só e-mail →
+// link de confirmação (a conta nasce sem senha, nível 1). Headline usa a contagem de riscos.
+export function inlineSignupCopy(risksCount) {
+  const n = Number(risksCount) || 0;
+  const headline = n > 0
+    ? `${n} ${n === 1 ? 'risco encontrado' : 'riscos encontrados'} neste site.`
+    : 'Monitore este site gratuitamente.';
   return {
-    title: domain ? `Monitore ${domain} gratuitamente` : 'Monitore este site gratuitamente',
-    benefits,
-    button: 'Criar conta gratuita →',
-    passwordOnly: false, // orgânico → e-mail + senha
+    headline,
+    subtitle: 'Quer ser avisado quando algo mudar?',
+    benefits: MONITOR_BENEFITS,
+    button: 'Monitorar',
+    note: 'Gratuito. Sem spam. Cancele quando quiser.',
+  };
+}
+
+// KL-99 Fluxo C — copy do consentimento de monitoramento (visitante JÁ logado, ex.: chegou pelo
+// link do alerta e a conta foi criada/logada). Sem campo de e-mail — só o botão "Sim, monitorar".
+export function monitorConsentCopy(domain) {
+  return {
+    title: domain ? `Quer monitorar ${domain}?` : 'Quer monitorar este site?',
+    benefits: MONITOR_BENEFITS,
+    button: 'Sim, monitorar',
+    note: 'Gratuito. Cancele quando quiser.',
   };
 }
 

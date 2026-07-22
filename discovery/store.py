@@ -364,6 +364,16 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS confirmation_source VARCHAR(20);  -- 
 UPDATE users SET email_confirmed = true, confirmation_source = 'code', email_confirmed_at = created_at
 WHERE email_confirmed IS NULL;
 
+-- KL-99 (conta sem senha + 3 níveis de confiança). `account_level`: 1=sem senha, 2=com senha,
+-- 3=dono verificado por controle de domínio. O `DEFAULT 2` no ADD COLUMN faz o backfill numa
+-- tacada: TODA conta existente tem senha → nível 2 (decisão do dono: "all existing → 2"). Os
+-- fluxos sem senha (hmac/inline) criam nível 1 EXPLÍCITO. `password_hash` passa a ser NULLABLE
+-- (a conta nível 1 não tem senha). `source`: origem da conta — 'signup' | 'hmac' (link do alerta,
+-- Fluxo C) | 'inline' (CTA do resultado, Fluxo D).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS account_level INTEGER DEFAULT 2;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS source VARCHAR(20) DEFAULT 'signup';
+ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
+
 -- Vínculo usuário ↔ target (site monitorado). is_owner = reivindicou propriedade.
 CREATE TABLE IF NOT EXISTS user_sites (
     id SERIAL PRIMARY KEY,
@@ -397,6 +407,16 @@ CREATE TABLE IF NOT EXISTS ownership_verifications (
 );
 CREATE INDEX IF NOT EXISTS idx_ownership_verif_user_target ON ownership_verifications(user_id, target_id);
 CREATE INDEX IF NOT EXISTS idx_ownership_verif_status ON ownership_verifications(status);
+
+-- KL-99 — verificação de propriedade por CONTROLE DE DOMÍNIO (meta tag / arquivo HTML / DNS
+-- TXT). Reusa a tabela do KL-68 (que era só código-ao-contact_email): adiciona `token` (segredo
+-- do desafio, `secrets.token_urlsafe(32)`) e `domain`. O `method` passa a aceitar também
+-- 'meta_tag' | 'html_file' | 'dns_txt'. O TTL destes desafios é 7 dias (setado no INSERT, não no
+-- DEFAULT do schema, que segue 30 min para o fluxo de código do KL-68). Verificado → dono nível 3.
+ALTER TABLE ownership_verifications ADD COLUMN IF NOT EXISTS token VARCHAR(64);
+ALTER TABLE ownership_verifications ADD COLUMN IF NOT EXISTS domain VARCHAR(253);
+-- Marca no alvo que a propriedade foi comprovada por controle de domínio (dono nível 3).
+ALTER TABLE targets ADD COLUMN IF NOT EXISTS owner_verified BOOLEAN DEFAULT FALSE;
 
 -- KL-82 Slice 3 — sessão temporária do alerta (Fluxo 2). Quando o destinatário clica no
 -- link HMAC do alerta, ganha acesso COMPLETO ao resultado daquele site (24h) sem conta.
@@ -2190,32 +2210,39 @@ class TargetStore:
     # --- contas de usuário (KL-51 f3) -------------------------------------- #
 
     _USER_COLS = ("id", "email", "name", "plan", "max_sites", "created_at",
-                  "last_login_at", "is_active", "role", "email_confirmed")
+                  "last_login_at", "is_active", "role", "email_confirmed", "account_level")
 
-    async def create_user(self, email: str, password_hash: str,
+    async def create_user(self, email: str, password_hash: Optional[str],
                           name: Optional[str] = None,
                           role: str = "owner",
                           email_confirmed: bool = True,
-                          confirmation_source: Optional[str] = None) -> Optional[Dict[str, Any]]:
+                          confirmation_source: Optional[str] = None,
+                          source: str = "signup") -> Optional[Dict[str, Any]]:
         """Cria um usuário. `role`: owner|technician|both (KL-44 P3). `email_confirmed`
         (KL-82 Slice 2): `False` no signup sem código (confirma depois via link); `True`
         no fluxo legado de código já validado. `confirmation_source` sobrescreve a origem
         ('hmac' no signup-from-alert, KL-82 Slice 3); default 'code' quando já confirmado.
+        KL-99: `password_hash` pode ser ``None`` (conta SEM senha) → `account_level=1`; com senha
+        → `account_level=2`. `source` = origem da conta ('signup'|'hmac'|'inline').
         Retorna o dict do user (sem hash) ou ``None`` se o e-mail já existe (viola a UNIQUE)."""
         r = role if role in ("owner", "technician", "both") else "owner"
         # origem: override explícito > 'code' (confirmado na criação) > NULL (confirma por link).
         src = confirmation_source if confirmation_source is not None else (
             "code" if email_confirmed else None)
+        # KL-99: nível deriva da presença de senha (1=sem senha, 2=com senha).
+        level = 2 if password_hash else 1
+        acct_src = source if source in ("signup", "hmac", "inline") else "signup"
 
         def _fn(cur):
             try:
                 cur.execute(
                     "INSERT INTO users (email, password_hash, name, role, email_confirmed, "
-                    "email_confirmed_at, confirmation_source) "
+                    "email_confirmed_at, confirmation_source, account_level, source) "
                     "VALUES (%s, %s, %s, %s, %s, "
-                    + ("NOW()" if email_confirmed else "NULL") + ", %s) "
+                    + ("NOW()" if email_confirmed else "NULL") + ", %s, %s, %s) "
                     "RETURNING " + ", ".join(self._USER_COLS),
-                    (email.lower().strip(), password_hash, name, r, email_confirmed, src))
+                    (email.lower().strip(), password_hash, name, r, email_confirmed, src,
+                     level, acct_src))
             except Exception:  # noqa: BLE001 - e-mail duplicado (UNIQUE) → None
                 return None
             return self._rows_to_dicts(cur)[0]
@@ -2249,6 +2276,28 @@ class TargetStore:
                 "WHERE u.email_confirmed IS NOT TRUE "
                 "  AND u.created_at < NOW() - (%s * INTERVAL '1 day') "
                 "  AND NOT EXISTS (SELECT 1 FROM user_sites s WHERE s.user_id = u.id) "
+                "  AND (u.last_login_at IS NULL "
+                "       OR u.last_login_at <= u.created_at + INTERVAL '1 hour') "
+                "RETURNING u.id",
+                (days,))
+            return len(cur.fetchall())
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def delete_unconfirmed_passwordless_accounts(self, older_than_days: int = 30) -> int:
+        """KL-99 — remove contas SEM SENHA (nível 1) NÃO confirmadas, criadas há +N dias e que
+        nunca re-logaram (`last_login_at` só o toque do signup). Diferente da limpeza do KL-82,
+        NÃO exige ausência de site: o signup inline vincula um site PENDENTE (nunca ativado, sem
+        vigília) — uma conta assim, sem senha e nunca confirmada, é abandonada. O FK CASCADE
+        limpa `user_sites`/`ownership_verifications`. Retorna quantas foram removidas."""
+        days = int(older_than_days)
+
+        def _fn(cur):
+            cur.execute(
+                "DELETE FROM users u "
+                "WHERE u.email_confirmed IS NOT TRUE "
+                "  AND u.account_level = 1 AND u.password_hash IS NULL "
+                "  AND u.created_at < NOW() - (%s * INTERVAL '1 day') "
                 "  AND (u.last_login_at IS NULL "
                 "       OR u.last_login_at <= u.created_at + INTERVAL '1 hour') "
                 "RETURNING u.id",
@@ -2499,6 +2548,65 @@ class TargetStore:
             "UPDATE ownership_verifications SET status = 'revoked' "
             "WHERE user_id = %s AND target_id = %s AND status IN ('pending', 'verified')",
             (user_id, target_id)))
+
+    # --- KL-99: níveis de conta + verificação de domínio (nível 2 → 3) ----- #
+
+    async def set_user_account_level(self, user_id: int, level: int) -> bool:
+        """KL-99 — eleva o nível da conta (nunca REBAIXA: usa GREATEST). set-password → 2,
+        verificação de domínio → 3. Retorna True se afetou uma linha."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE users SET account_level = GREATEST(COALESCE(account_level, 1), %s) "
+                "WHERE id = %s", (int(level), user_id))
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def create_domain_verification(self, user_id: int, target_id: int, domain: str,
+                                         method: str, token: str) -> Dict[str, Any]:
+        """KL-99 — cria um desafio de verificação de propriedade por CONTROLE DE DOMÍNIO
+        (meta_tag|html_file|dns_txt). Expira desafios de domínio pendentes anteriores do
+        mesmo (usuário, alvo). TTL 7 dias (setado no INSERT). Retorna `{id, token, expires_at}`."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE ownership_verifications SET status = 'expired' "
+                "WHERE user_id = %s AND target_id = %s AND status = 'pending' "
+                "  AND method IN ('meta_tag', 'html_file', 'dns_txt')",
+                (user_id, target_id))
+            cur.execute(
+                "INSERT INTO ownership_verifications "
+                "(user_id, target_id, method, token, domain, expires_at) "
+                "VALUES (%s, %s, %s, %s, %s, NOW() + INTERVAL '7 days') "
+                "RETURNING id, token, expires_at",
+                (user_id, target_id, method, token, (domain or "").lower().strip()))
+            return self._rows_to_dicts(cur)[0]
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_pending_domain_verification(self, user_id: int, target_id: int
+                                              ) -> Optional[Dict[str, Any]]:
+        """KL-99 — desafio de domínio pendente e não expirado (o mais recente) do usuário
+        para o alvo. Retorna `{id, method, token, domain, expires_at}` ou None."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT id, method, token, domain, expires_at FROM ownership_verifications "
+                "WHERE user_id = %s AND target_id = %s AND status = 'pending' "
+                "  AND method IN ('meta_tag', 'html_file', 'dns_txt') AND expires_at > NOW() "
+                "ORDER BY created_at DESC LIMIT 1", (user_id, target_id))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def set_target_owner_verified(self, target_id: int, verified: bool = True) -> bool:
+        """KL-99 — marca (ou desmarca) o alvo como tendo dono verificado por controle de
+        domínio. Retorna True se afetou uma linha."""
+        def _fn(cur):
+            cur.execute("UPDATE targets SET owner_verified = %s WHERE id = %s",
+                        (bool(verified), target_id))
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
 
     # --- KL-44 P3: técnico vinculado + laudo compartilhável + boletim ------- #
 

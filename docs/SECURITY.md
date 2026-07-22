@@ -133,6 +133,34 @@ Na dúvida, trate o alvo como site de terceiro que só autorizou olhar o que é 
   servidor-autoritativo** (403 no `POST /account/sites`, nunca só no frontend).
 - Trocar a senha do admin ou rotacionar o token MCP **invalida os refresh tokens OAuth**.
 
+### Níveis de conta (KL-99) — conta sem senha + gate progressivo
+
+- **`users.account_level`** (eixo distinto do `access_level` do KL-82): **1** = sem senha ·
+  **2** = com senha · **3** = dono verificado por controle de domínio. Contas legadas → 2
+  (backfill). `password_hash` é **nullable** (nível 1 não tem senha).
+- **Conta sem senha só nasce com prova de posse do e-mail:** Fluxo C (clique no link HMAC do
+  alerta) ou Fluxo D (`signup-inline` + confirmação por e-mail POST-only) ou `/cadastrar` (só
+  e-mail + confirmação). Rate limits: alert auto-create **5/h/IP**, signup-inline **3/h/IP**.
+- **`@require_level(n)`** (server-authoritative, 403 `{error:insufficient_level, required_level,
+  current_level}`): **nível ≥ 2** para `PUT /account/me`, `DELETE /account/sites/{id}`,
+  `POST /account/technician/invite`, `POST /account/upgrade`; **nível ≥ 3** para
+  `PUT /account/profile-confirm` (editar perfil público). O corpo do 403 só expõe o
+  `current_level` do próprio caller.
+- **`set-password`** (nível 1→2) recusa se já há senha (não sobrescreve conta alheia); a sessão
+  já prova identidade → não pede senha atual.
+- **⚠️ Fluxo C — auto-login por link do alerta:** o link HMAC loga em sessão COMPLETA, inclusive
+  contas com senha, sem digitar senha. Racional: posse do e-mail == posse do reset de senha
+  (magic-link). **TTL reduzido de 30 → 7 dias (KL-99)** para limitar a janela de link vazado /
+  inbox compartilhado (comum em PMEs) — `_ALERT_ACCESS_TTL` em `notifier/email_client.py` e
+  `api/main.py` (manter em sincronia).
+- **Verificação de domínio (nível 2→3):** `verify/start` gera `token_urlsafe(32)` (256-bit);
+  `verify/check` (rate limit **10/h/IP**) busca meta tag / arquivo / DNS TXT. **Anti-SSRF:** o
+  domínio vem de `targets` (site público já escaneado), não de input cru, e o corpo **nunca**
+  volta ao usuário (só o boolean do match) → sem exfiltração; UA honesto, timeout 10s, ≤3 redirects.
+- **Cleanup:** conta nível 1 + sem senha + não confirmada + >30d + sem re-login é removida pelo
+  `trial_worker` (`delete_unconfirmed_passwordless_accounts` — o vínculo de site PENDENTE do Fluxo
+  D a isentava da limpeza do KL-82).
+
 ## 5. Privacidade de dados
 
 - **`contact_email`, `cnpj`, `whatsapp` NUNCA são expostos** na API/perfil público

@@ -2,17 +2,15 @@ import { useState } from 'react';
 import { apiPost } from '../../lib/api.js';
 import { field, btn, card, label, errorBox } from './ui.js';
 
-// Cadastro (KL-82 Slice 2 — confiança progressiva). Signup SEM código: e-mail + senha →
-// conta criada na hora (email_confirmed=false) + e-mail de boas-vindas com link p/ confirmar.
-// O usuário já entra logado e cai no dashboard (com banner de "confirme seu e-mail"). O fluxo
-// de código de 6 dígitos (KL-25/KL-44 F-03b) fica DORMENTE ao fim do arquivo (fallback).
+// Cadastro SEM senha (KL-99 — conta sem fricção). Um único campo (e-mail) → POST /account/signup
+// sem senha → conta nível 1 + e-mail de confirmação com link. O usuário já entra logado e cai no
+// dashboard (com banner de "confirme seu e-mail"); a senha pode ser definida depois, quando uma
+// ação sensível exigir (prompt de nível 1 → 2). Preserva url/role/invite/plan (KL-68/KL-44).
 export default function SignupForm({ email: initialEmail = '', url = '', redirect = '/dashboard', role = '', invite = '', plan = '' }) {
   const emailFromScan = !!initialEmail;
   const isTech = role === 'technician';   // KL-44 P3: perfil de profissional de TI
   const planName = plan === 'agency' ? 'Agency' : (plan === 'pro' ? 'Pro' : '');   // KL-44 P6
   const [email, setEmail] = useState(initialEmail);
-  const [password, setPassword] = useState('');
-  const [confirm, setConfirm] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
 
@@ -34,11 +32,10 @@ export default function SignupForm({ email: initialEmail = '', url = '', redirec
   async function submit(e) {
     e.preventDefault();
     setError('');
-    if (password.length < 8) return setError('A senha precisa ter ao menos 8 caracteres.');
-    if (password !== confirm) return setError('As senhas não coincidem.');
     setBusy(true);
+    // KL-99: sem `password` → conta nível 1 (sem senha). O backend envia o link de confirmação.
     const { ok, status, data, error: err } = await apiPost('/account/signup', {
-      email, password, url: url || undefined,
+      email, url: url || undefined,
       role: role || undefined, invite: invite || undefined, plan: plan || undefined });
     setBusy(false);
     if (ok) { window.location.href = nextUrl(data); return; }
@@ -56,7 +53,7 @@ export default function SignupForm({ email: initialEmail = '', url = '', redirec
       <p className="mt-2 text-sm text-slate-400">
         {isTech ? 'Gerencie os sites dos seus clientes em um só painel.'
           : planName ? `Teste o plano ${planName} por 30 dias, sem cartão. Depois sua conta continua no Gratuito automaticamente.`
-          : (emailFromScan ? 'Seu e-mail já está verificado. Só falta uma senha.' : 'Monitore seu site gratuitamente.')}
+          : 'Só o seu e-mail. Sem senha para começar — você define depois, se quiser.'}
       </p>
       {error && <p className={`mt-4 ${errorBox}`}>{error}</p>}
       <form onSubmit={submit} className="mt-6 flex flex-col gap-4">
@@ -64,21 +61,14 @@ export default function SignupForm({ email: initialEmail = '', url = '', redirec
           <label htmlFor="email" className={label}>E-mail</label>
           <input id="email" type="email" required value={email} readOnly={emailFromScan}
             onChange={(e) => setEmail(e.target.value)} autoComplete="email"
+            placeholder="voce@empresa.com.br"
             className={`${field} ${emailFromScan ? 'opacity-70' : ''}`} />
-        </div>
-        <div>
-          <label htmlFor="password" className={label}>Senha</label>
-          <input id="password" type="password" required minLength={8} value={password}
-            onChange={(e) => setPassword(e.target.value)} autoComplete="new-password"
-            placeholder="mínimo 8 caracteres" className={field} />
-        </div>
-        <div>
-          <label htmlFor="confirm" className={label}>Confirmar senha</label>
-          <input id="confirm" type="password" required value={confirm}
-            onChange={(e) => setConfirm(e.target.value)} autoComplete="new-password" className={field} />
         </div>
         <button type="submit" disabled={busy} className={btn}>{busy ? 'Criando…' : 'Criar conta →'}</button>
       </form>
+      <p className="mt-4 text-xs text-slate-500">
+        Enviamos um link de confirmação para o seu e-mail. Sem cartão. Cancele quando quiser.
+      </p>
       <p className="mt-6 text-sm text-slate-400">
         Já tem conta? <a href={loginHref} className="text-brand-400 hover:text-brand-300">Entrar →</a>
       </p>

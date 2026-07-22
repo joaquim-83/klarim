@@ -5,8 +5,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   accessLevelOf, isAlertVisitor, hasAccount, isFullAccess, maskEmail, maskedEmailOf,
-  scoreHeadline, shareLabel, ctaCopy, viewFlags, reportUrls,
-  SCAN_CATEGORIES, getCategoryStatus,
+  scoreHeadline, shareLabel, inlineSignupCopy, monitorConsentCopy, MONITOR_BENEFITS,
+  viewFlags, reportUrls, SCAN_CATEGORIES, getCategoryStatus,
 } from './scanView.js'
 
 // --- nível de acesso ------------------------------------------------------------------------- #
@@ -85,25 +85,37 @@ test('shareLabel: possessivo adapta pela origem', () => {
   assert.equal(shareLabel(false), 'Compartilhe este resultado')
 })
 
-test('ctaCopy: alerta → só senha, "Monitore seu site", 3 benefícios humanos', () => {
-  const c = ctaCopy(true, 'hotel.com.br')
-  assert.equal(c.passwordOnly, true)
-  assert.equal(c.title, 'Monitore seu site gratuitamente')
-  assert.equal(c.button, 'Criar conta →')
+// --- CTA passwordless (KL-99 Fluxos C/D) ----------------------------------------------------- #
+test('MONITOR_BENEFITS: 3 benefícios humanos (sair do ar / certificados / evolução)', () => {
+  assert.equal(MONITOR_BENEFITS.length, 3)
+  assert.match(MONITOR_BENEFITS.join(' '), /sair do ar/i)
+  assert.match(MONITOR_BENEFITS.join(' '), /certificados/i)
+  assert.match(MONITOR_BENEFITS.join(' '), /evolução/i)
+})
+
+test('inlineSignupCopy: headline usa a contagem de riscos (singular/plural)', () => {
+  assert.match(inlineSignupCopy(3).headline, /3 riscos encontrados/i)
+  assert.match(inlineSignupCopy(1).headline, /1 risco encontrado/i)
+  assert.match(inlineSignupCopy(0).headline, /monitore este site/i)  // sem riscos → CTA neutro
+})
+
+test('inlineSignupCopy: botão "Monitorar", 3 benefícios, nota sem spam', () => {
+  const c = inlineSignupCopy(2)
+  assert.equal(c.button, 'Monitorar')
   assert.equal(c.benefits.length, 3)
-  assert.match(c.benefits.join(' '), /sair do ar/i)
-  assert.match(c.benefits.join(' '), /certificados/i)
+  assert.match(c.subtitle, /avisado/i)
+  assert.match(c.note, /spam/i)
 })
 
-test('ctaCopy: orgânico → e-mail+senha, inclui o domínio no título', () => {
-  const c = ctaCopy(false, 'hotel.com.br')
-  assert.equal(c.passwordOnly, false)
-  assert.equal(c.title, 'Monitore hotel.com.br gratuitamente')
-  assert.equal(c.button, 'Criar conta gratuita →')
+test('monitorConsentCopy: "Sim, monitorar", inclui o domínio no título (sem campo de e-mail)', () => {
+  const c = monitorConsentCopy('hotel.com.br')
+  assert.equal(c.button, 'Sim, monitorar')
+  assert.equal(c.title, 'Quer monitorar hotel.com.br?')
+  assert.equal(c.benefits.length, 3)
 })
 
-test('ctaCopy: orgânico sem domínio → "este site"', () => {
-  assert.equal(ctaCopy(false, '').title, 'Monitore este site gratuitamente')
+test('monitorConsentCopy: sem domínio → "este site"', () => {
+  assert.equal(monitorConsentCopy('').title, 'Quer monitorar este site?')
 })
 
 // --- tabela de visibilidade (KL-89 correção urgente) ----------------------------------------- #

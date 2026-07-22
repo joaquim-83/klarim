@@ -150,7 +150,9 @@ def build_unsubscribe_link(email: str, secret: str) -> str:
 # KL-82 Slice 3 — token do LINK do alerta (Fluxo 2). Formato IDÊNTICO ao
 # `api.main._verify_alert_access_token` (base64(json).hmac[:32], typ='alert_access'), com o
 # MESMO segredo (JWT_SECRET|UNSUBSCRIBE_SECRET) — o contrato é testado em test_kl82_slice3.
-_ALERT_ACCESS_TTL = 30 * 86400
+# KL-99: reduzido de 30 → 7 dias — o link auto-loga a conta (Fluxo C); 30d era risco alto para
+# link vazado / inbox compartilhado (comum em PMEs). Manter em sincronia com api.main.
+_ALERT_ACCESS_TTL = 7 * 86400
 
 
 def alert_access_token(email: str, target_id: int, domain: str, secret: str) -> str:
