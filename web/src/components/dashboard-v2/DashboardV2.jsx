@@ -87,7 +87,7 @@ export default function DashboardV2({ user = {} }) {
     return (
       <div className="space-y-6">
         <ConfirmEmailBanner user={user} />
-        {isTech && <TechnicianClients />}
+        <TechnicianClients isTech={isTech} />
         <EmptyDashboard data={data} />
         {addModal && <AddSiteModal onClose={() => setAddModal(false)} onAdded={() => load(null)} />}
         <Toast toast={toast} />
@@ -103,7 +103,7 @@ export default function DashboardV2({ user = {} }) {
   return (
     <div className="space-y-6">
       <ConfirmEmailBanner user={user} />
-      {isTech && <TechnicianClients />}
+      <TechnicianClients isTech={isTech} />
 
       <div className="lg:flex lg:gap-6">
         <aside className="lg:w-72 lg:shrink-0">

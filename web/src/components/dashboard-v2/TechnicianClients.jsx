@@ -4,12 +4,15 @@ import { useEffect, useState } from 'react';
 import { apiGet } from '../../lib/api.js';
 import { card, SEMA_DOT } from './shared.js';
 
-export default function TechnicianClients() {
+// `isTech` = a conta se declara técnico (role). A seção aparece se HÁ clientes vinculados
+// (mesmo que a role seja 'owner' — um dono pode ser técnico de outro) OU se é técnico declarado.
+export default function TechnicianClients({ isTech = false }) {
   const [clients, setClients] = useState(null);
   useEffect(() => {
     apiGet('/account/technician/clients').then(({ ok, data }) => setClients(ok ? (data.clients || []) : []));
   }, []);
   if (clients === null) return null;
+  if (clients.length === 0 && !isTech) return null;  // dono comum sem vínculos → não mostra nada
   return (
     <div className={`${card} border-brand-500/30 bg-brand-500/5`}>
       <div className="flex items-center gap-2">

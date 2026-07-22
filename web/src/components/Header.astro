@@ -56,4 +56,8 @@ import Logo from './Logo.astro';
   </nav>
 </header>
 
-<script src="/header.js" is:inline></script>
+<!-- ?v= = cache-busting (padrão do projeto, como theme.js?v=2). Sem a versão, o Cloudflare
+     cacheou o HTML de fallback do SSR durante a janela do deploy (o arquivo ainda não existia
+     no astro) e passou a servir text/html → o browser bloqueia o script (nosniff) e o login
+     não togglava. Bump da versão a cada alteração deste arquivo. -->
+<script src="/header.js?v=2" is:inline></script>

@@ -1709,7 +1709,16 @@ async def technician_accept(body: AcceptInviteBody, request: Request) -> dict:
 async def technician_clients(request: Request) -> dict:
     """Sites dos clientes do técnico (dashboard do técnico). E-mail do dono mascarado."""
     user = await auth_users.require_user(request)
-    rows = await get_target_store().get_technician_clients(user["id"])
+    store = get_target_store()
+    # KL-90 fix Bug 2: o `auto_link` só rodava no SIGNUP. Uma conta que JÁ existia ao ser
+    # convidada como técnico ficava com o vínculo 'pending' para sempre (o e-mail de convite
+    # leva ao laudo, não a uma página de aceite). Ativa aqui os convites pendentes deste
+    # e-mail → o técnico vê os sites assim que abre o dashboard. Idempotente, best-effort.
+    try:
+        await store.auto_link_technician_by_email(user["email"], user["id"])
+    except Exception as exc:  # noqa: BLE001 - vínculo é best-effort, nunca quebra o dashboard
+        print(f"[technician] auto-link no dashboard falhou u={user['id']}: {exc!r}", flush=True)
+    rows = await store.get_technician_clients(user["id"])
     for r in rows:   # KL-44 P3: regra inviolável — nunca expor o e-mail do dono cru
         r["owner_email"] = _mask_email(r.get("owner_email") or "")
     return {"clients": rows}
