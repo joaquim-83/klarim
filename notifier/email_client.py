@@ -418,11 +418,13 @@ class KlarimMailer:
 
     async def _send(self, params: Dict[str, Any], *, email_type: str = "unknown",
                     target_id: Optional[int] = None, domain: Optional[str] = None,
-                    source: Optional[str] = None, skip_blocklist: bool = False) -> Dict[str, Any]:
+                    source: Optional[str] = None, skip_blocklist: bool = False,
+                    template_variant: Optional[int] = None) -> Dict[str, Any]:
         """Envia um e-mail individual e o registra no `email_log` (KL-62).
 
         Checa a blocklist antes (exceto transacionais, `skip_blocklist=True`). Loga
-        `blocked`/`sent`/`failed`. Um e-mail bloqueado retorna `email_id=None`."""
+        `blocked`/`sent`/`failed`. Um e-mail bloqueado retorna `email_id=None`.
+        `template_variant` (KL-91) registra qual variante cold foi usada."""
         params.setdefault("reply_to", REPLY_TO_DEFAULT)  # KL-67 (send_contact já define o seu)
         to = _first_recipient(params.get("to"))
         subject = params.get("subject")
@@ -431,7 +433,7 @@ class KlarimMailer:
             await self._log_email(email_id=None, to_email=to, email_type=email_type,
                                   subject=subject, target_id=target_id, domain=domain,
                                   status="blocked", blocked_reason="blocklist", source=source,
-                                  from_domain=from_domain)
+                                  from_domain=from_domain, template_variant=template_variant)
             print(f"[email] BLOQUEADO (blocklist) {email_type} → {to}", flush=True)
             return {"email_id": None, "raw": None, "blocked": True}
         try:
@@ -440,15 +442,23 @@ class KlarimMailer:
             await self._log_email(email_id=None, to_email=to, email_type=email_type,
                                   subject=subject, target_id=target_id, domain=domain,
                                   status="failed", error=str(exc), source=source,
-                                  from_domain=from_domain)
+                                  from_domain=from_domain, template_variant=template_variant)
             raise
         await self._log_email(email_id=result.get("email_id"), to_email=to,
                               email_type=email_type, subject=subject, target_id=target_id,
                               domain=domain, status="sent", source=source,
-                              from_domain=from_domain)
+                              from_domain=from_domain, template_variant=template_variant)
         return result
 
     def _send_sync(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        # KL-91: modo DRY_RUN (dev local) — não fala com o Resend, mas o e-mail_log é
+        # gravado normalmente (exercita rotação/variante/limites sem enviar de verdade).
+        if str(os.environ.get("DRY_RUN_EMAIL", "")).strip().lower() in ("1", "true", "yes"):
+            eid = f"dryrun_{uuid4().hex[:12]}"
+            print(f"[email] DRY_RUN → {_first_recipient(params.get('to'))} "
+                  f"from={params.get('from')} ({eid})", flush=True)
+            return {"email_id": eid, "raw": {"dry_run": True}}
+
         import resend  # import tardio: só necessário no envio real
 
         resend.api_key = self.api_key
@@ -689,6 +699,27 @@ class KlarimMailer:
                  else "alert" for a in batch]
         return await self._send_batch(payloads, batch, email_type="alert",
                                       source="alert_worker", types=types)
+
+    async def send_cold_alert(self, *, to_email: str, from_address: str, subject: str,
+                              text: str, template_variant: Optional[int] = None,
+                              target_id: Optional[int] = None, domain: Optional[str] = None,
+                              email_type: str = "alert", source: str = "alert_worker",
+                              opt_out_mailbox: str = "scan@klarim.net") -> Dict[str, Any]:
+        """KL-91 — alerta COLD em texto puro, remetente ROTACIONADO (`from_address` vem
+        do `cold_alert.pick_sender`). Sem HTML, sem links no corpo; opt-out por resposta
+        via header `List-Unsubscribe` (mailto). **Proativo** → respeita a blocklist e é
+        registrado no `email_log` com `from_domain`+`template_variant`."""
+        from notifier.cold_alert import list_unsubscribe_reply_header  # evita ciclo de import
+        params = {
+            "from": from_address,
+            "to": [to_email],
+            "subject": subject,
+            "text": text,
+            "headers": list_unsubscribe_reply_header(opt_out_mailbox),
+        }
+        return await self._send(params, email_type=email_type, target_id=target_id,
+                                domain=domain, source=source,
+                                template_variant=template_variant)
 
     def _evolution_params(
         self,

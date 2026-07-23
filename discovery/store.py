@@ -524,10 +524,13 @@ CREATE TABLE IF NOT EXISTS email_log (
     sent_at TIMESTAMPTZ DEFAULT NOW(),
     source TEXT,
     batch_id TEXT,
-    from_domain TEXT
+    from_domain TEXT,
+    template_variant SMALLINT
 );
 -- Migração da migração de remetente (klarimscan.com): coluna nova em tabelas já criadas.
 ALTER TABLE email_log ADD COLUMN IF NOT EXISTS from_domain TEXT;
+-- KL-91: qual das 3 variantes de template cold foi usada (1/2/3); NULL nos demais e-mails.
+ALTER TABLE email_log ADD COLUMN IF NOT EXISTS template_variant SMALLINT;
 CREATE INDEX IF NOT EXISTS idx_email_log_sent_at ON email_log(sent_at DESC);
 CREATE INDEX IF NOT EXISTS idx_email_log_to_email ON email_log(to_email);
 CREATE INDEX IF NOT EXISTS idx_email_log_type ON email_log(email_type);
@@ -4945,10 +4948,12 @@ class TargetStore:
                         domain: Optional[str] = None, status: str = "sent",
                         blocked_reason: Optional[str] = None, error: Optional[str] = None,
                         source: Optional[str] = None, batch_id: Optional[str] = None,
-                        from_domain: Optional[str] = None) -> None:
+                        from_domain: Optional[str] = None,
+                        template_variant: Optional[int] = None) -> None:
         """Grava uma entrada no `email_log` (KL-62). Chamado pelo KlarimMailer em TODO
         envio. `from_domain` (migração klarimscan.com) registra de qual domínio o e-mail
-        saiu. Best-effort — quem chama já envolve em try/except (nunca derruba o envio)."""
+        saiu; `template_variant` (KL-91) qual das 3 variantes cold foi usada. Best-effort
+        — quem chama já envolve em try/except (nunca derruba o envio)."""
         to_email = (to_email or "").strip().lower()
         if not to_email:
             return
@@ -4956,13 +4961,29 @@ class TargetStore:
         def _fn(cur):
             cur.execute(
                 "INSERT INTO email_log (email_id, to_email, email_type, subject, target_id, "
-                "  domain, status, blocked_reason, error, source, batch_id, from_domain) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                "  domain, status, blocked_reason, error, source, batch_id, from_domain, "
+                "  template_variant) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (email_id, to_email, email_type, (subject or None), target_id,
                  (domain or None), status, blocked_reason, (error[:2000] if error else None),
-                 source, batch_id, (from_domain or None)))
+                 source, batch_id, (from_domain or None), template_variant))
 
         await asyncio.to_thread(self._run, _fn)
+
+    async def count_alerts_sent_today_by_domain(self) -> Dict[str, int]:
+        """KL-91 — alertas cold enviados HOJE (calendário) por remetente (`from_domain`).
+        Base do limite diário por remetente + da rotação: {from_domain: enviados}. Só conta
+        os tipos de alerta cold com status='sent'. Reseta naturalmente à meia-noite."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT from_domain, COUNT(*) FROM email_log "
+                "WHERE status = 'sent' AND email_type IN ('alert', 'alert_score100') "
+                "  AND from_domain IS NOT NULL "
+                "  AND sent_at >= date_trunc('day', NOW()) "
+                "GROUP BY from_domain")
+            return {row[0]: int(row[1]) for row in cur.fetchall()}
+
+        return await asyncio.to_thread(self._run, _fn)
 
     async def count_alerts_sent_today(self) -> int:
         """Alertas PROATIVOS efetivamente enviados hoje (calendário) — controla o warmup
@@ -5305,6 +5326,36 @@ class TargetStore:
             blocklist = int(cur.fetchone()[0])
             return {"total": int(total or 0), "bounced": int(bounced or 0),
                     "complained": int(complained or 0), "blocklist": blocklist}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def email_health_by_domain(self) -> Dict[str, Dict[str, Any]]:
+        """KL-91 — saúde de e-mail POR domínio de envio (`from_domain`). Alimenta o
+        `by_domain` do `get_email_health` e o circuit breaker do alert worker (pausa o
+        remetente com bounce > limite). Mesma definição de `email_health`: `total` =
+        tentativas rastreáveis (sent+bounced+complained; exclui `test`)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT from_domain, "
+                "COUNT(*) FILTER (WHERE status IN ('sent','bounced','complained')), "
+                "COUNT(*) FILTER (WHERE status = 'bounced'), "
+                "COUNT(*) FILTER (WHERE status = 'complained') "
+                "FROM email_log WHERE email_type <> 'test' AND from_domain IS NOT NULL "
+                "GROUP BY from_domain ORDER BY 2 DESC")
+            out: Dict[str, Dict[str, Any]] = {}
+            for dom, total, bounced, complained in cur.fetchall():
+                total = int(total or 0)
+                bounced = int(bounced or 0)
+                complained = int(complained or 0)
+                out[dom] = {
+                    "sent": total,
+                    "delivered": max(total - bounced - complained, 0),
+                    "bounced": bounced,
+                    "complained": complained,
+                    "total": total,
+                    "bounce_rate": round(100.0 * bounced / total, 2) if total else 0.0,
+                }
+            return out
 
         return await asyncio.to_thread(self._run, _fn)
 

@@ -5971,11 +5971,22 @@ async def api_system_email_health() -> dict:
 
     `bounced`/`complained` refletem o que o webhook/backfill do Resend marcou no
     `alert_log`. Não distinguimos bounce transitório (não descartamos por isso).
+    KL-91: `by_domain` quebra as métricas por domínio de envio (`from_domain`) —
+    vital para acompanhar os subdomínios cold (alertas./aviso.) vs. o transacional
+    (klarim.net) separadamente, e para o circuit breaker de rotação.
     """
-    h = await get_target_store().email_health()
+    store = get_target_store()
+    h = await store.email_health()
     total = h["total"]
     bounced, complained = h["bounced"], h["complained"]
     rate = round(100.0 * bounced / total, 2) if total else 0.0
+    try:  # fail-open: o by_domain nunca derruba o painel de saúde
+        by_domain = await store.email_health_by_domain()
+        for dom, d in by_domain.items():
+            d["bounce_status"] = _bounce_status(d.get("bounce_rate", 0.0))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[email-health] by_domain falhou (segue): {exc!r}", flush=True)
+        by_domain = {}
     return {
         "total_sent": total,
         "delivered": max(total - bounced - complained, 0),
@@ -5985,6 +5996,7 @@ async def api_system_email_health() -> dict:
         "bounce_rate": rate,
         "bounce_status": _bounce_status(rate),
         "blocklist_size": h["blocklist"],
+        "by_domain": by_domain,  # KL-91
     }
 
 
@@ -6215,6 +6227,8 @@ async def api_config() -> dict:
         "alert_batches_per_cycle": _i("ALERT_BATCHES_PER_CYCLE", "4"),
         "alert_batch_pause": _i("ALERT_BATCH_PAUSE", "10"),
         "alert_monthly_limit": _i("ALERT_MONTHLY_LIMIT", "45000"),
+        # KL-91 — limite DIÁRIO por remetente cold (warmup dos subdomínios).
+        "alert_sender_daily_limit": _i("ALERT_SENDER_DAILY_LIMIT", "100"),
         "rescan_interval_hours": _i("RESCAN_INTERVAL_HOURS", "24"),
         "rescan_age_days": _i("RESCAN_AGE_DAYS", "30"),
         "worker_max_scans_per_hour": _i("WORKER_MAX_SCANS_PER_HOUR", "50"),
@@ -6236,6 +6250,7 @@ _CONFIG_PARAMS: Dict[str, Dict[str, Any]] = {
     "ALERT_BATCH_PAUSE": {"label": "Pausa entre batches", "default": "10", "min": 1, "max": 60, "unit": "s"},
     "ALERT_MONTHLY_LIMIT": {"label": "Cota mensal de e-mail", "default": "45000", "min": 1000, "max": 100000, "unit": "e-mails/mês"},
     "ALERT_DAILY_LIMIT": {"label": "Limite diário de alertas (warmup)", "default": "5000", "min": 0, "max": 50000, "unit": "e-mails/dia"},
+    "ALERT_SENDER_DAILY_LIMIT": {"label": "Limite diário por remetente cold (KL-91)", "default": "100", "min": 0, "max": 5000, "unit": "e-mails/dia/remetente"},
     "RESCAN_INTERVAL_HOURS": {"label": "Intervalo de re-scan", "default": "24", "min": 1, "max": 720, "unit": "h"},
     "RESCAN_AGE_DAYS": {"label": "Idade para re-scan", "default": "30", "min": 1, "max": 365, "unit": "dias"},
     "WORKER_MAX_SCANS_PER_HOUR": {"label": "Máx. scans/hora", "default": "50", "min": 10, "max": 1000, "unit": "scans"},

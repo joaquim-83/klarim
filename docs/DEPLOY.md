@@ -124,7 +124,12 @@ R$49 (4900). **Nenhum dado de cartão/PIX é armazenado.**
 |---|---|
 | `RESEND_API_KEY` | chave send-only |
 | `RESEND_FROM` | remetente transacional (`Klarim <klarim@klarim.net>` — migrado de `seguranca@` em 2026-07-21; a palavra "seguranca" elevava o spam score, confirmação caía no spam) |
-| `ALERT_FROM_EMAIL` / `ALERT_FROM_NAME` | remetente proativo (`alerta@klarim.net` — migrado de `alerta@klarimscan.com` em 2026-07-20; o warmup do klarimscan.com falhou/spam) |
+| `ALERT_FROM_EMAIL` / `ALERT_FROM_NAME` | remetente proativo legado (`alerta@klarim.net`) — hoje só **profile_view/bulletin** (o alerta cold migrou para a rotação KL-91) |
+| `ALERT_SENDER_EMAILS` | **KL-91** — CSV dos remetentes cold rotacionados (default `scan@alertas.klarim.net,scan@aviso.klarim.net`; verificados no Resend). `klarim.net` cru é ignorado (isolamento do transacional) |
+| `ALERT_SENDER_DAILY_LIMIT` | **KL-91** — limite diário POR remetente cold (warmup: 100→250→500→750; editável no painel) |
+| `ALERT_SEND_INTERVAL_MIN` / `ALERT_SEND_INTERVAL_MAX` | **KL-91** — cooldown randômico entre envios individuais (default 30/60s; 0/0 em dev) |
+| `ALERT_SENDER_MAX_BOUNCE_RATE` | **KL-91** — circuit breaker: pausa o remetente com bounce acima disto (default 5.0%, amostra ≥`ALERT_BOUNCE_MIN_SAMPLE`) |
+| `DRY_RUN_EMAIL` | dev — `true` faz o `KlarimMailer._send_sync` simular (não fala com o Resend), mas grava `email_log` |
 | `RESEND_WEBHOOK_SECRET` | webhook Resend (Svix, bounce/complaint) |
 | `UNSUBSCRIBE_SECRET` | HMAC do link de descadastro (`openssl rand -hex 32`) |
 

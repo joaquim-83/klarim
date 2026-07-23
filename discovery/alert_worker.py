@@ -1,13 +1,16 @@
-"""Alert Worker — dispara o alerta gratuito por e-mail para alvos escaneados.
+"""Alert Worker — dispara o alerta cold gratuito por e-mail para alvos escaneados.
 
 Elegibilidade: status='scanned', com FALHAS, com e-mail, sem alerta nos últimos
 30 dias, não 'unsubscribed'.
 
-Envio em LOTE (KL-23, Resend Pro): cada ciclo busca TODOS os alvos elegíveis (sem
-cap artificial por ciclo/hora/dia), agrupa em batches de ``ALERT_BATCH_SIZE`` e
-envia cada batch em 1 request via `KlarimMailer.send_alert_batch`. O único teto é
-a **cota mensal** (`ALERT_MONTHLY_LIMIT`, compartilhada com os e-mails de evolução
-do Re-scan Worker) — reserva de segurança dentro do limite de 50k/mês do Resend Pro.
+Envio COLD (KL-91): cada ciclo escolhe, por e-mail, um dos remetentes rotacionados
+(`notifier.cold_alert.pick_sender` — round-robin pelo de menor volume no dia; ver
+`docs/ARCHITECTURE.md`), renderiza uma das 3 variantes de **texto puro sem links** e
+envia INDIVIDUALMENTE (não mais em batch) via `KlarimMailer.send_cold_alert`, com
+**cooldown 30-60s** entre e-mails. Tetos: **limite diário POR remetente**
+(`ALERT_SENDER_DAILY_LIMIT`, warmup), o `ALERT_DAILY_LIMIT` global e a **cota mensal**
+(`ALERT_MONTHLY_LIMIT`, compartilhada com a evolução do Re-scan). Circuit breaker por
+remetente pausa quem passar de `ALERT_SENDER_MAX_BOUNCE_RATE` (amostra ≥20).
 """
 
 from __future__ import annotations
@@ -18,12 +21,14 @@ import hashlib
 import hmac
 import json
 import os
+import random
 import re
 import time
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
-from notifier import KlarimMailer, KlarimMailerError, build_unsubscribe_link
+from notifier import KlarimMailer, KlarimMailerError, site_name
+from notifier import cold_alert
 from .store import get_target_store
 from .heartbeat import publish_heartbeat
 from .contact import email_mx_status, _clean_email
@@ -96,81 +101,76 @@ def severity_counts_from_checks(checks_json: Optional[dict]) -> Dict[str, int]:
 
 
 async def build_alert_payload(store, target: Dict[str, Any]) -> Dict[str, Any]:
-    """Monta o dict de alerta (para o batch) a partir de um alvo elegível.
+    """Monta o dict de alerta cold (KL-91) a partir de um alvo elegível.
 
     Reusa os campos já trazidos pelo JOIN de `get_eligible_targets_for_alert`
-    (``scan_checks``/``scan_semaphore``/``scan_fail_count``); cai para `get_scan`
-    se algum faltar (ex.: alvo vindo de `get_target`, sem o JOIN).
-    """
+    (``last_scan_score``/``scan_semaphore``/``scan_fail_count``); cai para `get_scan`
+    se faltar. Acrescenta ``sector_label`` + ``sector_avg`` (média do setor) para a
+    variante 2 do template — best-effort, nunca derruba o envio. **Não** carrega mais
+    risco/benchmark/link (os templates cold são texto puro, sem CTA — ver KL-91)."""
     email = target.get("contact_email")
     if not email:
         raise ValueError("alvo sem e-mail")
 
-    checks = target.get("scan_checks")
     semaphore = target.get("scan_semaphore")
     fail_count = target.get("scan_fail_count")
     score = target.get("last_scan_score")
-    if checks is None or score is None:
+    if score is None:
         scan = await store.get_scan(target["last_scan_id"]) if target.get("last_scan_id") else None
         if scan is None:
             raise ValueError("alvo sem scan")
-        checks = scan.get("checks_json") if checks is None else checks
         semaphore = semaphore or scan.get("semaphore")
         fail_count = scan.get("fail_count") if fail_count is None else fail_count
         score = scan.get("score") if score is None else score
 
-    secret = os.environ.get("UNSUBSCRIBE_SECRET")
-    unsub = build_unsubscribe_link(email, secret) if secret else None
-    # KL-31: score 100 verde → token de bônus (análise completa gratuita) no link.
-    bonus = bonus_scan_token(email, target["url"]) if _is_score100(score, semaphore) else None
-    # KL-20: risco setorizado + benchmark (linguagem de negócio + CTA de setor). O alerta
-    # deixa de ser genérico e cita consequências concretas para o setor do alvo. Best-effort.
+    # KL-91 — setor + média para a variante 2 (contextual). Só sites com setor conhecido
+    # e amostra suficiente (>=10) recebem a média; senão a variante 2 é descartada.
     sector = (target.get("sector") or "").strip().lower()
-    risk_summary, benchmark_line = None, ""
-    if not _is_score100(score, semaphore):
+    sector_label, sector_avg = "", None
+    if sector and sector != "outro":
         try:
-            from reporter.risk_messages import build_risk_summary, build_benchmark_line
-            benchmark = None
-            if sector and sector != "outro":
-                benchmark = await store.sector_benchmark(sector, min_count=10)
-            risk_summary = build_risk_summary(checks, sector, limit=3)
-            benchmark_line = build_benchmark_line(score, sector, benchmark)
-        except Exception as exc:  # noqa: BLE001 - risco/benchmark nunca derruba o alerta
-            print(f"[alert] risco/benchmark falhou t={target.get('id')}: {exc!r}", flush=True)
+            from discovery.sector_taxonomy import get_label
+            sector_label = get_label(sector)
+            bench = await store.sector_benchmark(sector, min_count=10)
+            if bench:
+                sector_avg = bench.get("avg_score")
+        except Exception as exc:  # noqa: BLE001 - setor/benchmark nunca derruba o alerta
+            print(f"[alert] setor/benchmark falhou t={target.get('id')}: {exc!r}", flush=True)
     return {
         "target_id": target["id"], "to_email": email, "target_url": target["url"],
         "score": score or 0, "semaphore": semaphore or "", "fail_count": fail_count or 0,
-        "unsubscribe_link": unsub, "bonus_token": bonus,
-        "sector": sector, "risk_summary": risk_summary, "benchmark_line": benchmark_line,  # KL-20
+        "sector": sector, "sector_label": sector_label, "sector_avg": sector_avg,
     }
 
 
 async def send_alert_for_target(store, mailer: KlarimMailer, target: Dict[str, Any]) -> Optional[str]:
-    """Envia o alerta de UM alvo (envio único), marca 'alerted' e registra no log.
+    """Envia o alerta cold de UM alvo (envio único), marca 'alerted' e registra no log.
 
-    Usado pelos disparos manuais da API (`/targets/{id}/alert`, `/admin/resend-alert`)
-    — o batch é só para o ciclo automático do worker.
-    """
+    Usado pelos disparos manuais da API (`/targets/{id}/alert`, `/admin/resend-alert`).
+    KL-91: mesmo formato do ciclo automático — texto puro, sem links, remetente cold. O
+    disparo manual usa o 1º remetente configurado (a rotação real é do ciclo em lote)."""
     email = target.get("contact_email")
     if not email:
         raise ValueError("alvo sem e-mail")
-    scan = await store.get_scan(target["last_scan_id"]) if target.get("last_scan_id") else None
-    if scan is None:
-        raise ValueError("alvo sem scan")
+    payload = await build_alert_payload(store, target)
+    score, semaphore, fail_count = payload["score"], payload["semaphore"], payload["fail_count"]
 
-    score, semaphore, fail_count = scan["score"], scan["semaphore"], scan["fail_count"]
-    secret = os.environ.get("UNSUBSCRIBE_SECRET")
-    unsub = build_unsubscribe_link(email, secret) if secret else None
-    # KL-31: score 100 verde → convite de análise completa gratuita + concede o crédito.
-    is_100 = _is_score100(score, semaphore)
-    bonus = bonus_scan_token(email, target["url"]) if is_100 else None
+    senders = cold_alert.load_senders()
+    if not senders:
+        raise KlarimMailerError("nenhum remetente cold configurado (ALERT_SENDER_EMAILS)")
+    sender = senders[0]
+    variant = cold_alert.choose_variant(payload.get("sector_avg") is not None)
+    domain = site_name(target["url"])
+    subject, text = cold_alert.build_cold_email(
+        variant, domain=domain, score=score,
+        sector_label=payload.get("sector_label") or "", sector_avg=payload.get("sector_avg"))
 
-    # KL-27: sem severidade/risco no e-mail (severity_counts fica {} — ignorado).
-    res = await mailer.send_alert(email, target["url"], score, semaphore, fail_count, {},
-                                  unsubscribe_link=unsub, target_id=target["id"],
-                                  bonus_token=bonus)
+    res = await mailer.send_cold_alert(
+        to_email=email, from_address=sender.from_address, subject=subject, text=text,
+        template_variant=variant, target_id=target["id"], domain=domain)
     email_id = res.get("email_id")
-    if is_100:
+    # KL-31: score 100 verde → concede o crédito de scan completo grátis (preservado).
+    if _is_score100(score, semaphore):
         await store.grant_full_scan_credit(email, target["url"])
     await store.mark_target_alerted(target["id"])
     await store.log_alert(target["id"], email, score, semaphore, fail_count, email_id)
@@ -195,6 +195,14 @@ class AlertWorker:
         self.interval_minutes = interval_minutes or 30
         # KL-85 Parte 1 — lead scoring: filtra alertas abaixo do threshold (conservador: 20).
         self.alert_score_threshold = int(os.environ.get("ALERT_SCORE_THRESHOLD", "20"))
+        # KL-91 — cold outreach: rotação de remetentes + envio individual com cooldown.
+        # Limite DIÁRIO POR REMETENTE (warmup: começa em 100, sobe manualmente). O
+        # cooldown 30-60s entre envios reduz cara de spam; 0/0 em dev/testes (sem espera).
+        self.sender_daily_limit = int(os.environ.get("ALERT_SENDER_DAILY_LIMIT", "100"))
+        self.send_interval_min = float(os.environ.get("ALERT_SEND_INTERVAL_MIN", "30"))
+        self.send_interval_max = float(os.environ.get("ALERT_SEND_INTERVAL_MAX", "60"))
+        # Circuit breaker por remetente: pausa quem passar deste bounce rate (amostra >=20).
+        self.sender_max_bounce_rate = float(os.environ.get("ALERT_SENDER_MAX_BOUNCE_RATE", "5.0"))
         self.store = get_target_store()
         self._redis = None
         self._last_cycle_at = None
@@ -215,6 +223,9 @@ class AlertWorker:
                 self.interval_minutes = im
             self.alert_score_threshold = int(
                 await g("ALERT_SCORE_THRESHOLD", self.alert_score_threshold))
+            # KL-91 — limite diário por remetente (knob do warmup, editável no painel).
+            self.sender_daily_limit = int(
+                await g("ALERT_SENDER_DAILY_LIMIT", self.sender_daily_limit))
         except Exception as exc:  # noqa: BLE001
             print(f"[alert] reload settings falhou (mantém atual): {exc!r}", flush=True)
 
@@ -359,31 +370,16 @@ class AlertWorker:
         avg = round(sum(kept_scores) / len(kept_scores), 1) if kept_scores else 0
         return kept, skipped, avg
 
-    async def _send_with_split(self, mailer, alerts: list):
-        """Envia o batch; em 422 (e-mail inválido), divide ao meio e retenta para
-        **isolar** o culpado (rede de segurança da Solução B). Erro de infra (não-422)
-        propaga. Retorna (sent_pairs, bad_alerts): sent_pairs=[(alert, email_id)],
-        bad_alerts=[alert] (os que falharam individualmente)."""
-        if not alerts:
-            return [], []
-        try:
-            res = await mailer.send_alert_batch(alerts)
-        except KlarimMailerError as exc:
-            msg = str(exc).lower()
-            if "422" not in msg and "invalid" not in msg:
-                raise  # erro de infra (5xx/rede) — não é e-mail ruim; propaga
-            if len(alerts) == 1:
-                return [], list(alerts)  # o único e-mail é o culpado
-            mid = len(alerts) // 2
-            s1, b1 = await self._send_with_split(mailer, alerts[:mid])
-            s2, b2 = await self._send_with_split(mailer, alerts[mid:])
-            return s1 + s2, b1 + b2
-        ids = res.get("ids") or []
-        pairs = [(a, ids[i] if i < len(ids) else None) for i, a in enumerate(alerts)]
-        return pairs, []
+    async def _send_cooldown(self) -> None:
+        """KL-91 — intervalo randômico ENTRE envios individuais (30-60s por padrão),
+        para reduzir a cara de spam. 0/0 (dev/testes) → sem espera."""
+        lo, hi = self.send_interval_min, self.send_interval_max
+        if hi <= 0:
+            return
+        await asyncio.sleep(random.uniform(lo, hi) if hi > lo else lo)
 
     async def run_cycle(self) -> dict:
-        stats = {"eligible": 0, "batches": 0, "sent": 0, "failed": 0,
+        stats = {"eligible": 0, "sent": 0, "failed": 0,
                  "errors": 0, "skipped": 0, "invalid": 0}
         await self._reload_settings()  # KL-44: config ao vivo (admin_settings > .env)
         mailer = self._mailer()
@@ -425,17 +421,57 @@ class AlertWorker:
             stats["daily_limit_reached"] = True
             return stats
 
+        # KL-91 — remetentes cold (rotação) + circuit breaker por bounce POR remetente.
+        senders = cold_alert.load_senders()
+        if not senders:
+            print("[alert] nenhum remetente cold configurado (ALERT_SENDER_EMAILS); "
+                  "ciclo pulado", flush=True)
+            stats["no_senders"] = True
+            return stats
+        try:
+            by_domain = await self.store.email_health_by_domain()
+        except Exception as exc:  # noqa: BLE001 - fail-open: sem stats, ninguém é pausado
+            by_domain = {}
+            print(f"[alert] email_health_by_domain falhou (segue): {exc!r}", flush=True)
+        paused = cold_alert.flag_high_bounce(senders, by_domain, self.sender_max_bounce_rate,
+                                             self.bounce_min_sample)
+        for dom, rate in paused:
+            print(f"[alert] CRITICAL: remetente {dom} pausado — bounce rate {rate}% "
+                  f"(> {self.sender_max_bounce_rate}%). A rotação segue nos demais.", flush=True)
+        stats["senders_paused"] = [d for d, _ in paused]
+
+        # Contagem por remetente HOJE (base da rotação + limite diário por remetente).
+        try:
+            sent_by_domain = await self.store.count_alerts_sent_today_by_domain()
+        except Exception as exc:  # noqa: BLE001 - fail-open
+            sent_by_domain = {}
+            print(f"[alert] count_alerts_sent_today_by_domain falhou (segue): {exc!r}", flush=True)
+        counts = {s.from_domain: int(sent_by_domain.get(s.from_domain, 0)) for s in senders}
+        sender_room = sum(max(0, self.sender_daily_limit - counts[s.from_domain])
+                          for s in senders if s.status == "active")
+        if sender_room <= 0:
+            print(f"[alert] todos os remetentes atingiram o limite diário "
+                  f"({self.sender_daily_limit}/remetente) ou estão pausados; ciclo pulado",
+                  flush=True)
+            stats["sender_limit_reached"] = True
+            return stats
+
         # Throttle dinâmico (KL-32): batch_size + max_per_hour lidos do controle.
         cfg = worker_control.worker_config("alert")
         batch_size = int(cfg.get("batch_size") or self.batch_size)
         self.batch_size = batch_size
-        # Busca só o que cabe no ciclo e na cota mensal restante.
+        # Teto do ciclo: batches * batch_size, throttle por hora e — se há cooldown — o que
+        # cabe no intervalo do ciclo (evita ciclos que estouram o próprio período).
         cycle_cap = batch_size * self.batches_per_cycle
         max_per_hour = cfg.get("max_per_hour")
         if max_per_hour:
             per_cycle = max(1, int(int(max_per_hour) * self.interval_minutes / 60))
             cycle_cap = min(cycle_cap, per_cycle)
-        want = min(cycle_cap, self.monthly_limit - sent_month, daily_limit - sent_today)
+        avg_cd = (self.send_interval_min + self.send_interval_max) / 2.0
+        if avg_cd > 0:  # com cooldown, cabe ~ (80% do intervalo) / cooldown médio
+            cycle_cap = min(cycle_cap, max(1, int(self.interval_minutes * 60 * 0.8 / avg_cd)))
+        want = min(cycle_cap, self.monthly_limit - sent_month,
+                   daily_limit - sent_today, sender_room)
         raw_targets = await self.store.get_eligible_targets_for_alert(limit=max(0, want))
         stats["eligible"] = len(raw_targets)
 
@@ -448,76 +484,98 @@ class AlertWorker:
         stats["skipped_low_quality"] = skipped_low
         stats["avg_alert_score"] = avg_score
 
-        for bi in range(self.batches_per_cycle):
-            chunk = targets[bi * self.batch_size:(bi + 1) * self.batch_size]
-            if not chunk:
-                break
-            # Respeita a cota mensal E o limite diário em tempo real (com o já enviado).
+        # Envio INDIVIDUAL com rotação + cooldown (KL-91). Sem batch: cada e-mail escolhe o
+        # remetente de menor volume hoje, renderiza a variante e há intervalo entre envios.
+        stats["variants"] = {1: 0, 2: 0, 3: 0}
+        deadline = time.monotonic() + self.interval_minutes * 60 * 0.8 if avg_cd > 0 else None
+        for idx, t in enumerate(targets):
+            # Respeita cota mensal + limite diário global em tempo real (já enviado no ciclo).
             room = min(self.monthly_limit - (sent_month + stats["sent"]),
                        daily_limit - (sent_today + stats["sent"]))
             if room <= 0:
-                stats["skipped"] += len(chunk)
+                stats["skipped"] += len(targets) - idx
                 break
-            if len(chunk) > room:
-                stats["skipped"] += len(chunk) - room
-                chunk = chunk[:room]
-
-            # Monta os payloads; um alvo ruim é pulado sem derrubar o batch.
-            alerts = []
-            for t in chunk:
-                try:
-                    alerts.append(await build_alert_payload(self.store, t))
-                except Exception as exc:  # noqa: BLE001
-                    stats["errors"] += 1
-                    print(f"[alert] pulando {t.get('url')}: {exc!r}", flush=True)
-            if not alerts:
-                continue
-
+            sender = cold_alert.pick_sender(senders, counts, self.sender_daily_limit)
+            if sender is None:  # todos os remetentes bateram o limite diário no ciclo
+                stats["skipped"] += len(targets) - idx
+                print("[alert] remetentes esgotados no ciclo; parando", flush=True)
+                break
             try:
-                # Split-retry: em 422 isola o e-mail ruim sem derrubar os outros 49.
-                sent_pairs, bad_alerts = await self._send_with_split(mailer, alerts)
-            except Exception as exc:  # noqa: BLE001 - erro de infra não derruba o ciclo
+                payload = await build_alert_payload(self.store, t)
+            except Exception as exc:  # noqa: BLE001 - alvo ruim é pulado sem derrubar o ciclo
                 stats["errors"] += 1
-                print(f"[alert] batch {bi + 1} falhou (infra): {exc!r}", flush=True)
-                for a in alerts:
-                    await self.store.log_alert(
-                        a["target_id"], a["to_email"], a.get("score"),
-                        a.get("semaphore"), a.get("fail_count"), None, status="failed")
+                print(f"[alert] pulando {t.get('url')}: {exc!r}", flush=True)
                 continue
 
-            for a, email_id in sent_pairs:
-                await self.store.mark_target_alerted(a["target_id"])
-                await self.store.log_alert(a["target_id"], a["to_email"], a.get("score"),
-                                           a.get("semaphore"), a.get("fail_count"), email_id)
-                # KL-31: convite de score 100 → concede o crédito de scan completo grátis.
-                if _is_score100(a.get("score"), a.get("semaphore")):
-                    await self.store.grant_full_scan_credit(a["to_email"], a["target_url"])
-            for a in bad_alerts:  # e-mails que o Resend rejeitou (isolados no split)
-                await self.store.log_alert(a["target_id"], a["to_email"], a.get("score"),
-                                           a.get("semaphore"), a.get("fail_count"), None,
-                                           status="failed")
-                await self.store.update_status(a["target_id"], "descartado")
-                stats["invalid"] += 1
-                print(f"[alert] descartado — Resend rejeitou {a['to_email']!r}", flush=True)
-            stats["batches"] += 1
-            stats["sent"] += len(sent_pairs)
-            stats["failed"] += len(bad_alerts)
-            print(f"[alert] batch {stats['batches']}: {len(sent_pairs)} enviados"
-                  + (f", {len(bad_alerts)} rejeitados" if bad_alerts else ""), flush=True)
+            domain = site_name(payload["target_url"])
+            variant = cold_alert.choose_variant(payload.get("sector_avg") is not None)
+            subject, text = cold_alert.build_cold_email(
+                variant, domain=domain, score=payload["score"],
+                sector_label=payload.get("sector_label") or "",
+                sector_avg=payload.get("sector_avg"))
+            try:
+                res = await mailer.send_cold_alert(
+                    to_email=payload["to_email"], from_address=sender.from_address,
+                    subject=subject, text=text, template_variant=variant,
+                    target_id=payload["target_id"], domain=domain)
+            except Exception as exc:  # noqa: BLE001 - um envio ruim não derruba o ciclo
+                msg = str(exc).lower()
+                if isinstance(exc, KlarimMailerError) and ("422" in msg or "invalid" in msg):
+                    # E-mail ruim (rejeitado pelo Resend) → descarta o alvo e SEGUE.
+                    await self.store.log_alert(payload["target_id"], payload["to_email"],
+                                               payload.get("score"), payload.get("semaphore"),
+                                               payload.get("fail_count"), None, status="failed")
+                    await self.store.update_status(payload["target_id"], "descartado")
+                    stats["invalid"] += 1
+                    stats["failed"] += 1
+                    print(f"[alert] descartado — Resend rejeitou {payload['to_email']!r}",
+                          flush=True)
+                    continue
+                # Infra/inesperado (5xx/rede): loga a falha, NÃO descarta, e ABORTA o ciclo.
+                stats["errors"] += 1
+                await self.store.log_alert(payload["target_id"], payload["to_email"],
+                                           payload.get("score"), payload.get("semaphore"),
+                                           payload.get("fail_count"), None, status="failed")
+                print(f"[alert] erro ao enviar (aborta ciclo): {exc!r}", flush=True)
+                break
+            if res.get("blocked"):  # blocklist (defensivo; já validado antes)
+                continue
 
-            if bi < self.batches_per_cycle - 1:
-                await asyncio.sleep(self.batch_pause)
+            email_id = res.get("email_id")
+            counts[sender.from_domain] += 1
+            await self.store.mark_target_alerted(payload["target_id"])
+            await self.store.log_alert(payload["target_id"], payload["to_email"],
+                                       payload.get("score"), payload.get("semaphore"),
+                                       payload.get("fail_count"), email_id)
+            # KL-31: convite de score 100 → concede o crédito de scan completo grátis.
+            if _is_score100(payload.get("score"), payload.get("semaphore")):
+                await self.store.grant_full_scan_credit(payload["to_email"], payload["target_url"])
+            stats["sent"] += 1
+            stats["variants"][variant] += 1
+
+            # Cooldown randômico ENTRE envios (não após o último) — respeita o deadline
+            # do ciclo (o restante entra no próximo ciclo).
+            if idx + 1 < len(targets):
+                if deadline is not None and time.monotonic() + self.send_interval_max > deadline:
+                    stats["skipped"] += len(targets) - (idx + 1)
+                    print("[alert] deadline do ciclo atingido; restante fica p/ o próximo ciclo",
+                          flush=True)
+                    break
+                await self._send_cooldown()
 
         remaining = await self.store.count_eligible_targets_for_alert()
-        print(f"[alert] ciclo: {stats['batches']} batches, {stats['sent']} enviados, "
-              f"{remaining} restantes, mês {sent_month + stats['sent']}/{self.monthly_limit}",
-              flush=True)
+        print(f"[alert] ciclo: {stats['sent']} enviados "
+              f"(variantes {stats['variants']}), {remaining} restantes, "
+              f"mês {sent_month + stats['sent']}/{self.monthly_limit}", flush=True)
         return stats
 
     async def start(self) -> None:
-        print(f"[alert] iniciado (batch {self.batch_size}, {self.batches_per_cycle} batches/ciclo, "
-              f"pausa {int(self.batch_pause)}s, intervalo {self.interval_minutes}min, "
-              f"limite {self.monthly_limit // 1000}k/mês)", flush=True)
+        senders = ", ".join(s.from_domain for s in cold_alert.load_senders()) or "(nenhum)"
+        print(f"[alert] iniciado (KL-91 rotação cold: {senders}; "
+              f"{self.sender_daily_limit}/remetente/dia, cooldown "
+              f"{int(self.send_interval_min)}-{int(self.send_interval_max)}s, "
+              f"intervalo {self.interval_minutes}min, limite {self.monthly_limit // 1000}k/mês)",
+              flush=True)
         asyncio.create_task(self._heartbeat_loop())
         while True:
             try:

@@ -158,7 +158,7 @@ RescanWorker, VigiliaWorker)`. Cada um relê config por ciclo (`get_setting`) e 
 | Worker | Arquivo | Ciclo | Função |
 |---|---|---|---|
 | Discovery | `ct_poller.py` + `worker.py` | 30 min | CT log poller → filtra `.com.br` → fingerprint + e-mail + setor → registra + enfileira **todo site acessível** (KL-60) |
-| Alert | `alert_worker.py` | 30 min | alerta proativo em batch (50, Resend Batch API), teto `ALERT_DAILY_LIMIT`/cota mensal, anti-bounce, kill-switch `STOP_ALERTS` |
+| Alert | `alert_worker.py` | 30 min | alerta **cold** (KL-91): texto puro sem links + **rotação** `alertas./aviso.klarim.net`, **envio individual** com cooldown 30-60s, limite/remetente (`ALERT_SENDER_DAILY_LIMIT`), circuit breaker por bounce, cota mensal, kill-switch `STOP_ALERTS` |
 | Rescan | `rescan_worker.py` | 24 h | reescaneia alvos ≥30 dias + e-mail de evolução; monitora sites 100 |
 | Vigília | `vigilia_worker.py` | 6 h + loop uptime 5 min | 8 vigílias: core (SSL, domínio, score, e-mail, reputação) + P4 (`changes`, `phishing`) no ciclo 6 h; **`uptime`** num loop próprio de 5 min (reagenda pelo intervalo do plano: Pro 30 / Agency 5 min). Enforcement de plano; **começa pausada** |
 | Bulletin | `bulletin_worker.py` | 1 h | KL-44 P3: boletim de segurança por frequência do plano (free=mensal/pro=semanal/agency=diário), às `BULLETIN_HOUR_UTC`; laudo técnico ao técnico vinculado |
@@ -206,7 +206,7 @@ Schema criado idempotente no `ensure_schema` (sem Alembic). Principais tabelas:
 
 | Serviço | Uso |
 |---|---|
-| **Resend** | e-mail — 2 domínios: `klarim.net` (transacional) + `klarimscan.com` (proativo). Batch API + webhook Svix (bounce/complaint) |
+| **Resend** | e-mail. **Transacional:** `klarim@klarim.net`. **Cold/alerta (KL-91):** rotação `scan@alertas.klarim.net` + `scan@aviso.klarim.net` (subdomínios verificados, DKIM/SPF/DMARC) — `klarim.net` fica exclusivo do transacional. Webhook Svix (bounce/complaint); `by_domain` em `get_email_health` |
 | **AbacatePay** | PIX (R$ 19 avulso); webhook query-secret + HMAC |
 | **OpenAI** | GPT-4o mini (setor/descrição/tags/CNAE; ~US$0,001/site; fail-open) |
 | **APIs públicas de leitura** | crt.sh (CT/subdomínios), HIBP, Google Safe Browsing, IBGE (CNAE), BrasilAPI/ReceitaWS (CNPJ), RDAP (domínio) |
@@ -236,6 +236,39 @@ Auth própria (`MCPAuthMiddleware`, fail-closed, constant-time) — fora do JWT 
 5. Visitante escaneia (verificação por e-mail, KL-25) → vira **lead** (PQL, fire-and-
    forget) → **conta** (signup vincula histórico) → **monitoramento** (vigílias por plano).
 6. Todo e-mail passa por `KlarimMailer._send` → `email_log` (rastreabilidade + blocklist).
+
+### Módulo de e-mail cold (KL-91)
+
+O alerta a quem **não tem conta** (cold outreach) é o maior emissor e o mais sensível a
+reputação. Ele caía no spam por 3 causas: linguagem de urgência, links trackáveis, e um
+único domínio recém-criado. O módulo KL-91 ataca as 3:
+
+- **Templates de texto puro sem links** (`notifier/cold_alert.py`, PURO/testável): 3 variantes
+  (`build_cold_email`) — informativa, setorial (setor + média), educativa. Escolha por
+  `choose_variant` (só usa a setorial se há setor + amostra ≥10). Opt-out **por resposta**
+  (`List-Unsubscribe: <mailto:scan@klarim.net?subject=remover>` — SEM One-Click, que exige URL
+  https e seria malformado com mailto). `klarim.net` aparece só como **texto** (o cliente pode
+  auto-linkificar, mas não há href nosso).
+- **Rotação de remetentes** (`load_senders`/`pick_sender`): round-robin pelo remetente de **menor
+  volume no dia**, entre `alertas.klarim.net` e `aviso.klarim.net` (`ALERT_SENDER_EMAILS`).
+  `load_senders` **descarta `klarim.net` cru** — isolamento: o domínio principal é só do
+  transacional.
+- **Cadência conservadora** (`alert_worker.run_cycle`, agora **envio individual**, não batch):
+  cooldown randômico **30-60s** entre envios (`ALERT_SEND_INTERVAL_MIN/MAX`), **limite diário por
+  remetente** (`ALERT_SENDER_DAILY_LIMIT`, warmup 100→250→500→750, editável no painel), e um
+  deadline por ciclo (não estoura o intervalo). O envio é `KlarimMailer.send_cold_alert`.
+- **Circuit breaker por remetente** (`flag_high_bounce`): bounce > 5% (amostra ≥20) → remetente
+  **pausado** no ciclo (log CRITICAL); o outro segue. Métricas por domínio de envio em
+  `store.email_health_by_domain` → `GET /system/email-health.by_domain` + MCP `get_email_health`;
+  `email_log` ganhou `template_variant` (`from_domain` já existia).
+- **Dev/`DRY_RUN_EMAIL`:** com a flag ligada, `_send_sync` **não fala com o Resend** (retorna um
+  id `dryrun_*`) mas grava o `email_log` — exercita rotação/variante/limites sem enviar.
+
+O disparo **manual** (`/targets/{id}/alert`, MCP `send_alert_to_target`) usa o mesmo formato cold
+(1º remetente). Os builders antigos com link (`build_alert_text`, alert-access HMAC do KL-82 S3)
+ficam no código mas o ciclo automático não os usa (revertível). **Fora do escopo:** `profile_view`
+e `bulletin` seguem em `alerta@klarim.net` (`_proactive_from`). **Opt-out por resposta é manual por
+ora** (Opção A): as respostas "remover" caem no inbox `scan@klarim.net`; o operador põe na blocklist.
 
 ### Arquivamento de responses brutos no GCS (KL-77 Fase 2)
 

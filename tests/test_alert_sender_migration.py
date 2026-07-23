@@ -146,6 +146,12 @@ def _prep_worker(monkeypatch, sent_today, daily_limit="30", sent_month=100,
     w.batches_per_cycle = 4
     w.interval_minutes = 30
     w.monthly_limit = 45000
+    # KL-91 — atributos do envio cold (rotação/cooldown/breaker); cooldown 0 nos testes.
+    w.sender_daily_limit = 1000
+    w.send_interval_min = 0
+    w.send_interval_max = 0
+    w.sender_max_bounce_rate = 100.0
+    w.bounce_min_sample = 20
 
     class S:
         async def get_setting(self, k, d=None):

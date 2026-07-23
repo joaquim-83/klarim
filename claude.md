@@ -135,14 +135,26 @@ standalone) + **React** (islands) + **Tailwind v4** (CSS-first, sem config) +
   some para quem já tem conta. LGPD é o único bloco restrito a acesso completo.
 
 ### E-mail (reputação)
-- **Alertas proativos:** `Klarim <alerta@klarim.net>` (`ALERT_FROM_EMAIL`/`ALERT_FROM_NAME`).
-  **2026-07-20:** MIGRADO de `alerta@klarimscan.com` → `alerta@klarim.net`. O warmup do
-  klarimscan.com falhou (7.419 alertas → 2 cliques; tudo no spam); `klarim.net` é aged, com
-  SPF/DKIM/DMARC no Resend e entrega na inbox. **Trade-off:** o proativo (cold) passa a
-  compartilhar o domínio com o transacional — **monitorar a reputação do `klarim.net`**
-  (bounce/complaint em `get_email_health`); se degradar o transacional, reavaliar. O
-  `ALERT_DAILY_LIMIT=30` (warmup) pode ser relaxado num domínio aged. `_proactive_from` lê o
-  env a cada envio; a troca do `.env` vale ao **recriar o container** (sem rebuild).
+- **Alertas cold (KL-91, atual):** o alerta a quem NÃO tem conta usa o **módulo cold**
+  (`notifier/cold_alert.py` + `alert_worker`): **texto puro SEM links** (3 variantes
+  informativa/setorial/educativa), opt-out **por resposta** ("responda com remover"), e
+  **rotação round-robin** entre 2 subdomínios verificados no Resend — `alertas.klarim.net`
+  e `aviso.klarim.net` (`ALERT_SENDER_EMAILS`). O `klarim.net` fica **exclusivo do
+  transacional** (isolamento de reputação; `load_senders` descarta `klarim.net` cru). Envio
+  **individual** (não batch) com **cooldown 30-60s** (`ALERT_SEND_INTERVAL_MIN/MAX`) e
+  **limite diário POR remetente** (`ALERT_SENDER_DAILY_LIMIT`, warmup: 100→250→500→750;
+  editável no painel). **Circuit breaker por remetente:** bounce > 5% (amostra ≥20) →
+  remetente **pausado** no ciclo (o outro continua). Métricas por domínio em
+  `get_email_health.by_domain` + `email_log.from_domain`/`template_variant`. Motivação: o
+  `alerta@klarim.net` (cold + urgência + links) caía no spam. **`send_alert_for_target`
+  (disparo manual) usa o mesmo formato** (1º remetente). Os builders antigos com link
+  (`build_alert_text`, alert-access HMAC do KL-82 S3) **ficam no código** mas o ciclo
+  automático NÃO os usa (revertível).
+- **Alertas proativos (legado, `_proactive_from`):** `Klarim <alerta@klarim.net>`
+  (`ALERT_FROM_EMAIL`/`ALERT_FROM_NAME`) — ainda usado por **profile_view** e **bulletin**
+  (não migrados para a rotação cold; escopo do KL-91 foi só o alerta). **2026-07-20:** MIGRADO
+  de `alerta@klarimscan.com` → `alerta@klarim.net` (warmup do klarimscan.com falhou no spam).
+  `_proactive_from` lê o env a cada envio; a troca do `.env` vale ao **recriar o container**.
 - **Transacionais:** `klarim@klarim.net` (`RESEND_FROM`). **2026-07-21:** MIGRADO de
   `seguranca@klarim.net` → `klarim@klarim.net` — a palavra "seguranca" é keyword de phishing e,
   com domínio aged, elevava o spam score (a confirmação de conta caía no spam). `_mailer()` lê
@@ -418,14 +430,15 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1555 passed** (backend pytest, KL-99: +27) + **98 node --test** (frontend `test:unit`, KL-99: +2)
+- Testes: **1588 passed** (backend pytest, KL-91: +33) + **98 node --test** (frontend `test:unit`)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - **Níveis de conta (KL-99):** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado
   por domínio); contas legadas → 2. Conta sem senha: Fluxo C (link do alerta) / Fluxo D (signup-inline)
   / `/cadastrar` só e-mail. **Não deployado** (aguarda validação do dono).
 - Workers: **5/5 ativos** (discovery, alert, scan, vigília, rescan)
 - Planos: 8 contas Pro trial · Vigílias: 35 (30 ok, 5 error)
-- E-mail: alertas proativos migrados p/ `alerta@klarim.net` (2026-07-20; klarimscan.com falhou no spam)
+- E-mail: **alertas cold com rotação (KL-91)** — `alertas.klarim.net`/`aviso.klarim.net`, texto puro
+  sem links, cooldown 30-60s, limite/remetente (warmup 100/dia). Transacional segue em `klarim@klarim.net`
 - Scan rate: **200/h** (KL-77 Fase 3) · Responses brutos arquivados no GCS `gs://klarim-raw` (KL-77 Fase 2)
 - Tech stack detectado por scan (KL-75 P1): `site_tech_stack` + `site_status_log` + `targets.email_provider`
 
@@ -1013,6 +1026,30 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   (fix crítico):** o link do alerta NÃO cria conta (só sessão view-only) — a conta nasce no
   consentimento (`monitor-from-alert`); + magic link para conta sem senha voltar; + layout do
   resultado em 2 colunas (score compacto + CTA acima do fold).
+- **KL-91** — Módulo de e-mail cold com rotação de subdomínios ✅ (validado local; **deploy
+  pendente de validação do dono**). Corrige os alertas caindo no spam (urgência + links
+  trackáveis + domínio único). **`notifier/cold_alert.py`** (PURO/testável): 3 variantes de
+  **texto puro SEM links** (1 informativa · 2 setorial com média · 3 educativa; acentuação PT-BR
+  correta — texto sem acento parece MAIS spam), opt-out **por resposta** (header
+  `List-Unsubscribe: <mailto:scan@klarim.net?subject=remover>`, SEM One-Click — inválido com
+  mailto), `choose_variant` (com setor→1/2/3, sem→1/3), `load_senders`/`pick_sender`
+  (round-robin pelo de menor volume; guard descarta `klarim.net` cru — isolamento), `flag_high_bounce`
+  (circuit breaker: bounce >5% amostra ≥20 → pausa o remetente). **Rotação** entre
+  `alertas.klarim.net` + `aviso.klarim.net` (`ALERT_SENDER_EMAILS`, verificados no Resend);
+  `klarim.net` fica **exclusivo do transacional**. `alert_worker.run_cycle` reescrito de **batch →
+  envio individual** com **cooldown 30-60s** (`ALERT_SEND_INTERVAL_MIN/MAX`, 0 em dev/testes) +
+  **limite diário por remetente** (`ALERT_SENDER_DAILY_LIMIT`, warmup 100→750; editável no painel)
+  + deadline de ciclo (não estoura o intervalo). `KlarimMailer.send_cold_alert` (texto puro,
+  from rotacionado, log com `template_variant`+`from_domain`); **`DRY_RUN_EMAIL`** curto-circuita
+  `_send_sync` (dev simula sem Resend, grava email_log). Schema: `email_log.template_variant`.
+  Store: `count_alerts_sent_today_by_domain`, `email_health_by_domain`. `/system/email-health`
+  (+ MCP `get_email_health`) ganham **`by_domain`** (sent/delivered/bounced/bounce_rate/status por
+  remetente). `send_alert_for_target` (disparo manual) usa o mesmo formato cold (1º remetente).
+  **Opt-out por resposta = manual por ora** (Opção A: respostas caem no inbox `scan@klarim.net`,
+  operador põe na blocklist). Threshold do lead scoring (KL-85) **não** foi mexido (gerido à parte).
+  Builders antigos (`build_alert_text` + alert-access HMAC KL-82 S3) **ficam no código** (o ciclo
+  não os usa; revertível). +33 testes (`test_kl91_cold_alert.py` +24; `test_alert_worker.py`
+  reescrito p/ envio individual). Relatório: `claude/reports/KL-91_modulo_email_rotacao.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

@@ -54,27 +54,23 @@ def test_severity_counts_from_checks():
 # --- fakes ----------------------------------------------------------------- #
 
 class FakeMailer:
+    """KL-91 — o worker envia individualmente via send_cold_alert (rotação). `fail`
+    simula erro de infra; `bad` são e-mails que o Resend rejeita (422)."""
     def __init__(self, fail=False, bad=None):
-        self.batches = []
-        self.singles = []
+        self.sent = []            # {to, from, variant, subject}
         self.fail = fail
-        self.bad = set(bad or [])  # e-mails que fazem o batch 422
+        self.bad = set(bad or [])  # e-mails que o Resend rejeita (422)
 
-    async def send_alert_batch(self, alerts):
+    async def send_cold_alert(self, *, to_email, from_address, subject, text,
+                              template_variant=None, target_id=None, domain=None, **kw):
         if self.fail:
-            raise RuntimeError("boom")
-        if any(a["to_email"] in self.bad for a in alerts):
+            raise RuntimeError("boom")  # infra/inesperado (não KlarimMailerError)
+        if to_email in self.bad:
             from notifier import KlarimMailerError
-            raise KlarimMailerError("Falha no batch Resend (422): Invalid 'to' field")
-        self.batches.append(list(alerts))
-        ids = [f"em_{i}" for i in range(len(alerts))]
-        return {"sent": len(alerts), "failed": 0, "ids": ids}
-
-    async def send_alert(self, to_email, target_url, score, semaphore, fail_count,
-                         severity_counts, unsubscribe_link=None, risk_messages=None,
-                         target_id=None, bonus_token=None):
-        self.singles.append({"to": to_email, "target_id": target_id, "bonus_token": bonus_token})
-        return {"email_id": f"single_{len(self.singles)}"}
+            raise KlarimMailerError("Falha no envio Resend (422): Invalid 'to' field")
+        self.sent.append({"to": to_email, "from": from_address, "variant": template_variant,
+                          "subject": subject, "text": text, "target_id": target_id})
+        return {"email_id": f"single_{len(self.sent)}"}
 
 
 class FakeStore:
@@ -109,8 +105,17 @@ class FakeStore:
     async def count_alerts_sent_today(self):
         return getattr(self, "_sent_today", 0)
 
+    async def count_alerts_sent_today_by_domain(self):  # KL-91
+        return dict(getattr(self, "_sent_by_domain", {}))
+
     async def email_health(self):
         return dict(self._health)
+
+    async def email_health_by_domain(self):  # KL-91
+        return dict(getattr(self, "_health_by_domain", {}))
+
+    async def sector_benchmark(self, sector, min_count=10):  # KL-91 (variante 2)
+        return getattr(self, "_benchmark", None)
 
     async def is_email_blocked(self, email):
         return email in self._blocked
@@ -197,20 +202,40 @@ def _worker(store):
     w.store = store
     w.batch_size, w.batches_per_cycle, w.batch_pause = 50, 4, 0
     w.monthly_limit = 45000
-    w.validate_mx = False  # sem DNS nos testes de fluxo de batch
-    w.alert_score_threshold = -100000  # KL-85: não filtrar nos testes de fluxo de batch
+    w.validate_mx = False  # sem DNS nos testes de fluxo
+    w.alert_score_threshold = -100000  # KL-85: não filtrar nos testes de fluxo
     w.max_bounce_rate = 8.0
     w.bounce_min_sample = 20
+    # KL-91: limite por remetente alto (não binda), cooldown 0 (sem espera), breaker off.
+    w.sender_daily_limit = 100000
+    w.send_interval_min = 0
+    w.send_interval_max = 0
+    w.sender_max_bounce_rate = 100.0
     w._mailer = lambda: FakeMailer()  # noqa: E731
     return w
 
 
-def test_run_cycle_sends_in_one_batch():
+def test_run_cycle_sends_all_individually():
     store = FakeStore(eligible=[_target(1), _target(2)])
     stats = asyncio.run(_worker(store).run_cycle())
-    assert stats["eligible"] == 2 and stats["sent"] == 2 and stats["batches"] == 1
+    assert stats["eligible"] == 2 and stats["sent"] == 2
     assert store.alerted == [1, 2]
     assert all(l["status"] == "sent" for l in store.logged)
+
+
+def test_run_cycle_rotates_between_senders(monkeypatch):
+    # KL-91: 4 alvos → round-robin alterna os 2 remetentes cold (2 e 2).
+    monkeypatch.delenv("ALERT_SENDER_EMAILS", raising=False)
+    store = FakeStore(eligible=[_target(i) for i in range(1, 5)])
+    sent = []
+    w = _worker(store)
+    fm = FakeMailer()
+    w._mailer = lambda: fm  # noqa: E731
+    stats = asyncio.run(w.run_cycle())
+    froms = [e["from"] for e in fm.sent]
+    assert stats["sent"] == 4
+    assert sum("alertas.klarim.net" in f for f in froms) == 2
+    assert sum("aviso.klarim.net" in f for f in froms) == 2
 
 
 # --- controle centralizado KL-32 ------------------------------------------- #
@@ -259,12 +284,47 @@ def test_run_cycle_paused_by_flag(tmp_path, monkeypatch):
     assert stats["sent"] == 0 and store.alerted == []
 
 
-def test_run_cycle_splits_into_batches():
-    # 120 elegíveis, batch 50 -> 3 batches (50 + 50 + 20)
+def test_run_cycle_sends_up_to_cycle_cap():
+    # cycle_cap = batch_size(50) * batches_per_cycle(4) = 200; 120 elegíveis < 200 → todos
     store = FakeStore(eligible=[_target(i) for i in range(1, 121)])
     stats = asyncio.run(_worker(store).run_cycle())
-    assert stats["sent"] == 120 and stats["batches"] == 3
+    assert stats["sent"] == 120
     assert len(store.alerted) == 120
+
+
+def test_run_cycle_respects_sender_daily_limit():
+    # 2 remetentes × limite 3 = 6 envios máx no dia; 10 elegíveis → só 6 saem.
+    store = FakeStore(eligible=[_target(i) for i in range(1, 11)])
+    w = _worker(store)
+    w.sender_daily_limit = 3
+    stats = asyncio.run(w.run_cycle())
+    assert stats["sent"] == 6 and len(store.alerted) == 6
+
+
+def test_run_cycle_skips_when_senders_exhausted():
+    # ambos os remetentes já bateram o limite hoje → ciclo pulado.
+    store = FakeStore(eligible=[_target(1)])
+    store._sent_by_domain = {"alertas.klarim.net": 3, "aviso.klarim.net": 3}
+    w = _worker(store)
+    w.sender_daily_limit = 3
+    stats = asyncio.run(w.run_cycle())
+    assert stats.get("sender_limit_reached") is True and stats["sent"] == 0
+    assert store.alerted == []
+
+
+def test_run_cycle_pauses_high_bounce_sender():
+    # alertas.klarim.net com 12% de bounce (amostra 100) → pausado; aviso continua.
+    store = FakeStore(eligible=[_target(i) for i in range(1, 5)])
+    store._health_by_domain = {
+        "alertas.klarim.net": {"total": 100, "bounced": 12, "complained": 0},
+        "aviso.klarim.net": {"total": 100, "bounced": 1, "complained": 0}}
+    w = _worker(store)
+    w.sender_max_bounce_rate = 5.0
+    fm = FakeMailer()
+    w._mailer = lambda: fm  # noqa: E731
+    stats = asyncio.run(w.run_cycle())
+    assert stats["senders_paused"] == ["alertas.klarim.net"]
+    assert all("aviso.klarim.net" in e["from"] for e in fm.sent)  # só o saudável envia
 
 
 def test_run_cycle_monthly_limit_skips_when_full():
@@ -281,14 +341,14 @@ def test_run_cycle_monthly_limit_caps_fetch():
     assert stats["sent"] == 10 and len(store.alerted) == 10
 
 
-def test_run_cycle_batch_failure_logs_failed_not_alerted():
+def test_run_cycle_infra_error_aborts_and_logs_failed():
     store = FakeStore(eligible=[_target(1), _target(2)])
     w = _worker(store)
-    w._mailer = lambda: FakeMailer(fail=True)  # noqa: E731
+    w._mailer = lambda: FakeMailer(fail=True)  # RuntimeError (infra) já no 1º envio
     stats = asyncio.run(w.run_cycle())
     assert stats["sent"] == 0 and stats["errors"] == 1
     assert store.alerted == []  # falha não marca alerted
-    assert all(l["status"] == "failed" for l in store.logged)
+    assert store.logged and all(l["status"] == "failed" for l in store.logged)
 
 
 def test_run_cycle_skips_without_mailer():
@@ -355,30 +415,8 @@ def test_validate_batch_discards_invalid_email():
     assert (1, "descartado") in store.discarded
 
 
-def test_send_with_split_isolates_bad_email():
-    store = FakeStore()
-    w = _worker(store)
-    mailer = FakeMailer(bad={"bad@x.com.br"})
-    alerts = [{"to_email": f"ok{i}@x.com.br", "target_id": i} for i in range(3)]
-    alerts.append({"to_email": "bad@x.com.br", "target_id": 99})
-    sent_pairs, bad = asyncio.run(w._send_with_split(mailer, alerts))
-    assert len(sent_pairs) == 3 and [a["target_id"] for a, _ in sent_pairs] == [0, 1, 2]
-    assert [a["target_id"] for a in bad] == [99]
-
-
-def test_send_with_split_reraises_infra_error():
-    store = FakeStore()
-    w = _worker(store)
-    mailer = FakeMailer(fail=True)  # RuntimeError, não 422
-    try:
-        asyncio.run(w._send_with_split(mailer, [{"to_email": "a@x.com.br", "target_id": 1}]))
-        assert False, "esperava exceção de infra propagada"
-    except RuntimeError:
-        pass
-
-
-def test_run_cycle_isolates_bad_email_in_batch():
-    # 2 bons + 1 ruim no mesmo batch: os 2 bons enviam, o ruim é descartado
+def test_run_cycle_isolates_bad_email():
+    # 2 bons + 1 ruim (422): os 2 bons enviam, o ruim é descartado sem abortar o ciclo
     store = FakeStore(eligible=[_target(1, email="ok1@x.com.br"),
                                 _target(2, email="ok2@x.com.br"),
                                 _target(3, email="bad@x.com.br")])
