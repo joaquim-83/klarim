@@ -5687,7 +5687,14 @@ async def api_list_alerts(
 
 @app.get("/alerts/stats")
 async def api_alerts_stats() -> dict:
+    """KL-96 — contadores da aba 'Alertas enviados' (email_log, tipos de alerta)."""
     return await get_target_store().alert_stats()
+
+
+@app.get("/alerts/profile-view-stats")
+async def api_alerts_profile_view_stats() -> dict:
+    """KL-96 — contadores PRÓPRIOS da aba 'Consultas de perfil' (email_log, profile_view)."""
+    return await get_target_store().profile_view_stats()
 
 
 @app.get("/alerts/daily")

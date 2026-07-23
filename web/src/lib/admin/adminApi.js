@@ -93,6 +93,7 @@ export const admin = {
   dashboardStats: () => get('/admin/dashboard-stats'),  // totalizadores KL-57
   targetsStats: () => get('/targets/stats'),
   alertsStats: () => get('/alerts/stats'),
+  profileViewStats: () => get('/alerts/profile-view-stats'),  // KL-96 — aba Consultas de perfil
   rescansStats: () => get('/rescans/stats'),
   scansStats: () => get('/scans/stats'),
   paymentsStats: () => get('/payments/stats'),

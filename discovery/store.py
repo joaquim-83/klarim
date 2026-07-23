@@ -5392,8 +5392,11 @@ class TargetStore:
         self, target_id: Optional[int] = None, limit: int = 50, offset: int = 0
     ) -> List[Dict[str, Any]]:
         def _fn(cur):
-            base = ("SELECT a.*, t.url FROM alert_log a "
-                    "LEFT JOIN targets t ON a.target_id = t.id ")
+            # KL-96 — `el.from_domain` traz o REMETENTE (subdomínio cold do KL-91 ou o antigo
+            # klarim.net) via o email_id do Resend (1:1). LEFT JOIN: envios sem email_id → NULL.
+            base = ("SELECT a.*, t.url, el.from_domain FROM alert_log a "
+                    "LEFT JOIN targets t ON a.target_id = t.id "
+                    "LEFT JOIN email_log el ON el.email_id = a.email_id ")
             if target_id is not None:
                 cur.execute(
                     base + "WHERE a.target_id = %s ORDER BY a.sent_at DESC LIMIT %s OFFSET %s",
@@ -5408,20 +5411,38 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
-    async def alert_stats(self) -> Dict[str, Any]:
+    @staticmethod
+    def _email_stats_fn(type_clause: str):
+        """KL-96 — contadores HOJE/SEMANA/MÊS/TOTAL de e-mails do `email_log` (fonte
+        ÚNICA) por tipo, status='sent', em DIA-calendário (não janela móvel). `type_clause`
+        é sempre um literal interno (nunca input do usuário) → sem risco de injeção."""
         def _fn(cur):
-            out = {}
-            for key, interval in (("today", "1 day"), ("week", "7 days"), ("month", "30 days")):
-                cur.execute(
-                    f"SELECT COUNT(*) FROM alert_log WHERE status = 'sent' "
-                    f"AND sent_at > NOW() - INTERVAL '{interval}'"
-                )
+            out: Dict[str, Any] = {}
+            base = (f"SELECT COUNT(*) FROM email_log WHERE status = 'sent' AND {type_clause}")
+            windows = (("today", ""), ("week", " - INTERVAL '7 days'"),
+                       ("month", " - INTERVAL '30 days'"))
+            for key, offset in windows:
+                cur.execute(base + f" AND sent_at >= date_trunc('day', NOW()){offset}")
                 out[key] = int(cur.fetchone()[0])
-            cur.execute("SELECT COUNT(*) FROM alert_log WHERE status = 'sent'")
+            cur.execute(base)
             out["total"] = int(cur.fetchone()[0])
             return out
+        return _fn
 
-        return await asyncio.to_thread(self._run, _fn)
+    async def alert_stats(self) -> Dict[str, Any]:
+        """KL-96 — contadores da página Alertas a partir do `email_log` (tipos de alerta:
+        `alert` + `alert_score100`, status='sent'). Antes vinha de `alert_log` (tabela
+        paralela), o que divergia do funil do Analytics (que já usa `email_log`) e do
+        `get_email_health`. Agora é fonte única. `alert` cobre os cold do KL-91 (o
+        `from_domain` distingue o remetente); `profile_view` NÃO entra (aba própria)."""
+        return await asyncio.to_thread(
+            self._run, self._email_stats_fn("email_type IN ('alert', 'alert_score100')"))
+
+    async def profile_view_stats(self) -> Dict[str, Any]:
+        """KL-96 — contadores PRÓPRIOS da aba 'Consultas de perfil' (avisos `profile_view`
+        enviados, `email_log`, status='sent'). Separado dos alertas — cada aba tem os seus."""
+        return await asyncio.to_thread(
+            self._run, self._email_stats_fn("email_type = 'profile_view'"))
 
     async def count_proactive_emails_this_month(self) -> int:
         """Cota mensal GLOBAL (KL-23): alertas (alert_log) + evolução (rescan_log)
@@ -5600,7 +5621,10 @@ class TargetStore:
                             f"WHERE session_id IS NOT NULL AND {since} AND ({where})")
                 return int(cur.fetchone()[0])
 
-            cur.execute(f"SELECT COUNT(*) FROM alert_log WHERE status='sent' AND {alert_since}")
+            # KL-96 — emails_sent do funil legado vem do email_log (tipos de alerta),
+            # consistente com a página Alertas + o funil novo (aa_funnel_raw).
+            cur.execute("SELECT COUNT(*) FROM email_log WHERE status='sent' "
+                        f"AND email_type IN ('alert','alert_score100') AND {alert_since}")
             emails_sent = int(cur.fetchone()[0])
             return {
                 "emails_sent": emails_sent,
@@ -6018,9 +6042,11 @@ class TargetStore:
                 "accounts": {
                     "daily": daily("SELECT date_trunc('day',created_at)::date d, COUNT(*) FROM users WHERE created_at >= %s AND created_at < %s GROUP BY d"),
                     "total": total("SELECT COUNT(*) FROM users WHERE created_at >= %s AND created_at < %s")},
+                # KL-96 — alerts_sent vem do email_log (tipos de alerta), fonte única =
+                # página Alertas + funil (aa_funnel_raw). Antes vinha de alert_log (divergia).
                 "alerts_sent": {
-                    "daily": daily("SELECT date_trunc('day',sent_at)::date d, COUNT(*) FROM alert_log WHERE status='sent' AND sent_at >= %s AND sent_at < %s GROUP BY d"),
-                    "total": total("SELECT COUNT(*) FROM alert_log WHERE status='sent' AND sent_at >= %s AND sent_at < %s")},
+                    "daily": daily("SELECT date_trunc('day',sent_at)::date d, COUNT(*) FROM email_log WHERE status='sent' AND email_type IN ('alert','alert_score100') AND sent_at >= %s AND sent_at < %s GROUP BY d"),
+                    "total": total("SELECT COUNT(*) FROM email_log WHERE status='sent' AND email_type IN ('alert','alert_score100') AND sent_at >= %s AND sent_at < %s")},
                 "alert_clicks": {
                     "daily": daily(f"SELECT date_trunc('day',created_at)::date d, COUNT(DISTINCT session_id) FROM site_events WHERE utm_campaign='alerta' AND {sid} AND {ev}{h} GROUP BY d"),
                     "total": total(f"SELECT COUNT(DISTINCT session_id) FROM site_events WHERE utm_campaign='alerta' AND {sid} AND {ev}{h}")},

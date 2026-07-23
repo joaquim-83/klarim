@@ -430,7 +430,7 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1588 passed** (backend pytest, KL-91: +33) + **98 node --test** (frontend `test:unit`)
+- Testes: **1593 passed** (backend pytest, KL-96: +5) + **98 node --test** (frontend `test:unit`)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - **Níveis de conta (KL-99):** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado
   por domínio); contas legadas → 2. Conta sem senha: Fluxo C (link do alerta) / Fluxo D (signup-inline)
@@ -1050,6 +1050,23 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   Builders antigos (`build_alert_text` + alert-access HMAC KL-82 S3) **ficam no código** (o ciclo
   não os usa; revertível). +33 testes (`test_kl91_cold_alert.py` +24; `test_alert_worker.py`
   reescrito p/ envio individual). Relatório: `claude/reports/KL-91_modulo_email_rotacao.md`.
+
+- **KL-96** — Desativar alerta antigo + corrigir contadores ✅. **Itens 1–2 já estavam resolvidos
+  pelo KL-91:** o `run_cycle` só envia por `send_cold_alert` (subdomínios cold; nenhum `send_alert`/
+  `_proactive_from`), e o webhook do Resend já bota todo bounce na blocklist (0 fora). A premissa
+  "785/dia de alerta antigo via alerta@klarim.net" era **`profile_view`** (769/dia, 0,7% bounce), não
+  alertas — os 8 alertas de hoje pelo path antigo foram ANTES do deploy KL-91. **Itens 3–6 (fonte única
+  = email_log):** havia 3 fontes p/ "alertas enviados" (alert_log/email_log/count_proactive) divergindo.
+  `store.alert_stats` reescrito de **alert_log → email_log** (`email_type IN ('alert','alert_score100')`,
+  dia-calendário) — alinha a página Alertas com o funil do Analytics (que já usava email_log) e o
+  Sistema (`/system/status` usa o mesmo `alert_stats`). `aa_metrics_raw.alerts_sent` + `analytics_funnel`
+  (MCP get_funnel) também migrados p/ email_log. **Abas:** "Alertas enviados" ganhou coluna **REMETENTE**
+  (`email_log.from_domain` via LEFT JOIN por email_id; badge verde p/ cold `alertas.`/`aviso.`, cinza
+  p/ antigo); "Consultas de perfil" ganhou **contadores próprios** (`profile_view_stats` +
+  `GET /alerts/profile-view-stats`). §6 "Contas criadas" já vinha de `users` (KL-95) — só verificado.
+  +5 testes (`test_kl96_counters.py`); SQL validado no Postgres 16 da VM. **Recomendação (próximo card):**
+  isolar `profile_view` (~15k/sem cold no domínio transacional `klarim.net`) num subdomínio próprio +
+  validação MX — é o risco de reputação real (não dá p/ usar `alertas.`/`aviso.`: quebraria o warmup).
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.
