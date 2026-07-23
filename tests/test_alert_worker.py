@@ -415,6 +415,40 @@ def test_validate_batch_discards_invalid_email():
     assert (1, "descartado") in store.discarded
 
 
+def test_run_cycle_sends_best_leads_first(monkeypatch):
+    # Fix livelock 2026-07-23: busca TODOS os candidatos, filtra pelo threshold e envia os de
+    # MAIOR score primeiro. Antes, os de baixa qualidade da frente entupiam e mandava 0.
+    import discovery.alert_worker as aw
+    scores = {1: 5, 2: 25, 3: 50, 4: 10, 5: 40}   # threshold 20 mantém 2, 3, 5
+    monkeypatch.setattr(aw, "calculate_alert_score",
+                        lambda t, e, b: {"score": scores[t["id"]], "signals": []})
+    store = FakeStore(eligible=[_target(i) for i in range(1, 6)])
+    w = _worker(store)
+    w.alert_score_threshold = 20
+    fm = FakeMailer()
+    w._mailer = lambda: fm  # noqa: E731
+    stats = asyncio.run(w.run_cycle())
+    assert stats["sent"] == 3 and stats["skipped_low_quality"] == 2
+    # ordenados por score DESC: t3(50) → t5(40) → t2(25)
+    assert [e["target_id"] for e in fm.sent] == [3, 5, 2]
+
+
+def test_apply_scoring_logs_skip_with_reason(monkeypatch, capsys):
+    # Fix 2026-07-23: log PERMANENTE do porquê do skip (score + sinais + e-mail mascarado).
+    import discovery.alert_worker as aw
+    monkeypatch.setattr(aw, "calculate_alert_score", lambda t, e, b: {
+        "score": 5, "signals": [{"signal": "corporate_email", "points": 10},
+                                 {"signal": "role_based_prefix", "points": -15}]})
+    w = _worker(FakeStore())
+    w.alert_score_threshold = 20
+    kept, skipped, _ = asyncio.run(
+        w._apply_alert_scoring([_target(1, email="contato@x.com.br")]))
+    out = capsys.readouterr().out
+    assert skipped == 1 and kept == []
+    assert "skip lead t=1" in out and "role_based_prefix=-15" in out
+    assert "c***o@x.com.br" in out          # e-mail mascarado (privacidade)
+
+
 def test_run_cycle_isolates_bad_email():
     # 2 bons + 1 ruim (422): os 2 bons enviam, o ruim é descartado sem abortar o ciclo
     store = FakeStore(eligible=[_target(1, email="ok1@x.com.br"),

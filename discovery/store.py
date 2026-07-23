@@ -5215,7 +5215,13 @@ class TargetStore:
                 FROM targets t
                 JOIN scans s ON t.last_scan_id = s.id
                 WHERE {self._ALERT_ELIGIBLE_WHERE}
-                ORDER BY t.last_scan_at ASC
+                -- KL (fix 2026-07-23): os leads de MAIOR qualidade primeiro — e-mail no
+                -- domínio do site (sinal +30 do lead scoring KL-85). Antes era só
+                -- last_scan_at ASC, que jogava os leads bons (e-mail casando o domínio) para
+                -- o fim da fila; a frente (mais antiga) era e-mail genérico que não passa do
+                -- threshold → o ciclo relia os mesmos 32 e mandava 0 (livelock).
+                ORDER BY (lower(t.domain) = split_part(lower(t.contact_email), '@', 2)) DESC,
+                         t.last_scan_at ASC
                 LIMIT %s
                 """,
                 (limit,),

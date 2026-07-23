@@ -6258,6 +6258,7 @@ _CONFIG_PARAMS: Dict[str, Dict[str, Any]] = {
     "ALERT_MONTHLY_LIMIT": {"label": "Cota mensal de e-mail", "default": "45000", "min": 1000, "max": 100000, "unit": "e-mails/mês"},
     "ALERT_DAILY_LIMIT": {"label": "Limite diário de alertas (warmup)", "default": "5000", "min": 0, "max": 50000, "unit": "e-mails/dia"},
     "ALERT_SENDER_DAILY_LIMIT": {"label": "Limite diário por remetente cold (KL-91)", "default": "100", "min": 0, "max": 5000, "unit": "e-mails/dia/remetente"},
+    "ALERT_FETCH_CAP": {"label": "Candidatos avaliados por ciclo de alerta", "default": "200", "min": 20, "max": 2000, "unit": "alvos/ciclo"},
     "RESCAN_INTERVAL_HOURS": {"label": "Intervalo de re-scan", "default": "24", "min": 1, "max": 720, "unit": "h"},
     "RESCAN_AGE_DAYS": {"label": "Idade para re-scan", "default": "30", "min": 1, "max": 365, "unit": "dias"},
     "WORKER_MAX_SCANS_PER_HOUR": {"label": "Máx. scans/hora", "default": "50", "min": 10, "max": 1000, "unit": "scans"},

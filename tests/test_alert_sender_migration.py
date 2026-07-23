@@ -193,12 +193,14 @@ async def test_daily_limit_skips_cycle(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_daily_limit_caps_fetch(monkeypatch):
+async def test_fetch_decoupled_from_daily_limit(monkeypatch):
+    # Fix 2026-07-23: o FETCH não é mais limitado pelo diário (era o que causava o livelock —
+    # buscar só `diário_rem` alvos de baixa qualidade da frente e mandar 0). Agora busca
+    # ALERT_FETCH_CAP candidatos (200) e o diário limita só os ENVIOS.
     cap = {}
     w = _prep_worker(monkeypatch, sent_today=25, daily_limit="30", capture_limit=cap)
     await w.run_cycle()
-    # want = min(cycle_cap, mensal_rem, diário_rem=5) → busca no máximo 5
-    assert cap["limit"] == 5
+    assert cap["limit"] == 200   # fetch_cap, independente do diário_rem=5
 
 
 # --- config editável -------------------------------------------------------- #

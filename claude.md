@@ -430,7 +430,7 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1603 passed** (backend pytest, hotfix prod: +10) + **98 node --test** (frontend `test:unit`)
+- Testes: **1605 passed** (backend pytest, hotfix alertas: +2) + **98 node --test** (frontend `test:unit`)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - **Níveis de conta (KL-99):** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado
   por domínio); contas legadas → 2. Conta sem senha: Fluxo C (link do alerta) / Fluxo D (signup-inline)
@@ -448,6 +448,13 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
 
 ## 8. Gotchas (evitam retrabalho)
 
+- **Alert worker cold: os melhores leads primeiro + fetch desacoplado do send (fix livelock 2026-07-23).**
+  A elegibilidade ordena `(e-mail casa o domínio do site) DESC, last_scan_at ASC` — senão a frente
+  (mais antiga) é e-mail genérico não-matching (score 15 < threshold 20) que entope a fila e manda 0
+  (os leads bons — e-mail no domínio, score 45-60 — ficam no fundo). O ciclo busca `ALERT_FETCH_CAP`
+  (200) candidatos e envia até o `send_cap` (throttle+cooldown+cotas), ordenados por score DESC. Cada
+  skip por baixa qualidade LOGA o motivo (`[alert] skip lead …` + sinais, e-mail mascarado). O `-15`
+  de prefixo role-based (`contato@`) NÃO foi mexido (os domain-match passam mesmo assim).
 - **Deploy = api+discovery+worker rodam `ensure_schema` CONCORRENTE → risco de DeadlockDetected**
   (ALTER/CREATE INDEX disputam `AccessExclusiveLock`). O `ensure_schema` **retenta** erro
   transitório de DDL (`_is_transient_ddl`, 6× backoff); o scan worker **não** zera mais o `store`

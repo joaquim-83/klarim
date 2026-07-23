@@ -48,6 +48,19 @@ def _is_score100(score, semaphore) -> bool:
     return score == 100 and (str(semaphore or "").lower() == "verde")
 
 
+def _mask_email(email: str) -> str:
+    """Mascara o e-mail para log (privacidade): 'contato@x.com.br' → 'co***o@x.com.br'."""
+    email = (email or "").strip().lower()
+    if "@" not in email:
+        return "(sem e-mail)"
+    local, _, domain = email.partition("@")
+    if len(local) <= 2:
+        masked = local[:1] + "*"
+    else:
+        masked = local[0] + "***" + local[-1]
+    return f"{masked}@{domain}"
+
+
 def bonus_scan_token(email: str, url: str) -> str:
     """Token de bônus de score 100 (KL-31). Formato IDÊNTICO ao
     api.main._make_scan_token(full=False, bonus=True) — o /scan/summary o verifica
@@ -345,9 +358,16 @@ class AlertWorker:
     async def _apply_alert_scoring(self, targets: list) -> tuple:
         """KL-85 — grava o `alert_quality_score` de TODOS os alvos e devolve só os que passam do
         threshold. Fail-safe: se o scoring de um alvo estourar, o alvo é MANTIDO (nunca perde um
-        lead bom por bug de scoring). Retorna (kept, skipped_low_quality, avg_score_dos_kept)."""
+        lead bom por bug de scoring). Retorna (kept, skipped_low_quality, avg_score_dos_kept).
+
+        Fix 2026-07-23: LOG DETALHADO e PERMANENTE de cada lead pulado por baixa qualidade
+        (score < threshold) — id, e-mail mascarado, score e os sinais que o compuseram. Sem
+        isto era impossível diagnosticar "1375 elegíveis → 0 enviados" (era o lead scoring,
+        não daily-limit/bounce/blocklist). `SAMPLE`: loga no máx. os primeiros N skips do ciclo
+        (evita flood) + o total no resumo do ciclo."""
         kept, kept_scores, skipped = [], [], 0
         bounce_cache: dict = {}
+        skip_log_budget = int(os.environ.get("ALERT_SKIP_LOG_SAMPLE", "20"))
         for t in targets:
             try:
                 email = (t.get("contact_email") or "").strip().lower()
@@ -362,12 +382,21 @@ class AlertWorker:
                     print(f"[alert] falha ao gravar score (alvo {t.get('id')}): {exc!r}", flush=True)
                 if score < self.alert_score_threshold:
                     skipped += 1
+                    if skip_log_budget > 0:
+                        skip_log_budget -= 1
+                        sig = " ".join(f"{s['signal']}={s['points']:+d}"
+                                       for s in result.get("signals", [])) or "sem-sinais"
+                        print(f"[alert] skip lead t={t.get('id')} {_mask_email(email)} "
+                              f"score={score}<{self.alert_score_threshold} [{sig}]", flush=True)
                     continue
             except Exception as exc:  # noqa: BLE001 - bug de scoring NÃO derruba o alvo
                 print(f"[alert] scoring falhou (alvo {t.get('id')}), mantendo: {exc!r}", flush=True)
             kept.append(t)
             kept_scores.append(t.get("_alert_score", 0))
         avg = round(sum(kept_scores) / len(kept_scores), 1) if kept_scores else 0
+        if skipped:
+            print(f"[alert] lead scoring: {len(kept)} aprovados, {skipped} pulados "
+                  f"(< threshold {self.alert_score_threshold}); média dos aprovados {avg}", flush=True)
         return kept, skipped, avg
 
     async def _send_cooldown(self) -> None:
@@ -460,20 +489,27 @@ class AlertWorker:
         cfg = worker_control.worker_config("alert")
         batch_size = int(cfg.get("batch_size") or self.batch_size)
         self.batch_size = batch_size
-        # Teto do ciclo: batches * batch_size, throttle por hora e — se há cooldown — o que
-        # cabe no intervalo do ciclo (evita ciclos que estouram o próprio período).
-        cycle_cap = batch_size * self.batches_per_cycle
+        # SEND cap: quantos e-mails ENVIAR no ciclo — throttle por hora + o que cabe no
+        # intervalo dado o cooldown (evita ciclos que estouram o próprio período) + cotas.
+        send_cap = batch_size * self.batches_per_cycle
         max_per_hour = cfg.get("max_per_hour")
         if max_per_hour:
             per_cycle = max(1, int(int(max_per_hour) * self.interval_minutes / 60))
-            cycle_cap = min(cycle_cap, per_cycle)
+            send_cap = min(send_cap, per_cycle)
         avg_cd = (self.send_interval_min + self.send_interval_max) / 2.0
         if avg_cd > 0:  # com cooldown, cabe ~ (80% do intervalo) / cooldown médio
-            cycle_cap = min(cycle_cap, max(1, int(self.interval_minutes * 60 * 0.8 / avg_cd)))
-        want = min(cycle_cap, self.monthly_limit - sent_month,
-                   daily_limit - sent_today, sender_room)
+            send_cap = min(send_cap, max(1, int(self.interval_minutes * 60 * 0.8 / avg_cd)))
+        send_cap = min(send_cap, self.monthly_limit - sent_month,
+                       daily_limit - sent_today, sender_room)
+        # FETCH cap: quantos CANDIDATOS avaliar — MUITO maior que o send_cap. O lead scoring
+        # (KL-85) corta a maioria; buscar só `send_cap` fazia o worker reler os mesmos alvos
+        # de baixa qualidade da frente e mandar 0 (livelock, fix 2026-07-23). A query já ordena
+        # os leads de maior qualidade (e-mail no domínio do site) primeiro.
+        fetch_cap = int(await self.store.get_setting("ALERT_FETCH_CAP", "200"))
+        want = min(max(fetch_cap, send_cap), self.monthly_limit - sent_month)
         raw_targets = await self.store.get_eligible_targets_for_alert(limit=max(0, want))
-        stats["eligible"] = len(raw_targets)
+        stats["fetched"] = len(raw_targets)
+        stats["eligible"] = len(raw_targets)   # compat (contagem avaliada neste ciclo)
 
         # Validação pré-envio (KL-24): remove blocklist + domínios sem MX.
         targets = await self._validate_batch(raw_targets)
@@ -483,12 +519,17 @@ class AlertWorker:
         targets, skipped_low, avg_score = await self._apply_alert_scoring(targets)
         stats["skipped_low_quality"] = skipped_low
         stats["avg_alert_score"] = avg_score
+        # Melhores leads primeiro: dado o send_cap, envia os de MAIOR score (mais provável clique).
+        targets.sort(key=lambda t: t.get("_alert_score", 0), reverse=True)
 
         # Envio INDIVIDUAL com rotação + cooldown (KL-91). Sem batch: cada e-mail escolhe o
         # remetente de menor volume hoje, renderiza a variante e há intervalo entre envios.
         stats["variants"] = {1: 0, 2: 0, 3: 0}
         deadline = time.monotonic() + self.interval_minutes * 60 * 0.8 if avg_cd > 0 else None
         for idx, t in enumerate(targets):
+            if stats["sent"] >= send_cap:   # atingiu o teto de ENVIO do ciclo (resto p/ o próximo)
+                stats["skipped"] += len(targets) - idx
+                break
             # Respeita cota mensal + limite diário global em tempo real (já enviado no ciclo).
             room = min(self.monthly_limit - (sent_month + stats["sent"]),
                        daily_limit - (sent_today + stats["sent"]))
@@ -565,7 +606,10 @@ class AlertWorker:
 
         remaining = await self.store.count_eligible_targets_for_alert()
         print(f"[alert] ciclo: {stats['sent']} enviados "
-              f"(variantes {stats['variants']}), {remaining} restantes, "
+              f"(variantes {stats['variants']}), {remaining} restantes | "
+              f"avaliados={stats.get('fetched', 0)} inválidos={stats['invalid']} "
+              f"baixa_qualidade={stats.get('skipped_low_quality', 0)} "
+              f"adiados={stats['skipped']} erros={stats['errors']} | "
               f"mês {sent_month + stats['sent']}/{self.monthly_limit}", flush=True)
         return stats
 
