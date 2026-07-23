@@ -135,6 +135,21 @@ standalone) + **React** (islands) + **Tailwind v4** (CSS-first, sem config) +
   some para quem já tem conta. LGPD é o único bloco restrito a acesso completo.
 
 ### E-mail (reputação)
+- **Mapa de remetentes (após KL-101 — `klarim.net` 100% transacional, zero cold):**
+  | Remetente | Domínio | Tipo |
+  |---|---|---|
+  | `klarim@klarim.net` (`RESEND_FROM`) | klarim.net | Transacional (confirmação, boas-vindas, boletim, vigília, magic link) |
+  | `scan@alertas.klarim.net` / `scan@aviso.klarim.net` (`ALERT_SENDER_EMAILS`) | alertas./aviso.klarim.net | Cold alert (rotação KL-91) |
+  | `notifica@perfil.klarim.net` (`PROFILE_VIEW_FROM_EMAIL`) | perfil.klarim.net | Aviso "perfil consultado" (KL-101) |
+- **Profile_view (KL-101):** o aviso "perfil consultado" era o ÚLTIMO cold saindo por `klarim.net`
+  (~15k/sem, via `_proactive_from`) — contaminava o domínio transacional. Agora sai por
+  `notifica@perfil.klarim.net` (subdomínio dedicado, `_profile_view_from`; **NÃO rotaciona** com
+  os cold alerts — este volume destruiria o warmup deles a 100/dia), **texto puro SEM links**
+  (`build_profile_view_text(domain)`), opt-out por resposta (mailto). **Dedup por dono: 1/dia**
+  (`notify_owner:{email}` no Redis) + a dedup por domínio/24h já existente + **teto diário de
+  warmup** `PROFILE_VIEW_DAILY_LIMIT` (200, editável no painel; contador `profileview:daily:{date}`).
+  ⚠️ `perfil.klarim.net` precisa estar **verificado no Resend** antes do deploy (senão os envios
+  falham). `bulletin` segue em `_proactive_from` (`alerta@klarim.net`) — a quem tem conta/opt-in.
 - **Alertas cold (KL-91, atual):** o alerta a quem NÃO tem conta usa o **módulo cold**
   (`notifier/cold_alert.py` + `alert_worker`): **texto puro SEM links** (3 variantes
   informativa/setorial/educativa), opt-out **por resposta** ("responda com remover"), e
@@ -150,11 +165,10 @@ standalone) + **React** (islands) + **Tailwind v4** (CSS-first, sem config) +
   (disparo manual) usa o mesmo formato** (1º remetente). Os builders antigos com link
   (`build_alert_text`, alert-access HMAC do KL-82 S3) **ficam no código** mas o ciclo
   automático NÃO os usa (revertível).
-- **Alertas proativos (legado, `_proactive_from`):** `Klarim <alerta@klarim.net>`
-  (`ALERT_FROM_EMAIL`/`ALERT_FROM_NAME`) — ainda usado por **profile_view** e **bulletin**
-  (não migrados para a rotação cold; escopo do KL-91 foi só o alerta). **2026-07-20:** MIGRADO
-  de `alerta@klarimscan.com` → `alerta@klarim.net` (warmup do klarimscan.com falhou no spam).
-  `_proactive_from` lê o env a cada envio; a troca do `.env` vale ao **recriar o container**.
+- **`_proactive_from` (`alerta@klarim.net`, `ALERT_FROM_EMAIL`):** após o KL-101, resta só o
+  **bulletin** proativo (a quem tem conta/opt-in). O profile_view saiu daqui (→ perfil.klarim.net);
+  o cold alert saiu no KL-91 (→ alertas./aviso.). **2026-07-20:** migrado de `klarimscan.com` →
+  `klarim.net`. Lido do env a cada envio; troca do `.env` vale ao **recriar o container**.
 - **Transacionais:** `klarim@klarim.net` (`RESEND_FROM`). **2026-07-21:** MIGRADO de
   `seguranca@klarim.net` → `klarim@klarim.net` — a palavra "seguranca" é keyword de phishing e,
   com domínio aged, elevava o spam score (a confirmação de conta caía no spam). `_mailer()` lê
@@ -430,7 +444,7 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1605 passed** (backend pytest, hotfix alertas: +2) + **98 node --test** (frontend `test:unit`)
+- Testes: **1613 passed** (backend pytest, KL-101: +8) + **98 node --test** (frontend `test:unit`)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - **Níveis de conta (KL-99):** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado
   por domínio); contas legadas → 2. Conta sem senha: Fluxo C (link do alerta) / Fluxo D (signup-inline)
@@ -1080,6 +1094,17 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   +5 testes (`test_kl96_counters.py`); SQL validado no Postgres 16 da VM. **Recomendação (próximo card):**
   isolar `profile_view` (~15k/sem cold no domínio transacional `klarim.net`) num subdomínio próprio +
   validação MX — é o risco de reputação real (não dá p/ usar `alertas.`/`aviso.`: quebraria o warmup).
+
+- **KL-101** — Isolar profile_view no subdomínio `perfil.klarim.net` ✅ (código pronto + testado;
+  **deploy PENDENTE de o dono verificar `perfil.klarim.net` no Resend** — senão os envios falham).
+  O aviso "perfil consultado" era o último cold saindo por `klarim.net` (~15k/sem, `_proactive_from`).
+  Agora: remetente dedicado `notifica@perfil.klarim.net` (`_profile_view_from`, `PROFILE_VIEW_FROM_
+  EMAIL`; **não rotaciona** com os cold alerts do KL-91), `build_profile_view_text(domain)` **texto
+  puro SEM links** + opt-out por resposta (mailto, como o KL-91), `email_log.from_domain=perfil.klarim.net`.
+  **Volume:** dedup por dono **1/dia** (`notify_owner:{email}` Redis) + dedup por domínio/24h (já
+  existia) + **teto diário de warmup** `PROFILE_VIEW_DAILY_LIMIT=200` (editável no painel, contador
+  `profileview:daily:{date}`). `klarim.net` fica **100% transacional**. +8 testes
+  (`test_kl101_profile_view.py`). Relatório: `claude/reports/KL-101_isolar_profile_view.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

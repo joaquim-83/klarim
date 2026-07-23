@@ -206,7 +206,7 @@ Schema criado idempotente no `ensure_schema` (sem Alembic). Principais tabelas:
 
 | Serviço | Uso |
 |---|---|
-| **Resend** | e-mail. **Transacional:** `klarim@klarim.net`. **Cold/alerta (KL-91):** rotação `scan@alertas.klarim.net` + `scan@aviso.klarim.net` (subdomínios verificados, DKIM/SPF/DMARC) — `klarim.net` fica exclusivo do transacional. Webhook Svix (bounce/complaint); `by_domain` em `get_email_health` |
+| **Resend** | e-mail. **Transacional:** `klarim@klarim.net`. **Cold/alerta (KL-91):** rotação `scan@alertas.klarim.net` + `scan@aviso.klarim.net`. **Profile_view (KL-101):** `notifica@perfil.klarim.net`. Todos subdomínios verificados (DKIM/SPF/DMARC) → `klarim.net` fica **100% transacional**. Webhook Svix (bounce/complaint); `by_domain` em `get_email_health` |
 | **AbacatePay** | PIX (R$ 19 avulso); webhook query-secret + HMAC |
 | **OpenAI** | GPT-4o mini (setor/descrição/tags/CNAE; ~US$0,001/site; fail-open) |
 | **APIs públicas de leitura** | crt.sh (CT/subdomínios), HIBP, Google Safe Browsing, IBGE (CNAE), BrasilAPI/ReceitaWS (CNPJ), RDAP (domínio) |
@@ -266,9 +266,17 @@ reputação. Ele caía no spam por 3 causas: linguagem de urgência, links track
 
 O disparo **manual** (`/targets/{id}/alert`, MCP `send_alert_to_target`) usa o mesmo formato cold
 (1º remetente). Os builders antigos com link (`build_alert_text`, alert-access HMAC do KL-82 S3)
-ficam no código mas o ciclo automático não os usa (revertível). **Fora do escopo:** `profile_view`
-e `bulletin` seguem em `alerta@klarim.net` (`_proactive_from`). **Opt-out por resposta é manual por
+ficam no código mas o ciclo automático não os usa (revertível). **Opt-out por resposta é manual por
 ora** (Opção A): as respostas "remover" caem no inbox `scan@klarim.net`; o operador põe na blocklist.
+
+**Profile_view isolado (KL-101):** o aviso "perfil consultado" (`send_profile_view`) era o último
+cold saindo por `klarim.net` (~15k/sem, via `_proactive_from`), contaminando a reputação do domínio
+transacional. Agora sai por um **subdomínio dedicado** `notifica@perfil.klarim.net`
+(`_profile_view_from`) — **não rotaciona** com os cold alerts (o volume destruiria o warmup deles).
+Texto puro sem links (`build_profile_view_text(domain)`), opt-out por resposta. Volume controlado por
+**dedup por dono (1/dia)** + dedup por domínio/24h + **teto diário de warmup** (`PROFILE_VIEW_DAILY_
+LIMIT`, contador Redis `profileview:daily:{date}`). Só `bulletin` (a quem tem conta) resta em
+`_proactive_from`. Resultado: `klarim.net` **100% transacional, zero cold**.
 
 ### Arquivamento de responses brutos no GCS (KL-77 Fase 2)
 

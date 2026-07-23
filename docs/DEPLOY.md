@@ -129,6 +129,8 @@ R$49 (4900). **Nenhum dado de cartão/PIX é armazenado.**
 | `ALERT_SENDER_DAILY_LIMIT` | **KL-91** — limite diário POR remetente cold (warmup: 100→250→500→750; editável no painel) |
 | `ALERT_SEND_INTERVAL_MIN` / `ALERT_SEND_INTERVAL_MAX` | **KL-91** — cooldown randômico entre envios individuais (default 30/60s; 0/0 em dev) |
 | `ALERT_SENDER_MAX_BOUNCE_RATE` | **KL-91** — circuit breaker: pausa o remetente com bounce acima disto (default 5.0%, amostra ≥`ALERT_BOUNCE_MIN_SAMPLE`) |
+| `PROFILE_VIEW_FROM_EMAIL` / `PROFILE_VIEW_FROM_NAME` | **KL-101** — remetente dedicado do aviso "perfil consultado" (default `notifica@perfil.klarim.net`). ⚠️ o subdomínio precisa estar **verificado no Resend** antes do deploy |
+| `PROFILE_VIEW_DAILY_LIMIT` | **KL-101** — teto diário de warmup do `perfil.klarim.net` (default 200; editável no painel) |
 | `DRY_RUN_EMAIL` | dev — `true` faz o `KlarimMailer._send_sync` simular (não fala com o Resend), mas grava `email_log` |
 | `RESEND_WEBHOOK_SECRET` | webhook Resend (Svix, bounce/complaint) |
 | `UNSUBSCRIBE_SECRET` | HMAC do link de descadastro (`openssl rand -hex 32`) |

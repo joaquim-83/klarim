@@ -69,13 +69,22 @@ def test_alert_fallback_when_unset(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_profile_view_uses_proactive(monkeypatch):
-    monkeypatch.setenv("ALERT_FROM_EMAIL", "alerta@klarimscan.com")
-    monkeypatch.setenv("ALERT_FROM_NAME", "Klarim Scanner")
+async def test_profile_view_uses_dedicated_perfil_sender(monkeypatch):
+    # KL-101: profile_view saiu do _proactive_from (klarim.net) → subdomínio perfil.klarim.net.
+    monkeypatch.setenv("ALERT_FROM_EMAIL", "alerta@klarimscan.com")   # ignorado no profile_view
+    monkeypatch.delenv("PROFILE_VIEW_FROM_EMAIL", raising=False)
+    monkeypatch.delenv("PROFILE_VIEW_FROM_NAME", raising=False)
     mailer = _mailer()
     cap = _capture(mailer)
-    await mailer.send_profile_view("dono@x.com", "x.com.br", 70, "amarelo", "https://klarim.net/site/x.com.br")
-    assert cap["params"]["from"] == "Klarim Scanner <alerta@klarimscan.com>"
+    await mailer.send_profile_view("dono@x.com", "x.com.br", 70, "amarelo", "https://k/cta")
+    assert cap["params"]["from"] == "Klarim <notifica@perfil.klarim.net>"
+    assert "http" not in cap["params"]["text"].lower()   # sem links (KL-101)
+
+
+def test_profile_view_from_env_override(monkeypatch):
+    monkeypatch.setenv("PROFILE_VIEW_FROM_EMAIL", "avisos@perfil.klarim.net")
+    monkeypatch.setenv("PROFILE_VIEW_FROM_NAME", "Klarim Avisos")
+    assert _mailer()._profile_view_from() == "Klarim Avisos <avisos@perfil.klarim.net>"
 
 
 @pytest.mark.asyncio

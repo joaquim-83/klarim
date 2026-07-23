@@ -3276,11 +3276,22 @@ async def _profile_view_notify(domain: str, utm_campaign: str = "") -> None:
         status = target.get("status")
         if not email or status in ("descartado", "unsubscribed"):
             return
-        # rate limit 1/domínio/24h (Redis SET NX EX); sem Redis, deixa passar.
+        # KL-101 — warmup do subdomínio novo `perfil.klarim.net` + dedup por DONO. Reduz o
+        # volume de ~15k/sem: no máx. 1 aviso por dono/dia (mesmo que o perfil seja consultado
+        # 10x — a dedup por domínio/24h abaixo cobre o mesmo domínio) e um teto diário para o
+        # subdomínio se aquecer. `daykey` reseta à meia-noite UTC.
+        daykey = "profileview:daily:" + datetime.now(timezone.utc).strftime("%Y%m%d")
         if _cache is not None and _cache.redis is not None:
-            key = f"notify:{domain}"
-            if not await _cache.redis.set(key, "1", nx=True, ex=86400):
-                return  # já notificado nas últimas 24h
+            try:
+                cap = int(await store.get_setting("PROFILE_VIEW_DAILY_LIMIT", "200"))
+                if int(await _cache.redis.get(daykey) or 0) >= cap:
+                    return  # teto diário do subdomínio atingido (warmup)
+                if not await _cache.redis.set(f"notify_owner:{email.lower()}", "1", nx=True, ex=86400):
+                    return  # dono já recebeu um aviso de perfil hoje (KL-101)
+                if not await _cache.redis.set(f"notify:{domain}", "1", nx=True, ex=86400):
+                    return  # mesmo domínio já notificado nas últimas 24h
+            except Exception:  # noqa: BLE001 - fail-open (nunca derruba por falha de infra)
+                pass
         # não notificar se o e-mail já tem conta (o dono já acompanha)
         try:
             if await store.get_user_by_email(email):
@@ -3292,8 +3303,15 @@ async def _profile_view_notify(domain: str, utm_campaign: str = "") -> None:
         score = target.get("last_scan_score") or 0
         semaphore = _semaphore_from_score(score)
         cta = f"{os.environ.get('SITE_BASE', 'https://klarim.net')}/cadastrar"
-        await _mailer().send_profile_view(email, domain, int(score), semaphore, cta,
-                                          target_id=target.get("id"))  # KL-62
+        result = await _mailer().send_profile_view(email, domain, int(score), semaphore, cta,
+                                                   target_id=target.get("id"))  # KL-62
+        # KL-101: conta no teto diário do subdomínio só se ENVIOU de fato (não bloqueado).
+        if _cache is not None and _cache.redis is not None and result and result.get("email_id"):
+            try:
+                await _cache.redis.incr(daykey)
+                await _cache.redis.expire(daykey, 90000)   # ~25h, cobre o dia
+            except Exception:  # noqa: BLE001
+                pass
         print(f"[notify] perfil {domain} consultado → aviso enviado a {email}", flush=True)
     except Exception as exc:  # noqa: BLE001 - nunca derruba nada
         print(f"[notify] profile-view erro {domain}: {exc!r}", flush=True)
@@ -6259,6 +6277,7 @@ _CONFIG_PARAMS: Dict[str, Dict[str, Any]] = {
     "ALERT_DAILY_LIMIT": {"label": "Limite diário de alertas (warmup)", "default": "5000", "min": 0, "max": 50000, "unit": "e-mails/dia"},
     "ALERT_SENDER_DAILY_LIMIT": {"label": "Limite diário por remetente cold (KL-91)", "default": "100", "min": 0, "max": 5000, "unit": "e-mails/dia/remetente"},
     "ALERT_FETCH_CAP": {"label": "Candidatos avaliados por ciclo de alerta", "default": "200", "min": 20, "max": 2000, "unit": "alvos/ciclo"},
+    "PROFILE_VIEW_DAILY_LIMIT": {"label": "Teto diário de avisos 'perfil consultado' (KL-101 warmup)", "default": "200", "min": 0, "max": 20000, "unit": "e-mails/dia"},
     "RESCAN_INTERVAL_HOURS": {"label": "Intervalo de re-scan", "default": "24", "min": 1, "max": 720, "unit": "h"},
     "RESCAN_AGE_DAYS": {"label": "Idade para re-scan", "default": "30", "min": 1, "max": 365, "unit": "dias"},
     "WORKER_MAX_SCANS_PER_HOUR": {"label": "Máx. scans/hora", "default": "50", "min": 10, "max": 1000, "unit": "scans"},

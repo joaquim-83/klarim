@@ -95,8 +95,9 @@ def test_alert_params_has_list_unsubscribe(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_profile_view_has_list_unsubscribe(monkeypatch):
-    monkeypatch.setenv("UNSUBSCRIBE_SECRET", "s" * 40)
-    mailer = ec.KlarimMailer("re_test", "Klarim <x@klarimscan.com>", store=None)
+    # KL-101: profile_view virou opt-out por RESPOSTA (mailto), como os cold alerts do KL-91 —
+    # não mais o One-Click https (o corpo perdeu os links).
+    mailer = ec.KlarimMailer("re_test", "Klarim <x@klarim.net>", store=None)
     sent = {}
 
     async def fake_send(params, **kw):
@@ -105,4 +106,5 @@ async def test_profile_view_has_list_unsubscribe(monkeypatch):
 
     monkeypatch.setattr(mailer, "_send", fake_send)
     await mailer.send_profile_view("dono@x.com.br", "x.com.br", 72, "amarelo", "https://klarim.net/cadastrar")
-    assert "headers" in sent and sent["headers"]["List-Unsubscribe-Post"] == "List-Unsubscribe=One-Click"
+    assert sent["headers"]["List-Unsubscribe"] == "<mailto:scan@klarim.net?subject=remover>"
+    assert "List-Unsubscribe-Post" not in sent["headers"]   # mailto ≠ One-Click

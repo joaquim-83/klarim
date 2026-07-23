@@ -282,20 +282,23 @@ def build_welcome_confirmation_text(confirm_url: str) -> str:
     )
 
 
-def build_profile_view_text(domain: str, score: int,
-                            unsubscribe_url: Optional[str]) -> str:
-    """Corpo em texto puro da notificação 'alguém consultou seu perfil' (KL-44)."""
-    body = (
+def build_profile_view_text(domain: str) -> str:
+    """KL-101 — corpo em TEXTO PURO, SEM links, do aviso 'perfil consultado'. Mesmo padrão
+    dos cold alerts do KL-91: sem link clicável, sem urgência, opt-out por resposta,
+    `klarim.net` só como texto. Antes tinha link (`/site/{domain}`) + link de descadastro."""
+    return (
         "Olá,\n\n"
-        f"Alguém consultou o perfil de segurança do site {domain}\n"
-        f"no Klarim. A nota atual é {score}/100.\n\n"
-        "Veja o que foi encontrado:\n"
-        f"{proactive_profile_link(domain, 'profile_view')}\n\n"
-        "O Klarim é uma plataforma gratuita de segurança web.\n"
-        "A análise é 100% passiva — nenhum dado do site foi acessado.\n\n"
-        "--\nKlarim\nklarim.net"
+        f"O perfil público do site {domain} foi consultado na\n"
+        "plataforma Klarim.\n\n"
+        "A Klarim disponibiliza análises públicas de segurança\n"
+        "web de sites brasileiros. O resultado do seu site está\n"
+        "disponível para consulta em klarim.net.\n\n"
+        "Se não deseja receber este tipo de comunicação, basta\n"
+        'responder este e-mail com "remover".\n\n'
+        "--\n"
+        "Klarim - Segurança web para o Brasil\n"
+        "klarim.net"
     )
-    return body + _unsub_line(unsubscribe_url, "Não deseja receber avisos?")
 
 
 # Endpoint da Batch API do Resend (envia até 100 e-mails em 1 request — KL-23).
@@ -380,6 +383,16 @@ class KlarimMailer:
             return self.from_address
         name = (os.environ.get("ALERT_FROM_NAME") or "Klarim").strip()
         return f"{name} <{email}>"
+
+    def _profile_view_from(self) -> str:
+        """KL-101 — remetente DEDICADO do `profile_view` (aviso 'perfil consultado'), o último
+        cold que ainda saía por `klarim.net` (via `_proactive_from`, ~15k/sem). Isolado em
+        `notifica@perfil.klarim.net` (`PROFILE_VIEW_FROM_EMAIL`/`_NAME`) para o `klarim.net`
+        ficar 100% transacional. Subdomínio próprio (NÃO rotaciona com os cold alerts do KL-91,
+        cujo warmup a 100/dia seria destruído por este volume). Lido do env a cada envio."""
+        email = (os.environ.get("PROFILE_VIEW_FROM_EMAIL") or "notifica@perfil.klarim.net").strip()
+        name = (os.environ.get("PROFILE_VIEW_FROM_NAME") or "Klarim").strip()
+        return f"{name} <{email}>" if name else email
 
     # ----- log unificado + blocklist (KL-62) ------------------------------- #
 
@@ -1051,23 +1064,19 @@ class KlarimMailer:
                                 unsubscribe_link: Optional[str] = None,
                                 target_id: Optional[int] = None) -> Dict[str, Any]:
         """Avisa o dono que alguém consultou o perfil público do site (KL-51 f4).
-        Proativo → **respeita a blocklist** + registra (KL-62; era o vazamento nº 1).
-        KL-44: enviado em **texto puro** (não HTML), como o alerta. `semaphore`/`cta_url`
-        seguem na assinatura (chamadores inalterados) mas o corpo em texto não os usa —
-        o link é montado do domínio (`/site/{domain}`)."""
-        if unsubscribe_link is None:
-            secret = os.environ.get("UNSUBSCRIBE_SECRET") or os.environ.get("JWT_SECRET") or ""
-            if secret:
-                unsubscribe_link = build_unsubscribe_link(to_email, secret)
+        Proativo → **respeita a blocklist** + registra (KL-62). KL-101: remetente DEDICADO
+        `notifica@perfil.klarim.net` (isola o último cold do domínio transacional `klarim.net`),
+        TEXTO PURO **sem links**, opt-out por RESPOSTA (`List-Unsubscribe` mailto, como o KL-91).
+        `score`/`semaphore`/`cta_url`/`unsubscribe_link` seguem na assinatura (chamadores
+        inalterados) mas o corpo novo não os usa."""
+        from notifier.cold_alert import list_unsubscribe_reply_header  # evita ciclo de import
         params = {
-            "from": self._proactive_from(),  # PROATIVO → domínio dedicado (klarim.net)
+            "from": self._profile_view_from(),   # KL-101 → perfil.klarim.net (isolado)
             "to": [to_email],
-            "subject": f"Alguém consultou a segurança do site {domain}",
-            "text": build_profile_view_text(domain, score, unsubscribe_link),
+            "subject": f"{domain} foi consultado na Klarim",
+            "text": build_profile_view_text(domain),
+            "headers": list_unsubscribe_reply_header(),   # opt-out por resposta (KL-91/101)
         }
-        hdrs = list_unsubscribe_headers(unsubscribe_link)   # RFC 8058 one-click (proativo)
-        if hdrs:
-            params["headers"] = hdrs
         return await self._send(params, email_type="profile_view", target_id=target_id,
                                 domain=domain, source="profile_view")
 

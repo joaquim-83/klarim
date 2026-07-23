@@ -56,13 +56,12 @@ def test_unsub_line_omitted_when_absent():
 
 
 def test_profile_view_text():
-    t = build_profile_view_text("hotelparaiso.com.br", 65, UNSUB)
-    assert "Alguém consultou o perfil de segurança do site hotelparaiso.com.br" in t
-    assert "A nota atual é 65/100" in t
-    assert "utm_campaign=profile_view" in t
-    assert "100% passiva" in t
-    assert UNSUB in t
-    assert "<" not in t
+    # KL-101: texto puro SEM links, opt-out por resposta (era HTML/link antes).
+    t = build_profile_view_text("hotelparaiso.com.br")
+    assert "hotelparaiso.com.br foi consultado" in t
+    assert "http" not in t.lower() and "www." not in t.lower()   # sem links
+    assert '"remover"' in t                                       # opt-out por resposta
+    assert "klarim.net" in t and "<" not in t
 
 
 # --- integração: o payload chega ao Resend como `text` (sem html) ----------- #
@@ -105,12 +104,14 @@ def test_send_alert_score100_is_plain_text(monkeypatch):
 
 
 def test_send_profile_view_is_plain_text(monkeypatch):
-    monkeypatch.setenv("UNSUBSCRIBE_SECRET", "s" * 32)
+    # KL-101: remetente dedicado perfil.klarim.net, texto puro sem links, opt-out por resposta.
+    monkeypatch.delenv("PROFILE_VIEW_FROM_EMAIL", raising=False)
     captured = _capture_send(monkeypatch)
     m = KlarimMailer("re_fake")
     asyncio.run(m.send_profile_view("d@e.com", "hotelparaiso.com.br", 65, "amarelo",
                                     "https://klarim.net/site/hotelparaiso.com.br"))
     assert "html" not in captured and "text" in captured
-    assert captured["subject"] == "Alguém consultou a segurança do site hotelparaiso.com.br"
-    assert "/site/hotelparaiso.com.br" in captured["text"]
-    assert "utm_campaign=profile_view" in captured["text"]
+    assert captured["from"] == "Klarim <notifica@perfil.klarim.net>"   # subdomínio dedicado
+    assert captured["subject"] == "hotelparaiso.com.br foi consultado na Klarim"
+    assert "http" not in captured["text"].lower()                      # sem links
+    assert captured["headers"]["List-Unsubscribe"] == "<mailto:scan@klarim.net?subject=remover>"
