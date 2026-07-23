@@ -137,10 +137,19 @@ class NginxLogParser:
         lines: List[str] = []
         with open(self.log_path, "r", errors="replace") as f:
             f.seek(self.offset)
-            for line in f:
-                lines.append(line.rstrip("\n"))
-                if len(lines) >= MAX_LINES_PER_CYCLE:
+            # ⚠️ `for line in f` usa o protocolo de iterador (readahead) e DESABILITA
+            # `f.tell()` → OSError('telling position disabled by next() call') a cada ciclo.
+            # `readline()` é compatível com `tell()`. Uma linha SEM '\n' final é o Nginx
+            # escrevendo no meio: deixa para o próximo ciclo (não avança o offset por ela).
+            while len(lines) < MAX_LINES_PER_CYCLE:
+                pos = f.tell()
+                line = f.readline()
+                if not line:
+                    break                                  # fim do arquivo
+                if not line.endswith("\n"):
+                    f.seek(pos)                            # linha parcial → reprocessa depois
                     break
+                lines.append(line.rstrip("\n"))
             self.offset = f.tell()
         truncate = st.st_size >= MAX_BYTES and self.offset >= st.st_size
         return lines, truncate

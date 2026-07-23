@@ -839,6 +839,18 @@ def _enrichment_where(mode: str = "all") -> str:
     return " AND ".join(parts)
 
 
+def _is_transient_ddl(exc: Exception) -> bool:
+    """True se o erro é uma falha TRANSITÓRIA de DDL concorrente (deadlock / lock /
+    'concurrently updated') — segura para retentar. Erro real (sintaxe/permissão/coluna
+    inexistente) → False (propaga). Usado no retry do `ensure_schema` (deploy simultâneo)."""
+    if exc.__class__.__name__ in ("DeadlockDetected", "LockNotAvailable", "SerializationFailure"):
+        return True
+    s = str(exc).lower()
+    return ("deadlock detected" in s or "concurrently updated" in s
+            or "could not obtain lock" in s or "lock timeout" in s
+            or "deadlock" in s and "lock" in s)
+
+
 class TargetStore:
     def _connect(self):
         import psycopg2
@@ -855,7 +867,22 @@ class TargetStore:
         return psycopg2.connect(os.environ["DATABASE_URL"])
 
     async def ensure_schema(self) -> None:
-        await asyncio.to_thread(self._run, lambda cur: cur.execute(_SCHEMA))
+        # No deploy, api+discovery+worker rodam ensure_schema CONCORRENTEMENTE → os
+        # ALTER/CREATE INDEX disputam AccessExclusiveLock e o Postgres mata um dos lados
+        # com DeadlockDetected. Sem retry, o container perdedor ficava com o boot de schema
+        # falho — no scan worker isso virava `store=None` (escaneava sem NUNCA persistir até
+        # um restart). Retry com backoff nos erros TRANSITÓRIOS de DDL concorrente resolve;
+        # erro real (sintaxe/permissão) propaga na hora.
+        for attempt in range(6):
+            try:
+                await asyncio.to_thread(self._run, lambda cur: cur.execute(_SCHEMA))
+                break
+            except Exception as exc:  # noqa: BLE001
+                if not _is_transient_ddl(exc) or attempt == 5:
+                    raise
+                print(f"[schema] DDL concorrente transitório ({exc.__class__.__name__}); "
+                      f"retry {attempt + 1}/6…", flush=True)
+                await asyncio.sleep(0.5 * (2 ** attempt))
         # KL-84 — seed dos 48 setores oficiais (idempotente). Fail-open: um erro na seed
         # não impede o boot (o schema já subiu).
         try:

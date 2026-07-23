@@ -191,9 +191,14 @@ async def _worker_loop() -> None:
     store = get_target_store()
     try:
         await store.ensure_schema()
-    except Exception as exc:  # noqa: BLE001 - segue sem persistência se o DB faltar
-        print(f"[klarim-worker] targets/scans indisponível ({exc!r})", flush=True)
-        store = None
+    except Exception as exc:  # noqa: BLE001
+        # NÃO zera o store (bug: o worker escaneava sem NUNCA persistir até um restart).
+        # As tabelas já existem (criadas pela API/discovery no boot); um erro aqui é quase
+        # sempre transitório (ex.: DeadlockDetected de DDL concorrente no deploy — o
+        # ensure_schema já retenta, mas mantemos a rede de segurança). Segue COM o store:
+        # cada persist tem try/except no loop e volta a gravar quando o DB estabiliza.
+        print(f"[klarim-worker] ensure_schema falhou; segue COM persistência ({exc!r})",
+              flush=True)
 
     # Rate limit: no máximo N scans/hora (padrão 50 -> 72s entre scans).
     max_per_hour = int(os.environ.get("WORKER_MAX_SCANS_PER_HOUR", "50"))

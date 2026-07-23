@@ -430,7 +430,7 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1593 passed** (backend pytest, KL-96: +5) + **98 node --test** (frontend `test:unit`)
+- Testes: **1603 passed** (backend pytest, hotfix prod: +10) + **98 node --test** (frontend `test:unit`)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - **Níveis de conta (KL-99):** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado
   por domínio); contas legadas → 2. Conta sem senha: Fluxo C (link do alerta) / Fluxo D (signup-inline)
@@ -448,6 +448,12 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
 
 ## 8. Gotchas (evitam retrabalho)
 
+- **Deploy = api+discovery+worker rodam `ensure_schema` CONCORRENTE → risco de DeadlockDetected**
+  (ALTER/CREATE INDEX disputam `AccessExclusiveLock`). O `ensure_schema` **retenta** erro
+  transitório de DDL (`_is_transient_ddl`, 6× backoff); o scan worker **não** zera mais o `store`
+  se falhar (bug 2026-07-23: `store=None` permanente → escaneava sem persistir até restart — o
+  `print` do score fica FORA do `if store is not None`, mascarando). Fila do scan = **`klarim:scan_queue`**
+  (não `scan_queue`); persistência real se vê em `targets.last_scan_at`/tabela `scans`, não só no log.
 - **CSP estrita do `klarim.net` bloqueia islands Astro** ("Astro is not defined") →
   o `/painel` usa CSP relaxada; ilhas admin são `client:only="react"`.
 - **`parseUTC`:** timestamps do Postgres são naive — adicione `Z` antes de `new Date`.

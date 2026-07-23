@@ -142,6 +142,11 @@ class CTLogPoller:
         self.last_event_at: Optional[datetime] = None
         self.total_seen: int = 0
         self.total_matched: int = 0
+        # Retry/backoff das chamadas aos CT logs (a API do Google fica instável / rate-limita
+        # → devolvia corpo vazio/429 e o `.json()` estourava JSONDecodeError a cada ciclo).
+        self._ct_attempts = int(os.environ.get("CT_RETRY_ATTEMPTS", "3"))
+        self._ct_backoff = float(os.environ.get("CT_RETRY_BACKOFF", "1.0"))
+        self._fail_streak = 0
         self._lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
 
@@ -165,27 +170,65 @@ class CTLogPoller:
             any_ok = False
             for url in logs:
                 try:
-                    self._poll_log(client, url)
-                    any_ok = True
+                    if self._poll_log(client, url):
+                        any_ok = True
                 except Exception as exc:  # noqa: BLE001 - um log ruim não derruba o poller
                     print(f"[ct-poll] erro em {url.split('/')[2]} ({exc!r})", flush=True)
             self.connected = any_ok
+            # Warning THROTTLED (não a cada ciclo): CT instável é comum e o discovery segue
+            # com o buffer/crt.sh. Loga na 1ª falha e a cada 10 ciclos consecutivos sem sucesso.
+            if any_ok:
+                self._fail_streak = 0
+            else:
+                self._fail_streak += 1
+                if self._fail_streak == 1 or self._fail_streak % 10 == 0:
+                    print(f"[ct-poll] WARN: nenhum CT log respondeu (streak {self._fail_streak}); "
+                          f"discovery usa buffer/crt.sh", flush=True)
             time.sleep(self.poll_interval)
 
-    def _poll_log(self, client: httpx.Client, url: str) -> None:
-        sth = client.get(url + "ct/v1/get-sth").json()
+    def _get_json(self, client: httpx.Client, url: str):
+        """GET + JSON com retry/backoff. Retorna None (sem exceção) quando o CT está
+        instável — corpo vazio, 429/5xx ou JSON inválido — para o chamador pular o ciclo
+        silenciosamente (o WARN throttled sai do `_run`). Erro de rede também vira None."""
+        for i in range(max(1, self._ct_attempts)):
+            try:
+                resp = client.get(url)
+                if resp.status_code == 200 and resp.content:
+                    try:
+                        return resp.json()
+                    except Exception:  # noqa: BLE001 - corpo 200 mas não-JSON → retenta
+                        pass
+                elif 400 <= resp.status_code < 500 and resp.status_code != 429:
+                    return None  # erro de cliente (não-429): não adianta retentar
+                # 200 vazio, 429 (rate limit) e 5xx caem no retry com backoff
+            except Exception:  # noqa: BLE001 - timeout/rede: retenta
+                pass
+            if i < self._ct_attempts - 1:
+                time.sleep(self._ct_backoff * (2 ** i))  # backoff exponencial
+        return None
+
+    def _poll_log(self, client: httpx.Client, url: str) -> bool:
+        """Amostra o topo de um CT log. Retorna True se respondeu (mesmo sem entradas
+        novas); False se o CT está instável/vazio (o `_run` conta para o WARN throttled)."""
+        sth = self._get_json(client, url + "ct/v1/get-sth")
+        if not sth or "tree_size" not in sth:
+            return False
         tree_size = int(sth["tree_size"])
         if tree_size <= 0:
-            return
+            return True  # respondeu, só não tem árvore
         # Amostra o TOPO do log (certs mais recentes); o buffer (set) deduplica
         # a sobreposição entre polls.
         start = max(0, tree_size - self.batch)
         end = tree_size - 1
-        entries = client.get(f"{url}ct/v1/get-entries?start={start}&end={end}").json().get("entries", [])
+        data = self._get_json(client, f"{url}ct/v1/get-entries?start={start}&end={end}")
+        if data is None:
+            return False
+        entries = data.get("entries", [])
         for entry in entries:
             self._ingest(entry)
         if entries:
             self.last_event_at = _utcnow()
+        return True
 
     def _ingest(self, entry: dict) -> None:
         """Processa uma entrada de CT: extrai SANs, filtra .com.br → buffer de raízes;
