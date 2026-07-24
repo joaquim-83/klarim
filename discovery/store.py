@@ -839,6 +839,14 @@ def _enrichment_where(mode: str = "all") -> str:
     return " AND ".join(parts)
 
 
+# KL-104 — extrai o DOMÍNIO (host, sem protocolo/www) de `site_events.target_url`
+# ('https://x.com.br' → 'x.com.br') para o LEFT JOIN com `targets.domain` derivar o
+# `target_id` (a coluna `site_events.target_id` é NULL p/ profile_view — o cliente não sabe
+# o id). Usado sempre com alias `e` sobre a subquery JÁ limitada (junta só as N linhas exibidas).
+_SITE_EVENT_DOMAIN = (r"regexp_replace(split_part(regexp_replace(lower(e.target_url), "
+                      r"'^https?://', ''), '/', 1), '^www\.', '')")
+
+
 def _is_transient_ddl(exc: Exception) -> bool:
     """True se o erro é uma falha TRANSITÓRIA de DDL concorrente (deadlock / lock /
     'concurrently updated') — segura para retentar. Erro real (sintaxe/permissão/coluna
@@ -5767,19 +5775,17 @@ class TargetStore:
                                ) -> List[Dict[str, Any]]:
         """Últimos eventos do funil. `event_type` (opcional) filtra por tipo — usado
         pela aba 'Consultas de perfil' (profile_view) da página Alertas."""
-        # KL-104 — `target_id` no response → domínio clicável (DomainLink) na aba Consultas.
-        cols = ("event_type, session_id, target_id, target_url, page_url, utm_campaign, "
-                "metadata, created_at")
+        # KL-104 — `target_id` derivado do domínio do target_url (DomainLink na aba Consultas).
+        inner = ("SELECT event_type, session_id, target_url, page_url, utm_campaign, "
+                 "metadata, created_at FROM site_events {where}ORDER BY created_at DESC LIMIT %s")
 
         def _fn(cur):
-            if event_type:
-                cur.execute(
-                    f"SELECT {cols} FROM site_events WHERE event_type = %s "
-                    "ORDER BY created_at DESC LIMIT %s", (event_type, limit))
-            else:
-                cur.execute(
-                    f"SELECT {cols} FROM site_events ORDER BY created_at DESC LIMIT %s",
-                    (limit,))
+            sub = inner.format(where="WHERE event_type = %s " if event_type else "")
+            params = [event_type, limit] if event_type else [limit]
+            cur.execute(
+                f"SELECT e.*, t.id AS target_id FROM ({sub}) e "
+                f"LEFT JOIN targets t ON t.domain = {_SITE_EVENT_DOMAIN} "
+                "ORDER BY e.created_at DESC", params)
             return self._rows_to_dicts(cur)
 
         return await asyncio.to_thread(self._run, _fn)
@@ -6184,10 +6190,14 @@ class TargetStore:
                 f"COUNT(*) FILTER (WHERE event_type IN {self._AA_ACCOUNT_EVENTS}) "
                 f"FROM site_events WHERE {w}", params)
             sess, doms, scans, accts = cur.fetchone()
+            # KL-104 — target_id derivado do domínio, DEPOIS do LIMIT (junta só as N linhas).
             cur.execute(
-                f"SELECT id, event_type, session_id, target_id, target_url, page_url, "
-                f"utm_campaign, referrer, metadata, created_at FROM site_events WHERE {w} "  # KL-104: target_id
-                f"ORDER BY created_at DESC LIMIT %s OFFSET %s", params + [limit, offset])
+                f"SELECT e.*, t.id AS target_id FROM ("
+                f"  SELECT id, event_type, session_id, target_url, page_url, utm_campaign, "
+                f"  referrer, metadata, created_at FROM site_events WHERE {w} "
+                f"  ORDER BY created_at DESC LIMIT %s OFFSET %s"
+                f") e LEFT JOIN targets t ON t.domain = {_SITE_EVENT_DOMAIN} "
+                f"ORDER BY e.created_at DESC", params + [limit, offset])
             rows = self._rows_to_dicts(cur)
             return {"events": rows, "total": total,
                     "counters": {"events": total, "sessions": int(sess or 0),
