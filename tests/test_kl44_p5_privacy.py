@@ -113,6 +113,9 @@ class FakeStore:
     async def get_latest_scan_full(self, tid):
         return self.scan if tid == 1 else None
 
+    async def get_site_profile(self, tid):  # KL-98: selo por-site (enabled/style)
+        return {"seal_enabled": True, "seal_style": "badge"}
+
     async def sector_benchmark(self, sector, min_count=10):
         if sector == "tecnologia":
             return {"sector": sector, "count": 42, "avg_score": 71, "median": 74,

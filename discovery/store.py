@@ -273,6 +273,15 @@ ALTER TABLE site_profile ADD COLUMN IF NOT EXISTS edited_by_admin_at TIMESTAMP;
 -- Array de nomes de campo suspeitos, ex.: ['instagram','facebook']. O painel mostra ⚠️.
 ALTER TABLE site_profile ADD COLUMN IF NOT EXISTS low_confidence_fields TEXT[] DEFAULT '{}';
 
+-- KL-98: edição do perfil pelo DONO verificado (nível 3), distinta da edição do operador
+-- (edited_by_admin). `owner_edited_fields` lista os campos que o dono editou → o enrich da IA
+-- NUNCA os sobrescreve (mesma regra de ouro do admin). Selo por-site (enabled + estilo).
+ALTER TABLE site_profile ADD COLUMN IF NOT EXISTS edited_by_owner BOOLEAN DEFAULT FALSE;
+ALTER TABLE site_profile ADD COLUMN IF NOT EXISTS edited_by_owner_at TIMESTAMPTZ;
+ALTER TABLE site_profile ADD COLUMN IF NOT EXISTS owner_edited_fields TEXT[] DEFAULT '{}';
+ALTER TABLE site_profile ADD COLUMN IF NOT EXISTS seal_enabled BOOLEAN DEFAULT TRUE;
+ALTER TABLE site_profile ADD COLUMN IF NOT EXISTS seal_style VARCHAR(20) DEFAULT 'badge';
+
 -- Classificação multi-setor via CNAE (KL-55): N classificações por alvo, cada uma
 -- de uma fonte (receita/ai/manual/schema_org). CNAE = referência estrutural do IBGE.
 CREATE TABLE IF NOT EXISTS target_classifications (
@@ -379,6 +388,15 @@ WHERE email_confirmed IS NULL;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS account_level INTEGER DEFAULT 2;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS source VARCHAR(20) DEFAULT 'signup';
 ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
+
+-- KL-97: preferências de notificação do dono. `bulletin_frequency` NULL = usa a do plano (o
+-- default freemium free=mensal/pro=semanal/agency=diário); um valor explícito (immediate/daily/
+-- weekly/monthly/off) SOBRESCREVE o plano no bulletin worker. Os toggles ligam/desligam cada canal.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS bulletin_frequency TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS bulletin_hour INTEGER;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_vigilia BOOLEAN DEFAULT TRUE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_bulletin BOOLEAN DEFAULT TRUE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS notify_news BOOLEAN DEFAULT FALSE;
 
 -- Vínculo usuário ↔ target (site monitorado). is_owner = reivindicou propriedade.
 CREATE TABLE IF NOT EXISTS user_sites (
@@ -2308,13 +2326,20 @@ class TargetStore:
                           "phone", "whatsapp", "address",
                           "instagram", "facebook", "linkedin", "youtube", "tiktok")  # + tags (TEXT[])
 
+    # KL-98: campos que o DONO verificado (nível 3) edita — preservados por-campo via
+    # `owner_edited_fields` (o enrich pula exatamente os que o dono tocou, mesmo se ele os limpou).
+    _SP_OWNER_EDITABLE = ("company_name", "description", "business_type", "phone", "whatsapp",
+                          "address", "cnpj", "commercial_email", "business_hours",
+                          "instagram", "facebook", "linkedin", "youtube", "tiktok",
+                          "google_maps_url")  # + tags (TEXT[])
+
     async def upsert_site_profile(self, target_id: int, profile: Dict[str, Any]) -> None:
         """Grava (ou atualiza) o perfil comercial de um alvo (1 por target).
 
         KL-56: se o perfil já foi editado pelo operador (`edited_by_admin=TRUE`), os
-        campos editáveis à mão (company_name/description/business_type/tags) são
-        **preservados** — o enrich automático só atualiza o resto. `public_visible` e
-        `edited_by_admin` nunca são tocados aqui (o upsert não os inclui)."""
+        campos editáveis à mão são **preservados** — o enrich automático só atualiza o resto.
+        KL-98: além disso, cada campo que o DONO editou (nome em `owner_edited_fields`) é
+        preservado individualmente. `public_visible`/`edited_by_*`/selo nunca são tocados aqui."""
         fields = list(self._SP_FIELDS)
         vals = [profile.get(f) for f in fields]
         tech = json.dumps(profile.get("technologies") or {})
@@ -2323,11 +2348,18 @@ class TargetStore:
         lcf = list(profile.get("low_confidence_fields") or [])  # KL-67: TEXT[]
 
         def _upd(col: str) -> str:
-            # Preserva a edição manual: mantém o valor antigo quando edited_by_admin.
-            if col in self._SP_ADMIN_EDITABLE or col == "tags":
-                return (f"{col} = CASE WHEN site_profile.edited_by_admin "
-                        f"THEN site_profile.{col} ELSE EXCLUDED.{col} END")
-            return f"{col} = EXCLUDED.{col}"
+            # Preserva edição manual: do operador (edited_by_admin) OU do dono (por-campo).
+            admin_locked = col in self._SP_ADMIN_EDITABLE or col == "tags"
+            owner_lockable = col in self._SP_OWNER_EDITABLE or col == "tags"
+            if not admin_locked and not owner_lockable:
+                return f"{col} = EXCLUDED.{col}"
+            conds = []
+            if admin_locked:
+                conds.append("site_profile.edited_by_admin")
+            if owner_lockable:  # `col` é sempre um nome de coluna controlado (nunca input)
+                conds.append(f"'{col}' = ANY(COALESCE(site_profile.owner_edited_fields, '{{}}'))")
+            return (f"{col} = CASE WHEN {' OR '.join(conds)} "
+                    f"THEN site_profile.{col} ELSE EXCLUDED.{col} END")
 
         def _fn(cur):
             cols = (", ".join(fields)
@@ -2348,14 +2380,14 @@ class TargetStore:
         await asyncio.to_thread(self._run, _fn)
 
     async def update_site_profile_fields(
-        self, target_id: int, fields: Dict[str, Any]
+        self, target_id: int, fields: Dict[str, Any], actor: str = "admin"
     ) -> Optional[Dict[str, Any]]:
-        """Edição manual do perfil pelo operador (KL-56/67). Atualiza os campos editáveis
-        (texto + contatos), aceita `clear_fields` (setar NULL), marca `edited_by_admin=TRUE`
-        (o enrich passa a preservá-los) e limpa os flags de baixa confiança (o operador
-        revisou). Retorna o perfil atualizado (ou None se o alvo não tem perfil)."""
-        allowed = ("description", "business_type", "company_name", "phone", "whatsapp",
-                   "address", "instagram", "facebook", "linkedin", "youtube", "tiktok")
+        """Edição manual do perfil. `actor='admin'` (operador, KL-56/67) marca `edited_by_admin`;
+        `actor='owner'` (dono verificado nível 3, KL-98) marca `edited_by_owner` + ACUMULA os
+        campos tocados em `owner_edited_fields` (o enrich da IA nunca sobrescreve exatamente esses,
+        mesmo que o dono os limpe). Aceita `clear_fields` (NULL); limpa os flags de baixa confiança.
+        Whitelist ampla (contatos + cnpj/commercial_email/business_hours/google_maps_url + tags)."""
+        allowed = self._SP_OWNER_EDITABLE
         sets, params, touched = [], [], set()
         for col in allowed:
             if col in fields:
@@ -2375,9 +2407,17 @@ class TargetStore:
             touched.add("tags")
         if not sets:
             return await self.get_site_profile(target_id)
-        sets.append("low_confidence_fields = '{}'")   # KL-67: operador revisou → limpa ⚠️
-        sets.append("edited_by_admin = TRUE")
-        sets.append("edited_by_admin_at = NOW()")
+        sets.append("low_confidence_fields = '{}'")   # revisado → limpa ⚠️
+        if actor == "owner":
+            sets.append("edited_by_owner = TRUE")
+            sets.append("edited_by_owner_at = NOW()")
+            # une (dedup) os campos tocados aos já marcados pelo dono
+            sets.append("owner_edited_fields = ARRAY(SELECT DISTINCT unnest("
+                        "COALESCE(owner_edited_fields, '{}'::text[]) || %s::text[]))")
+            params.append(sorted(touched))
+        else:
+            sets.append("edited_by_admin = TRUE")
+            sets.append("edited_by_admin_at = NOW()")
 
         def _fn(cur):
             cur.execute(
@@ -2385,6 +2425,22 @@ class TargetStore:
                 f"RETURNING *",
                 [*params, target_id],
             )
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def set_seal_config(self, target_id: int, enabled: bool,
+                              style: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """KL-98 — liga/desliga o selo e define o estilo (badge/footer/floating) por site."""
+        sets, params = ["seal_enabled = %s"], [bool(enabled)]
+        if style is not None:
+            sets.append("seal_style = %s")
+            params.append(style)
+
+        def _fn(cur):
+            cur.execute(f"UPDATE site_profile SET {', '.join(sets)} WHERE target_id = %s RETURNING *",
+                        [*params, target_id])
             rows = self._rows_to_dicts(cur)
             return rows[0] if rows else None
 
@@ -3212,13 +3268,22 @@ class TargetStore:
     _BULLETIN_FREQ_INTERVAL = {"weekly": "7 days", "monthly": "30 days", "daily": "1 day"}
 
     async def list_users_due_bulletin(self, frequency: str) -> List[Dict[str, Any]]:
-        """Contas (+ sites) que precisam de boletim agora, pela frequência do plano
-        (free→monthly, pro→weekly, agency→daily). Uma linha por (usuário, site); o worker
-        agrupa. Só sites já escaneados. Respeita o intervalo mínimo (ou nunca enviado)."""
-        plans = self._BULLETIN_FREQ_PLANS.get(frequency)
+        """Contas (+ sites) que precisam de boletim agora pela frequência EFETIVA (KL-97):
+        `users.bulletin_frequency` sobrescreve a do plano (free→monthly/pro→weekly/agency→daily);
+        `off` nunca recebe; `notify_bulletin=FALSE` nunca recebe (`IS NOT FALSE` → NULL=default TRUE).
+        `immediate` cai em `daily` para a cadência do worker. Uma linha por (usuário, site)."""
         interval = self._BULLETIN_FREQ_INTERVAL.get(frequency)
-        if not plans or not interval:
+        if not interval:
             return []
+        plan_expr = "COALESCE(sub.plan_id, u.plan, 'free')"
+        eff_freq = (
+            "CASE "
+            "WHEN u.bulletin_frequency = 'off' THEN 'off' "
+            "WHEN u.bulletin_frequency IN ('immediate','daily') THEN 'daily' "
+            "WHEN u.bulletin_frequency IN ('weekly','monthly') THEN u.bulletin_frequency "
+            f"WHEN {plan_expr} = 'agency' THEN 'daily' "
+            f"WHEN {plan_expr} = 'pro' THEN 'weekly' "
+            "ELSE 'monthly' END")
 
         def _fn(cur):
             cur.execute(
@@ -3228,12 +3293,13 @@ class TargetStore:
                 "JOIN user_sites us ON us.user_id = u.id "
                 "JOIN targets t ON t.id = us.target_id "
                 "LEFT JOIN subscriptions sub ON sub.account_id = u.id "
-                "WHERE u.is_active = TRUE AND t.last_scan_score IS NOT NULL "
-                "  AND COALESCE(sub.plan_id, u.plan, 'free') = ANY(%s) "
+                "WHERE u.is_active = TRUE AND u.notify_bulletin IS NOT FALSE "
+                "  AND t.last_scan_score IS NOT NULL "
+                f"  AND {eff_freq} = %s "
                 "  AND NOT EXISTS (SELECT 1 FROM bulletins b WHERE b.user_id = u.id "
                 "        AND b.target_id = us.target_id AND b.sent_at > NOW() - %s::interval) "
                 "ORDER BY u.id",
-                (list(plans), interval))
+                (frequency, interval))
             return self._rows_to_dicts(cur)
 
         return await asyncio.to_thread(self._run, _fn)
@@ -3680,6 +3746,73 @@ class TargetStore:
             return self._rows_to_dicts(cur)
 
         return await asyncio.to_thread(self._run, _fn)
+
+    async def list_site_vigilias(self, user_id: int, domain: str) -> List[Dict[str, Any]]:
+        """KL-97 — TODAS as vigílias de um site do usuário (habilitadas OU não) para a tela de
+        configuração. `enabled=FALSE` é preservado (não deletado)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT tipo, enabled, last_status, last_check_at, next_check_at, last_data "
+                "FROM vigilias WHERE user_id = %s AND site_domain = %s ORDER BY tipo",
+                (user_id, (domain or "").lower().strip()))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def set_vigilia_enabled(self, user_id: int, domain: str, tipo: str, enabled: bool,
+                                  threshold: Optional[int] = None, next_check_at: Any = None) -> None:
+        """KL-97 — liga/desliga UMA vigília (cria se não existir). O threshold (queda de score)
+        vai no `last_data` JSONB. Idempotente por (user, domínio, tipo)."""
+        dom = (domain or "").lower().strip()
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO vigilias (user_id, site_domain, tipo, enabled, next_check_at) "
+                "VALUES (%s, %s, %s, %s, %s) "
+                "ON CONFLICT (user_id, site_domain, tipo) DO UPDATE SET "
+                "  enabled = EXCLUDED.enabled, updated_at = NOW(), "
+                "  next_check_at = CASE WHEN EXCLUDED.enabled AND NOT vigilias.enabled "
+                "                       THEN EXCLUDED.next_check_at ELSE vigilias.next_check_at END",
+                (user_id, dom, tipo, bool(enabled), next_check_at))
+            if threshold is not None:
+                cur.execute(
+                    "UPDATE vigilias SET last_data = jsonb_set(COALESCE(last_data, '{}'::jsonb), "
+                    "'{threshold}', to_jsonb(%s::int)) "
+                    "WHERE user_id = %s AND site_domain = %s AND tipo = %s",
+                    (int(threshold), user_id, dom, tipo))
+
+        await asyncio.to_thread(self._run, _fn)
+
+    # --- KL-97: preferências de notificação (colunas em users) ------------- #
+
+    _NOTIF_PREFS = ("bulletin_frequency", "bulletin_hour", "notify_vigilia",
+                    "notify_bulletin", "notify_news")
+
+    async def get_notification_prefs(self, user_id: int) -> Dict[str, Any]:
+        """Preferências de notificação do usuário. `bulletin_frequency` NULL → usa a do plano."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT bulletin_frequency, bulletin_hour, notify_vigilia, notify_bulletin, "
+                "  notify_news FROM users WHERE id = %s", (user_id,))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else {}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def update_notification_prefs(self, user_id: int, fields: Dict[str, Any]) -> Dict[str, Any]:
+        """Atualiza (partial) as preferências de notificação. Whitelist estrita."""
+        sets, params = [], []
+        for col in self._NOTIF_PREFS:
+            if col in fields:
+                sets.append(f"{col} = %s")
+                params.append(fields[col])
+        if not sets:
+            return await self.get_notification_prefs(user_id)
+
+        def _fn(cur):
+            cur.execute(f"UPDATE users SET {', '.join(sets)} WHERE id = %s", [*params, user_id])
+
+        await asyncio.to_thread(self._run, _fn)
+        return await self.get_notification_prefs(user_id)
 
     async def get_user_vigilia_alerts(self, user_id: int, limit: int = 50
                                       ) -> List[Dict[str, Any]]:

@@ -6,6 +6,8 @@
 //  5c. boletim (frequência do plano).  5d. gancho para uma página dedicada futura.
 import { useEffect, useState } from 'react';
 import { card, outlineBtn, relDate } from './shared.js';
+import MonitoringConfig from './MonitoringConfig.jsx';
+import ProfileEditor from './ProfileEditor.jsx';
 
 const ST = { ok: { i: '🟢', c: '#22c55e', t: 'OK' }, warning: { i: '🟡', c: '#eab308', t: 'Atenção' },
   alert: { i: '🟡', c: '#eab308', t: 'Atenção' }, critical: { i: '🔴', c: '#ef4444', t: 'Crítico' },
@@ -29,8 +31,9 @@ function detail(v) {
   return v.last_check_at ? `verificado ${relDate(v.last_check_at)}` : 'aguardando 1ª verificação';
 }
 
-export default function MonitoringSection({ domain, monitoring }) {
+export default function MonitoringSection({ domain, monitoring, targetId, canEditProfile = false, profile = {} }) {
   const [vigilias, setVigilias] = useState(null);
+  const [modal, setModal] = useState('');   // '' | 'config' | 'profile'
   useEffect(() => {
     let alive = true;
     import('../../lib/api.js').then(({ apiGet }) =>
@@ -92,12 +95,22 @@ export default function MonitoringSection({ domain, monitoring }) {
         </p>
       </div>
 
-      {/* notificações + boletim */}
+      {/* notificações + boletim + ações (KL-97/98) */}
       <div className="mt-4 flex flex-wrap items-center gap-x-6 gap-y-2 border-t border-slate-800 pt-4 text-sm">
         <span className="text-slate-300">📧 Alertas por e-mail{m.technician_linked ? ' · técnico vinculado' : ''}</span>
         <span className="text-slate-300">📰 Boletim: <strong className="text-white">{m.bulletin_frequency || 'nenhum'}</strong></span>
-        <a href="/dashboard/conta" className={`${outlineBtn} ml-auto`}>Preferências de notificação</a>
+        <div className="ml-auto flex flex-wrap gap-2">
+          {targetId && <button type="button" onClick={() => setModal('config')} className={outlineBtn}>⚙️ Configurar</button>}
+          {targetId && canEditProfile && <button type="button" onClick={() => setModal('profile')} className={outlineBtn}>✏️ Editar perfil</button>}
+        </div>
       </div>
+
+      {modal === 'config' && (
+        <MonitoringConfig targetId={targetId} domain={domain} onClose={() => setModal('')} />
+      )}
+      {modal === 'profile' && (
+        <ProfileEditor targetId={targetId} domain={domain} initial={profile} onClose={() => setModal('')} />
+      )}
     </div>
   );
 }

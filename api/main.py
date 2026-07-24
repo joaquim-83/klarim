@@ -35,7 +35,7 @@ from scanner import __version__ as scanner_version
 from scanner.cache import ScanCache
 from scanner.checks.base import normalize_url, registrable_domain, domain_of
 from scanner.checks.classifications import classify as classify_compliance
-from discovery.store import get_target_store
+from discovery.store import get_target_store, TargetStore
 from reporter import generate_executive_pdf, generate_technical_pdf, pdf_filename
 from reporter.risk_messages import get_risk_messages, get_risk_summary
 from payments import (
@@ -1609,6 +1609,310 @@ async def account_remove_site(target_id: int, request: Request) -> dict:
     return {"ok": True, "removed": True, "domain": domain}
 
 
+# --------------------------------------------------------------------------- #
+# KL-97 / KL-98 — gestão do dono: monitoramento, notificações, perfil, selo
+# --------------------------------------------------------------------------- #
+
+# Plano mínimo que habilita cada vigília (Free não tem nenhuma; Pro core+uptime; Agency tudo).
+_VIGILIA_MIN_PLAN = {"ssl": "pro", "domain": "pro", "score": "pro", "email": "pro",
+                     "reputation": "pro", "uptime": "pro", "changes": "agency", "phishing": "agency"}
+_account_cfg_hits: dict = {}   # KL-97/98: escrita de config 10/min por user
+
+
+async def _owned_site(request: Request, target_id: int, min_level: int, require_owner: bool = False):
+    """Auth + nível + posse do vínculo (KL-97/98). Retorna (user, link, target, store).
+    403 se nível/posse insuficiente; 404 se o site não é do usuário."""
+    user = await auth_users.require_user(request)
+    _require_level(user, min_level)
+    store = get_target_store()
+    link = await store.get_user_site(user["id"], target_id)
+    if not link:
+        raise HTTPException(status_code=404, detail="Site não encontrado na sua conta.")
+    if require_owner and not link.get("is_owner"):
+        raise HTTPException(status_code=403,
+                            detail={"error": "not_owner",
+                                    "message": "Apenas o dono verificado deste site pode editar isto."})
+    target = await store.get_target(target_id)
+    if not target:
+        raise HTTPException(status_code=404, detail="Alvo não encontrado.")
+    return user, link, target, store
+
+
+async def _cfg_rate_limit(request: Request, user_id: int) -> None:
+    allowed, retry = await _redis_allow("account_cfg", str(user_id), 10, 60, _account_cfg_hits)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Muitas alterações. Aguarde um momento.",
+                            headers={"Retry-After": str(retry)})
+
+
+async def _monitoring_view(store, user_id: int, domain: str, target: dict) -> dict:
+    """Estado das vigílias de um site + configurabilidade por plano (KL-97)."""
+    from api.vigilias import VIGILIA_TYPES
+    allowed = set(await _vigilia_allowed_types(user_id))
+    existing = {v["tipo"]: v for v in await store.list_site_vigilias(user_id, domain)}
+    vigilias = []
+    for tipo in VIGILIA_TYPES:
+        v = existing.get(tipo)
+        configurable = tipo in allowed
+        entry = {
+            "tipo": tipo,
+            "enabled": bool(v.get("enabled")) if v else False,
+            "last_status": (v or {}).get("last_status"),
+            "last_check_at": (v or {}).get("last_check_at"),
+            "next_check_at": (v or {}).get("next_check_at"),
+            "configurable": configurable,
+            "threshold": ((v or {}).get("last_data") or {}).get("threshold") if v else None,
+        }
+        if not configurable:
+            entry["requires_plan"] = _VIGILIA_MIN_PLAN.get(tipo, "pro")
+        vigilias.append(entry)
+    score = target.get("last_scan_score")
+    return {"site": {"domain": domain, "score": score, "semaphore": _semaphore_from_score(score)},
+            "vigilias": vigilias}
+
+
+@app.get("/account/sites/{target_id}/monitoring")
+async def account_site_monitoring(target_id: int, request: Request) -> dict:
+    """KL-97 — estado + configurabilidade das vigílias de um site do usuário (nível ≥ 1 + posse
+    do vínculo). NÃO expõe dado de outro usuário."""
+    user, _link, target, store = await _owned_site(request, target_id, 1)
+    return await _monitoring_view(store, user["id"], target.get("domain") or "", target)
+
+
+class MonitoringUpdateBody(BaseModel):
+    vigilias: dict   # {tipo: {enabled, threshold?}} — o handler valida cada item
+
+
+@app.put("/account/sites/{target_id}/monitoring")
+async def account_site_monitoring_update(target_id: int, body: MonitoringUpdateBody,
+                                         request: Request) -> dict:
+    """KL-97 — liga/desliga vigílias + threshold. Nível ≥ 1 + posse. Respeita o plano: toggle de
+    vigília não habilitada pelo plano → 403 `requires_plan`. Vigília desabilitada é preservada
+    (enabled=false), não deletada."""
+    from api.vigilias import VIGILIA_TYPES
+    user, _link, target, store = await _owned_site(request, target_id, 1)
+    await _cfg_rate_limit(request, user["id"])
+    domain = target.get("domain") or ""
+    allowed = set(await _vigilia_allowed_types(user["id"]))
+    now = datetime.now(timezone.utc)
+    for tipo, cfg in (body.vigilias or {}).items():
+        if tipo not in VIGILIA_TYPES or not isinstance(cfg, dict):
+            continue
+        enabled = bool(cfg.get("enabled"))
+        if enabled and tipo not in allowed:  # não deixa habilitar vigília fora do plano
+            raise HTTPException(status_code=403, detail={
+                "error": "requires_plan", "vigilia": tipo,
+                "requires_plan": _VIGILIA_MIN_PLAN.get(tipo, "pro")})
+        threshold = cfg.get("threshold")
+        threshold = int(threshold) if isinstance(threshold, (int, float)) and tipo == "score" else None
+        await store.set_vigilia_enabled(user["id"], domain, tipo, enabled,
+                                        threshold=threshold, next_check_at=now)
+    return await _monitoring_view(store, user["id"], domain, target)
+
+
+@app.get("/account/notification-preferences")
+async def account_notification_prefs(request: Request) -> dict:
+    """KL-97 — preferências de notificação do usuário (nível ≥ 1). `bulletin_frequency` NULL =
+    usa a do plano."""
+    user = await auth_users.require_user(request)
+    prefs = await get_target_store().get_notification_prefs(user["id"])
+    return {
+        "bulletin_frequency": prefs.get("bulletin_frequency"),
+        "bulletin_hour": prefs.get("bulletin_hour"),
+        "notify_vigilia": prefs.get("notify_vigilia", True),
+        "notify_bulletin": prefs.get("notify_bulletin", True),
+        "notify_news": prefs.get("notify_news", False),
+    }
+
+
+class NotificationPrefsBody(BaseModel):
+    bulletin_frequency: Optional[str] = None
+    bulletin_hour: Optional[int] = None
+    notify_vigilia: Optional[bool] = None
+    notify_bulletin: Optional[bool] = None
+    notify_news: Optional[bool] = None
+
+
+_BULLETIN_FREQS = {"immediate", "daily", "weekly", "monthly", "off"}
+
+
+@app.put("/account/notification-preferences")
+async def account_notification_prefs_update(body: NotificationPrefsBody, request: Request) -> dict:
+    """KL-97 — atualiza (partial) as preferências de notificação. Valida frequência/hora."""
+    user = await auth_users.require_user(request)
+    await _cfg_rate_limit(request, user["id"])
+    fields: dict = {}
+    if body.bulletin_frequency is not None:
+        if body.bulletin_frequency not in _BULLETIN_FREQS:
+            raise HTTPException(status_code=422, detail="Frequência inválida.")
+        fields["bulletin_frequency"] = body.bulletin_frequency
+    if body.bulletin_hour is not None:
+        fields["bulletin_hour"] = max(0, min(23, int(body.bulletin_hour)))
+    for col in ("notify_vigilia", "notify_bulletin", "notify_news"):
+        val = getattr(body, col)
+        if val is not None:
+            fields[col] = bool(val)
+    prefs = await get_target_store().update_notification_prefs(user["id"], fields)
+    return {
+        "bulletin_frequency": prefs.get("bulletin_frequency"),
+        "bulletin_hour": prefs.get("bulletin_hour"),
+        "notify_vigilia": prefs.get("notify_vigilia", True),
+        "notify_bulletin": prefs.get("notify_bulletin", True),
+        "notify_news": prefs.get("notify_news", False),
+    }
+
+
+# --- KL-98: perfil público + visibilidade + selo (dono verificado, nível 3) --- #
+
+class OwnerProfileBody(BaseModel):
+    company_name: Optional[str] = None
+    description: Optional[str] = None
+    phone: Optional[str] = None
+    whatsapp: Optional[str] = None
+    address: Optional[str] = None
+    cnpj: Optional[str] = None
+    commercial_email: Optional[str] = None
+    business_hours: Optional[str] = None
+    instagram: Optional[str] = None
+    facebook: Optional[str] = None
+    linkedin: Optional[str] = None
+    youtube: Optional[str] = None
+    tiktok: Optional[str] = None
+    google_maps_url: Optional[str] = None
+    business_type: Optional[str] = None
+    tags: Optional[Any] = None
+    sector: Optional[str] = None
+    clear_fields: Optional[list] = None
+
+
+_PROFILE_LIMITS = {"company_name": 200, "description": 1000, "business_type": 80,
+                   "address": 300, "business_hours": 200, "cnpj": 20, "commercial_email": 200,
+                   "phone": 40, "whatsapp": 40, "instagram": 100, "facebook": 200,
+                   "linkedin": 200, "youtube": 200, "tiktok": 100, "google_maps_url": 500}
+_PHONE_RE = re.compile(r"^[0-9()+\-\s]{6,40}$")
+_CNPJ_RE = re.compile(r"^(\d{2}\.?\d{3}\.?\d{3}/?\d{4}-?\d{2}|\d{14})$")
+
+
+def _sanitize_owner_profile(body: OwnerProfileBody) -> Dict[str, Any]:
+    """Sanitiza os campos editáveis pelo dono (strip HTML, limites, formato). Levanta 422
+    em telefone/CNPJ/URL inválidos. Retorna só os campos presentes no body."""
+    out: Dict[str, Any] = {}
+    for col, limit in _PROFILE_LIMITS.items():
+        val = getattr(body, col, None)
+        if val is None:
+            continue
+        clean = _sanitize_str(str(val), limit).strip()
+        if not clean:
+            out[col] = None
+            continue
+        if col in ("phone", "whatsapp") and not _PHONE_RE.match(clean):
+            raise HTTPException(status_code=422, detail=f"{col} inválido.")
+        if col == "cnpj" and not _CNPJ_RE.match(clean):
+            raise HTTPException(status_code=422, detail="CNPJ inválido.")
+        if col in ("google_maps_url", "facebook", "linkedin", "youtube") and not clean.startswith(("http://", "https://")):
+            raise HTTPException(status_code=422, detail=f"{col} deve ser uma URL http(s).")
+        out[col] = clean
+    if body.business_type is not None:
+        out["business_type"] = _sanitize_str(str(body.business_type), 80).strip() or None
+    if body.tags is not None:
+        raw = body.tags if isinstance(body.tags, list) else str(body.tags or "").split(",")
+        tags = [_sanitize_str(str(t), 50).strip() for t in raw]
+        out["tags"] = [t for t in tags if t][:10]
+    if body.clear_fields:
+        out["clear_fields"] = [c for c in body.clear_fields if c in TargetStore._SP_OWNER_EDITABLE or c == "tags"]
+    return out
+
+
+@app.put("/account/sites/{target_id}/profile")
+async def account_site_profile_update(target_id: int, body: OwnerProfileBody,
+                                       request: Request) -> dict:
+    """KL-98 — o DONO verificado (nível 3, is_owner) edita o perfil público. Sanitiza tudo (strip
+    HTML, limites, formato) e marca `edited_by_owner` + acumula `owner_edited_fields` (o enrich da
+    IA nunca sobrescreve esses campos). Setor (opcional) atualiza `targets.sector` como manual."""
+    user, _link, target, store = await _owned_site(request, target_id, 3, require_owner=True)
+    await _cfg_rate_limit(request, user["id"])
+    fields = _sanitize_owner_profile(body)
+    # Nota: `sector` NÃO é editável aqui — vive em `targets` e passa pelo pipeline de
+    # classificação (afeta benchmark/ranking); fica com o fluxo admin/IA.
+    profile = await store.update_site_profile_fields(target_id, fields, actor="owner") if fields else \
+        await store.get_site_profile(target_id)
+    return {"ok": True, "profile": _owner_profile_payload(profile)}
+
+
+class OwnerVisibilityBody(BaseModel):
+    public_visible: bool
+
+
+@app.put("/account/sites/{target_id}/visibility")
+async def account_site_visibility(target_id: int, body: OwnerVisibilityBody,
+                                   request: Request) -> dict:
+    """KL-98 — o dono liga/desliga a landing pública `/site/{domain}` (nível 3 + posse)."""
+    user, _link, target, store = await _owned_site(request, target_id, 3, require_owner=True)
+    await _cfg_rate_limit(request, user["id"])
+    await store.set_profile_visibility(target_id, bool(body.public_visible))
+    return {"ok": True, "public_visible": bool(body.public_visible)}
+
+
+def _seal_embed(domain: str, style: str) -> str:
+    style_attr = f' data-style="{style}"' if style and style != "badge" else ""
+    return ('<div id="klarim-seal"></div>\n'
+            f'<script src="https://klarim.net/seal/widget.js" data-domain="{domain}"{style_attr} async></script>')
+
+
+_SEAL_VARIANTS = {
+    "badge": ("Badge Inline", "Ícone compacto para header ou footer"),
+    "footer": ("Barra de Footer", "Barra horizontal para o rodapé"),
+    "floating": ("Selo Flutuante", "Canto inferior direito, flutuante"),
+}
+
+
+@app.get("/account/sites/{target_id}/seal")
+async def account_site_seal(target_id: int, request: Request) -> dict:
+    """KL-98 — dados do selo do site (nível 3 + posse): estado + variantes com embed_code."""
+    user, _link, target, store = await _owned_site(request, target_id, 3, require_owner=True)
+    domain = target.get("domain") or ""
+    profile = await store.get_site_profile(target_id) or {}
+    score = target.get("last_scan_score")
+    variants = {
+        key: {"name": name, "description": desc, "embed_code": _seal_embed(domain, key),
+              "preview_url": f"https://klarim.net/site/{domain}"}
+        for key, (name, desc) in _SEAL_VARIANTS.items()
+    }
+    return {
+        "enabled": profile.get("seal_enabled", True),
+        "style": profile.get("seal_style") or "badge",
+        "score": score, "semaphore": _semaphore_from_score(score), "domain": domain,
+        "verified": bool(_link.get("is_owner")), "variants": variants,
+    }
+
+
+class SealConfigBody(BaseModel):
+    enabled: Optional[bool] = None
+    style: Optional[str] = None
+
+
+@app.put("/account/sites/{target_id}/seal")
+async def account_site_seal_update(target_id: int, body: SealConfigBody, request: Request) -> dict:
+    """KL-98 — liga/desliga o selo + estilo (badge/footer/floating). Nível 3 + posse."""
+    user, _link, target, store = await _owned_site(request, target_id, 3, require_owner=True)
+    await _cfg_rate_limit(request, user["id"])
+    style = body.style if body.style in _SEAL_VARIANTS else None
+    enabled = True if body.enabled is None else bool(body.enabled)
+    profile = await store.set_seal_config(target_id, enabled, style)
+    return {"ok": True, "enabled": (profile or {}).get("seal_enabled", enabled),
+            "style": (profile or {}).get("seal_style") or "badge"}
+
+
+def _owner_profile_payload(profile: Optional[dict]) -> dict:
+    """Campos do perfil devolvidos ao DONO (o próprio dono; inclui os que ele edita). Nunca
+    inclui colunas internas de sistema além das úteis; `contact_email` do target não vive aqui."""
+    p = profile or {}
+    keys = (*TargetStore._SP_OWNER_EDITABLE, "tags", "logo_url", "maturity_score",
+            "public_visible", "seal_enabled", "seal_style", "edited_by_owner",
+            "owner_edited_fields", "low_confidence_fields")
+    return {k: p.get(k) for k in keys}
+
+
 @app.post("/account/sites/{target_id}/claim")
 async def account_claim_site(target_id: int, request: Request) -> dict:
     """Reivindica a propriedade de um site: o e-mail da conta precisa bater com o
@@ -2260,8 +2564,12 @@ async def api_seal(domain: str, request: Request) -> JSONResponse:
     if scan and isinstance(scan.get("checks_json"), dict):
         privacy = scan["checks_json"].get("privacy")
     last_at = (scan or {}).get("scanned_at") or target.get("last_scan_at")
+    profile = await store.get_site_profile(target["id"]) or {}   # KL-98: estado + estilo do selo
     payload = {
         "domain": dom, "found": True, "seal_type": "monitored",
+        "enabled": profile.get("seal_enabled", True),            # dono pode desligar o selo
+        "style": profile.get("seal_style") or "badge",
+        "verified": bool(target.get("owner_verified")),
         "score": (scan or {}).get("score") if scan else target.get("last_scan_score"),
         "semaphore": (scan or {}).get("semaphore") if scan else target.get("last_semaphore"),
         "privacy_score": (privacy or {}).get("score"),
@@ -6203,6 +6511,8 @@ _KNOWN_EVENTS = {
     "admin_filter_used",
     # KL-105 — funil de conversão do InlineSignup no resultado do scan (Fluxo D)
     "inline_signup_shown", "inline_signup_click", "inline_signup_success", "inline_signup_existing",
+    # KL-97/98 — gestão do dono no dashboard (monitoramento, notificação, perfil, selo)
+    "vigilia_toggled", "bulletin_frequency_changed", "profile_edited", "seal_configured",
 }
 _EVENT_RL_MAX = 100          # eventos/minuto por sessão
 _event_rl: dict = {}         # session_id -> lista de timestamps (janela de 60s)

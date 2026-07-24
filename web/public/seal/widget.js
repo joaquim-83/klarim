@@ -11,9 +11,21 @@
   var domain = (s && s.getAttribute("data-domain")) || "";
   var theme = (s && s.getAttribute("data-theme")) || "auto";   // auto | dark | light
   var size = (s && s.getAttribute("data-size")) || "compact";  // compact | full
+  var style = (s && s.getAttribute("data-style")) || "badge";  // badge | footer | floating (KL-98)
   var base = "https://klarim.net";
   var mount = document.getElementById("klarim-seal");
+  // KL-98: floating/footer não exigem um <div id="klarim-seal"> — o widget cria o container.
+  if (!mount && (style === "floating" || style === "footer")) {
+    mount = document.createElement("div");
+    mount.id = "klarim-seal";
+    document.body.appendChild(mount);
+  }
   if (!mount || !domain) return;
+  if (style === "floating") {
+    mount.style.cssText = "position:fixed;right:16px;bottom:16px;z-index:2147483000;";
+  } else if (style === "footer") {
+    mount.style.cssText = "display:flex;justify-content:center;width:100%;padding:8px 0;";
+  }
 
   function isDark() {
     if (theme === "dark") return true;
@@ -30,6 +42,8 @@
   }
 
   function render(data) {
+    // KL-98: dono desligou o selo (ou domínio não encontrado) → não renderiza nada.
+    if (!data || data.found === false || data.enabled === false) { mount.innerHTML = ""; return; }
     var dark = isDark();
     var bg = dark ? "#161B22" : "#FFFFFF";
     var fg = dark ? "#E6EDF3" : "#1B2733";

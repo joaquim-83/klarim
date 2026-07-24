@@ -150,7 +150,8 @@ export default function DashboardV2({ user = {} }) {
             onScan={onScan} onToast={setToast}
             onLinkTechnician={() => ensureLevel(2, {}, () => setTechModal(true))} />
 
-          <MonitoringSection domain={site.domain} monitoring={data.monitoring} />
+          <MonitoringSection domain={site.domain} monitoring={data.monitoring}
+            targetId={targetId} canEditProfile={level >= 3} profile={data.profile || {}} />
 
           {/* reg 1 — selo Klarim (KL-99: exibir/copiar o selo exige dono verificado, nível 3) */}
           <SealSection domain={site.domain} planName={(data.plan || {}).name} level={level}

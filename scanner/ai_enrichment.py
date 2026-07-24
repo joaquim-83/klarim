@@ -220,8 +220,11 @@ async def ai_enrich(domain: str, html_text: str, current_profile: Optional[dict]
 
 def merge_ai_into_profile(profile: dict, ai: dict) -> list:
     """Aplica os dados da IA ao ``profile``. Campos de identidade só preenchem VAZIO
-    (regra de ouro); **tags** a IA é a fonte, então sobrescreve. Retorna o que mudou."""
+    (regra de ouro); **tags** a IA é a fonte, então sobrescreve. **KL-98:** campos que o DONO
+    editou (nomes em ``owner_edited_fields``) NUNCA são tocados — nem se o dono os deixou vazios
+    (a regra de ouro do admin é reforçada no upsert; aqui é a defesa em memória). Retorna o que mudou."""
     changed = []
+    owner_locked = set(profile.get("owner_edited_fields") or [])
     contacts = ai.get("contacts_found") or {}
     mapping = [
         ("company_name", ai.get("company_name")),
@@ -232,11 +235,11 @@ def merge_ai_into_profile(profile: dict, ai: dict) -> list:
         ("whatsapp", contacts.get("whatsapp")),
     ]
     for field, value in mapping:
-        if value and not profile.get(field):
+        if value and not profile.get(field) and field not in owner_locked:
             profile[field] = value
             changed.append(field)
     tags = ai.get("tags")  # KL-55: tags são da IA (sobrescreve se vier lista não vazia)
-    if tags:
+    if tags and "tags" not in owner_locked:
         profile["tags"] = tags
         changed.append("tags")
     return changed
