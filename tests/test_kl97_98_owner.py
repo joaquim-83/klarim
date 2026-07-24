@@ -170,6 +170,20 @@ def test_monitoring_requires_auth(client):
     assert client.get("/account/sites/1/monitoring").status_code == 401
 
 
+def test_free_plan_gets_5_core_vigilias_configurable(client, store, monkeypatch):
+    # KL-106: as 5 vigílias CORE são do Free → configuráveis p/ todos; só uptime(Pro)/changes/
+    # phishing(Agency) exigem plano. Simula um plano FREE (só as 5 core habilitadas).
+    async def free_allowed(uid):
+        return ["ssl", "domain", "score", "email", "reputation"]
+    monkeypatch.setattr(m, "_vigilia_allowed_types", free_allowed)
+    d = client.get("/account/sites/1/monitoring", headers=_hdr(store, 10)).json()
+    by = {v["tipo"]: v for v in d["vigilias"]}
+    for core in ("ssl", "domain", "score", "email", "reputation"):
+        assert by[core]["configurable"] is True and "requires_plan" not in by[core]
+    assert by["uptime"]["configurable"] is False and by["uptime"]["requires_plan"] == "pro"
+    assert by["changes"]["requires_plan"] == "agency"
+
+
 # --------------------------- KL-97: notificações -------------------------- #
 
 def test_notification_prefs_defaults(client, store):

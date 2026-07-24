@@ -610,6 +610,14 @@ VALUES
      TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, TRUE, 5,
      'daily', 0, 0, 10, TRUE, 'whitelabel', 'weekly', TRUE, TRUE)
 ON CONFLICT (id) DO NOTHING;
+-- KL-106: o plano Free passa a incluir as 5 vigílias CORE (ssl/domain/score/email/reputation)
+-- ATIVAS — monitoramento básico para todo dono (uptime=Pro; changes/phishing=Agency). O seed acima
+-- usa ON CONFLICT DO NOTHING (não atualiza linhas já semeadas em prod), então forço por UPDATE
+-- idempotente (roda a cada boot). Assim, mesmo antes do trial Pro existir (corrida do signup), o
+-- fallback ao plano free já habilita as 5 core → as vigílias nascem ativas.
+UPDATE plans SET vigilia_ssl = TRUE, vigilia_domain = TRUE, vigilia_score = TRUE,
+                 vigilia_email = TRUE, vigilia_reputation = TRUE
+WHERE id = 'free' AND vigilia_ssl IS DISTINCT FROM TRUE;
 
 CREATE TABLE IF NOT EXISTS subscriptions (
     id SERIAL PRIMARY KEY,

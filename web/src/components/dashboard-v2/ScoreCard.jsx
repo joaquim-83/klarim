@@ -74,10 +74,12 @@ export default function ScoreCard({ site, benchmark, scanning, onScan, onToast, 
         </button>
       </div>
 
-      {/* link externo + (só dono) vincular técnico */}
+      {/* KL-106: "Ver landing page" = o PERFIL Klarim (/site/{domain}), não o site real do cliente */}
       <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-slate-800 pt-4">
-        <a href={`https://${site.domain}`} target="_blank" rel="noopener"
+        <a href={profileUrl(site.domain)} target="_blank" rel="noopener"
           className="inline-flex min-h-[44px] items-center text-sm text-brand-400 hover:text-brand-300">Ver landing page →</a>
+        <a href={`https://${site.domain}`} target="_blank" rel="noopener noreferrer"
+          className="inline-flex min-h-[44px] items-center text-sm text-slate-400 hover:text-slate-200">Visitar site ↗</a>
         {!technician && (
           <button type="button" onClick={onLinkTechnician}
             className="ml-auto inline-flex min-h-[44px] items-center gap-2 rounded-xl border border-brand-500 bg-brand-500/10 px-4 text-sm font-semibold text-brand-300 hover:bg-brand-500/20">

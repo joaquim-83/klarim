@@ -733,8 +733,14 @@ async def _create_account_record(store, email: str, password_hash: Optional[str]
     await store.touch_user_login(user["id"])
     _spawn(_safe_lead(store.set_lead_account(email, user["id"])))          # KL-61
     # KL-44 P6: trial de 30 dias do plano escolhido (pro/agency); default pro.
+    # KL-106: AWAIT (não _spawn) — o chamador (signup-inline/monitor-from-alert) cria as vigílias
+    # LOGO em seguida, e `_vigilia_allowed_types` lê a assinatura; se ela ainda não existisse
+    # (corrida do fire-and-forget), o fallback caía em 'free' e nenhuma vigília era criada.
     trial_plan = plan if plan in ("pro", "agency") else "pro"
-    _spawn(_safe_lead(plans.create_subscription(user["id"], trial_plan, is_trial=True)))  # KL-44
+    try:
+        await plans.create_subscription(user["id"], trial_plan, is_trial=True)  # KL-44
+    except Exception as exc:  # noqa: BLE001 - assinatura é best-effort; a conta já foi criada
+        print(f"[account] trial {trial_plan} falhou u={user['id']}: {exc!r}", flush=True)
     return user, claim
 
 
@@ -1613,9 +1619,9 @@ async def account_remove_site(target_id: int, request: Request) -> dict:
 # KL-97 / KL-98 — gestão do dono: monitoramento, notificações, perfil, selo
 # --------------------------------------------------------------------------- #
 
-# Plano mínimo que habilita cada vigília (Free não tem nenhuma; Pro core+uptime; Agency tudo).
-_VIGILIA_MIN_PLAN = {"ssl": "pro", "domain": "pro", "score": "pro", "email": "pro",
-                     "reputation": "pro", "uptime": "pro", "changes": "agency", "phishing": "agency"}
+# Plano mínimo que habilita cada vigília (KL-106: Free = as 5 core; Pro +uptime; Agency +changes/
+# phishing). As 5 core não têm entrada → sempre configuráveis (`requires_plan` só p/ as pagas).
+_VIGILIA_MIN_PLAN = {"uptime": "pro", "changes": "agency", "phishing": "agency"}
 _account_cfg_hits: dict = {}   # KL-97/98: escrita de config 10/min por user
 
 

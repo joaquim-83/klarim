@@ -291,8 +291,11 @@ server {
     }
 }
 
-# Subdomínio do painel (KL-14): painel.${DOMAIN} serve só o dashboard admin.
-# Mesmo build React (SPA) e mesmo certificado; a raiz vai direto ao login.
+# Subdomínio do painel (KL-14 → KL-106): painel.${DOMAIN} agora REDIRECIONA 301 para o domínio
+# principal. O admin foi migrado para ${DOMAIN}/painel (Astro SSR); o subdomínio servia um build
+# Vite ANTIGO desatualizado. O 301 preserva o path (painel.${DOMAIN}/painel/alvos →
+# ${DOMAIN}/painel/alvos). Mesmo certificado (o SAN cobre painel.). Cookies de sessão vivem em
+# ${DOMAIN} → re-login único no máximo, sem perda de dados.
 server {
     listen 443 ssl;
     http2 on;
@@ -302,165 +305,8 @@ server {
     ssl_certificate     /etc/letsencrypt/live/${DOMAIN}/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/${DOMAIN}/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;
-    ssl_prefer_server_ciphers off;
     ssl_session_cache shared:SSL:10m;
     ssl_session_timeout 1d;
 
-    # Mesmos security headers do domínio principal.
-    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
-    add_header X-Frame-Options "DENY" always;
-    add_header X-Content-Type-Options "nosniff" always;
-    add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-    add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'" always;
-
-    root /usr/share/nginx/html;
-    index index.html;
-
-    gzip on;
-    gzip_types text/css application/javascript image/svg+xml application/json;
-
-    # KL-65 — security.txt (RFC 9116) também no subdomínio painel.
-    location = /.well-known/security.txt {
-        default_type "text/plain; charset=utf-8";
-        add_header Cache-Control "public, max-age=86400" always;
-        alias /etc/nginx/klarim_security.txt;
-    }
-
-    # Segurança (self-audit): mesmos bloqueios de paths sensíveis do host principal.
-    location ~ /\. { return 404; }
-    location ~* \.(php|sql|bak|log|ya?ml|toml|ini|conf|config)$ { return 404; }
-    location ~* ^/(phpinfo|server-status|server-info|wp-admin|wp-login|administrator|admin\.php) { return 404; }
-    # Diretórios "suspeitos" que scanners sondam — 404 em vez de 200 com a SPA. NÃO
-    # afeta /api/, /mcp/ (prefixos, e a âncora ^/ não casa /api/admin) nem /painel/.
-    location ~* ^/(backup|uploads|admin|internal|debug|test|staging|tmp|temp|logs|private|secret|dump)(/|$) { return 404; }
-
-    # A raiz do subdomínio vai direto ao login do painel.
-    location = / {
-        return 302 /painel/login;
-    }
-
-    # KL-51 fase 1 — assets das ilhas React do painel (Astro) no subdomínio. Sem esta
-    # regra os /_astro/*.js cairiam no `location /` (index.html do Vite) e o painel não
-    # hidrataria. add_header próprio → repetir os headers de segurança do server block.
-    location ^~ /_astro/ {
-        resolver 127.0.0.11 valid=10s ipv6=off;
-        set $klarim_astro astro:4321;
-        proxy_pass http://$klarim_astro;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        expires 1y;
-        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
-        add_header X-Frame-Options "DENY" always;
-        add_header X-Content-Type-Options "nosniff" always;
-        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'" always;
-        add_header Cache-Control "public, immutable";
-    }
-
-    # KL-51 fase 1 — painel admin migrado para o Astro (rotas já migradas). As demais
-    # /painel/* continuam na SPA Vite (location / abaixo). CSP do subdomínio permite
-    # 'unsafe-inline' no script-src → as ilhas rodam sem depender de hash. add_header
-    # próprio → repetir os headers de segurança. KL-51 fase 2: TODO o /painel → `^/painel(/|$)`.
-    location ~ ^/painel(/|$) {
-        resolver 127.0.0.11 valid=10s ipv6=off;
-        set $klarim_astro astro:4321;
-        proxy_pass http://$klarim_astro;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
-        add_header X-Frame-Options "DENY" always;
-        add_header X-Content-Type-Options "nosniff" always;
-        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'" always;
-        add_header Cache-Control "no-store" always;
-    }
-
-    location /assets/ {
-        expires 1y;
-        add_header Cache-Control "public, immutable";
-        # Um add_header próprio quebra a herança dos headers do server block — por
-        # isso repetimos os de segurança aqui, senão os assets (JS/CSS) sairiam sem
-        # HSTS/CSP (regressão flagrada na auditoria pós-MCP).
-        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
-        add_header X-Frame-Options "DENY" always;
-        add_header X-Content-Type-Options "nosniff" always;
-        add_header Referrer-Policy "strict-origin-when-cross-origin" always;
-        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'" always;
-        try_files $uri =404;
-    }
-
-    location / {
-        try_files $uri /index.html;
-    }
-
-    # Proxy da API com resolver dinâmico (DNS do Docker) + upstream em variável:
-    # o Nginx re-resolve o IP do `api` a cada request (TTL 10s) em vez de cachear
-    # no boot. Evita o 502 quando o container `api` é recriado (novo IP) e o `web`
-    # não (bug do login do painel). O rewrite faz o strip do prefixo /api/ (o
-    # proxy_pass com variável não o faz automaticamente).
-    location /api/ {
-        resolver 127.0.0.11 valid=10s ipv6=off;
-        set $klarim_api api:8000;
-        rewrite ^/api/(.*)$ /$1 break;
-        proxy_pass http://$klarim_api;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_connect_timeout 10s;
-        proxy_read_timeout 180s;
-        proxy_send_timeout 180s;
-    }
-
-    # KL-63 fix (CSP) — a página de login OAuth (/mcp/authorize) tem um <form> que POSTa
-    # em 'self' e, ao autorizar, REDIRECIONA para o callback do cliente MCP (loopback ou
-    # https). O `form-action 'self'` herdado do server bloqueava esse redirect. Location
-    # dedicada (regex, vence o prefixo /mcp/) com CSP própria: form-action liberado p/
-    # self + https + loopback. ⚠️ add_header próprio QUEBRA a herança dos headers do
-    # server → re-declara os essenciais aqui. Aplica só às 3 rotas do fluxo OAuth; o
-    # SSE (/mcp/sse, /mcp/messages/) continua no `location /mcp/` abaixo.
-    location ~ ^/mcp/(authorize|token|register)(/|$) {
-        resolver 127.0.0.11 valid=10s ipv6=off;
-        set $klarim_api api:8000;
-        proxy_pass http://$klarim_api;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        add_header Content-Security-Policy "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self' https: http://localhost:* http://127.0.0.1:*" always;
-        add_header Strict-Transport-Security "max-age=31536000; includeSubDomains; preload" always;
-        add_header X-Frame-Options "DENY" always;
-        add_header X-Content-Type-Options "nosniff" always;
-        add_header Referrer-Policy "no-referrer" always;
-    }
-
-    # Streamable HTTP do MCP: o endpoint é /mcp/ (com barra). O /mcp "pelado" cairia
-    # no location / (SPA) — redireciona para /mcp/ preservando a query (?token=).
-    location = /mcp { return 308 /mcp/$is_args$args; }
-
-    # Servidor MCP (KL-18) — Streamable HTTP (/mcp/) + SSE (/mcp/sse). Buffering/cache
-    # DESLIGADOS + Connection '' obrigatórios. Mesmo resolver dinâmico. `access_log
-    # off`: a auth pode vir em ?token= — não deve vazar nos logs. Identidade (sem rewrite).
-    location /mcp/ {
-        resolver 127.0.0.11 valid=10s ipv6=off;
-        set $klarim_api api:8000;
-        proxy_pass http://$klarim_api;
-        proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_set_header Connection '';
-        proxy_buffering off;
-        proxy_cache off;
-        chunked_transfer_encoding off;
-        proxy_read_timeout 300s;
-        access_log off;
-    }
+    return 301 https://${DOMAIN}$request_uri;
 }

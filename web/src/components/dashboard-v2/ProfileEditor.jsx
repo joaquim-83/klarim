@@ -37,7 +37,21 @@ export default function ProfileEditor({ targetId, domain, initial = {}, onClose,
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
-    apiGet(`/account/sites/${targetId}/seal`).then((r) => { if (r.ok) setSeal(r.data); });
+    let alive = true;
+    apiGet(`/account/sites/${targetId}/seal`).then((r) => { if (alive && r.ok) setSeal(r.data); });
+    // KL-106 fix: pré-preenche o formulário com o perfil ATUAL (o `initial` do dashboard é parcial).
+    apiGet(`/account/sites/${targetId}`).then((r) => {
+      if (!alive || !r.ok || !r.data) return;
+      const p = r.data.profile || {};
+      setForm((prev) => {
+        const next = { ...prev };
+        for (const [k] of FIELDS) if (p[k] != null) next[k] = p[k];
+        if (Array.isArray(p.tags)) next.tags = p.tags.join(', ');
+        return next;
+      });
+      if (typeof (r.data.profile || {}).public_visible === 'boolean') setVisible(r.data.profile.public_visible);
+    });
+    return () => { alive = false; };
   }, [targetId]);
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
@@ -63,9 +77,9 @@ export default function ProfileEditor({ targetId, domain, initial = {}, onClose,
   const previewTags = form.tags.split(',').map((t) => t.trim()).filter(Boolean);
 
   return (
-    <Modal title={`Editar perfil · ${domain}`} onClose={onClose} wide>
+    <Modal title={`Editar perfil · ${domain}`} onClose={onClose} size="xl">
       {err && <p className="rounded-lg bg-red-500/10 px-3 py-2 text-sm text-red-300">{err}</p>}
-      <div className="grid gap-5 lg:grid-cols-2">
+      <div className="grid gap-5 md:grid-cols-2">
         {/* Formulário */}
         <div className="space-y-3">
           {FIELDS.map(([k, label, type]) => (
