@@ -19,7 +19,7 @@ def _run(coro):
 
 class _RecCur:
     """Cursor que grava os SQLs executados e devolve `one` em todo fetchone."""
-    def __init__(self, one=(0,)):
+    def __init__(self, one=(0, 0, 0)):  # fix 24/07: contadores devolvem (tentativas, sent, bounced)
         self.executed = []
         self._one = one
         self.description = [("id",), ("url",), ("from_domain",)]
@@ -41,7 +41,8 @@ def _sql(cur):
 # --- §3: alert_stats agora vem do email_log (tipos de alerta) --------------- #
 
 def test_alert_stats_reads_email_log_alert_types(monkeypatch):
-    cur = _RecCur(one=(7,))
+    # fix 24/07: cada janela devolve (tentativas, sent, bounced) → cursor de 3 colunas.
+    cur = _RecCur(one=(7, 5, 2))
     store = TargetStore()
     monkeypatch.setattr(store, "_run", lambda fn: fn(cur))
     out = _run(store.alert_stats())
@@ -50,20 +51,23 @@ def test_alert_stats_reads_email_log_alert_types(monkeypatch):
     assert "email_type IN ('alert', 'alert_score100')" in sql
     assert "profile_view" not in sql                                    # não mistura perfis
     assert "date_trunc('day', NOW())" in sql                           # dia-calendário
-    assert set(out) == {"today", "week", "month", "total"} and out["today"] == 7
+    # fix 24/07: "enviados" = tentativas (inclui bounces), com breakdown sent/bounced
+    assert "soft_bounced" in sql and "FILTER (WHERE status = 'sent')" in sql
+    assert {"today", "today_sent", "today_bounced", "total", "total_bounced"} <= set(out)
+    assert out["today"] == 7 and out["today_sent"] == 5 and out["today_bounced"] == 2
 
 
 # --- §4: profile_view_stats — contadores PRÓPRIOS da aba de perfil ---------- #
 
 def test_profile_view_stats_reads_email_log(monkeypatch):
-    cur = _RecCur(one=(3,))
+    cur = _RecCur(one=(3, 3, 0))
     store = TargetStore()
     monkeypatch.setattr(store, "_run", lambda fn: fn(cur))
     out = _run(store.profile_view_stats())
     sql = _sql(cur)
     assert "FROM email_log" in sql and "email_type = 'profile_view'" in sql
     assert "alert_score100" not in sql                                 # separado dos alertas
-    assert set(out) == {"today", "week", "month", "total"} and out["total"] == 3
+    assert {"today", "today_bounced", "total"} <= set(out) and out["total"] == 3
 
 
 def test_alert_and_profile_stats_use_distinct_filters(monkeypatch):

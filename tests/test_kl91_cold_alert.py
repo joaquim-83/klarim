@@ -154,6 +154,29 @@ def test_flag_high_bounce_respects_min_sample():
     assert paused == [] and s[0].status == "active"
 
 
+def test_default_min_sample_is_100():
+    # fix 24/07: warmup precisa de ~100 envios antes de julgar (era 20).
+    assert c.DEFAULT_BOUNCE_MIN_SAMPLE == 100
+
+
+def test_flag_high_bounce_warmup_not_paused_below_100():
+    # 50 envios, 5 bounces (10%) — acima do rate, mas amostra insuficiente → NÃO pausa (default 100).
+    s = c.load_senders({})
+    by_domain = {"alertas.klarim.net": {"total": 50, "bounced": 5}}
+    paused = c.flag_high_bounce(s, by_domain, max_rate=5.0)   # min_sample = default (100)
+    assert paused == [] and s[0].status == "active"
+
+
+def test_flag_high_bounce_pauses_at_full_sample():
+    # 100 envios, 6 bounces (6%) — amostra atingida E acima de 5% → pausa.
+    s = c.load_senders({})
+    by_domain = {"alertas.klarim.net": {"total": 100, "bounced": 6},
+                 "aviso.klarim.net": {"total": 100, "bounced": 4}}
+    paused = c.flag_high_bounce(s, by_domain, max_rate=5.0)   # default 100
+    assert paused == [("alertas.klarim.net", 6.0)]
+    assert s[0].status == "paused" and s[1].status == "active"
+
+
 # --------------------------------------------------------------------------- #
 # header opt-out
 # --------------------------------------------------------------------------- #

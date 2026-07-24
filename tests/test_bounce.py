@@ -167,6 +167,9 @@ def test_webhook_resend_transient_bounce_kept(monkeypatch):
     })
     assert r.status_code == 200
     assert store.discarded == [] and store.blocked == []  # transitório não descarta
+    # fix 24/07: transitório agora é RASTREADO como soft_bounced no email_log (não some mais)
+    assert ("e2", "soft_bounced") in store.marked
+    assert ("e2", "bounced") not in store.marked          # não marca como hard bounce
 
 
 def test_webhook_resend_complaint_unsubscribes(monkeypatch):

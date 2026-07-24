@@ -303,9 +303,16 @@ Na dúvida, trate o alvo como site de terceiro que só autorizou olhar o que é 
   de `alerta@klarimscan.com` em 2026-07-20) e o Reply-To (`scan@`) **não mudaram**.
 - **Validação de MX na captação** (`contact.py`): só aceita e-mail com registro MX
   (tri-estado `ok|no_mx|unknown`, fail-open no timeout).
-- **Blocklist central** (`email_blocklist`, por e-mail). **Webhook Resend** (Svix):
-  bounce permanente → descarta + bloqueia; complaint → unsubscribe + bloqueia.
-- **Auto-pause** se o bounce rate passa de `ALERT_MAX_BOUNCE_RATE` (com amostra mínima).
+- **Blocklist central** (`email_blocklist`, por e-mail). **Webhook Resend** (Svix, assinatura
+  validada → 401 se inválida): bounce **permanente** → `bounced` + descarta + bloqueia; complaint →
+  unsubscribe + bloqueia. **Bounce transitório** (`transient`/`soft`/`temporary`/`delivery_delayed`,
+  fix 24/07) → marcado `soft_bounced` no `email_log` (rastreável, conta no circuit breaker) MAS **não
+  descarta o alvo nem blocklist** (pode ser caixa cheia temporária). Antes o transitório era ignorado
+  (evento sumia); ambos os ramos logam se o `email_id` não casa (diagnostica update silencioso).
+- **Auto-pause GLOBAL** se o bounce rate all-time passa de `ALERT_MAX_BOUNCE_RATE` (8%, amostra
+  `ALERT_BOUNCE_MIN_SAMPLE`=20). **Circuit breaker POR REMETENTE** (KL-91): 5% sobre **janela de 7d**
+  com amostra `ALERT_SENDER_BOUNCE_MIN_SAMPLE`=100 (fix 24/07 — não pausa remetente em warmup por
+  poucos bounces; bounces antigos saem da janela).
 - **Cota mensal** (`ALERT_MONTHLY_LIMIT`, 45k dos 50k Resend Pro) — nunca estourar; reserva
   para transacionais.
 - **Regra por construção (KL-62):** todo e-mail passa por `KlarimMailer._send` →

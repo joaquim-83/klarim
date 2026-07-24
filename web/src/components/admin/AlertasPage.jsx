@@ -69,10 +69,14 @@ function AlertsTab() {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatCard label="Hoje" value={stats.data?.today ?? 0} accent="#FF6B35" />
-        <StatCard label="Semana" value={stats.data?.week ?? 0} />
-        <StatCard label="Mês" value={stats.data?.month ?? 0} />
-        <StatCard label="Total" value={stats.data?.total ?? 0} />
+        <StatCard label="Hoje" value={stats.data?.today ?? 0} accent="#FF6B35"
+          sub={stats.data?.today_bounced ? `${stats.data.today_bounced} bounced ⚠️` : undefined} />
+        <StatCard label="Semana" value={stats.data?.week ?? 0}
+          sub={stats.data?.week_bounced ? `${stats.data.week_bounced} bounced` : undefined} />
+        <StatCard label="Mês" value={stats.data?.month ?? 0}
+          sub={stats.data?.month_bounced ? `${stats.data.month_bounced} bounced` : undefined} />
+        <StatCard label="Total" value={stats.data?.total ?? 0}
+          sub={stats.data?.total_bounced ? `${stats.data.total_bounced} bounced` : undefined} />
       </div>
 
       <Card>
@@ -126,10 +130,14 @@ function ProfileViewsTab() {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
-        <StatCard label="Hoje" value={stats.data?.today ?? 0} accent="#FF6B35" />
-        <StatCard label="Semana" value={stats.data?.week ?? 0} />
-        <StatCard label="Mês" value={stats.data?.month ?? 0} />
-        <StatCard label="Total" value={stats.data?.total ?? 0} />
+        <StatCard label="Hoje" value={stats.data?.today ?? 0} accent="#FF6B35"
+          sub={stats.data?.today_bounced ? `${stats.data.today_bounced} bounced ⚠️` : undefined} />
+        <StatCard label="Semana" value={stats.data?.week ?? 0}
+          sub={stats.data?.week_bounced ? `${stats.data.week_bounced} bounced` : undefined} />
+        <StatCard label="Mês" value={stats.data?.month ?? 0}
+          sub={stats.data?.month_bounced ? `${stats.data.month_bounced} bounced` : undefined} />
+        <StatCard label="Total" value={stats.data?.total ?? 0}
+          sub={stats.data?.total_bounced ? `${stats.data.total_bounced} bounced` : undefined} />
       </div>
     <Card>
       <p className="mb-3 text-sm text-klarim-muted">

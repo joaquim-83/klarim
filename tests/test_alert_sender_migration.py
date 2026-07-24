@@ -161,10 +161,14 @@ def _prep_worker(monkeypatch, sent_today, daily_limit="30", sent_month=100,
     w.send_interval_max = 0
     w.sender_max_bounce_rate = 100.0
     w.bounce_min_sample = 20
+    w.sender_bounce_min_sample = 100   # fix 24/07: amostra própria do circuit breaker
 
     class S:
         async def get_setting(self, k, d=None):
             return daily_limit if k == "ALERT_DAILY_LIMIT" else d
+
+        async def email_health_by_domain(self, days=None):  # fix 24/07 (janela 7d)
+            return {}
 
         async def count_proactive_emails_this_month(self):
             return sent_month

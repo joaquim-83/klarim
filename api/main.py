@@ -4753,13 +4753,23 @@ async def webhook_resend(request: Request) -> dict:
         transient = btype in ("transient", "soft", "temporary", "delivery_delayed")
         message = str(bounce.get("message", "") or bounce.get("subType", ""))
         if not transient:
+            # Bounce PERMANENTE: marca + descarta o alvo + blocklist (inalterado).
             if email_id:
                 await store.mark_alert_status_by_email_id(email_id, "bounced")
-                await store.mark_email_status_by_email_id(email_id, "bounced")  # KL-62
+                rows = await store.mark_email_status_by_email_id(email_id, "bounced")  # KL-62
+                if rows == 0:  # fix 24/07: diagnostica o gap (email_id do Resend != email_log.email_id)
+                    print(f"[webhook/resend] bounce sem match no email_log (email_id={email_id})", flush=True)
             for addr in recipients:
                 await _handle_bounce(store, addr, message)
         else:
-            print(f"[webhook/resend] bounce transitório ignorado ({recipients}, {btype})", flush=True)
+            # Bounce TRANSITÓRIO (fix 24/07): rastreia como `soft_bounced` no email_log (o operador
+            # vê; o circuit breaker conta) MAS não descarta o alvo nem entra na blocklist — pode ser
+            # caixa cheia temporária. Antes o evento sumia (só um print) → gap de contadores.
+            if email_id:
+                rows = await store.mark_email_status_by_email_id(email_id, "soft_bounced")
+                if rows == 0:
+                    print(f"[webhook/resend] soft-bounce sem match no email_log (email_id={email_id})", flush=True)
+            print(f"[webhook/resend] bounce transitório {recipients} ({btype}) — soft_bounced, alvo mantido", flush=True)
     elif evt_type == "email.complained":
         if email_id:
             await store.mark_alert_status_by_email_id(email_id, "complained")

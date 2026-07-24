@@ -30,6 +30,35 @@ def test_check_resend_unknown_without_key(monkeypatch):
     assert asyncio.run(hc.check_resend())["status"] == "unknown"
 
 
+def test_check_resend_reachability_no_domains_no_auth(monkeypatch):
+    # fix 24/07: o probe NÃO chama /domains (401 com key send-only → ruído nos logs do Resend).
+    # Um HEAD ao host, SEM Authorization, prova a conectividade sem gerar auth-failure.
+    import httpx
+    calls = {}
+
+    class FakeResp:
+        status_code = 200
+
+    class FakeClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def head(self, url, **kw):
+            calls["url"] = url
+            calls["headers"] = kw.get("headers")
+            return FakeResp()
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda *a, **k: FakeClient())
+    monkeypatch.setenv("RESEND_API_KEY", "re_sendonly")
+    out = asyncio.run(hc.check_resend())
+    assert out["status"] == "ok"
+    assert "/domains" not in calls["url"]      # não bate no endpoint autenticado
+    assert calls.get("headers") is None        # sem Authorization → não gera 401 no Resend
+
+
 def test_check_abacatepay_unknown_without_key(monkeypatch):
     monkeypatch.delenv("ABACATEPAY_API_KEY", raising=False)
     assert asyncio.run(hc.check_abacatepay())["status"] == "unknown"

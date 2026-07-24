@@ -40,8 +40,12 @@ DEFAULT_SENDER_NAME = "Klarim"
 OPT_OUT_MAILBOX = "scan@klarim.net"
 
 # Circuit breaker: pausa um remetente cujo bounce rate passar disto (amostra mínima).
+# Fix operacional 24/07: min_sample 20→100 — com 20, um remetente em warmup era pausado por
+# 3-4 bounces aleatórios antes de ter amostra estatisticamente significativa (ex.: aviso.klarim.net
+# pausado com 34 envios). O `by_domain` passa a usar janela de 7 dias (ver alert_worker) → bounces
+# antigos saem do cálculo naturalmente e o remetente se recupera após corrigir a lista.
 DEFAULT_MAX_BOUNCE_RATE = 5.0
-DEFAULT_BOUNCE_MIN_SAMPLE = 20
+DEFAULT_BOUNCE_MIN_SAMPLE = 100
 
 
 @dataclass

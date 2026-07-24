@@ -181,7 +181,7 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 |---|---|---|
 | GET | `/scans` · `/scans/{id}` · `/scans/stats` · `/scans/daily` | scans (filtros: `offset`, `from_date`, `to_date`, `distinct_url`, `source`) |
 | GET | `/scans/{id}/report/{executive\|technical}` | PDF sem gating |
-| GET | `/alerts` · `/alerts/stats` · `/alerts/daily` | alertas |
+| GET | `/alerts` · `/alerts/stats` · `/alerts/daily` | alertas. **`/alerts/stats`** (e `/alerts/profile-view-stats`): `{today, week, month, total}` = **tentativas** (sent+bounced+`soft_bounced`+complained; `blocked` não) + breakdown `{key}_sent`/`{key}_bounced` (fix 24/07 — antes só `sent`, escondia bounces). `soft_bounced` = bounce transitório rastreado sem descartar o alvo |
 | GET | `/rescans` · `/rescans/stats` | rescans |
 | GET | `/payments/list` · `/payments/stats` | pagamentos de relatório (com `target_id`) |
 | GET | `/payments/subscription-stats` | KL-44 P6: receita de assinaturas (total/por plano/status/recentes) |

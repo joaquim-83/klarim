@@ -214,8 +214,12 @@ class AlertWorker:
         self.sender_daily_limit = int(os.environ.get("ALERT_SENDER_DAILY_LIMIT", "100"))
         self.send_interval_min = float(os.environ.get("ALERT_SEND_INTERVAL_MIN", "30"))
         self.send_interval_max = float(os.environ.get("ALERT_SEND_INTERVAL_MAX", "60"))
-        # Circuit breaker por remetente: pausa quem passar deste bounce rate (amostra >=20).
+        # Circuit breaker POR REMETENTE (KL-91): pausa quem passar deste bounce rate. Fix 24/07:
+        # amostra mínima própria (default 100, não a 20 do safety net global) + janela de 7 dias
+        # (ver run_cycle) — um remetente em warmup não é pausado por 3-4 bounces aleatórios cedo.
         self.sender_max_bounce_rate = float(os.environ.get("ALERT_SENDER_MAX_BOUNCE_RATE", "5.0"))
+        self.sender_bounce_min_sample = int(os.environ.get(
+            "ALERT_SENDER_BOUNCE_MIN_SAMPLE", str(cold_alert.DEFAULT_BOUNCE_MIN_SAMPLE)))
         self.store = get_target_store()
         self._redis = None
         self._last_cycle_at = None
@@ -458,12 +462,14 @@ class AlertWorker:
             stats["no_senders"] = True
             return stats
         try:
-            by_domain = await self.store.email_health_by_domain()
+            # Fix 24/07: janela de 7 dias — o circuit breaker julga o bounce rate RECENTE
+            # (bounces antigos saem do cálculo; um remetente se recupera após corrigir a lista).
+            by_domain = await self.store.email_health_by_domain(days=7)
         except Exception as exc:  # noqa: BLE001 - fail-open: sem stats, ninguém é pausado
             by_domain = {}
             print(f"[alert] email_health_by_domain falhou (segue): {exc!r}", flush=True)
         paused = cold_alert.flag_high_bounce(senders, by_domain, self.sender_max_bounce_rate,
-                                             self.bounce_min_sample)
+                                             self.sender_bounce_min_sample)
         for dom, rate in paused:
             print(f"[alert] CRITICAL: remetente {dom} pausado — bounce rate {rate}% "
                   f"(> {self.sender_max_bounce_rate}%). A rotação segue nos demais.", flush=True)

@@ -87,10 +87,23 @@ async def _reachable(url: str, key: str) -> Dict[str, Any]:
 
 
 async def check_resend() -> Dict[str, Any]:
-    key = os.environ.get("RESEND_API_KEY")
-    if not key:
+    """Health por REACHABILITY do host — SEM chamar endpoint autenticado. A key do Resend
+    é send-only (`POST /emails`): um `GET /domains` respondia 401 e poluía os logs do Resend
+    a cada ciclo (fix operacional 24/07). Um HEAD ao host (sem Authorization) prova a
+    conectividade TLS/rede sem consumir permissão nem gerar ruído de auth. Qualquer resposta
+    < 500 = no ar; só rede/timeout/5xx viram 🔴."""
+    if not os.environ.get("RESEND_API_KEY"):
         return _result("unknown", detail="RESEND_API_KEY não configurada")
-    return await _reachable("https://api.resend.com/domains", key)
+    t0 = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as c:
+            r = await c.head("https://api.resend.com")
+        ms = int((time.monotonic() - t0) * 1000)
+        if r.status_code < 500:
+            return _result("ok", ms, None if r.status_code < 400 else f"reachable (HTTP {r.status_code})")
+        return _result("error", ms, f"HTTP {r.status_code}")
+    except Exception as exc:  # noqa: BLE001 - rede/timeout
+        return _result("error", int((time.monotonic() - t0) * 1000), repr(exc))
 
 
 async def check_abacatepay() -> Dict[str, Any]:

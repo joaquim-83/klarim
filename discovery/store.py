@@ -5669,19 +5669,24 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
-    async def email_health_by_domain(self) -> Dict[str, Dict[str, Any]]:
+    async def email_health_by_domain(self, days: Optional[int] = None) -> Dict[str, Dict[str, Any]]:
         """KL-91 — saúde de e-mail POR domínio de envio (`from_domain`). Alimenta o
-        `by_domain` do `get_email_health` e o circuit breaker do alert worker (pausa o
-        remetente com bounce > limite). Mesma definição de `email_health`: `total` =
-        tentativas rastreáveis (sent+bounced+complained; exclui `test`)."""
+        `by_domain` do `get_email_health` (all-time, `days=None`) e o circuit breaker do
+        alert worker (janela móvel `days=7` — fix 24/07: bounces antigos saem do cálculo,
+        um remetente se recupera após corrigir a lista). `total` = tentativas rastreáveis
+        (sent+bounced+soft_bounced+complained; exclui `test`)."""
         def _fn(cur):
+            window = ""
+            if days is not None:
+                window = f" AND sent_at >= NOW() - INTERVAL '{int(days)} days'"
             cur.execute(
                 "SELECT from_domain, "
-                "COUNT(*) FILTER (WHERE status IN ('sent','bounced','complained')), "
-                "COUNT(*) FILTER (WHERE status = 'bounced'), "
+                "COUNT(*) FILTER (WHERE status IN ('sent','bounced','soft_bounced','complained')), "
+                "COUNT(*) FILTER (WHERE status IN ('bounced','soft_bounced')), "
                 "COUNT(*) FILTER (WHERE status = 'complained') "
-                "FROM email_log WHERE email_type <> 'test' AND from_domain IS NOT NULL "
-                "GROUP BY from_domain ORDER BY 2 DESC")
+                "FROM email_log WHERE email_type <> 'test' AND from_domain IS NOT NULL"
+                + window +
+                " GROUP BY from_domain ORDER BY 2 DESC")
             out: Dict[str, Dict[str, Any]] = {}
             for dom, total, bounced, complained in cur.fetchall():
                 total = int(total or 0)
@@ -5753,19 +5758,28 @@ class TargetStore:
 
     @staticmethod
     def _email_stats_fn(type_clause: str):
-        """KL-96 — contadores HOJE/SEMANA/MÊS/TOTAL de e-mails do `email_log` (fonte
-        ÚNICA) por tipo, status='sent', em DIA-calendário (não janela móvel). `type_clause`
-        é sempre um literal interno (nunca input do usuário) → sem risco de injeção."""
+        """KL-96 + fix 24/07 — contadores HOJE/SEMANA/MÊS/TOTAL do `email_log` (fonte ÚNICA)
+        por tipo, em DIA-calendário. Agora `{key}` = TENTATIVAS que chegaram ao Resend
+        (sent+bounced+soft_bounced+complained; `blocked`/blocklist NÃO conta — nunca saiu), com
+        breakdown `{key}_sent` e `{key}_bounced` (hard+soft) — antes o contador só via `sent` e
+        escondia os bounces do operador. `type_clause` é literal interno (sem injeção)."""
+        attempted = "status IN ('sent','bounced','soft_bounced','complained')"
+        bounced = "status IN ('bounced','soft_bounced')"
         def _fn(cur):
             out: Dict[str, Any] = {}
-            base = (f"SELECT COUNT(*) FROM email_log WHERE status = 'sent' AND {type_clause}")
-            windows = (("today", ""), ("week", " - INTERVAL '7 days'"),
-                       ("month", " - INTERVAL '30 days'"))
-            for key, offset in windows:
-                cur.execute(base + f" AND sent_at >= date_trunc('day', NOW()){offset}")
-                out[key] = int(cur.fetchone()[0])
-            cur.execute(base)
-            out["total"] = int(cur.fetchone()[0])
+            base = f"FROM email_log WHERE {type_clause}"
+            windows = (("today", " AND sent_at >= date_trunc('day', NOW())"),
+                       ("week", " AND sent_at >= date_trunc('day', NOW()) - INTERVAL '7 days'"),
+                       ("month", " AND sent_at >= date_trunc('day', NOW()) - INTERVAL '30 days'"),
+                       ("total", ""))
+            for key, wclause in windows:
+                cur.execute(f"SELECT COUNT(*) FILTER (WHERE {attempted}), "
+                            f"COUNT(*) FILTER (WHERE status = 'sent'), "
+                            f"COUNT(*) FILTER (WHERE {bounced}) {base}{wclause}")
+                att, snt, bnc = cur.fetchone()
+                out[key] = int(att or 0)
+                out[f"{key}_sent"] = int(snt or 0)
+                out[f"{key}_bounced"] = int(bnc or 0)
             return out
         return _fn
 

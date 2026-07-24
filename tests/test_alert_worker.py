@@ -111,7 +111,7 @@ class FakeStore:
     async def email_health(self):
         return dict(self._health)
 
-    async def email_health_by_domain(self):  # KL-91
+    async def email_health_by_domain(self, days=None):  # KL-91 + fix 24/07 (janela de 7d)
         return dict(getattr(self, "_health_by_domain", {}))
 
     async def sector_benchmark(self, sector, min_count=10):  # KL-91 (variante 2)
