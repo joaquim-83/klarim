@@ -146,6 +146,8 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 | POST | `/remover?token=` | **KL-102** — confirma o descadastro: form do browser OU one-click do Gmail/Yahoo (body `List-Unsubscribe=One-Click`). Marca o alvo `unsubscribed` + blocklist + evento `email_log` (`type=unsubscribe`, `from_domain`=sender, target_id). Rate limit 10/min/IP **só p/ tokens inválidos** (o one-click válido nunca é bloqueado). Inválido → 400 |
 | GET | `/metodologia` | **KL-100** — página estática (Astro SSG) de transparência: o que a Klarim faz/não faz, base legal, direitos do dono. No footer + sitemap |
 
+**KL-104 P1 — deep linking:** os responses de `analytics_events` (`GET /admin/analytics/events` legado / aba Consultas de perfil) e `aa_events` (`GET /admin/analytics/events`) passam a incluir **`target_id`** (de `site_events.target_id`) — o admin usa p/ transformar o domínio em link ao detalhe do alvo (`DomainLink` → `/painel/alvos/{id}`). Sem endpoint novo; só campo adicionado. Auth admin inalterada.
+
 > **KL-74 — endpoints `/public/*` de conteúdo:** rate limit **30/min por IP real**; chamadas SSR
 > internas (container Astro → API, sem `X-Forwarded-For`) **não** contam (senão o IP único do
 > container estouraria o teto). Só listam sites com perfil público (`site_profile.public_visible`

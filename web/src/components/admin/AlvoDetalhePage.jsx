@@ -83,6 +83,20 @@ export default function AlvoDetalhePage() {
           <StatusEditor target={t} onSaved={(_u, note) => { setMsg(note); reload() }} onError={(m) => setMsg(m)} />
         </div>
 
+        {/* KL-104 — links de saída p/ o público (nova aba). Perfil só se público; scan só se já escaneado. */}
+        {t.domain && (
+          <div className="flex flex-wrap gap-4 text-sm">
+            {t.profile && t.profile.public_visible !== false && (
+              <a href={`https://klarim.net/site/${t.domain}`} target="_blank" rel="noreferrer"
+                 className="text-klarim-alert hover:underline">🌐 Ver perfil público →</a>
+            )}
+            {t.last_scan_at && (
+              <a href={`https://klarim.net/scan?url=${encodeURIComponent(t.domain)}`} target="_blank" rel="noreferrer"
+                 className="text-klarim-alert hover:underline">🔍 Ver último scan →</a>
+            )}
+          </div>
+        )}
+
         {/* Ações */}
         <div className="flex flex-wrap gap-2">
           <Button variant="primary" disabled={busy === 'scan'} onClick={scanNow}>{busy === 'scan' ? 'Escaneando…' : 'Escanear agora'}</Button>

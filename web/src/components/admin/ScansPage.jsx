@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { admin } from '../../lib/admin/adminApi'
 import { useAsync } from '../../lib/admin/useAsync'
-import { Card, Loading, ErrorBox, Button, SemaphoreDot, SourceBadge, Pagination, formatDate } from './ui'
+import { Card, Loading, ErrorBox, Button, SemaphoreDot, SourceBadge, Pagination, formatDate, DomainLink } from './ui'
 import AdminShell from './AdminShell'
 
 // Portado de frontend/src/pages/admin/Scans.jsx (KL-51 fase 2). Link → <a href>.
@@ -111,7 +111,7 @@ export default function ScansPage() {
                 <tbody>
                   {rows.map((s) => (
                     <tr key={s.id} className="border-t border-klarim-border">
-                      <td className="py-2 pr-3 font-mono text-xs">{s.url}</td>
+                      <td className="py-2 pr-3"><DomainLink domain={s.url} targetId={s.target_id} /></td>
                       <td className="py-2 pr-3"><SemaphoreDot semaphore={s.semaphore} score={s.score} /></td>
                       <td className="py-2 pr-3 text-xs text-klarim-muted">
                         {s.pass_count}✓ / {s.fail_count}✗ / {s.inconclusive_count}?

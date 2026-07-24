@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { admin } from '../../lib/admin/adminApi'
-import { Card, StatCard, Loading, ErrorBox, Badge, SemaphoreDot, relativeTime, formatDate } from './ui'
+import { Card, StatCard, Loading, ErrorBox, Badge, SemaphoreDot, relativeTime, formatDate, DomainLink } from './ui'
 import AdminShell from './AdminShell'
 
 // Gestão de Clientes (KL-51 f3 fix): contas de usuário (tabela `users`) + os sites que
@@ -95,7 +95,7 @@ function ClientRow({ c }) {
         <div className="mt-3 space-y-1.5">
           {sites.map((s) => (
             <div key={s.target_id} className="flex flex-wrap items-center justify-between gap-2 text-sm">
-              <span className="font-mono text-xs text-klarim-text">{s.domain || s.url}</span>
+              <DomainLink domain={s.domain || s.url} targetId={s.target_id} />
               <span className="flex items-center gap-3 text-klarim-muted">
                 <SemaphoreDot semaphore={s.last_semaphore} score={s.last_scan_score} />
                 <span className="text-xs">{s.last_scan_at ? formatDate(s.last_scan_at) : 'sem scan'}</span>

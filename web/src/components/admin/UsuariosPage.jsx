@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { admin } from '../../lib/admin/adminApi'
-import { Card, StatCard, Loading, ErrorBox, Badge, SemaphoreDot, relativeTime, formatDate } from './ui'
+import { Card, StatCard, Loading, ErrorBox, Badge, SemaphoreDot, relativeTime, formatDate, DomainLink } from './ui'
 import AdminShell from './AdminShell'
 
 // KL-69 — página unificada "Usuários" (funde Gestão de Clientes + Assinantes) com ações
@@ -258,7 +258,7 @@ function SiteRow({ u, s, onChanged }) {
     <div className="rounded-lg border border-klarim-border bg-klarim-bg px-3 py-2">
       <div className="flex flex-wrap items-center justify-between gap-2 text-sm">
         <span className="flex items-center gap-2 font-mono text-xs text-klarim-text">
-          {s.domain || s.url}
+          <DomainLink domain={s.domain || s.url} targetId={s.target_id} />
           <SemaphoreDot semaphore={s.last_semaphore} score={s.last_scan_score} />
           {s.is_owner && <span className="rounded bg-brand-500/15 px-1.5 py-0.5 text-[11px] text-brand-300">✓ Dono{s.verified_at ? ` · ${formatDate(s.verified_at)}` : ''}</span>}
         </span>

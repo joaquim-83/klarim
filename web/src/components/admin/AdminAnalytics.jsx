@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, Legend } from 'recharts'
 import { admin } from '../../lib/admin/adminApi'
 import { useAsync, useDebounce } from '../../lib/admin/useAsync'
-import { Card, Loading, ErrorBox, Badge } from './ui'
+import { Card, Loading, ErrorBox, Badge, DomainLink } from './ui'
 import AdminShell from './AdminShell'
 import PaginationBar from './analytics/PaginationBar'
 import SortableTable from './analytics/SortableTable'
@@ -434,7 +434,7 @@ function EventsTable({ events }) {
               <td className="whitespace-nowrap px-3 py-2 text-klarim-muted">{fmtDateTime(e.created_at)}</td>
               <td className="px-3 py-2"><Badge color={EV_COLOR[e.event_type] || '#8B949E'}>{e.event_type}</Badge></td>
               <td className="max-w-xs truncate px-3 py-2">{e.page_url || '—'}</td>
-              <td className="px-3 py-2 text-klarim-muted">{domainOf(e)}</td>
+              <td className="px-3 py-2"><DomainLink domain={domainOf(e)} targetId={e.target_id} /></td>
               <td className="px-3 py-2 text-klarim-muted">{e.utm_campaign || '—'}</td>
               <td className="px-3 py-2 font-mono text-xs text-klarim-muted">{(e.session_id || '').slice(0, 8)}</td>
             </tr>

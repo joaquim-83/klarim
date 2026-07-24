@@ -5767,16 +5767,18 @@ class TargetStore:
                                ) -> List[Dict[str, Any]]:
         """Últimos eventos do funil. `event_type` (opcional) filtra por tipo — usado
         pela aba 'Consultas de perfil' (profile_view) da página Alertas."""
+        # KL-104 — `target_id` no response → domínio clicável (DomainLink) na aba Consultas.
+        cols = ("event_type, session_id, target_id, target_url, page_url, utm_campaign, "
+                "metadata, created_at")
+
         def _fn(cur):
             if event_type:
                 cur.execute(
-                    "SELECT event_type, session_id, target_url, page_url, utm_campaign, "
-                    "metadata, created_at FROM site_events WHERE event_type = %s "
+                    f"SELECT {cols} FROM site_events WHERE event_type = %s "
                     "ORDER BY created_at DESC LIMIT %s", (event_type, limit))
             else:
                 cur.execute(
-                    "SELECT event_type, session_id, target_url, page_url, utm_campaign, "
-                    "metadata, created_at FROM site_events ORDER BY created_at DESC LIMIT %s",
+                    f"SELECT {cols} FROM site_events ORDER BY created_at DESC LIMIT %s",
                     (limit,))
             return self._rows_to_dicts(cur)
 
@@ -6183,8 +6185,8 @@ class TargetStore:
                 f"FROM site_events WHERE {w}", params)
             sess, doms, scans, accts = cur.fetchone()
             cur.execute(
-                f"SELECT id, event_type, session_id, target_url, page_url, utm_campaign, "
-                f"referrer, metadata, created_at FROM site_events WHERE {w} "
+                f"SELECT id, event_type, session_id, target_id, target_url, page_url, "
+                f"utm_campaign, referrer, metadata, created_at FROM site_events WHERE {w} "  # KL-104: target_id
                 f"ORDER BY created_at DESC LIMIT %s OFFSET %s", params + [limit, offset])
             rows = self._rows_to_dicts(cur)
             return {"events": rows, "total": total,

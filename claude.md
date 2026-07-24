@@ -451,7 +451,7 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1631 passed** (backend pytest, KL-103: +4) + **98 node --test** (frontend `test:unit`)
+- Testes: **1633 passed** (backend pytest, KL-104 P1: +2) + **98 node --test** (frontend `test:unit`)
 - Páginas públicas: `/metodologia` (KL-100) · descadastro `/remover` (KL-102) · landing com social proof ao vivo (KL-103)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - **Níveis de conta (KL-99):** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado
@@ -1145,6 +1145,18 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   ("50.000+ sites analisados em 49 setores"). `landing-stats.js` na allowlist do nginx (`?v=1`).
   **Decisão:** script vanilla externo (não React island) — SSG-friendly (número no HTML antes do JS),
   CSP-safe, ~1KB (a landing não tinha bundle JS). +4 testes. Relatório: `claude/reports/KL-103_landing_social_proof.md`.
+
+- **KL-104 P1** — Deep linking entre páginas do admin ✅ (Parte 1 de 3). Componente reutilizável
+  **`DomainLink`** (`ui.jsx`): um domínio/URL em tabela do admin vira `<a href="/painel/alvos/{id}">`
+  (sem `targetId` → texto puro, nunca link quebrado). Aplicado em **Scans** (`s.target_id`), **Alertas
+  enviados** (`a.target_id`), **Consultas de perfil** (+ mantém link "perfil ↗" público), **Analytics/
+  Eventos** e **Sites monitorados** (Clientes + Usuários, `s.target_id`). Detalhe do alvo
+  (`AlvoDetalhePage`) ganhou **links de saída** (nova aba): "Ver perfil público" (`klarim.net/site/
+  {domain}`, só se `profile.public_visible`) e "Ver último scan" (`klarim.net/scan?url={domain}`, só se
+  `last_scan_at`). Backend: `target_id` adicionado aos responses de `analytics_events` + `aa_events`
+  (site_events já tinha a coluna). **Não coberto (nota):** Leads (lista é por e-mail, sem domínio) e
+  Comportamento/IPs (access_log → join com targets; a Parte 3 cobre o comportamento por-alvo).
+  Frontend-only + 2 campos `target_id`. +2 testes. Relatório: `claude/reports/KL-104_p1_deep_linking.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

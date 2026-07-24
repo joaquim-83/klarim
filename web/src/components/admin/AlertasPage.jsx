@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { admin } from '../../lib/admin/adminApi'
 import { useAsync } from '../../lib/admin/useAsync'
-import { Card, StatCard, Loading, ErrorBox, SemaphoreDot, Pagination, formatDate } from './ui'
+import { Card, StatCard, Loading, ErrorBox, SemaphoreDot, Pagination, formatDate, DomainLink } from './ui'
 import AdminShell from './AdminShell'
 
 // Portado de frontend/src/pages/admin/Alertas.jsx (KL-51 fase 2). Link → <a href>.
@@ -94,7 +94,7 @@ function AlertsTab() {
                 {rows.map((a) => (
                   <tr key={a.id} className="border-t border-klarim-border">
                     <td className="py-2 pr-3 text-xs">{a.contact_email}</td>
-                    <td className="py-2 pr-3 font-mono text-xs text-klarim-muted">{a.url || `alvo #${a.target_id}`}</td>
+                    <td className="py-2 pr-3"><DomainLink domain={a.url} targetId={a.target_id} /></td>
                     <td className="py-2 pr-3"><SenderBadge domain={a.from_domain} /></td>
                     <td className="py-2 pr-3"><SemaphoreDot semaphore={a.semaphore} score={a.score} /></td>
                     <td className="py-2 pr-3 text-xs">{a.status}</td>
@@ -150,8 +150,10 @@ function ProfileViewsTab() {
             <tbody>
               {rows.map((e, i) => (
                 <tr key={i} className="border-t border-klarim-border">
-                  <td className="py-2 pr-3 font-mono text-xs text-klarim-text">
-                    <a href={`/site/${domOf(e)}`} target="_blank" rel="noreferrer" className="hover:underline">{domOf(e)}</a>
+                  <td className="py-2 pr-3">
+                    <DomainLink domain={domOf(e)} targetId={e.target_id} />
+                    <a href={`/site/${domOf(e)}`} target="_blank" rel="noreferrer"
+                       className="ml-2 text-[10px] text-klarim-muted hover:underline">perfil ↗</a>
                   </td>
                   <td className="py-2 pr-3 text-xs text-klarim-muted">{e.utm_campaign || '—'}</td>
                   <td className="py-2 text-xs text-klarim-muted">{formatDate(e.created_at)}</td>

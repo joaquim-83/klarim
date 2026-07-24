@@ -120,6 +120,19 @@ export function SemaphoreDot({ semaphore, score }) {
   )
 }
 
+// KL-104 — deep linking: um domínio/URL em qualquer tabela do admin vira link para o detalhe
+// do alvo (`/painel/alvos/{id}`). Sem `targetId` → texto puro (nunca link quebrado). `<a href>`
+// interno (SPA Astro; sem react-router). Reutilizado em Scans/Alertas/Consultas/Clientes/Usuários.
+export function DomainLink({ domain, targetId, className = '' }) {
+  const label = domain || (targetId ? `alvo #${targetId}` : '—')
+  if (!targetId) return <span className={`font-mono text-xs text-klarim-muted ${className}`}>{label}</span>
+  return (
+    <a href={`/painel/alvos/${targetId}`}
+       className={`font-mono text-xs text-klarim-alert hover:underline ${className}`}
+       title="Ver detalhe do alvo">{label}</a>
+  )
+}
+
 export function Button({ children, onClick, variant = 'ghost', disabled, size = 'sm', type = 'button', className = '' }) {
   const base = 'inline-flex items-center justify-center rounded-md font-semibold transition disabled:opacity-40 disabled:cursor-not-allowed'
   const sizes = { sm: 'px-2.5 py-1 text-xs', md: 'px-4 py-2 text-sm' }
