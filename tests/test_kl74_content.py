@@ -76,6 +76,9 @@ class FakeStore:
             {"sector": "restaurante", "count": 30, "avg_score": 45, "median": 44},
         ]
 
+    async def public_landing_counts(self):  # KL-103
+        return {"sites_analyzed": 50811, "sectors": 49, "public_profiles": 27204}
+
     # --- /public/profile (para o teste de ranking + related) ----------------- #
     async def get_target_by_domain(self, domain):
         return self.targets.get(domain.lower().strip())
@@ -233,6 +236,9 @@ def test_public_stats(client):
     # setores mais seguros primeiro; oportunidade = piores
     assert body["safest_sectors"][0]["slug"] == "tecnologia"
     assert body["opportunity_sectors"][0]["slug"] == "restaurante"
+    # KL-103 — social proof da landing (3 contadores agregados)
+    assert body["sites_analyzed"] == 50811 and body["sectors"] == 49
+    assert body["public_profiles"] == 27204
 
 
 # --------------------------------------------------------------------------- #

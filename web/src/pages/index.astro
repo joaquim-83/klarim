@@ -20,9 +20,21 @@ const footerLinks = [
 // KL-81 — landing minimalista tipo buscador: "Pesquise qualquer site". Hero + footer
 // apenas (removidas as seções Como funciona / checks / benchmark / Para quem). A busca
 // (GET /scan?url=) é idêntica — só mudou o texto/botão.
+// KL-103 — social proof na meta (removido o "13.000+" antigo já no KL-81; aqui adiciona a escala).
 const description =
-  'Pesquise a segurança de qualquer site brasileiro em 30 segundos. ' +
-  'Relatório completo e 100% gratuito, sem cadastro.';
+  'Pesquise qualquer site brasileiro. 50.000+ sites analisados em 49 setores. ' +
+  'Relatório de segurança completo e gratuito em 30 segundos.';
+
+// KL-103 — 6 setores mais populosos (dados de /setores) + "+43 setores". Hardcoded (mudam
+// raramente). Slugs = /setor/{slug}. O total muda pouco (49-50); "+43" = 49 total − 6 exibidos.
+const sectorPills = [
+  { label: 'Tecnologia', slug: 'tecnologia' },
+  { label: 'E-commerce', slug: 'ecommerce' },
+  { label: 'Consultoria', slug: 'consultoria' },
+  { label: 'Clínicas', slug: 'clinica' },
+  { label: 'Pet Shop', slug: 'petshop' },
+  { label: 'Imobiliárias', slug: 'imobiliaria' },
+];
 
 // KL-65 — SoftwareApplication reforça que o Klarim é uma ferramenta de segurança.
 const softwareApplication = {
@@ -95,6 +107,30 @@ const softwareApplication = {
         </form>
 
         <p class="mt-4 text-sm text-slate-500">Relatório completo. 100% gratuito.</p>
+
+        {/* KL-103 — social proof: 3 contadores ao vivo (GET /api/public/stats via landing-stats.js).
+            Fallback ESTÁTICO no HTML (SSG) → aparece antes do JS; o script atualiza p/ o valor real.
+            Cores theme-aware pelo token slate (KL-87). */}
+        <div class="mt-6 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-sm tracking-wide text-slate-400">
+          <span><span data-stat="sites_analyzed" class="font-semibold text-slate-300">50.800+</span> sites analisados</span>
+          <span aria-hidden="true" class="text-slate-600">·</span>
+          <span><span data-stat="sectors" class="font-semibold text-slate-300">49</span> setores</span>
+          <span aria-hidden="true" class="text-slate-600">·</span>
+          <span><span data-stat="public_profiles" class="font-semibold text-slate-300">27.000+</span> perfis públicos</span>
+        </div>
+
+        {/* KL-103 — pills dos 6 setores mais populosos + "+43 setores". Chips clicáveis (SEO +
+            navegação de conteúdo). Clique rastreado (sector_pill_click) pelo landing-stats.js. */}
+        <div class="mt-4 flex flex-wrap items-center justify-center gap-2">
+          {sectorPills.map((s) => (
+            <a
+              href={`/setor/${s.slug}`}
+              data-sector-pill={s.slug}
+              class="rounded-full border border-slate-700 px-3 py-1 text-sm text-slate-400 transition-colors hover:border-brand-500 hover:text-brand-400"
+            >{s.label}</a>
+          ))}
+          <a href="/setores" class="px-1 py-1 text-sm font-medium text-brand-400 hover:underline">+43 setores →</a>
+        </div>
       </div>
     </main>
 
@@ -113,4 +149,8 @@ const softwareApplication = {
       </div>
     </footer>
   </div>
+
+  {/* KL-103 — atualiza a stats bar com os números ao vivo + rastreia o clique nos pills.
+      Externo (public/) → CSP `script-src 'self'`. `?v=` bumpar a cada alteração (KL-90). */}
+  <script src="/landing-stats.js?v=1" is:inline></script>
 </Base>

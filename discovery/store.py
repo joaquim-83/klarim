@@ -4880,6 +4880,22 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    async def public_landing_counts(self) -> Dict[str, int]:
+        """KL-103 — 3 contadores agregados p/ a social proof da landing (`/`): sites no
+        dataset (status ≠ 'discovered'), setores distintos (≠ 'outro') e perfis públicos
+        visíveis. **Só números** — sem PII, sem detalhe de alvo/e-mail/conta."""
+        def _fn(cur):
+            cur.execute("SELECT COUNT(*) FROM targets WHERE status <> 'discovered'")
+            sites = int(cur.fetchone()[0] or 0)
+            cur.execute("SELECT COUNT(DISTINCT sector) FROM targets "
+                        "WHERE sector IS NOT NULL AND sector <> 'outro'")
+            sectors = int(cur.fetchone()[0] or 0)
+            cur.execute("SELECT COUNT(*) FROM site_profile WHERE public_visible = TRUE")
+            profiles = int(cur.fetchone()[0] or 0)
+            return {"sites_analyzed": sites, "sectors": sectors, "public_profiles": profiles}
+
+        return await asyncio.to_thread(self._run, _fn)
+
     async def public_platform_stats(self) -> Dict[str, Any]:
         """KL-74 — números públicos da plataforma: total de alvos, scans, sites
         escaneados, scores 100 e distribuição por semáforo (sobre alvos com score)."""

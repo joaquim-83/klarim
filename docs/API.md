@@ -133,7 +133,7 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 | GET | `/public/top-fails?sector=&limit=` | KL-74: checks que mais falham no setor (dos últimos scans públicos). Cache 24h |
 | GET | `/public/related?domain=&limit=` | KL-74: sites relacionados (mesmo setor, exclui o domínio; completa com outros). Cache 1h |
 | GET | `/public/best` | KL-74: vitrine dos sites com score 100, agrupados por setor. Cache 1h |
-| GET | `/public/stats` | KL-74: números da plataforma (total sites/scans/score 100, distribuição, setores mais seguros/oportunidade). Cache 1h |
+| GET | `/public/stats` | KL-74: números da plataforma (total sites/scans/score 100, distribuição, setores mais seguros/oportunidade). **KL-103:** + 3 contadores agregados p/ a social proof da landing — `sites_analyzed` (targets status≠'discovered'), `sectors` (distinct sector≠'outro'), `public_profiles` (site_profile public_visible). Público, sem auth, **só números (sem PII)**, cache Redis 1h + rate limit 30/min. Consumido via `/api/public/stats` |
 | POST | `/notify/profile-view` | notifica dono ("alguém consultou"; 1/domínio/24h) |
 | GET | `/sectors` | 48 setores + 13 macro-setores |
 | GET | `/cnaes/sections` · `/cnaes/divisions` | referência CNAE |

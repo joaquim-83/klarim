@@ -3079,6 +3079,11 @@ async def public_stats(request: Request) -> dict:
                 "count": int(s["count"]), "avg_score": int(s["avg_score"]),
                 "median": int(s.get("median") or 0)} for s in sectors]
     by_avg = sorted(labeled, key=lambda s: s["avg_score"], reverse=True)
+    # KL-103 — 3 contadores agregados p/ a social proof da landing (mesmo cache 1h).
+    try:
+        counts = await store.public_landing_counts()
+    except Exception:  # noqa: BLE001
+        counts = {"sites_analyzed": 0, "sectors": 0, "public_profiles": 0}
     out = {
         "total_targets": int(base.get("total_targets") or 0),
         "total_scans": int(base.get("total_scans") or 0),
@@ -3090,6 +3095,10 @@ async def public_stats(request: Request) -> dict:
         "safest_sectors": by_avg[:5],
         # piores setores primeiro (com muitos setores não há sobreposição com os mais seguros).
         "opportunity_sectors": by_avg[::-1][:5],
+        # KL-103 — social proof da landing (3 contadores agregados).
+        "sites_analyzed": int(counts.get("sites_analyzed") or 0),
+        "sectors": int(counts.get("sectors") or 0),
+        "public_profiles": int(counts.get("public_profiles") or 0),
     }
     await _cache_set("public:stats", out, ttl=3600)
     return JSONResponse(out, headers={"Cache-Control": "public, max-age=3600"})
@@ -6070,6 +6079,8 @@ _KNOWN_EVENTS = {
     "scan_anonymous", "scan_authenticated", "signup_inline_clicked",
     # KL-82 Slice 3 — Fluxo 2 do alerta
     "alert_session_created", "alert_session_converted", "account_created_alert",
+    # KL-103 — clique nos pills de setor da landing (curiosidade por setor → priorização)
+    "sector_pill_click",
 }
 _EVENT_RL_MAX = 100          # eventos/minuto por sessão
 _event_rl: dict = {}         # session_id -> lista de timestamps (janela de 60s)

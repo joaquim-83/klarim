@@ -451,8 +451,8 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1627 passed** (backend pytest, KL-100+KL-102: +14) + **98 node --test** (frontend `test:unit`)
-- Páginas públicas: `/metodologia` (KL-100, transparência/base legal) · descadastro `/remover` (KL-102, List-Unsubscribe RFC 8058)
+- Testes: **1631 passed** (backend pytest, KL-103: +4) + **98 node --test** (frontend `test:unit`)
+- Páginas públicas: `/metodologia` (KL-100) · descadastro `/remover` (KL-102) · landing com social proof ao vivo (KL-103)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - **Níveis de conta (KL-99):** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado
   por domínio); contas legadas → 2. Conta sem senha: Fluxo C (link do alerta) / Fluxo D (signup-inline)
@@ -1132,6 +1132,19 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   (nunca revela se email/domínio existe; token inválido → 200/400 genérico), rate limit 10/min/IP só
   nos tokens INVÁLIDOS (o one-click válido nunca é bloqueado). Opt-out por resposta ("remover") segue
   em paralelo. +14 testes. Relatórios: `claude/reports/KL-100_metodologia.md`, `KL-102_list_unsubscribe.md`.
+
+- **KL-103** — Landing: social proof (números ao vivo) + pills de setores acima do fold ✅. Nota:
+  a remoção das seções abaixo do fold e do texto "13.000+" já fora feita no **KL-81** (o "estado
+  atual" do card era um snapshot antigo). Feito: (1) **`/public/stats` estendido** com 3 contadores
+  agregados (`sites_analyzed` = targets status≠'discovered'; `sectors` = distinct sector≠'outro';
+  `public_profiles` = site_profile public_visible) — `store.public_landing_counts`, mesmo cache Redis
+  1h + rate limit 30/min do KL-74; **só números, sem PII**. (2) **Stats bar** na landing (fallback
+  ESTÁTICO no HTML SSG + `web/public/landing-stats.js` atualiza ao vivo; formata pt-BR, arredonda >1000
+  p/ centena inferior + "+"). (3) **6 pills de setor** (`/setor/{slug}`) + "+43 setores" → `/setores`;
+  clique rastreado (`sector_pill_click` em `_KNOWN_EVENTS`). (4) **meta/og/twitter** com a escala
+  ("50.000+ sites analisados em 49 setores"). `landing-stats.js` na allowlist do nginx (`?v=1`).
+  **Decisão:** script vanilla externo (não React island) — SSG-friendly (número no HTML antes do JS),
+  CSP-safe, ~1KB (a landing não tinha bundle JS). +4 testes. Relatório: `claude/reports/KL-103_landing_social_proof.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.
