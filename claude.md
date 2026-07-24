@@ -181,6 +181,13 @@ standalone) + **React** (islands) + **Tailwind v4** (CSS-first, sem config) +
   `/site/{domain}` com UTM. Builders em `notifier/email_client.py`
   (`build_alert_text`/`build_profile_view_text`); os templates HTML ficam só como
   referência. Linguagem freemium, sem menção a preço/pagamento/relatório.
+- **Cold (KL-102) levam `List-Unsubscribe` = mailto (opt-out por resposta) + https one-click**
+  (`/remover?token=`, RFC 8058, `build_cold_unsubscribe_headers`) — os 3 senders cold (alertas./
+  aviso./perfil.), NUNCA o transacional. Token HMAC (`generate/verify_unsubscribe_token`, propósito
+  `unsubscribe`, SEM expiração, codifica email+domínio+remetente). `POST/GET /remover` marca o alvo
+  `unsubscribed` + blocklist + evento `email_log` (`type=unsubscribe`, `from_domain`=sender, target_id
+  → setor via join). Rate limit 10/min/IP **só p/ tokens inválidos** (o one-click válido do Gmail vem
+  de IP compartilhado — nunca bloquear opt-out legítimo). nginx roteia `/remover` → FastAPI.
 - **Proativos levam `List-Unsubscribe` + `List-Unsubscribe-Post` (one-click RFC 8058,
   `list_unsubscribe_headers`)** — alerta/profile_view/evolution. O `GET/POST /unsubscribe`
   aceita params **opcionais** (ausentes → HTML "Link incompleto", nunca 422 JSON) e trata
@@ -444,7 +451,8 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1613 passed** (backend pytest, KL-101: +8) + **98 node --test** (frontend `test:unit`)
+- Testes: **1627 passed** (backend pytest, KL-100+KL-102: +14) + **98 node --test** (frontend `test:unit`)
+- Páginas públicas: `/metodologia` (KL-100, transparência/base legal) · descadastro `/remover` (KL-102, List-Unsubscribe RFC 8058)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - **Níveis de conta (KL-99):** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado
   por domínio); contas legadas → 2. Conta sem senha: Fluxo C (link do alerta) / Fluxo D (signup-inline)
@@ -1105,6 +1113,25 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   existia) + **teto diário de warmup** `PROFILE_VIEW_DAILY_LIMIT=200` (editável no painel, contador
   `profileview:daily:{date}`). `klarim.net` fica **100% transacional**. +8 testes
   (`test_kl101_profile_view.py`). Relatório: `claude/reports/KL-101_isolar_profile_view.md`.
+
+- **KL-100** — Página pública `/metodologia` ✅. Transparência da varredura passiva: 6 seções (o que
+  faz / o que NÃO faz / base legal [Art. 154-A CP, Marco Civil, LGPD Art. 7 IX, links planalto.gov.br
+  em nova aba] / dados consultados / direitos do dono / identificação do scanner). Astro SSG
+  (`web/src/pages/metodologia.astro` + `Page.astro`), link no `Footer.astro` (todas as páginas),
+  no `sitemap.xml.js` e na allowlist do nginx (`metodologia` em http.conf + https.conf.template).
+  Linha "Saiba mais sobre nossa metodologia: klarim.net/metodologia" (texto, não link) no rodapé dos
+  4 templates cold (3 variantes de alerta + profile_view).
+- **KL-102** — List-Unsubscribe (RFC 8058) + `/remover` ✅. Testes de deliverability (10/10) apontavam
+  ausência do header `List-Unsubscribe` nos senders cold (Gmail/Yahoo exigem p/ >5k/dia). Agora os 3
+  senders cold (não o transacional) levam `List-Unsubscribe: <mailto:scan@klarim.net?subject=remover>,
+  <https://klarim.net/remover?token=...>` + `List-Unsubscribe-Post: One-Click`. Token HMAC em
+  `notifier/email_client.py` (`generate/verify_unsubscribe_token`, propósito `unsubscribe` — não colide
+  com o alert_session do KL-82; SEM expiração; base64url(json).hmac). `POST/GET /remover` (FastAPI,
+  roteado pelo nginx): marca `unsubscribed` + blocklist + evento `email_log`; GET = página de
+  confirmação; POST = form OU one-click do Gmail. **Segurança:** HMAC constant-time, anti-enumeração
+  (nunca revela se email/domínio existe; token inválido → 200/400 genérico), rate limit 10/min/IP só
+  nos tokens INVÁLIDOS (o one-click válido nunca é bloqueado). Opt-out por resposta ("remover") segue
+  em paralelo. +14 testes. Relatórios: `claude/reports/KL-100_metodologia.md`, `KL-102_list_unsubscribe.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

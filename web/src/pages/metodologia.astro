@@ -1,0 +1,104 @@
+---
+export const prerender = true;
+import Page from '../layouts/Page.astro';
+
+// KL-100 — página pública de transparência: o que a Klarim faz, o que NÃO faz, a base
+// legal (varredura passiva) e os direitos do dono do site. Links de lei em nova aba.
+const laws = {
+  cp: 'https://www.planalto.gov.br/ccivil_03/decreto-lei/del2848compilado.htm',
+  marcoCivil: 'https://www.planalto.gov.br/ccivil_03/_ato2011-2014/2014/lei/l12965.htm',
+  lgpd: 'https://www.planalto.gov.br/ccivil_03/_ato2015-2018/2018/lei/l13709.htm',
+};
+---
+
+<Page
+  title="Metodologia"
+  description="Como a Klarim faz análise passiva de segurança web: o que verificamos, o que nunca fazemos, a base legal (Art. 154-A CP, Marco Civil, LGPD) e os direitos do dono do site."
+  path="/metodologia"
+>
+  <p>
+    A <strong>Klarim</strong> faz <strong>análise passiva</strong> de segurança de sites
+    brasileiros. Esta página explica exatamente o que fazemos, o que nunca fazemos, a base
+    legal da nossa atividade e os seus direitos como dono de um site.
+  </p>
+
+  <h2>1. O que a Klarim faz</h2>
+  <ul>
+    <li>Análise passiva de segurança de sites brasileiros, com um score de 0 a 100.</li>
+    <li>Mais de <strong>48 verificações automáticas</strong> de configuração de segurança.</li>
+    <li>Scanner <strong>100% passivo</strong>: apenas requisições <code>GET</code>/<code>HEAD</code> a URLs públicas.</li>
+    <li>
+      Descoberta de domínios pelos <strong>Certificate Transparency logs</strong> — registros
+      públicos e obrigatórios de todo certificado SSL emitido.
+    </li>
+  </ul>
+
+  <h2>2. O que a Klarim NÃO faz</h2>
+  <ul>
+    <li>Não acessa áreas restritas ou autenticadas.</li>
+    <li>Não envia payloads de ataque nem faz brute-force.</li>
+    <li>Não explora as vulnerabilidades encontradas.</li>
+    <li>Não coleta dados privados dos usuários do site.</li>
+    <li>Não acessa comunicações privadas.</li>
+  </ul>
+
+  <h2>3. Base legal</h2>
+  <p>
+    Nossa atividade lê apenas informação que o próprio site já torna pública. Isso a coloca
+    dentro da lei brasileira:
+  </p>
+  <ul>
+    <li>
+      <strong>Art. 154-A do Código Penal</strong> (Lei 12.737/2012): não há invasão, não há
+      violação de mecanismo de segurança, nem finalidade de obter, adulterar ou destruir dados.
+      <a href={laws.cp} target="_blank" rel="noopener noreferrer">Ler a lei →</a>
+    </li>
+    <li>
+      <strong>Marco Civil da Internet</strong> (Lei 12.965/2014): não acessamos comunicações
+      privadas nem dados da intimidade.
+      <a href={laws.marcoCivil} target="_blank" rel="noopener noreferrer">Ler a lei →</a>
+    </li>
+    <li>
+      <strong>LGPD</strong> (Lei 13.709/2018): o tratamento de dados de acesso público está
+      amparado pelo <strong>legítimo interesse</strong> (Art. 7º, IX), com finalidade legítima
+      e boa-fé (Art. 7º, § 3º).
+      <a href={laws.lgpd} target="_blank" rel="noopener noreferrer">Ler a lei →</a>
+    </li>
+    <li>
+      <strong>Precedentes internacionais:</strong> serviços como Shodan, Censys e Shadowserver
+      operam o mesmo modelo de análise a partir de dados públicos.
+    </li>
+  </ul>
+
+  <h2>4. Dados que consultamos</h2>
+  <ul>
+    <li><strong>Headers HTTP</strong> — enviados a qualquer visitante do site.</li>
+    <li><strong>Registros DNS</strong> (SPF, DKIM, DMARC, DNSSEC, CAA, MX) — um sistema de consulta aberta.</li>
+    <li><strong>Certificados SSL/TLS</strong> — publicados nos CT logs por exigência de Google e Mozilla.</li>
+    <li><strong>Conteúdo HTML público</strong> — acessível sem qualquer autenticação.</li>
+  </ul>
+
+  <h2>5. Seus direitos</h2>
+  <ul>
+    <li>
+      <strong>Opt-out:</strong> solicitar a remoção a qualquer momento — respondendo ao e-mail
+      com a palavra <strong>"remover"</strong> ou pelo link de remoção presente no e-mail.
+    </li>
+    <li>
+      <strong>Consulta:</strong> ver o resultado da análise gratuitamente em
+      <a href="/">klarim.net</a>.
+    </li>
+    <li><strong>Contestação:</strong> solicitar a revisão de qualquer item da análise.</li>
+  </ul>
+
+  <h2>6. Identificação do scanner</h2>
+  <ul>
+    <li>User-Agent honesto: <code>Klarim Scanner</code> — não nos passamos por navegador.</li>
+    <li>Rate limit: no máximo <strong>1 requisição por segundo</strong> por domínio.</li>
+    <li>Apenas <code>GET</code>/<code>HEAD</code> — nunca <code>POST</code>, <code>PUT</code> ou <code>DELETE</code>.</li>
+  </ul>
+
+  <p style="margin-top:2rem">
+    Dúvidas ou pedidos? Fale com a gente pela página de <a href="/contato">contato</a>.
+  </p>
+</Page>

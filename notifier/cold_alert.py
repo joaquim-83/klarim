@@ -131,13 +131,16 @@ def choose_variant(has_sector_data: bool, rng: Optional[random.Random] = None) -
 # é por resposta. `klarim.net` aparece só como texto.
 # --------------------------------------------------------------------------- #
 
+# KL-100 — referência de transparência (texto, não link clicável) em todos os templates cold.
+_METHODOLOGY_LINE = "Saiba mais sobre nossa metodologia: klarim.net/metodologia"
 _SIGNATURE_FULL = (
     "--\n"
     "Klarim - Segurança web para o Brasil\n"
     "klarim.net\n"
+    f"{_METHODOLOGY_LINE}\n"
     "Scanner 100% passivo."
 )
-_SIGNATURE_SHORT = "--\nKlarim\nklarim.net"
+_SIGNATURE_SHORT = f"--\nKlarim\nklarim.net\n{_METHODOLOGY_LINE}"
 
 _OPT_OUT_REPLY = 'Se não deseja receber este tipo de comunicação, basta\nresponder este e-mail com "remover".'
 _OPT_OUT_REPLY_SHORT = 'Para não receber mais, responda com "remover".'

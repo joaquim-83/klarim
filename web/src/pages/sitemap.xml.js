@@ -31,6 +31,7 @@ export async function GET() {
   const staticUrls = [
     `<url><loc>${SITE}/</loc><changefreq>weekly</changefreq><priority>1.0</priority></url>`,
     `<url><loc>${SITE}/sobre</loc><changefreq>monthly</changefreq><priority>0.5</priority></url>`,
+    `<url><loc>${SITE}/metodologia</loc><changefreq>monthly</changefreq><priority>0.5</priority></url>`,
     `<url><loc>${SITE}/scan</loc><changefreq>weekly</changefreq><priority>0.6</priority></url>`,
     `<url><loc>${SITE}/ranking</loc><changefreq>daily</changefreq><priority>0.8</priority></url>`,
     // KL-74 — arquitetura de conteúdo navegável.

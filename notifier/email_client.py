@@ -181,6 +181,70 @@ def list_unsubscribe_headers(unsubscribe_url: Optional[str]) -> Dict[str, str]:
 
 
 # --------------------------------------------------------------------------- #
+# KL-102 — token HMAC de descadastro (List-Unsubscribe one-click, RFC 8058).
+# Propósito 'unsubscribe' → NÃO colide com o alert_access/alert_session do KL-82.
+# SEM expiração (um opt-out deve funcionar sempre). Codifica email+domínio (o `/remover`
+# marca o alvo) + o remetente (analytics de taxa de unsub por sender, KL-57).
+# Formato: base64url(json).hmac[:32] — URL-safe, sem padding, seguro em header de e-mail.
+# --------------------------------------------------------------------------- #
+
+def _unsubscribe_secret() -> str:
+    return (os.environ.get("UNSUBSCRIBE_SECRET", "") or os.environ.get("JWT_SECRET", "")
+            or os.environ.get("HMAC_SECRET", ""))
+
+
+def generate_unsubscribe_token(email: str, domain: str, secret: str,
+                               sender_domain: str = "") -> str:
+    """HMAC-SHA256 (propósito 'unsubscribe') de email+domínio(+remetente). Determinístico
+    para os mesmos inputs. `secret` = `UNSUBSCRIBE_SECRET`/`JWT_SECRET`/`HMAC_SECRET`."""
+    payload = {"typ": "unsubscribe", "email": (email or "").lower().strip(),
+               "domain": (domain or "").lower().strip(),
+               "s": (sender_domain or "").lower().strip()}
+    raw = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":")).encode()).decode().rstrip("=")
+    sig = hmac.new(secret.encode(), raw.encode(), hashlib.sha256).hexdigest()[:32]
+    return f"{raw}.{sig}"
+
+
+def verify_unsubscribe_token(token: str, secret: str) -> Optional[Dict[str, str]]:
+    """Valida o token (comparação constant-time) → `{email, domain, sender}` ou None.
+    Rejeita token malformado/adulterado/de outro propósito. Nunca lança."""
+    if not token or "." not in token or not secret:
+        return None
+    raw, _, sig = token.rpartition(".")
+    if not raw or not sig:
+        return None
+    expected = hmac.new(secret.encode(), raw.encode(), hashlib.sha256).hexdigest()[:32]
+    if not hmac.compare_digest(sig, expected):
+        return None
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(raw + "=" * (-len(raw) % 4)).decode())
+    except Exception:  # noqa: BLE001 - base64/json inválido → token inválido
+        return None
+    if not isinstance(payload, dict) or payload.get("typ") != "unsubscribe":
+        return None
+    return {"email": str(payload.get("email", "")), "domain": str(payload.get("domain", "")),
+            "sender": str(payload.get("s", ""))}
+
+
+def build_cold_unsubscribe_headers(email: str, domain: str, sender_domain: str,
+                                   secret: str = "",
+                                   mailbox: str = "scan@klarim.net") -> Dict[str, str]:
+    """KL-102 — headers `List-Unsubscribe` dos e-mails COLD: **mailto** (opt-out por resposta,
+    KL-91) + **https one-click** (RFC 8058, `/remover?token=`). `List-Unsubscribe-Post` liga o
+    one-click ao https (o mailto é o fallback). Sem segredo → cai para só o mailto (o envio
+    nunca quebra). SÓ para os 3 senders cold — o transacional não recebe."""
+    secret = secret or _unsubscribe_secret()
+    mailto = f"<mailto:{mailbox}?subject=remover>"
+    if not secret:
+        return {"List-Unsubscribe": mailto}
+    token = generate_unsubscribe_token(email, domain, secret, sender_domain)
+    url = f"{SITE_BASE}/remover?token={quote(token, safe='')}"
+    return {"List-Unsubscribe": f"{mailto}, <{url}>",
+            "List-Unsubscribe-Post": "List-Unsubscribe=One-Click"}
+
+
+# --------------------------------------------------------------------------- #
 # Corpo em TEXTO PURO dos e-mails PROATIVOS (alerta + perfil consultado) — KL-44.
 # O template HTML (alert.html / alert_score100.html / profile_view.html) foi mantido
 # como referência, mas os envios proativos saem em plain text: parecem menos "e-mail
@@ -297,7 +361,8 @@ def build_profile_view_text(domain: str) -> str:
         'responder este e-mail com "remover".\n\n'
         "--\n"
         "Klarim - Segurança web para o Brasil\n"
-        "klarim.net"
+        "klarim.net\n"
+        "Saiba mais sobre nossa metodologia: klarim.net/metodologia"
     )
 
 
@@ -719,16 +784,16 @@ class KlarimMailer:
                               email_type: str = "alert", source: str = "alert_worker",
                               opt_out_mailbox: str = "scan@klarim.net") -> Dict[str, Any]:
         """KL-91 — alerta COLD em texto puro, remetente ROTACIONADO (`from_address` vem
-        do `cold_alert.pick_sender`). Sem HTML, sem links no corpo; opt-out por resposta
-        via header `List-Unsubscribe` (mailto). **Proativo** → respeita a blocklist e é
-        registrado no `email_log` com `from_domain`+`template_variant`."""
-        from notifier.cold_alert import list_unsubscribe_reply_header  # evita ciclo de import
+        do `cold_alert.pick_sender`). Sem HTML, sem links no corpo. KL-102: header
+        `List-Unsubscribe` = mailto (opt-out por resposta) **+ https one-click** (`/remover`,
+        RFC 8058). **Proativo** → respeita a blocklist e é registrado no `email_log`."""
         params = {
             "from": from_address,
             "to": [to_email],
             "subject": subject,
             "text": text,
-            "headers": list_unsubscribe_reply_header(opt_out_mailbox),
+            "headers": build_cold_unsubscribe_headers(
+                to_email, domain or "", _domain_of_from(from_address), mailbox=opt_out_mailbox),
         }
         return await self._send(params, email_type=email_type, target_id=target_id,
                                 domain=domain, source=source,
@@ -1069,13 +1134,14 @@ class KlarimMailer:
         TEXTO PURO **sem links**, opt-out por RESPOSTA (`List-Unsubscribe` mailto, como o KL-91).
         `score`/`semaphore`/`cta_url`/`unsubscribe_link` seguem na assinatura (chamadores
         inalterados) mas o corpo novo não os usa."""
-        from notifier.cold_alert import list_unsubscribe_reply_header  # evita ciclo de import
+        from_addr = self._profile_view_from()   # KL-101 → perfil.klarim.net (isolado)
         params = {
-            "from": self._profile_view_from(),   # KL-101 → perfil.klarim.net (isolado)
+            "from": from_addr,
             "to": [to_email],
             "subject": f"{domain} foi consultado na Klarim",
             "text": build_profile_view_text(domain),
-            "headers": list_unsubscribe_reply_header(),   # opt-out por resposta (KL-91/101)
+            # KL-102: mailto (opt-out por resposta) + https one-click (/remover, RFC 8058).
+            "headers": build_cold_unsubscribe_headers(to_email, domain, _domain_of_from(from_addr)),
         }
         return await self._send(params, email_type="profile_view", target_id=target_id,
                                 domain=domain, source="profile_view")

@@ -142,6 +142,9 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 | POST | `/contact` | formulário de contato → inbox + Resend (best-effort) |
 | POST | `/events` | tracking do funil (fire-and-forget, 100/min/sessão) |
 | GET/POST | `/unsubscribe?email=&token=` | descadastro (token HMAC constant-time). Params **opcionais**: ausentes → página HTML "Link incompleto" (nunca 422 JSON — evita ruído do pre-fetch de bots). **POST** = one-click RFC 8058 (`List-Unsubscribe-Post`) |
+| GET | `/remover?token=` | **KL-102** — página de confirmação do descadastro dos e-mails cold. Token HMAC (propósito `unsubscribe`, codifica email+domínio+remetente, sem expiração). Inválido/ausente → 200 com mensagem genérica (anti-enumeração) |
+| POST | `/remover?token=` | **KL-102** — confirma o descadastro: form do browser OU one-click do Gmail/Yahoo (body `List-Unsubscribe=One-Click`). Marca o alvo `unsubscribed` + blocklist + evento `email_log` (`type=unsubscribe`, `from_domain`=sender, target_id). Rate limit 10/min/IP **só p/ tokens inválidos** (o one-click válido nunca é bloqueado). Inválido → 400 |
+| GET | `/metodologia` | **KL-100** — página estática (Astro SSG) de transparência: o que a Klarim faz/não faz, base legal, direitos do dono. No footer + sitemap |
 
 > **KL-74 — endpoints `/public/*` de conteúdo:** rate limit **30/min por IP real**; chamadas SSR
 > internas (container Astro → API, sem `X-Forwarded-For`) **não** contam (senão o IP único do

@@ -72,6 +72,16 @@ Na dúvida, trate o alvo como site de terceiro que só autorizou olhar o que é 
   p/ anonymous). `signup-from-alert` cria conta só com senha (e-mail do cookie, `source='hmac'`).
   `contact_email` **nunca em claro** — só hint mascarado. Tokens `typ`-isolados (um alert-access
   não vale como sessão nem como confirm/scan token). Rate limit: alert-access 30/h, signup 5/h/IP.
+- **Descadastro one-click / `/remover` (KL-102):** token **HMAC-SHA256** `typ=unsubscribe`
+  (`email|domain|sender`, base64url(json).hmac[:32], **comparação constant-time**) — propósito
+  ISOLADO do `alert_session`/`confirm` (um não vale pelo outro). **SEM expiração** de propósito
+  (um opt-out deve funcionar sempre). **Anti-enumeração:** token inválido/ausente → página genérica
+  (GET 200, POST 400), **nunca** revela se o e-mail/domínio existe; um token válido só existe se a
+  Klarim o gerou (para um alvo real que e-mailamos) → sem oráculo de existência. **Rate limit
+  10/min/IP SÓ nos tokens inválidos** (anti brute-force) — um token VÁLIDO é idempotente e escopado
+  ao próprio e-mail, então nunca é bloqueado: o one-click do Gmail vem de IP **compartilhado** do
+  Google, e bloqueá-lo faria a pessoa marcar como spam (pior p/ reputação). Só nos 3 senders cold;
+  o transacional (`klarim@klarim.net`) NÃO leva o header. Opt-out por resposta ("remover") em paralelo.
 - **Endpoints públicos sensíveis (KL-93 — hardening).** A varredura achou o `POST /payment/create`
   criando cobrança PIX **real** sem auth/validação/rate limit. Política por endpoint (todos por
   `CF-Connecting-IP`; `_redis_allow` com fallback in-memory, exceto onde marcado `_rl_ok`):

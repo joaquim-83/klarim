@@ -12,6 +12,9 @@ from .email_client import (
     build_unsubscribe_link,
     batch_idempotency_key,
     verify_resend_signature,
+    generate_unsubscribe_token,
+    verify_unsubscribe_token,
+    build_cold_unsubscribe_headers,
 )
 
 __all__ = [
@@ -24,4 +27,7 @@ __all__ = [
     "build_unsubscribe_link",
     "batch_idempotency_key",
     "verify_resend_signature",
+    "generate_unsubscribe_token",
+    "verify_unsubscribe_token",
+    "build_cold_unsubscribe_headers",
 ]

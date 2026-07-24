@@ -54,7 +54,7 @@ from payments import (
     init_store,
 )
 from notifier import (KlarimMailer, KlarimMailerError, EMAIL_TYPES, unsubscribe_token,
-                      verify_resend_signature)
+                      verify_resend_signature, verify_unsubscribe_token)
 from discovery.alert_worker import send_alert_for_target
 from discovery.rescan_worker import rescan_target
 from discovery import worker_control
@@ -6956,6 +6956,112 @@ async def api_unsubscribe_oneclick(
     """One-click unsubscribe (RFC 8058): o cliente de e-mail faz POST ao `List-Unsubscribe`
     sem interação. Mesma lógica/segurança do GET."""
     return await _process_unsubscribe(email, token)
+
+
+# --------------------------------------------------------------------------- #
+# KL-102 — /remover: descadastro one-click (RFC 8058) dos e-mails COLD. O token HMAC
+# codifica email+domínio+remetente (propósito 'unsubscribe', SEM expiração). GET → página
+# de confirmação; POST → marca 'unsubscribed' + blocklist + evento no email_log. Aceita o
+# form do browser E o POST direto do Gmail/Yahoo (body `List-Unsubscribe=One-Click`).
+# --------------------------------------------------------------------------- #
+
+_REMOVER_RL: dict = {}   # fallback in-memory do rate limit (10/min/IP p/ tokens INVÁLIDOS)
+
+
+def _remover_verify(token: Optional[str]) -> Optional[dict]:
+    secret = (os.environ.get("UNSUBSCRIBE_SECRET", "") or os.environ.get("JWT_SECRET", "")
+              or os.environ.get("HMAC_SECRET", ""))
+    return verify_unsubscribe_token(token or "", secret)
+
+
+async def _remover_apply(info: dict) -> bool:
+    """Aplica o opt-out: blocklist do e-mail + marca TODOS os alvos dele 'unsubscribed' +
+    evento no `email_log` (KL-57: tipo unsubscribe, remetente, alvo → setor via join).
+    Idempotente; retorna True se já estava removido. Nunca lança nem revela se o alvo existe."""
+    email = (info.get("email") or "").strip().lower()
+    domain = (info.get("domain") or "").strip().lower()
+    sender = (info.get("sender") or "").strip().lower()
+    store = get_target_store()
+    already, tid = False, None
+    try:
+        if email:
+            already = await store.is_email_blocked(email)   # já na blocklist = já removido
+            await store.mark_unsubscribed(email)            # marca todos os alvos desse e-mail
+            await store.block_email(email, reason="unsubscribe")
+        if domain:
+            t = await store.get_target_by_domain(domain)
+            tid = t.get("id") if t else None
+    except Exception as exc:  # noqa: BLE001 - opt-out nunca pode falhar por infra
+        print(f"[remover] apply erro: {exc!r}", flush=True)
+    try:  # evento (status='unsubscribe' → NÃO polui as contagens de 'sent'/bounce)
+        await store.log_email(email_id=None, to_email=email, email_type="unsubscribe",
+                              target_id=tid, domain=(domain or None), status="unsubscribe",
+                              from_domain=(sender or None), source="unsubscribe")
+    except Exception:  # noqa: BLE001
+        pass
+    return already
+
+
+@app.get("/remover")
+async def api_remover_page(request: Request,
+                           token: Optional[str] = Query(default=None)) -> HTMLResponse:
+    """Página de confirmação do descadastro (KL-102). Token inválido/ausente → mensagem
+    genérica (200, não 4xx — melhor UX + anti-enumeração, não revela email/domínio)."""
+    info = _remover_verify(token)
+    if info is None:
+        return HTMLResponse(_remover_html("invalid"))
+    already = False
+    try:
+        if info.get("email"):
+            already = await get_target_store().is_email_blocked(info["email"].lower())
+    except Exception:  # noqa: BLE001
+        already = False
+    return HTMLResponse(_remover_html("already" if already else "confirm", token=token or ""))
+
+
+@app.post("/remover")
+async def api_remover_confirm(request: Request,
+                              token: Optional[str] = Query(default=None)) -> HTMLResponse:
+    """Confirma o descadastro (KL-102): form do browser OU one-click do Gmail (body
+    `List-Unsubscribe=One-Click`). Rate limit 10/min/IP **só nos tokens INVÁLIDOS**
+    (anti brute-force) — um token VÁLIDO é idempotente e escopado ao próprio e-mail, então
+    NUNCA é bloqueado (senão o one-click do Gmail, que vem de IP compartilhado do Google,
+    falharia e a pessoa marcaria como spam)."""
+    info = _remover_verify(token)
+    if info is None:
+        allowed, retry = await _redis_allow("remover", _client_ip(request), 10, 60, _REMOVER_RL)
+        if not allowed:
+            return HTMLResponse(_remover_html("ratelimited"), status_code=429,
+                                headers={"Retry-After": str(retry)})
+        return HTMLResponse(_remover_html("invalid"), status_code=400)
+    already = await _remover_apply(info)
+    return HTMLResponse(_remover_html("already" if already else "success"))
+
+
+def _remover_html(state: str, token: str = "") -> str:
+    from html import escape
+    if state == "confirm":
+        tok = escape(token or "")
+        msg = ('Deseja parar de receber os avisos de segurança da Klarim? '
+               'Ao confirmar, não enviaremos mais e-mails para você.'
+               f'<form method="POST" action="/remover?token={tok}" style="margin-top:20px">'
+               '<button type="submit" style="background:#FF6B35;color:#0D1117;border:none;'
+               'border-radius:8px;padding:12px 24px;font-size:15px;font-weight:bold;'
+               'cursor:pointer">Confirmar remoção</button></form>')
+        return _unsubscribe_html_generic("Confirmar remoção", msg)
+    if state == "success":
+        return _unsubscribe_html_generic(
+            "Removido", "Você foi removido da lista de avisos da Klarim. "
+            "Não enviaremos mais e-mails para você.")
+    if state == "already":
+        return _unsubscribe_html_generic(
+            "Já removido", "Você já havia sido removido anteriormente. Nenhum e-mail será enviado.")
+    if state == "ratelimited":
+        return _unsubscribe_html_generic(
+            "Muitas tentativas", "Muitas tentativas em pouco tempo. Tente novamente em instantes.")
+    return _unsubscribe_html_generic(
+        "Link inválido", "Este link de remoção é inválido ou está incompleto. "
+        "Se preferir, responda ao e-mail com a palavra \"remover\".")
 
 
 def _unsubscribe_html(email: str, success: bool, incomplete: bool = False) -> str:
