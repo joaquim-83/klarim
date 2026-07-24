@@ -139,9 +139,22 @@ Na dúvida, trate o alvo como site de terceiro que só autorizou olhar o que é 
 - **MCP** — auth própria (OAuth 2.1/PKCE S256 obrigatório + `MCP_API_KEY` estático),
   fail-closed, constant-time; `redirect_uri` sempre validada; code one-time 60s; refresh
   rotacionado; rate limits. Fora do JWT admin.
-- **IDOR-safe:** `/account/vigilia*` filtra por `user_id`. **Enforcement de plano é
+- **IDOR-safe:** `/account/vigilia*` e TODO `/account/sites/{id}/*` filtram por `user_id`
+  (ownership via `user_sites` → 404 se não for da conta). **Enforcement de plano é
   servidor-autoritativo** (403 no `POST /account/sites`, nunca só no frontend).
 - Trocar a senha do admin ou rotacionar o token MCP **invalida os refresh tokens OAuth**.
+
+### Auditoria da área logada (KL-107, 24/07) — 2 achados corrigidos
+- **IDOR no `verify/check`:** `POST /account/sites/{id}/verify/check` era o ÚNICO
+  `/account/sites/{id}/*` sem ownership check — devolvia `200 {no_pending}` para site de outro
+  usuário (enumerava quais têm verificação de domínio pendente). **Fix:** `get_user_site` no início
+  → **404** (constant-time via SQL, como os demais). `verify/start` já bloqueava.
+- **Adição por terceiro (decisão de produto = permitir + avisar):** `POST /account/sites` deixa um
+  não-dono monitorar (is_owner=false) um site com dono verificado — o modelo agência→técnico (KL-70)
+  depende disso; **não se bloqueia**. Em vez disso, o **dono verificado é notificado** por e-mail
+  transacional (`owner_notification`, texto puro, informativo, **sem link de ação**), com dedup
+  1/dia/target. A notificação **só revela o e-mail** de quem adicionou (nunca id/plano/dados de
+  conta); é fire-and-forget (falha não impede a adição). O não-dono nunca vê painel/dados/perfil.
 
 ### Níveis de conta (KL-99) — conta sem senha + gate progressivo
 

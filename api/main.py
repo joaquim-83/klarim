@@ -410,6 +410,7 @@ _alert_autocreate_hits: dict = {}  # KL-99: consentimento de monitoramento via a
 _signup_inline_hits: dict = {}     # KL-105: signup inline no resultado 5/min por IP
 _signup_inline_daily_hits: dict = {}  # KL-105: backstop diário do signup inline 30/dia por IP
 _monitoring_status_hits: dict = {}  # KL-105: consulta de status de monitoramento 30/min por IP
+_owner_notify_hits: dict = {}      # KL-107: dedup do aviso "site adicionado por terceiro" 1/dia/target
 _verify_check_hits: dict = {}      # KL-99: verificação de domínio (check) 10/h por IP
 _magic_email_hits: dict = {}       # KL-99: magic link 3/h por e-mail
 _magic_ip_hits: dict = {}          # KL-99: magic link 10/h por IP
@@ -1550,6 +1551,30 @@ async def _sync_user_vigilias(user_id: int) -> None:
         print(f"[vigilia] sync user={user_id}: {exc!r}", flush=True)
 
 
+async def _notify_owner_site_added(target_id: int, added_by_email: str, domain: str) -> None:
+    """KL-107 — avisa o DONO verificado (se houver e ≠ quem adicionou) que um terceiro passou a
+    monitorar o site. Dedup 1/dia/target (Redis). Fire-and-forget — nunca derruba o add_site. O
+    e-mail é transacional, informativo, SEM link de ação; só vaza o e-mail de quem adicionou."""
+    try:
+        store = get_target_store()
+        owner = await store.get_site_owner(target_id)
+        if not owner:
+            return
+        if (owner.get("email") or "").strip().lower() == (added_by_email or "").strip().lower():
+            return   # guard: o próprio dono (não deveria ocorrer com is_owner=false)
+        ok, _retry = await _redis_allow("notify_site_added", str(target_id), 1, 86400,
+                                        _owner_notify_hits)
+        if not ok:   # dedup: no máx 1 aviso por target por 24h (vários podem adicionar o mesmo site)
+            return
+        if not _email_enabled():
+            return
+        await _mailer().send_owner_site_added(owner["email"], domain, added_by_email)
+        await store.log_event("owner_notification_sent", f"server:{target_id}",
+                              target_id=target_id, metadata={"domain": domain}, is_human=True)
+    except Exception as exc:  # noqa: BLE001 - notificação é best-effort
+        print(f"[owner-notify] site {target_id} add: {exc!r}", flush=True)
+
+
 @app.post("/account/sites")
 async def account_add_site(body: SiteBody, request: Request) -> dict:
     user = await auth_users.require_user(request)
@@ -1580,6 +1605,9 @@ async def account_add_site(body: SiteBody, request: Request) -> dict:
     # KL-44 P2: cria as vigílias do plano para o novo site (fire-and-forget).
     target = await store.get_target(tid)
     _spawn(_create_site_vigilias(user["id"], (target or {}).get("domain") or ""))
+    # KL-107: se um TERCEIRO (não-dono) adicionou um site que já tem dono verificado, avisa o dono.
+    if not owner:
+        _spawn(_notify_owner_site_added(tid, user["email"], (target or {}).get("domain") or ""))
     verification_available = bool(
         not owner and (target or {}).get("contact_email") and not await store.site_has_owner(tid))
     return {"ok": True, "target_id": tid, "is_owner": owner,
@@ -2059,12 +2087,17 @@ async def account_verify_check(target_id: int, request: Request) -> dict:
     Retorna `{status: verified}` | `{status: not_found}` | `{status: no_pending}`."""
     user = await auth_users.require_user(request)
     _require_level(user, 2)
+    store = get_target_store()
+    # KL-107 (achado 1): ownership check — sem isto, o handler devolvia 200 `no_pending` para um
+    # site de OUTRO usuário (permitia enumerar quais sites têm verificação pendente). Agora 404,
+    # igual aos demais `/account/sites/{id}/*`.
+    if not await store.get_user_site(user["id"], target_id):
+        raise HTTPException(status_code=404, detail="Site não encontrado na sua conta.")
     allowed, retry = await _redis_allow("verify_check", _client_ip(request), 10, 3600,
                                         _verify_check_hits)
     if not allowed:
         raise HTTPException(status_code=429, detail="Muitas verificações. Aguarde um pouco.",
                             headers={"Retry-After": str(retry)})
-    store = get_target_store()
     v = await store.get_pending_domain_verification(user["id"], target_id)
     if not v:
         return {"status": "no_pending"}
@@ -6519,6 +6552,8 @@ _KNOWN_EVENTS = {
     "inline_signup_shown", "inline_signup_click", "inline_signup_success", "inline_signup_existing",
     # KL-97/98 — gestão do dono no dashboard (monitoramento, notificação, perfil, selo)
     "vigilia_toggled", "bulletin_frequency_changed", "profile_edited", "seal_configured",
+    # KL-107 — dono avisado quando um terceiro adiciona o site dele ao monitoramento
+    "owner_notification_sent",
 }
 _EVENT_RL_MAX = 100          # eventos/minuto por sessão
 _event_rl: dict = {}         # session_id -> lista de timestamps (janela de 60s)

@@ -2845,6 +2845,18 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    async def get_site_owner(self, target_id: int) -> Optional[Dict[str, Any]]:
+        """KL-107 — o DONO VERIFICADO do site (is_owner + verified_at), com id/e-mail. Ou None.
+        Usado para avisar o dono quando um terceiro passa a monitorar o site."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT u.id, u.email FROM user_sites us JOIN users u ON u.id = us.user_id "
+                "WHERE us.target_id = %s AND us.is_owner = TRUE AND us.verified_at IS NOT NULL "
+                "ORDER BY us.verified_at ASC LIMIT 1", (target_id,))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+        return await asyncio.to_thread(self._run, _fn)
+
     async def mark_site_verified(self, user_id: int, target_id: int, method: str) -> bool:
         """Marca o vínculo como dono verificado (KL-68): `is_owner=TRUE`, `verified_at=NOW()`
         e registra o método (`auto_email` | `code_verification`). Retorna True se afetou."""

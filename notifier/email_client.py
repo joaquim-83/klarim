@@ -954,6 +954,31 @@ class KlarimMailer:
         }, email_type="ownership_verification", domain=domain, source="ownership",
             skip_blocklist=True)
 
+    async def send_owner_site_added(self, to_email: str, domain: str,
+                                    added_by_email: str) -> Dict[str, Any]:
+        """KL-107 — avisa o DONO verificado que um terceiro passou a monitorar o site dele.
+        Transacional (`klarim@klarim.net`, `RESEND_FROM`), TEXTO PURO, **sem links de ação**
+        (só informativo — quem/o quê; nunca "clique para bloquear"). Registrado no email_log."""
+        text = (
+            "Olá,\n\n"
+            f"Alguém adicionou {domain} ao monitoramento na Klarim.\n\n"
+            f"Quem: {added_by_email}\n\n"
+            "Isso significa que essa pessoa passará a receber alertas sobre o seu site, mas "
+            "NÃO tem acesso ao seu painel, aos dados da sua conta, nem controle do perfil "
+            "público.\n\n"
+            "Se não reconhece essa pessoa, não se preocupe — ela não pode editar nada no seu "
+            "site. Apenas recebe alertas públicos.\n\n"
+            "Você pode gerenciar quem monitora seu site no seu dashboard:\n"
+            "https://klarim.net/dashboard\n\n"
+            "Equipe Klarim"
+        )
+        return await self._send({
+            "from": self.from_address,
+            "to": [to_email],
+            "subject": f"Alguém adicionou {domain} ao monitoramento na Klarim",
+            "text": text,
+        }, email_type="owner_notification", domain=domain, source="account", skip_blocklist=True)
+
     # ----- KL-44 P6: ciclo de assinatura (transacional, plain text) -------- #
 
     _PLAN_DISPLAY = {"pro": ("Pro", "R$ 19/mês"), "agency": ("Agency", "R$ 49/mês")}
