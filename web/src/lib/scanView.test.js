@@ -5,7 +5,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   accessLevelOf, isAlertVisitor, hasAccount, isFullAccess, maskEmail, maskedEmailOf,
-  scoreHeadline, shareLabel, inlineSignupCopy, monitorConsentCopy, MONITOR_BENEFITS,
+  scoreHeadline, shareLabel, inlineSignupCopy, monitorConsentCopy, MONITOR_BENEFITS, isValidEmail,
   viewFlags, reportUrls, SCAN_CATEGORIES, getCategoryStatus,
 } from './scanView.js'
 
@@ -105,6 +105,15 @@ test('inlineSignupCopy: botão "Monitorar", 3 benefícios, nota sem spam', () =>
   assert.equal(c.benefits.length, 3)
   assert.match(c.subtitle, /avisado/i)
   assert.match(c.note, /spam/i)
+})
+
+test('isValidEmail: aceita e-mail válido, rejeita inválido/vazio (KL-105 — desabilita o botão)', () => {
+  assert.equal(isValidEmail('dono@empresa.com.br'), true)
+  assert.equal(isValidEmail('  DONO@EMPRESA.COM  '), true)   // trim antes de validar
+  assert.equal(isValidEmail('semarroba.com'), false)
+  assert.equal(isValidEmail('a@b'), false)                  // sem TLD
+  assert.equal(isValidEmail(''), false)
+  assert.equal(isValidEmail(undefined), false)
 })
 
 test('monitorConsentCopy: "Sim, monitorar", inclui o domínio no título (sem campo de e-mail)', () => {

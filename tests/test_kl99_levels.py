@@ -270,18 +270,20 @@ def test_signup_with_password_creates_level2(client, store):
 # 2. Fluxo D — /account/signup-inline (passwordless + vincula domínio)
 # --------------------------------------------------------------------------- #
 
-def test_signup_inline_creates_level1_and_links_domain(client, store):
+def test_signup_inline_activates_monitoring_and_logs_in(client, store, monkeypatch):
+    # KL-105 — monitoramento ATIVADO na hora (sem confirmação) + login imediato.
+    monkeypatch.setattr(m, "_vigilia_allowed_types", _fake_allowed_types)
     r = client.post("/account/signup-inline",
                     json={"email": "dono@hotelx.com.br", "domain": "hotelx.com.br"})
-    assert r.status_code == 200 and r.json()["status"] == "confirmation_sent"
+    assert r.status_code == 200 and r.json()["status"] == "monitoring_active"
     u = store.users["dono@hotelx.com.br"]
     assert u["account_level"] == 1 and u["source"] == "inline" and u["email_confirmed"] is False
-    # NÃO loga (sem cookie de sessão de usuário — só após confirmar)
-    assert auth_users.USER_COOKIE not in r.cookies
-    # domínio vinculado como site pendente (is_owner False), SEM vigília ainda
+    # LOGA na hora (cookie de sessão de usuário)
+    assert auth_users.USER_COOKIE in r.cookies
+    # domínio vinculado + posse Tier 1 (e-mail == domínio) + vigílias criadas
     tid = store.by_url["https://hotelx.com.br"]
-    assert (u["id"], tid) in store.links and store.links[(u["id"], tid)]["is_owner"] is False
-    assert store.vigilias == []
+    assert (u["id"], tid) in store.links and store.links[(u["id"], tid)]["is_owner"] is True
+    assert "hotelx.com.br" in {d for (_u, d, _t) in store.vigilias}
 
 
 def test_signup_inline_existing_email(client, store):
@@ -297,12 +299,55 @@ def test_signup_inline_disposable_blocked(client, store):
     assert r.status_code == 400
 
 
-def test_signup_inline_rate_limit(client, store):
-    for i in range(3):
+def test_signup_inline_rate_limit(client, store, monkeypatch):
+    monkeypatch.setattr(m, "_vigilia_allowed_types", _fake_allowed_types)
+    for i in range(5):  # KL-105 — 5/min por IP
         assert client.post("/account/signup-inline",
                            json={"email": f"u{i}@x{i}.com.br", "domain": f"x{i}.com.br"}).status_code == 200
-    r = client.post("/account/signup-inline", json={"email": "u4@x4.com.br", "domain": "x4.com.br"})
+    r = client.post("/account/signup-inline", json={"email": "u9@x9.com.br", "domain": "x9.com.br"})
     assert r.status_code == 429
+
+
+def test_signup_inline_existing_fires_no_cookie(client, store):
+    # conta já existe → 200 already_exists, NÃO loga (o front dispara o magic link)
+    store.users["ja2@x.com.br"] = {"id": 77, "email": "ja2@x.com.br", "password_hash": "h",
+                                   "account_level": 2}
+    r = client.post("/account/signup-inline", json={"email": "ja2@x.com.br", "domain": "x.com.br"})
+    assert r.status_code == 200 and r.json()["status"] == "already_exists"
+    assert auth_users.USER_COOKIE not in r.cookies
+
+
+# --------------------------------------------------------------------------- #
+# 2b. KL-105 — GET /account/monitoring-status (auth opcional)
+# --------------------------------------------------------------------------- #
+
+def test_monitoring_status_anonymous(client, store):
+    r = client.get("/account/monitoring-status?domain=x.com.br")
+    assert r.status_code == 200
+    assert r.json() == {"logged_in": False, "monitoring": False}
+
+
+def test_monitoring_status_logged_in_monitoring(client, store):
+    u = {"id": 610, "email": "m@meusite.com.br", "password_hash": "h", "account_level": 2,
+         "is_active": True}
+    store.users[u["email"]] = u
+    store.by_id[610] = u
+    tid = store.add_target("meusite.com.br")
+    store.links[(610, tid)] = {"is_owner": True, "verified_at": None, "method": None}
+    r = client.get("/account/monitoring-status?domain=meusite.com.br", headers=_bearer(u))
+    assert r.status_code == 200
+    d = r.json()
+    assert d["logged_in"] is True and d["monitoring"] is True and d["user_email"] == u["email"]
+
+
+def test_monitoring_status_logged_in_not_monitoring(client, store):
+    u = {"id": 611, "email": "n@outro.com.br", "password_hash": "h", "account_level": 2,
+         "is_active": True}
+    store.users[u["email"]] = u
+    store.by_id[611] = u
+    r = client.get("/account/monitoring-status?domain=naomonitoro.com.br", headers=_bearer(u))
+    assert r.status_code == 200
+    assert r.json()["logged_in"] is True and r.json()["monitoring"] is False
 
 
 # --------------------------------------------------------------------------- #

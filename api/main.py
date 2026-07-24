@@ -407,7 +407,9 @@ _notify_view_hits: dict = {}       # KL-93: notify/profile-view 1/hora por (IP, 
 _report_dl_hits: dict = {}         # KL-93: /report/{executive,technical} 5/hora por IP
 # KL-99 (conta sem senha + níveis): rate limits dos novos fluxos.
 _alert_autocreate_hits: dict = {}  # KL-99: consentimento de monitoramento via alerta 5/h por IP
-_signup_inline_hits: dict = {}     # KL-99 Fluxo D: signup inline no resultado 3/h por IP
+_signup_inline_hits: dict = {}     # KL-105: signup inline no resultado 5/min por IP
+_signup_inline_daily_hits: dict = {}  # KL-105: backstop diário do signup inline 30/dia por IP
+_monitoring_status_hits: dict = {}  # KL-105: consulta de status de monitoramento 30/min por IP
 _verify_check_hits: dict = {}      # KL-99: verificação de domínio (check) 10/h por IP
 _magic_email_hits: dict = {}       # KL-99: magic link 3/h por e-mail
 _magic_ip_hits: dict = {}          # KL-99: magic link 10/h por IP
@@ -4444,45 +4446,88 @@ class SignupInlineBody(BaseModel):
 
 
 @app.post("/account/signup-inline")
-async def signup_inline(body: SignupInlineBody, request: Request) -> dict:
-    """KL-99 Fluxo D — cadastro SEM senha no resultado do scan (chegada orgânica). `{email, domain}`
-    → cria conta nível 1 (`source='inline'`, `email_confirmed=false`), vincula o domínio como site
-    PENDENTE de monitoramento (consentimento explícito do usuário; **sem** vigílias — a confirmação
-    do e-mail as ativa) e envia o e-mail de confirmação (link POST-only anti pre-fetch, KL-82 S2).
-    Retorna `{status: confirmation_sent}` (NÃO loga — só após confirmar) ou `{status: already_exists}`.
-    Anti-abuso: blocklist de descartáveis + rate limit 3/h por IP."""
+async def signup_inline(body: SignupInlineBody, request: Request) -> JSONResponse:
+    """KL-99 Fluxo D + **KL-105** — cadastro SEM senha no resultado do scan (chegada orgânica).
+    `{email, domain}` → cria conta nível 1 (`source='inline'`), **ativa o monitoramento na hora**
+    (vincula o site + vigílias, auto-verifica posse Tier 1 se o e-mail bater com o domínio) e
+    **loga** (cookie de sessão). NÃO exige confirmação prévia de e-mail — a confirmação prévia
+    matava a conversão (lição KL-89: 97% abandonavam). Um e-mail de boas-vindas valida o endereço
+    (um bounce cai na blocklist → alertas futuros suprimidos → protege a reputação sem bloquear a
+    conversão). Retorna `{status: monitoring_active}` (+ cookie) ou `{status: already_exists}` (o
+    front dispara um magic link). Anti-abuso: blocklist de descartáveis + 5/min & 30/dia por IP."""
     ip = _client_ip(request)
     email = (body.email or "").lower().strip()
     if is_disposable_email(email):
         raise HTTPException(status_code=400,
                             detail="Por favor, use um e-mail permanente para criar sua conta.")
-    allowed, retry = await _redis_allow("signup_inline", ip, 3, 3600, _signup_inline_hits)
+    allowed, retry = await _redis_allow("signup_inline", ip, 5, 60, _signup_inline_hits)
     if not allowed:
         raise HTTPException(status_code=429,
-                            detail="Muitos cadastros deste dispositivo. Tente novamente em alguns minutos.",
+                            detail="Muitas tentativas. Aguarde um momento.",
                             headers={"Retry-After": str(retry)})
+    allowed_d, retry_d = await _redis_allow("signup_inline_daily", ip, 30, 86400,
+                                            _signup_inline_daily_hits)
+    if not allowed_d:
+        raise HTTPException(status_code=429,
+                            detail="Muitos cadastros deste dispositivo hoje. Tente novamente amanhã.",
+                            headers={"Retry-After": str(retry_d)})
     if not _ACCOUNT_EMAIL_RE.match(email):
         raise HTTPException(status_code=400, detail="E-mail inválido.")
     store = get_target_store()
     if await store.get_user_by_email(email):
-        return {"status": "already_exists", "email": _mask_email(email)}
+        return JSONResponse({"status": "already_exists", "email": _mask_email(email)})
     user, _ = await _create_account_record(
         store, email, None, None, None, email_confirmed=False, source="inline")
     if user is None:  # corrida: e-mail criado entre o check e o insert
-        return {"status": "already_exists", "email": _mask_email(email)}
-    # Vincula o domínio como site PENDENTE (consentimento explícito). Domínio público/institucional
-    # NÃO é monitorável (o scan é livre; monitorar não). Vigílias só na confirmação do e-mail.
+        return JSONResponse({"status": "already_exists", "email": _mask_email(email)})
+    # KL-105 — ativa o monitoramento IMEDIATAMENTE (consentimento = o clique em "Monitorar"): vincula
+    # o site + vigílias + posse Tier 1. Domínio público/institucional NÃO é monitorável (o scan é
+    # livre; monitorar não) → conta criada mesmo assim, mas sem vínculo.
     domain = _norm_domain(body.domain or "")
+    monitored = False
     try:
         blocked, _reason = domain_guard.is_blocked_domain(domain)
         if domain and not blocked:
             tid = await _resolve_or_create_target(f"https://{domain}", source="inline")
             if tid:
-                await store.link_user_site(user["id"], tid, is_owner=False)
-    except Exception as exc:  # noqa: BLE001 - vínculo é best-effort; a conta já foi criada
-        print(f"[signup-inline] vincular {domain} falhou: {exc!r}", flush=True)
+                method = await _ownership_method(email, tid)   # Tier 1 (e-mail == contato/domínio)
+                owner = method is not None and not await store.site_has_owner(tid)
+                await store.link_user_site(user["id"], tid, is_owner=owner)
+                if owner:
+                    await store.mark_site_verified(user["id"], tid, method)
+                await _create_site_vigilias(user["id"], domain)
+                monitored = True
+    except Exception as exc:  # noqa: BLE001 - a conta já foi criada; monitoramento é best-effort
+        print(f"[signup-inline] ativar monitoramento {domain}: {exc!r}", flush=True)
     _spawn(_send_welcome_confirmation(user["id"], email))
-    return {"status": "confirmation_sent", "email": _mask_email(email)}
+    resp = JSONResponse({"status": "monitoring_active", "email": _mask_email(email),
+                         "monitoring": monitored, "user": _user_public(user)})
+    _set_session_cookie(resp, auth_users.create_user_token(user))
+    return resp
+
+
+@app.get("/account/monitoring-status")
+async def account_monitoring_status(request: Request, domain: str = Query(default="")) -> dict:
+    """KL-105 — o visitante está logado? monitora ESTE domínio? Usado pelo CTA do resultado do scan
+    para escolher entre "adicionar ao monitoramento" (não monitora) e "você já monitora este site".
+    Auth OPCIONAL (sem sessão → `logged_in:false`, nunca 401). Nunca expõe dado de outro usuário —
+    só o estado booleano + o e-mail do PRÓPRIO usuário. Rate limit 30/min por IP."""
+    allowed, _retry = await _redis_allow("monitoring_status", _client_ip(request), 30, 60,
+                                         _monitoring_status_hits)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Muitas consultas. Aguarde um momento.")
+    user = await auth_users.optional_user(request)
+    if not user:
+        return {"logged_in": False, "monitoring": False}
+    dom = _norm_domain(domain or "")
+    monitoring = False
+    if dom:
+        try:
+            sites = await get_target_store().list_user_sites(user["id"])
+            monitoring = any(_norm_domain(s.get("domain") or "") == dom for s in sites)
+        except Exception:  # noqa: BLE001 - falha de leitura → assume não-monitorado
+            monitoring = False
+    return {"logged_in": True, "monitoring": monitoring, "user_email": user.get("email")}
 
 
 # --------------------------------------------------------------------------- #
@@ -6146,6 +6191,8 @@ _KNOWN_EVENTS = {
     "sector_pill_click",
     # KL-104 P2 — filtros usados na página Alvos do admin (quais combinações priorizar)
     "admin_filter_used",
+    # KL-105 — funil de conversão do InlineSignup no resultado do scan (Fluxo D)
+    "inline_signup_shown", "inline_signup_click", "inline_signup_success", "inline_signup_existing",
 }
 _EVENT_RL_MAX = 100          # eventos/minuto por sessão
 _event_rl: dict = {}         # session_id -> lista de timestamps (janela de 60s)

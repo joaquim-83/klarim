@@ -34,6 +34,8 @@ def _reset_api_rate_limits():
         m._monitor_hits.clear()              # KL-93: monitoring/offer 3/h por IP
         m._alert_autocreate_hits.clear()     # KL-99: consentimento de monitoramento via alerta
         m._signup_inline_hits.clear()        # KL-99 Fluxo D: signup inline
+        m._signup_inline_daily_hits.clear()  # KL-105: backstop diário do signup inline
+        m._monitoring_status_hits.clear()    # KL-105: status de monitoramento
         m._verify_check_hits.clear()         # KL-99: verificação de domínio
         m._magic_email_hits.clear()          # KL-99: magic link por e-mail
         m._magic_ip_hits.clear()             # KL-99: magic link por IP

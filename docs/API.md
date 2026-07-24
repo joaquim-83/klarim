@@ -40,6 +40,9 @@ Um middleware (`_admin_auth_mw`) protege os prefixos abaixo (`_PROTECTED_PREFIXE
 | Método | Path | Descrição |
 |---|---|---|
 | POST | `/account/signup` | **KL-82 S2** — cria conta na hora (e-mail+senha≥8, `email_confirmed=false`) + welcome com link; nasce confirmada se o e-mail já foi verificado no scan. Blocklist de descartáveis (400) + rate limit **3/h & 5/dia por IP** (KL-85) |
+| POST | `/account/signup-inline` | **KL-99 Fluxo D + KL-105** — cadastro SEM senha no resultado do scan (`{email, domain}`): cria conta nível 1 (`source=inline`), **ATIVA o monitoramento na hora** (vincula site + vigílias + posse Tier 1) e **loga** (cookie). SEM confirmação prévia (converte). `{status: monitoring_active}` (+cookie) ou `{status: already_exists}` (o front dispara magic link). Welcome valida o e-mail (bounce→blocklist). Descartáveis 400 + rate limit **5/min & 30/dia por IP** |
+| GET | `/account/monitoring-status?domain=` | **KL-105** — o visitante está logado e monitora ESTE domínio? `{logged_in, monitoring, user_email?}`. Auth **opcional** (sem sessão → `logged_in:false`, nunca 401); só o e-mail do próprio usuário. Rate limit 30/min/IP |
+| POST | `/account/magic-link` | **KL-99** — envia link de acesso HMAC (`typ=magic`, TTL 1h) p/ conta sem senha voltar; `{status: sent\|not_found}`; rate limit 3/h/e-mail & 10/h/IP |
 | POST | `/account/verify` | (fallback dormente) verifica e-mail por código de 6 dígitos |
 | POST | `/account/login` | login → cookie de sessão |
 | POST | `/account/logout` | encerra sessão |

@@ -75,8 +75,9 @@ export const MONITOR_BENEFITS = [
   'Acompanhe a evolução do score',
 ];
 
-// KL-99 Fluxo D — copy do CTA de cadastro SEM senha (visitante orgânico, não logado). Só e-mail →
-// link de confirmação (a conta nasce sem senha, nível 1). Headline usa a contagem de riscos.
+// KL-99 Fluxo D + KL-105 — copy do CTA de cadastro SEM senha (visitante orgânico, não logado). Só
+// e-mail → a conta nasce sem senha (nível 1) e o monitoramento é ativado NA HORA (sem confirmação).
+// Headline usa a contagem de riscos.
 export function inlineSignupCopy(risksCount) {
   const n = Number(risksCount) || 0;
   const headline = n > 0
@@ -87,8 +88,13 @@ export function inlineSignupCopy(risksCount) {
     subtitle: 'Quer ser avisado quando algo mudar?',
     benefits: MONITOR_BENEFITS,
     button: 'Monitorar',
-    note: 'Gratuito. Sem spam. Cancele quando quiser.',
+    note: 'Gratuito. Sem spam.',
   };
+}
+
+// Valida um e-mail no cliente (mesmo padrão do LoginForm) — desabilita o botão enquanto inválido.
+export function isValidEmail(value) {
+  return /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test((value || '').trim());
 }
 
 // KL-99 Fluxo C — copy do consentimento de monitoramento (visitante JÁ logado, ex.: chegou pelo
