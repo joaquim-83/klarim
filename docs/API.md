@@ -158,7 +158,8 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 
 | Método | Path | Descrição |
 |---|---|---|
-| GET | `/targets` · `/targets/{id}` · `/targets/stats` | lista/detalhe/stats (filtros + `search`). O detalhe anexa `profile` (site_profile, KL-52), `classifications` (CNAE) e `owner` |
+| GET | `/targets` · `/targets/{id}` · `/targets/stats` | lista/detalhe/stats. **KL-104 P2:** 15 filtros que combinam com AND — `status`/`platform`/`sector`/`source`/`search`/`low_confidence` + `score` (`0-49`/`50-89`/`90-100`/`sem`) · `semaphore` (`verde`/`amarelo`/`vermelho`/`sem`) · `lead_score` (`alto`/`medio`/`baixo`/`sem`) · `has_email`/`monitored`/`owner_verified`/`has_ai_profile` (bool 3-estados) · `site_type`/`tech` (CSV multi) · `last_scan` (`hoje`/`7d`/`30d`/`nunca`). Response inclui `total` (filtrado) + `total_all` (geral, cache 1h). Tudo parametrizado. O detalhe anexa `profile` (site_profile, KL-52), `classifications` (CNAE) e `owner` |
+| GET | `/targets/tech-list` | KL-104 P2: top-20 tecnologias (nome) p/ o dropdown do filtro Tecnologia (cache 1h) |
 | POST | `/targets/add` | adiciona alvo (source=manual) + enfileira scan |
 | POST | `/targets/{id}/scan` | `?sync=1` → varredura **síncrona** (devolve `score`/`semaphore`); sem `sync` → enfileira |
 | POST | `/targets/{id}/rescan` · `/alert` · `/discard` | ações |

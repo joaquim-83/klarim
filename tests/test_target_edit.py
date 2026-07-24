@@ -30,9 +30,16 @@ class FakeStore:
         return {"id": target_id, "contact_email": email, "status": "discovered"}
 
     async def list_targets(self, status=None, platform=None, sector=None, source=None,
-                           limit=50, offset=0, low_confidence=False, search=None):
-        self.list_kwargs = {"status": status, "search": search, "limit": limit}
+                           limit=50, offset=0, low_confidence=False, search=None, **filters):
+        self.list_kwargs = {"status": status, "search": search, "limit": limit, **filters}
         return [{"id": 1, "url": "https://verdegreen.com.br", "domain": "verdegreen.com.br"}]
+
+    # KL-104 P2 — barra de totais (filtrado + geral).
+    async def count_targets_filtered(self, **filters):
+        return 1
+
+    async def count_targets(self, status=None):
+        return 42
 
     async def list_target_emails(self):
         return [

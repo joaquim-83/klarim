@@ -5397,13 +5397,59 @@ async def api_list_targets(
     source: Optional[str] = Query(default=None),
     low_confidence: bool = Query(default=False),
     search: Optional[str] = Query(default=None),
+    # KL-104 P2 — filtros avançados (todos opcionais; ausentes → ignorados).
+    score: Optional[str] = Query(default=None),
+    semaphore: Optional[str] = Query(default=None),
+    lead_score: Optional[str] = Query(default=None),
+    has_email: Optional[bool] = Query(default=None),
+    monitored: Optional[bool] = Query(default=None),
+    owner_verified: Optional[bool] = Query(default=None),
+    site_type: Optional[str] = Query(default=None),
+    last_scan: Optional[str] = Query(default=None),
+    tech: Optional[str] = Query(default=None),
+    has_ai_profile: Optional[bool] = Query(default=None),
     limit: int = Query(default=50, le=500),
     offset: int = Query(default=0, ge=0),
 ) -> dict:
-    rows = await get_target_store().list_targets(
-        status, platform, sector, source, limit, offset,
-        low_confidence=low_confidence, search=search)
-    return {"count": len(rows), "targets": rows}
+    store = get_target_store()
+    filt = dict(status=status, platform=platform, sector=sector, source=source,
+                low_confidence=low_confidence, search=search, score=score,
+                semaphore=semaphore, lead_score=lead_score, has_email=has_email,
+                monitored=monitored, owner_verified=owner_verified, site_type=site_type,
+                last_scan=last_scan, tech=tech, has_ai_profile=has_ai_profile)
+    rows = await store.list_targets(limit=limit, offset=offset, **filt)
+    total = await store.count_targets_filtered(**filt)
+    return {"count": len(rows), "targets": rows, "total": total,
+            "total_all": await _targets_total_all(), "page": offset // limit if limit else 0,
+            "per_page": limit}
+
+
+async def _targets_total_all() -> int:
+    """KL-104 P2 — total de alvos SEM filtro (denominador da barra de totais). Cache Redis 1h."""
+    cached = await _cache_get("targets:total_all")
+    if cached is not None and isinstance(cached, dict):
+        return int(cached.get("n") or 0)
+    try:
+        n = await get_target_store().count_targets()
+    except Exception:  # noqa: BLE001
+        n = 0
+    await _cache_set("targets:total_all", {"n": n}, ttl=3600)
+    return n
+
+
+@app.get("/targets/tech-list")
+async def api_targets_tech_list() -> dict:
+    """KL-104 P2 — top tecnologias (nome) p/ o dropdown do filtro Tecnologia. Cache 1h."""
+    cached = await _cache_get("targets:tech_list")
+    if cached is not None and isinstance(cached, dict):
+        return cached
+    try:
+        techs = await get_target_store().top_technologies(limit=20)
+    except Exception:  # noqa: BLE001
+        techs = []
+    out = {"technologies": techs}
+    await _cache_set("targets:tech_list", out, ttl=3600)
+    return out
 
 
 @app.get("/targets/stats")
@@ -6081,6 +6127,8 @@ _KNOWN_EVENTS = {
     "alert_session_created", "alert_session_converted", "account_created_alert",
     # KL-103 — clique nos pills de setor da landing (curiosidade por setor → priorização)
     "sector_pill_click",
+    # KL-104 P2 — filtros usados na página Alvos do admin (quais combinações priorizar)
+    "admin_filter_used",
 }
 _EVENT_RL_MAX = 100          # eventos/minuto por sessão
 _event_rl: dict = {}         # session_id -> lista de timestamps (janela de 60s)

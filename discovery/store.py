@@ -63,6 +63,12 @@ CREATE INDEX IF NOT EXISTS idx_targets_email_provider ON targets(email_provider)
 ALTER TABLE targets ADD COLUMN IF NOT EXISTS site_type VARCHAR(20) DEFAULT 'institucional';
 ALTER TABLE targets ADD COLUMN IF NOT EXISTS subdomain_count INTEGER DEFAULT 0;
 CREATE INDEX IF NOT EXISTS idx_targets_site_type ON targets(site_type);
+-- KL-104 P2 — filtros avançados da página Alvos: índices das colunas filtradas mais pesadas.
+CREATE INDEX IF NOT EXISTS idx_targets_last_scan_score ON targets(last_scan_score)
+    WHERE last_scan_score IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_targets_last_scan_at ON targets(last_scan_at)
+    WHERE last_scan_at IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_targets_owner_verified ON targets(id) WHERE owner_verified = TRUE;
 
 -- KL-84 — taxonomia ABERTA de setores. Os 48 setores fixos (KL-54) entram como 'official' via
 -- seed; a IA pode propor novos ('proposed') que o admin aprova/merge/rejeita. Só official/approved
@@ -1496,31 +1502,87 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
-    async def list_targets(
-        self, status: Optional[str] = None, platform: Optional[str] = None,
-        sector: Optional[str] = None, source: Optional[str] = None,
-        limit: int = 50, offset: int = 0, low_confidence: bool = False,
-        search: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+    @staticmethod
+    def _target_filters(f: Dict[str, Any]) -> tuple:
+        """KL-104 P2 — monta (where_clauses, params) dos filtros da página Alvos. TUDO
+        parametrizado (nunca interpola input); combina com AND. Valores desconhecidos são
+        ignorados (não quebram a query). Compartilhado por `list_targets`/`count_targets_filtered`
+        → a contagem bate exatamente com a listagem."""
+        where, params = [], []
+        for col in ("status", "platform", "sector", "source"):
+            if f.get(col):
+                where.append(f"t.{col} = %s")
+                params.append(f[col])
+        if f.get("low_confidence"):
+            where.append("t.classification_confidence < 0.5")
+        if (f.get("search") or "").strip():
+            like = f"%{f['search'].strip().lower()}%"
+            where.append("(LOWER(t.url) LIKE %s OR LOWER(t.domain) LIKE %s "
+                         "OR LOWER(COALESCE(t.contact_email, '')) LIKE %s)")
+            params.extend([like, like, like])
+        # score (faixa) e semáforo (derivado do score) — se ambos ativos, combinam com AND.
+        _SCORE = {"0-49": "t.last_scan_score BETWEEN 0 AND 49",
+                  "50-89": "t.last_scan_score BETWEEN 50 AND 89",
+                  "90-100": "t.last_scan_score BETWEEN 90 AND 100",
+                  "sem": "t.last_scan_score IS NULL"}
+        if f.get("score") in _SCORE:
+            where.append(_SCORE[f["score"]])
+        _SEM = {"verde": "t.last_scan_score >= 90",
+                "amarelo": "t.last_scan_score >= 50 AND t.last_scan_score < 90",
+                "vermelho": "t.last_scan_score < 50", "sem": "t.last_scan_score IS NULL"}
+        if f.get("semaphore") in _SEM:
+            where.append(f"({_SEM[f['semaphore']]})")
+        _LEAD = {"alto": "t.alert_quality_score >= 60",
+                 "medio": "t.alert_quality_score >= 30 AND t.alert_quality_score < 60",
+                 "baixo": "t.alert_quality_score < 30", "sem": "t.alert_quality_score IS NULL"}
+        if f.get("lead_score") in _LEAD:
+            where.append(f"({_LEAD[f['lead_score']]})")
+        # toggles (True=sim, False=não, None=ignora)
+        if f.get("has_email") is not None:
+            where.append("(t.contact_email IS NOT NULL AND t.contact_email <> '')"
+                         if f["has_email"] else "(t.contact_email IS NULL OR t.contact_email = '')")
+        if f.get("monitored") is not None:
+            ex = "EXISTS (SELECT 1 FROM user_sites us WHERE us.target_id = t.id)"
+            where.append(ex if f["monitored"] else f"NOT {ex}")
+        if f.get("owner_verified") is not None:
+            where.append("t.owner_verified = TRUE" if f["owner_verified"]
+                         else "COALESCE(t.owner_verified, FALSE) = FALSE")
+        if f.get("has_ai_profile") is not None:
+            ex = ("EXISTS (SELECT 1 FROM site_profile sp WHERE sp.target_id = t.id "
+                  "AND sp.description IS NOT NULL AND sp.description <> '')")
+            where.append(ex if f["has_ai_profile"] else f"NOT {ex}")
+        if f.get("site_type"):
+            types = [s.strip() for s in str(f["site_type"]).split(",") if s.strip()][:20]
+            if types:
+                where.append("t.site_type = ANY(%s)")
+                params.append(types)
+        _SCAN = {"nunca": "t.last_scan_at IS NULL",
+                 "hoje": "t.last_scan_at >= date_trunc('day', NOW())",
+                 "7d": "t.last_scan_at >= NOW() - INTERVAL '7 days'",
+                 "30d": "t.last_scan_at >= NOW() - INTERVAL '30 days'"}
+        if f.get("last_scan") in _SCAN:
+            where.append(_SCAN[f["last_scan"]])
+        if f.get("tech"):
+            techs = [s.strip() for s in str(f["tech"]).split(",") if s.strip()][:20]
+            if techs:  # EXISTS lazy — só junta o site_tech_stack quando o filtro está ativo (idx name)
+                where.append("EXISTS (SELECT 1 FROM site_tech_stack st "
+                             "WHERE st.target_id = t.id AND st.name = ANY(%s))")
+                params.append(techs)
+        return where, params
+
+    async def list_targets(self, status: Optional[str] = None, platform: Optional[str] = None,
+                           sector: Optional[str] = None, source: Optional[str] = None,
+                           limit: int = 50, offset: int = 0, low_confidence: bool = False,
+                           search: Optional[str] = None, **filters: Any) -> List[Dict[str, Any]]:
+        """Lista alvos com os filtros da página Alvos (KL-104 P2). `**filters` aceita score,
+        semaphore, lead_score, has_email, monitored, owner_verified, site_type, last_scan,
+        tech, has_ai_profile — todos parametrizados. Retorna a LISTA (shape inalterado)."""
+        f = {"status": status, "platform": platform, "sector": sector, "source": source,
+             "low_confidence": low_confidence, "search": search, **filters}
+        where, params = self._target_filters(f)
+
         def _fn(cur):
-            where, params = [], []
-            for col, val in (("status", status), ("platform", platform),
-                             ("sector", sector), ("source", source)):
-                if val:
-                    where.append(f"t.{col} = %s")
-                    params.append(val)
-            if low_confidence:  # revisão manual: classificação incerta (< 0.5)
-                where.append("t.classification_confidence < 0.5")
-            if search and search.strip():
-                # Busca case-insensitive + parcial em url, domínio e e-mail.
-                like = f"%{search.strip().lower()}%"
-                where.append("(LOWER(t.url) LIKE %s OR LOWER(t.domain) LIKE %s "
-                             "OR LOWER(COALESCE(t.contact_email, '')) LIKE %s)")
-                params.extend([like, like, like])
             clause = ("WHERE " + " AND ".join(where)) if where else ""
-            params.extend([limit, offset])
-            # JOIN traz o semáforo do último scan (KL-14: lista de alvos no painel) e
-            # o estado da landing pública (KL-56: has_profile + public_visible).
             cur.execute(
                 f"SELECT t.*, s.semaphore AS last_semaphore, "
                 f"       (sp.id IS NOT NULL) AS has_profile, "
@@ -1529,9 +1591,30 @@ class TargetStore:
                 f"LEFT JOIN scans s ON t.last_scan_id = s.id "
                 f"LEFT JOIN site_profile sp ON sp.target_id = t.id {clause} "
                 f"ORDER BY t.discovered_at DESC LIMIT %s OFFSET %s",
-                params,
+                params + [limit, offset],
             )
             return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def count_targets_filtered(self, **filters: Any) -> int:
+        """KL-104 P2 — total de alvos com os MESMOS filtros de `list_targets` (bate com a
+        listagem). Usa o `_target_filters` compartilhado."""
+        where, params = self._target_filters(filters)
+
+        def _fn(cur):
+            clause = ("WHERE " + " AND ".join(where)) if where else ""
+            cur.execute(f"SELECT COUNT(*) FROM targets t {clause}", params)
+            return int(cur.fetchone()[0])
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def top_technologies(self, limit: int = 20) -> List[str]:
+        """KL-104 P2 — as tecnologias mais frequentes (nome) para o dropdown do filtro Tecnologia."""
+        def _fn(cur):
+            cur.execute("SELECT name, COUNT(*) FROM site_tech_stack GROUP BY name "
+                        "ORDER BY COUNT(*) DESC LIMIT %s", (limit,))
+            return [r[0] for r in cur.fetchall()]
 
         return await asyncio.to_thread(self._run, _fn)
 

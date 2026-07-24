@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { admin } from '../../lib/admin/adminApi'
 import { useAsync, useDebounce } from '../../lib/admin/useAsync'
 import {
@@ -9,6 +9,10 @@ import { SectorEditor, SECTOR_OPTIONS } from './SectorEditor'
 import { StatusEditor, EmailEditor } from './TargetEditors'
 import { ProfileEditModal } from './ProfileEditor'
 import AdminShell from './AdminShell'
+import AlvosFilters from './AlvosFilters'
+import {
+  readFiltersFromURL, filtersToQueryString, filtersToApiParams, activeFilterCount,
+} from '../../lib/admin/alvosFilters'
 
 // Portado de frontend/src/pages/admin/Alvos.jsx (KL-51 fase 2). Link → <a href>; editores
 // inline (SectorEditor/StatusEditor/EmailEditor/ProfileEditModal) já portados na fase 1.
@@ -19,26 +23,20 @@ const SECTOR_OPTS = SECTOR_OPTIONS.map((o) => o.value)
 const SOURCE_OPTS = ['public', 'discovery', 'admin', 'manual']
 const PAGE_SIZE = 25
 
-function Select({ value, onChange, options, allLabel, labels }) {
-  return (
-    <select
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      className="rounded-lg border border-klarim-border bg-klarim-surface px-3 py-1.5 text-sm text-klarim-text outline-none focus:border-klarim-alert"
-    >
-      <option value="">{allLabel}</option>
-      {options.map((o) => <option key={o} value={o}>{labels?.[o] || o}</option>)}
-    </select>
-  )
+// ID de sessão estável do admin (para o evento admin_filter_used; sem PII).
+function adminSession() {
+  try {
+    let s = localStorage.getItem('klarim_admin_session')
+    if (!s) { s = 'adm-' + Math.random().toString(36).slice(2) + Date.now().toString(36); localStorage.setItem('klarim_admin_session', s) }
+    return s
+  } catch { return 'adm-anon' }
 }
 
 export default function AlvosPage() {
-  const [status, setStatus] = useState('')
-  const [platform, setPlatform] = useState('')
-  const [sector, setSector] = useState('')
-  const [source, setSource] = useState('')
-  const [lowConf, setLowConf] = useState(false)
-  const [search, setSearch] = useState('')
+  // KL-104 P2 — 15 filtros num único objeto, sincronizado com a URL (deep-link/bookmark).
+  const [filters, setFilters] = useState(
+    () => readFiltersFromURL(typeof window !== 'undefined' ? window.location.search : ''),
+  )
   const [page, setPage] = useState(0)
   const [msg, setMsg] = useState('')
   const [busyId, setBusyId] = useState(null)
@@ -49,16 +47,58 @@ export default function AlvosPage() {
   const [bulkSector, setBulkSector] = useState('hotel')
   const [bulkBusy, setBulkBusy] = useState(false)
 
-  const debouncedSearch = useDebounce(search.trim(), 300)
+  // A URL reflete os filtros (replaceState → não polui o histórico).
+  useEffect(() => {
+    if (typeof window === 'undefined') return
+    const q = filtersToQueryString(filters)
+    window.history.replaceState(null, '', q ? `${window.location.pathname}?${q}` : window.location.pathname)
+  }, [filters])
+
+  function setFilter(key, value) {
+    setFilters((prev) => {
+      const next = { ...prev }
+      if (value === undefined || value === null || value === '') delete next[key]
+      else next[key] = value
+      return next
+    })
+    setPage(0)
+  }
+  function clearFilters() { setFilters({}); setPage(0) }
+
+  // Params da API (search trimado; string estável p/ debounce coalescer teclas/cliques).
+  const apiParams = filtersToApiParams(filters)
+  if (typeof apiParams.search === 'string') {
+    apiParams.search = apiParams.search.trim()
+    if (!apiParams.search) delete apiParams.search
+  }
+  const apiKey = useDebounce(JSON.stringify(apiParams), 300)
 
   const { data, loading, error, reload } = useAsync(
-    () => admin.targets({
-      status, platform, sector, source, low_confidence: lowConf || undefined,
-      search: debouncedSearch || undefined,
-      limit: PAGE_SIZE, offset: page * PAGE_SIZE,
-    }),
-    [status, platform, sector, source, lowConf, debouncedSearch, page],
+    () => admin.targets({ ...JSON.parse(apiKey), limit: PAGE_SIZE, offset: page * PAGE_SIZE }),
+    [apiKey, page],
   )
+
+  // Lista de tecnologias para o dropdown (cacheada no backend 1h).
+  const { data: techData } = useAsync(() => admin.techList(), [])
+  const techList = techData?.technologies || []
+
+  // KL-57: registra quais combinações de filtro são usadas (fire-and-forget, sem PII).
+  useEffect(() => {
+    const p = JSON.parse(apiKey)
+    if (activeFilterCount(p) === 0) return
+    const keys = Object.keys(p).filter((k) => k !== 'search').sort()
+    if (keys.length === 0) return
+    try {
+      fetch('/api/events', {
+        method: 'POST', keepalive: true,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          event_type: 'admin_filter_used', session_id: adminSession(),
+          metadata: { filters: keys, combo: keys.join('+') },
+        }),
+      }).catch(() => {})
+    } catch { /* nunca quebra a página */ }
+  }, [apiKey])
 
   function toggleSel(id) {
     setSelected((prev) => {
@@ -145,25 +185,20 @@ export default function AlvosPage() {
           </div>
         </div>
 
-        {/* Filtros */}
-        <div className="flex flex-wrap gap-2">
-          <Select value={status} onChange={(v) => { setStatus(v); setPage(0) }} options={STATUS_OPTS} allLabel="Todos os status" labels={STATUS_LABEL} />
-          <Select value={platform} onChange={(v) => { setPlatform(v); setPage(0) }} options={PLATFORM_OPTS} allLabel="Todas as plataformas" />
-          <Select value={sector} onChange={(v) => { setSector(v); setPage(0) }} options={SECTOR_OPTS} allLabel="Todos os setores" />
-          <Select value={source} onChange={(v) => { setSource(v); setPage(0) }} options={SOURCE_OPTS} allLabel="Todas as origens" />
-          <button
-            onClick={() => { setLowConf(!lowConf); setPage(0) }}
-            className={`rounded-lg border px-3 py-1.5 text-sm ${lowConf ? 'border-klarim-alert bg-klarim-alert/15 text-klarim-text' : 'border-klarim-border bg-klarim-surface text-klarim-muted hover:text-klarim-text'}`}
-          >
-            Classificação incerta
-          </button>
-          <input
-            value={search}
-            onChange={(e) => { setSearch(e.target.value); setPage(0) }}
-            placeholder="Buscar por site ou email…"
-            className="min-w-40 flex-1 rounded-lg border border-klarim-border bg-klarim-surface px-3 py-1.5 text-sm outline-none focus:border-klarim-alert"
-          />
-        </div>
+        {/* Filtros avançados (KL-104 P2) */}
+        <AlvosFilters
+          filters={filters}
+          setFilter={setFilter}
+          clearFilters={clearFilters}
+          total={data?.total}
+          totalAll={data?.total_all}
+          techList={techList}
+          statusOpts={STATUS_OPTS}
+          statusLabel={STATUS_LABEL}
+          sectorOpts={SECTOR_OPTS}
+          platformOpts={PLATFORM_OPTS}
+          sourceOpts={SOURCE_OPTS}
+        />
 
         {msg && <div className="text-sm text-klarim-muted">{msg}</div>}
 
@@ -278,7 +313,8 @@ export default function AlvosPage() {
               </table>
             </div>
           )}
-          <Pagination page={page} setPage={setPage} hasNext={(data?.targets || []).length === PAGE_SIZE} />
+          <Pagination page={page} setPage={setPage}
+            hasNext={data?.total != null ? (page + 1) * PAGE_SIZE < data.total : (data?.targets || []).length === PAGE_SIZE} />
         </Card>
 
         {showAdd && <AddTargetModal onClose={() => setShowAdd(false)} onAdded={(note) => { setShowAdd(false); if (note) setMsg(note); reload() }} />}

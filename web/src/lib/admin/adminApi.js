@@ -103,6 +103,7 @@ export const admin = {
 
   // alvos
   targets: (params) => get(`/targets${qs(params)}`),
+  techList: () => get('/targets/tech-list'),   // KL-104 P2 — top tecnologias p/ o filtro
   target: (id) => get(`/targets/${id}`),
   addTarget: (url) => post('/targets/add', { url }),
   // FIX scan admin: síncrono (sync=1) devolve score/semaphore imediatamente
