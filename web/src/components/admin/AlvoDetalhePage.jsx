@@ -9,6 +9,7 @@ import { SectorEditor } from './SectorEditor'
 import { StatusEditor, EmailEditor } from './TargetEditors'
 import { ProfileEditModal } from './ProfileEditor'
 import AdminShell from './AdminShell'
+import TargetIntelligence from './TargetIntelligence'
 
 // Portado de frontend/src/pages/admin/AlvoDetalhe.jsx (KL-51 fase 2). useParams → pathname;
 // Link → <a href>; useNavigate removido (não era usado).
@@ -96,6 +97,9 @@ export default function AlvoDetalhePage() {
             )}
           </div>
         )}
+
+        {/* KL-104 P3 — Visão 360°: monitoramento + funil + visitantes + timeline */}
+        <TargetIntelligence targetId={id} />
 
         {/* Ações */}
         <div className="flex flex-wrap gap-2">

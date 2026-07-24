@@ -105,6 +105,8 @@ export const admin = {
   targets: (params) => get(`/targets${qs(params)}`),
   techList: () => get('/targets/tech-list'),   // KL-104 P2 — top tecnologias p/ o filtro
   target: (id) => get(`/targets/${id}`),
+  // KL-104 P3 — visão 360° (monitoramento + funil + visitantes + timeline). `before` = cursor.
+  targetIntelligence: (id, params) => get(`/admin/targets/${id}/intelligence${qs(params)}`),
   addTarget: (url) => post('/targets/add', { url }),
   // FIX scan admin: síncrono (sync=1) devolve score/semaphore imediatamente
   scanTarget: (id) => post(`/targets/${id}/scan?sync=1`),

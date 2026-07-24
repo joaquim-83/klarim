@@ -165,6 +165,7 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 | POST | `/targets/{id}/rescan` · `/alert` · `/discard` | ações |
 | GET | `/targets/{id}/profile` · `/classifications` · `/payments` | anexos |
 | GET | `/targets/{id}/tech-stack` | KL-75: stack DETALHADO (nomes/versões/fonte) + `email_provider` + `related_domains` + `status_history` |
+| GET | `/admin/targets/{id}/intelligence?before=&limit=` | **KL-104 P3** — Visão 360° numa chamada: `monitoring` (quem monitora + vigílias + dono verificado + técnico), `funnel` (6 etapas + e-mails enviados/summary + lead score), `visitors` (consultas/IPs **mascarados /24** + cross-site com `target_id` + fontes de tráfego), `timeline` (eventos de scans/alertas/perfil/status/descoberta em ordem DESC, paginação por cursor `before`+`has_more`/`next_cursor`). Cada seção é **isolada** — falha vira `null`/`{error}`, nunca quebra o response. IP completo NUNCA sai do backend |
 | PUT | `/targets/{id}/profile` | edita perfil — texto **+ contatos** (phone/whatsapp/address/socials) + `clear_fields` (KL-67); marca `edited_by_admin`, limpa `low_confidence_fields` |
 | POST | `/admin/revalidate-profiles?dry_run=` | KL-67: aplica os filtros de qualidade aos perfis existentes (sem re-scrape); dry-run conta o impacto |
 | PATCH | `/targets/{id}/classify` · `/email` · `/status` · `/profile/visibility` | edições inline |

@@ -5611,6 +5611,23 @@ async def api_get_target(target_id: int) -> dict:
     return target
 
 
+@app.get("/admin/targets/{target_id}/intelligence")
+async def api_target_intelligence(target_id: int,
+                                  before: Optional[str] = Query(default=None),
+                                  limit: int = Query(default=30, ge=1, le=50)) -> dict:
+    """KL-104 P3 — Visão 360° do alvo: monitoramento + funil + visitantes + timeline numa
+    chamada. Admin-only (prefixo `/admin`). Cada seção é isolada — uma falha vira `error`, não
+    quebra as outras. IPs saem MASCARADOS a /24 (LGPD, KL-92)."""
+    from api.target_intelligence import build_intelligence, parse_cursor
+    from api.access_log_middleware import mask_ip
+    store = get_target_store()
+    target = await store.get_target(target_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="Alvo não encontrado.")
+    return await build_intelligence(store, target, before=parse_cursor(before),
+                                    limit=limit, mask=mask_ip)
+
+
 @app.get("/targets/{target_id}/classifications")
 async def api_target_classifications(target_id: int) -> dict:
     """Classificações CNAE multi-setor de um alvo (KL-55), ordenadas por rank."""

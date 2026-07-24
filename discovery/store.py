@@ -798,6 +798,9 @@ CREATE INDEX IF NOT EXISTS idx_access_domain ON access_log(domain_queried);
 CREATE INDEX IF NOT EXISTS idx_access_user ON access_log(user_id);
 CREATE INDEX IF NOT EXISTS idx_access_bot ON access_log(is_bot, created_at);
 CREATE INDEX IF NOT EXISTS idx_access_country ON access_log(country_code, created_at);
+-- KL-104 P3: inteligência de visitantes por alvo (visitantes/cross-site com filtro de data).
+CREATE INDEX IF NOT EXISTS idx_access_domain_created ON access_log(domain_queried, created_at);
+CREATE INDEX IF NOT EXISTS idx_access_ip_created ON access_log(ip_address, created_at);
 -- KL-92 P3: origem do registro — 'middleware' (FastAPI, tráfego /api+/mcp, com user_id) ou
 -- 'nginx' (parser do access_log do Nginx, páginas Astro que não tocam a API). Fontes
 -- disjuntas (o parser pula /api e /mcp) → cobertura completa sem duplicar.
@@ -1616,6 +1619,203 @@ class TargetStore:
                         "ORDER BY COUNT(*) DESC LIMIT %s", (limit,))
             return [r[0] for r in cur.fetchall()]
 
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- KL-104 P3: inteligência 360° do alvo ------------------------------ #
+    # Cada método é uma query isolada (própria conexão) → uma falha (ex.: tabela
+    # ausente) não derruba as outras seções. Todo input é parametrizado. IPs saem
+    # COMPLETOS daqui; o mascaramento LGPD (/24) é aplicado no módulo de montagem.
+
+    async def ti_monitors(self, target_id: int) -> List[Dict[str, Any]]:
+        """Quem monitora o alvo (user_sites → users). O e-mail dos usuários é dado
+        admin legítimo (o operador é o dono da plataforma)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT u.email, u.plan, u.account_level, us.added_at, us.is_owner "
+                "FROM user_sites us JOIN users u ON u.id = us.user_id "
+                "WHERE us.target_id = %s ORDER BY us.added_at ASC", (target_id,))
+            return self._rows_to_dicts(cur)
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def ti_vigilias(self, domain: str) -> List[Dict[str, Any]]:
+        """Vigílias do domínio (a tabela `vigilias` é chaveada por site_domain)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT tipo, last_status, last_check_at, next_check_at, enabled "
+                "FROM vigilias WHERE site_domain = %s ORDER BY tipo", (domain,))
+            return self._rows_to_dicts(cur)
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def ti_ownership(self, target_id: int) -> Optional[Dict[str, Any]]:
+        """Verificação de propriedade comprovada mais recente (ou None)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT method, verified_at FROM ownership_verifications "
+                "WHERE target_id = %s AND status = 'verified' "
+                "ORDER BY verified_at DESC NULLS LAST LIMIT 1", (target_id,))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def ti_technician(self, target_id: int) -> Optional[Dict[str, Any]]:
+        """Técnico vinculado (prioriza o não-revogado mais recente)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT technician_email AS email, status, linked_at, invited_at "
+                "FROM technician_links WHERE target_id = %s "
+                "ORDER BY (status <> 'revoked') DESC, COALESCE(linked_at, invited_at) DESC "
+                "LIMIT 1", (target_id,))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def ti_funnel_flags(self, target_id: int, url: str, domain: str) -> Dict[str, Any]:
+        """Timestamps das etapas do funil (MIN por sinal). Etapa ausente → None."""
+        def _fn(cur):
+            cur.execute("SELECT MIN(sent_at) FROM email_log WHERE target_id = %s "
+                        "AND email_type IN ('alert','alert_score100')", (target_id,))
+            first_alert_at = cur.fetchone()[0]
+            cur.execute("SELECT MIN(added_at) FROM user_sites WHERE target_id = %s", (target_id,))
+            account_at = cur.fetchone()[0]
+            cur.execute("SELECT MIN(created_at) FROM vigilias WHERE site_domain = %s "
+                        "AND enabled = TRUE", (domain,))
+            monitoring_at = cur.fetchone()[0]
+            cur.execute("SELECT MIN(COALESCE(paid_at, created_at)) FROM payments "
+                        "WHERE target_url = %s AND (status = 'PAID' OR paid_at IS NOT NULL)", (url,))
+            paid_at = cur.fetchone()[0]
+            return {"first_alert_at": first_alert_at, "account_at": account_at,
+                    "monitoring_at": monitoring_at, "paid_at": paid_at}
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def ti_emails(self, target_id: int, limit: int = 20) -> List[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute("SELECT email_type, sent_at, from_domain, status, email_id "
+                        "FROM email_log WHERE target_id = %s ORDER BY sent_at DESC LIMIT %s",
+                        (target_id, limit))
+            return self._rows_to_dicts(cur)
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def ti_emails_summary(self, target_id: int) -> Dict[str, Any]:
+        def _fn(cur):
+            cur.execute("SELECT COUNT(*), MAX(sent_at) FROM email_log WHERE target_id = %s", (target_id,))
+            total, last = cur.fetchone()
+            cur.execute("SELECT email_type, COUNT(*) FROM email_log WHERE target_id = %s "
+                        "GROUP BY email_type", (target_id,))
+            by_type = {r[0]: int(r[1]) for r in cur.fetchall()}
+            cur.execute("SELECT status, COUNT(*) FROM email_log WHERE target_id = %s "
+                        "GROUP BY status", (target_id,))
+            by_status = {r[0]: int(r[1]) for r in cur.fetchall()}
+            return {"total": int(total or 0), "last_sent_at": last,
+                    "by_type": by_type, "by_status": by_status}
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def ti_visitors(self, domain: str, days: int = 30, top: int = 10) -> Dict[str, Any]:
+        """Totais + top IPs (humanos, últimos N dias). IP completo — mascarado no módulo."""
+        def _fn(cur):
+            cutoff = f"NOW() - INTERVAL '{int(days)} days'"
+            cur.execute(f"SELECT COUNT(*), COUNT(DISTINCT ip_address) FROM access_log "
+                        f"WHERE domain_queried = %s AND is_bot = FALSE AND created_at >= {cutoff}",
+                        (domain,))
+            total, uniq = cur.fetchone()
+            cur.execute(f"SELECT ip_address::text AS ip, COUNT(*) AS queries, "
+                        f"MIN(created_at) AS first_seen, MAX(created_at) AS last_seen, "
+                        f"MAX(country_code) AS country "
+                        f"FROM access_log WHERE domain_queried = %s AND is_bot = FALSE "
+                        f"AND created_at >= {cutoff} GROUP BY ip_address "
+                        f"ORDER BY queries DESC LIMIT %s", (domain, top))
+            return {"total_queries": int(total or 0), "unique_ips": int(uniq or 0),
+                    "top_ips": self._rows_to_dicts(cur)}
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def ti_cross_site(self, ips: List[str], domain: str, days: int = 30) -> List[Dict[str, Any]]:
+        """Outros domínios consultados pelos mesmos IPs (cross-site). 1 query p/ todos os
+        top IPs (evita N+1); o corte por-IP (LIMIT 5) é no módulo."""
+        if not ips:
+            return []
+        def _fn(cur):
+            cutoff = f"NOW() - INTERVAL '{int(days)} days'"
+            cur.execute(f"SELECT ip_address::text AS ip, domain_queried "
+                        f"FROM access_log WHERE ip_address = ANY(%s::inet[]) "
+                        f"AND domain_queried IS NOT NULL AND domain_queried <> %s "
+                        f"AND is_bot = FALSE AND created_at >= {cutoff} "
+                        f"GROUP BY ip_address, domain_queried", (ips, domain))
+            return self._rows_to_dicts(cur)
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def ti_traffic_sources(self, domain: str, days: int = 30) -> List[Dict[str, Any]]:
+        def _fn(cur):
+            cutoff = f"NOW() - INTERVAL '{int(days)} days'"
+            cur.execute(f"SELECT referrer, COUNT(*) AS n FROM access_log "
+                        f"WHERE domain_queried = %s AND is_bot = FALSE AND created_at >= {cutoff} "
+                        f"GROUP BY referrer", (domain,))
+            return [{"referrer": r[0], "count": int(r[1])} for r in cur.fetchall()]
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- timeline: cada fonte é isolada (tabela ausente → módulo pula) ------ #
+
+    async def ti_tl_scans(self, target_id: int, before, limit: int = 30) -> List[Dict[str, Any]]:
+        def _fn(cur):
+            extra, params = "", [target_id]
+            if before is not None:
+                extra = "AND scanned_at < %s "
+                params.append(before)
+            params.append(limit)
+            cur.execute(f"SELECT id, scanned_at AS at, score, semaphore, pass_count, "
+                        f"fail_count, status FROM scans WHERE target_id = %s {extra}"
+                        f"ORDER BY scanned_at DESC LIMIT %s", params)
+            return self._rows_to_dicts(cur)
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def ti_tl_alerts(self, target_id: int, before, limit: int = 30) -> List[Dict[str, Any]]:
+        def _fn(cur):
+            # sent_at é TIMESTAMPTZ; normaliza p/ naive-UTC (`AT TIME ZONE 'UTC'`) → o merge da
+            # timeline no módulo não mistura datetime aware/naive (as outras fontes são naive).
+            extra, params = "", [target_id]
+            if before is not None:
+                extra = "AND (sent_at AT TIME ZONE 'UTC') < %s "
+                params.append(before)
+            params.append(limit)
+            cur.execute(f"SELECT (sent_at AT TIME ZONE 'UTC') AS at, from_domain, status, email_type "
+                        f"FROM email_log WHERE target_id = %s "
+                        f"AND email_type IN ('alert','alert_score100') {extra}"
+                        f"ORDER BY sent_at DESC LIMIT %s", params)
+            return self._rows_to_dicts(cur)
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def ti_tl_profile_views(self, domain: str, before, limit: int = 30) -> List[Dict[str, Any]]:
+        def _fn(cur):
+            extra, params = "", [domain]
+            if before is not None:
+                extra = "AND created_at < %s "
+                params.append(before)
+            params.append(limit)
+            cur.execute(f"SELECT created_at AS at, ip_address::text AS ip, country_code "
+                        f"FROM access_log WHERE domain_queried = %s AND is_bot = FALSE "
+                        f"AND endpoint LIKE '/site/%%' {extra}"
+                        f"ORDER BY created_at DESC LIMIT %s", params)
+            return self._rows_to_dicts(cur)
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def ti_tl_status(self, target_id: int, before, limit: int = 30) -> List[Dict[str, Any]]:
+        def _fn(cur):
+            extra, params = "", [target_id]
+            if before is not None:
+                extra = "AND detected_at < %s "
+                params.append(before)
+            params.append(limit)
+            cur.execute(f"SELECT detected_at AS at, status, http_code "
+                        f"FROM site_status_log WHERE target_id = %s {extra}"
+                        f"ORDER BY detected_at DESC LIMIT %s", params)
+            return self._rows_to_dicts(cur)
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def ti_domain_ids(self, domains: List[str]) -> Dict[str, int]:
+        """domínio → target_id (p/ os DomainLinks do cross-site). 1 query."""
+        if not domains:
+            return {}
+        def _fn(cur):
+            cur.execute("SELECT domain, id FROM targets WHERE domain = ANY(%s)", (list(domains),))
+            return {r[0]: r[1] for r in cur.fetchall()}
         return await asyncio.to_thread(self._run, _fn)
 
     async def count_discovered_today(self) -> int:
