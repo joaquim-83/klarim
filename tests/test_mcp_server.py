@@ -25,6 +25,7 @@ import mcp_server.tools.tech as tech_tools
 
 READ_TOOLS = [
     "get_system_status", "get_email_health", "get_discovery_status", "get_config",
+    "get_email_verification_stats",  # KL-110: verificação de deliverability pré-envio
     "get_gcs_archive_stats",  # KL-77: saúde do arquivamento de responses brutos no GCS
     "list_targets", "get_target", "get_target_stats", "search_targets",
     "get_site_profile",   # KL-52: perfil comercial extraído (site_profile)

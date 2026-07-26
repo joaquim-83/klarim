@@ -1,0 +1,411 @@
+"""KL-110 — testes da verificação de deliverability de e-mail (local + API Reoon)."""
+import asyncio
+
+import pytest
+
+from notifier import email_verifier as ev
+from discovery.alert_scoring import calculate_alert_score
+from discovery import contact as contact_mod
+from discovery.store import TargetStore
+
+
+# --------------------------------------------------------------------------- #
+# Fakes
+# --------------------------------------------------------------------------- #
+
+class FakeRedis:
+    def __init__(self):
+        self.d = {}
+
+    async def get(self, k):
+        return self.d.get(k)
+
+    async def set(self, k, v, ex=None):
+        self.d[k] = v
+
+
+class FakeResp:
+    def __init__(self, data, status=200):
+        self._data = data
+        self.status_code = status
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            import httpx
+            raise httpx.HTTPStatusError("err", request=None, response=None)
+
+    def json(self):
+        return self._data
+
+
+class FakeClient:
+    """Cliente httpx falso: devolve `data` fixo em .get()."""
+    def __init__(self, data):
+        self.data = data
+        self.calls = 0
+
+    async def get(self, url, params=None, timeout=None):
+        self.calls += 1
+        return FakeResp(self.data)
+
+
+# --------------------------------------------------------------------------- #
+# Camada 0 — verify_local
+# --------------------------------------------------------------------------- #
+
+def test_verify_local_valid(monkeypatch):
+    monkeypatch.setattr(ev, "_resolve_mx_sync", lambda d: "ok")
+    r = asyncio.run(ev.verify_local("joao@empresa.com.br"))
+    assert r.status == "valid" and r.reason == "ok" and not r.is_role_based
+
+
+def test_verify_local_invalid_syntax():
+    r = asyncio.run(ev.verify_local("nao-eh-email"))
+    assert r.status == "invalid" and r.reason == "syntax"
+
+
+def test_verify_local_disposable():
+    # mailinator.com está na lista curada (KL-85). Não precisa de MX.
+    r = asyncio.run(ev.verify_local("teste@mailinator.com"))
+    assert r.status == "disposable" and r.reason == "disposable_domain"
+
+
+def test_verify_local_no_mx(monkeypatch):
+    monkeypatch.setattr(ev, "_resolve_mx_sync", lambda d: "no_mx")
+    r = asyncio.run(ev.verify_local("contato@semmx.com"))
+    assert r.status == "invalid" and r.reason == "no_mx"
+
+
+def test_verify_local_role_based_flag(monkeypatch):
+    monkeypatch.setattr(ev, "_resolve_mx_sync", lambda d: "ok")
+    r = asyncio.run(ev.verify_local("contato@empresa.com.br"))
+    assert r.status == "valid" and r.is_role_based is True
+
+
+def test_verify_local_mx_unknown_is_fail_open(monkeypatch):
+    # DNS incerto (timeout) → não rejeita (has_mx=True), status 'valid'.
+    monkeypatch.setattr(ev, "_resolve_mx_sync", lambda d: "unknown")
+    r = asyncio.run(ev.verify_local("x@dominio.com"))
+    assert r.status == "valid"
+
+
+def test_mx_cache_uses_redis(monkeypatch):
+    calls = {"n": 0}
+
+    def _resolve(d):
+        calls["n"] += 1
+        return "ok"
+
+    monkeypatch.setattr(ev, "_resolve_mx_sync", _resolve)
+    redis = FakeRedis()
+    asyncio.run(ev.verify_local("a@dominio.com", redis))
+    asyncio.run(ev.verify_local("b@dominio.com", redis))  # mesmo domínio → cache
+    assert calls["n"] == 1  # só 1 resolução DNS
+
+
+# --------------------------------------------------------------------------- #
+# Camada 1 — Reoon parse + fallback
+# --------------------------------------------------------------------------- #
+
+def test_parse_reoon_power_safe():
+    r = ev.parse_reoon_response({"status": "safe", "overall_score": 95}, "power")
+    assert r.status == "safe" and r.score == 95 and r.source == "reoon"
+
+
+def test_parse_reoon_role_account_maps_to_role():
+    r = ev.parse_reoon_response({"status": "role_account", "is_role_account": True}, "power")
+    assert r.status == "role" and r.is_role_based is True
+
+
+def test_parse_reoon_catch_all():
+    r = ev.parse_reoon_response({"status": "catch_all", "is_catch_all": True}, "power")
+    assert r.status == "catch_all" and r.catch_all is True
+
+
+def test_parse_reoon_unknown_status():
+    r = ev.parse_reoon_response({"status": "algo_estranho"}, "power")
+    assert r.status == "unknown"
+
+
+def test_verify_reoon_with_fake_client():
+    client = FakeClient({"status": "safe", "overall_score": 90})
+    r = asyncio.run(ev.verify_reoon("x@y.com", "power", api_key="k", client=client))
+    assert r.status == "safe" and client.calls == 1
+
+
+def test_verify_api_fallback_on_error(monkeypatch):
+    async def _boom(*a, **k):
+        raise TimeoutError("reoon down")
+
+    monkeypatch.setattr(ev, "verify_reoon", _boom)
+    r = asyncio.run(ev.verify_api("x@y.com", "power", api_key="k"))
+    assert r.status == "unknown" and r.reason == "api_unavailable" and r.source == "fallback"
+
+
+def test_verify_api_no_key_falls_back():
+    # sem key, verify_reoon levanta RuntimeError → fallback unknown
+    r = asyncio.run(ev.verify_api("x@y.com", "power", api_key=None))
+    assert r.status == "unknown"
+
+
+# --------------------------------------------------------------------------- #
+# Pipeline verify_email + cache
+# --------------------------------------------------------------------------- #
+
+def test_verify_email_skip_api_returns_local(monkeypatch):
+    monkeypatch.setattr(ev, "_resolve_mx_sync", lambda d: "ok")
+    r = asyncio.run(ev.verify_email("joao@empresa.com", skip_api=True))
+    assert r.status == "valid" and r.source == "local"
+
+
+def test_verify_email_no_key_returns_local(monkeypatch):
+    monkeypatch.setattr(ev, "_resolve_mx_sync", lambda d: "ok")
+    r = asyncio.run(ev.verify_email("joao@empresa.com", mode="power", api_key=""))
+    assert r.status == "valid"  # sem key → só Camada 0
+
+
+def test_verify_email_invalid_short_circuits_api(monkeypatch):
+    called = {"api": False}
+
+    async def _api(*a, **k):
+        called["api"] = True
+        return ev.VerifyResult("safe", "x")
+
+    monkeypatch.setattr(ev, "_resolve_mx_sync", lambda d: "no_mx")
+    monkeypatch.setattr(ev, "verify_api", _api)
+    r = asyncio.run(ev.verify_email("x@nomx.com", api_key="k"))
+    assert r.status == "invalid" and called["api"] is False  # não gasta crédito
+
+
+def test_verify_email_cache_hit(monkeypatch):
+    monkeypatch.setattr(ev, "_resolve_mx_sync", lambda d: "ok")
+    calls = {"api": 0}
+
+    async def _api(email, mode, key, client, role_hint=False):
+        calls["api"] += 1
+        return ev.VerifyResult("safe", "reoon_power", source="reoon")
+
+    monkeypatch.setattr(ev, "verify_api", _api)
+    redis = FakeRedis()
+    r1 = asyncio.run(ev.verify_email("z@empresa.com", redis=redis, api_key="k"))
+    r2 = asyncio.run(ev.verify_email("z@empresa.com", redis=redis, api_key="k"))
+    assert r1.status == "safe" and r2.status == "safe"
+    assert r2.cached is True and calls["api"] == 1  # 2ª vez veio do cache
+
+
+def test_verify_email_domain_catch_all_cache(monkeypatch):
+    monkeypatch.setattr(ev, "_resolve_mx_sync", lambda d: "ok")
+
+    async def _api(email, mode, key, client, role_hint=False):
+        return ev.VerifyResult("catch_all", "reoon_power", source="reoon", catch_all=True)
+
+    monkeypatch.setattr(ev, "verify_api", _api)
+    redis = FakeRedis()
+    asyncio.run(ev.verify_email("a@catchall.com", redis=redis, api_key="k"))
+    # outro e-mail do MESMO domínio → resolvido pelo cache de domínio, sem nova chamada
+    monkeypatch.setattr(ev, "verify_api",
+                        lambda *a, **k: (_ for _ in ()).throw(AssertionError("não deveria chamar")))
+    r = asyncio.run(ev.verify_email("b@catchall.com", redis=redis, api_key="k"))
+    assert r.status == "catch_all" and r.cached is True
+
+
+# --------------------------------------------------------------------------- #
+# is_safe_to_send
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("status,score,expected", [
+    ("safe", 0, True),
+    ("valid", 0, True),
+    ("role", 0, True),
+    ("invalid", 90, False),
+    ("disabled", 90, False),
+    ("disposable", 90, False),
+    ("spamtrap", 90, False),
+    ("catch_all", 30, False),
+    ("catch_all", 60, True),
+    ("unknown", 30, False),
+    ("unknown", 60, True),
+    ("inbox_full", 51, True),
+])
+def test_is_safe_to_send(status, score, expected):
+    assert ev.is_safe_to_send(ev.VerifyResult(status, "x"), score) is expected
+
+
+# --------------------------------------------------------------------------- #
+# Semáforo — máx 5 chamadas simultâneas à Reoon
+# --------------------------------------------------------------------------- #
+
+def test_reoon_semaphore_limits_concurrency():
+    state = {"cur": 0, "peak": 0}
+
+    class SlowClient:
+        async def get(self, url, params=None, timeout=None):
+            state["cur"] += 1
+            state["peak"] = max(state["peak"], state["cur"])
+            await asyncio.sleep(0.02)
+            state["cur"] -= 1
+            return FakeResp({"status": "safe"})
+
+    async def _run():
+        client = SlowClient()
+        await asyncio.gather(*[
+            ev.verify_reoon(f"u{i}@x.com", "power", api_key="k", client=client)
+            for i in range(12)])
+
+    asyncio.run(_run())
+    assert state["peak"] <= 5  # nunca passa do semáforo
+
+
+# --------------------------------------------------------------------------- #
+# Lead scoring — penalidades por status de verificação (KL-110)
+# --------------------------------------------------------------------------- #
+
+def test_lead_scoring_catch_all_penalty():
+    t = {"domain": "x.com", "last_scan_score": 60, "email_verify_status": "catch_all"}
+    out = calculate_alert_score(t, "pessoa@outrodominio.com")
+    assert any(s["signal"] == "email_catch_all" and s["points"] == -10 for s in out["signals"])
+
+
+def test_lead_scoring_unknown_penalty():
+    t = {"domain": "x.com", "last_scan_score": 60, "email_verify_status": "unknown"}
+    out = calculate_alert_score(t, "pessoa@outrodominio.com")
+    assert any(s["signal"] == "email_unknown" and s["points"] == -5 for s in out["signals"])
+
+
+def test_lead_scoring_role_status_no_double_penalty():
+    # prefixo 'contato' já penaliza -15; o status 'role' NÃO deve dobrar.
+    t = {"domain": "x.com", "last_scan_score": 60, "email_verify_status": "role"}
+    out = calculate_alert_score(t, "contato@x.com")
+    role_signals = [s for s in out["signals"] if "role" in s["signal"]]
+    assert len(role_signals) == 1 and role_signals[0]["signal"] == "role_based_prefix"
+
+
+def test_lead_scoring_role_status_penalizes_when_prefix_absent():
+    t = {"domain": "x.com", "last_scan_score": 60, "email_verify_status": "role"}
+    out = calculate_alert_score(t, "joao@x.com")  # prefixo não é role
+    assert any(s["signal"] == "email_role_account" and s["points"] == -15 for s in out["signals"])
+
+
+# --------------------------------------------------------------------------- #
+# Extração — descartável nunca vira contact_email (Camada 0 preventiva)
+# --------------------------------------------------------------------------- #
+
+def test_contact_is_junk_rejects_disposable():
+    assert contact_mod._is_junk("qualquer@mailinator.com") is True
+    assert contact_mod._is_junk("contato@empresareal.com.br") is False
+
+
+# --------------------------------------------------------------------------- #
+# Store — email_verification_stats (offline via cursor falso)
+# --------------------------------------------------------------------------- #
+
+class _FakeCursor:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def execute(self, sql, params=None):
+        self.sql = sql
+
+    def fetchall(self):
+        return self._rows
+
+
+class _StatsStore(TargetStore):
+    def __init__(self, rows):
+        self._rows = rows
+
+    def _run(self, fn):
+        return fn(_FakeCursor(self._rows))
+
+
+def test_email_verification_stats_mapping():
+    rows = [("safe", 4100, 0), ("invalid", 300, 10), ("catch_all", 500, 5),
+            ("role", 200, 200), (None, 3523, 0)]
+    out = asyncio.run(_StatsStore(rows).email_verification_stats())
+    assert out["total_with_email"] == 4100 + 300 + 500 + 200 + 3523
+    assert out["unverified"] == 3523
+    assert out["verified"] == 4100 + 300 + 500 + 200
+    assert out["by_status"]["safe"] == 4100
+    assert out["by_status"]["unverified"] == 3523
+    assert out["role_based_total"] == 215
+
+
+# --------------------------------------------------------------------------- #
+# Alert worker — _verify_and_filter (gate de deliverability pré-envio)
+# --------------------------------------------------------------------------- #
+
+class _MiniStore:
+    def __init__(self):
+        self.blocked, self.discarded, self.verified = [], [], []
+
+    async def block_email(self, email, reason="bounced"):
+        self.blocked.append((email, reason))
+
+    async def update_status(self, target_id, status):
+        self.discarded.append((target_id, status))
+
+    async def update_target_email_verification(self, tid, status, is_role_based, verified=True):
+        self.verified.append((tid, status))
+
+
+def _mk_worker(store):
+    from discovery.alert_worker import AlertWorker
+    w = AlertWorker()
+    w.store = store
+    w._redis = False  # sem redis nos testes
+    return w
+
+
+def test_verify_and_filter_blocks_and_gates(monkeypatch):
+    from datetime import datetime, timezone
+    monkeypatch.setenv("REOON_API_KEY", "test-key")
+
+    async def _fake_verify(email, mode="power", redis=None, api_key=None):
+        table = {
+            "safe@x.com": ev.VerifyResult("safe", "reoon_power", source="reoon"),
+            "bad@x.com": ev.VerifyResult("invalid", "reoon_power", source="reoon"),
+            "catch@x.com": ev.VerifyResult("catch_all", "reoon_power", source="reoon", catch_all=True),
+        }
+        return table[email]
+
+    monkeypatch.setattr(ev, "verify_email", _fake_verify)
+    store = _MiniStore()
+    w = _mk_worker(store)
+    targets = [
+        {"id": 1, "contact_email": "safe@x.com", "_alert_score": 40},
+        {"id": 2, "contact_email": "bad@x.com", "_alert_score": 40},
+        {"id": 3, "contact_email": "catch@x.com", "_alert_score": 30},   # catch_all + score baixo → pula
+        {"id": 4, "contact_email": "catch@x.com", "_alert_score": 60},   # catch_all + score alto → mantém
+    ]
+    kept, stats = asyncio.run(w._verify_and_filter(targets))
+    kept_ids = {t["id"] for t in kept}
+    assert kept_ids == {1, 4}
+    assert stats["blocked"] == 1 and stats["skipped_unsafe"] == 1
+    assert ("bad@x.com", "verify_invalid") in store.blocked
+    assert (2, "descartado") in store.discarded
+
+
+def test_verify_and_filter_noop_without_key(monkeypatch):
+    monkeypatch.delenv("REOON_API_KEY", raising=False)
+    store = _MiniStore()
+    w = _mk_worker(store)
+    targets = [{"id": 1, "contact_email": "a@x.com", "_alert_score": 40}]
+    kept, stats = asyncio.run(w._verify_and_filter(targets))
+    assert kept == targets and stats["verified"] == 0 and not store.blocked
+
+
+def test_verify_and_filter_fresh_skips_api(monkeypatch):
+    from datetime import datetime, timezone
+    monkeypatch.setenv("REOON_API_KEY", "test-key")
+
+    async def _boom(*a, **k):
+        raise AssertionError("não deveria chamar a API para alvo fresco")
+
+    monkeypatch.setattr(ev, "verify_email", _boom)
+    store = _MiniStore()
+    w = _mk_worker(store)
+    targets = [{"id": 1, "contact_email": "a@x.com", "_alert_score": 40,
+                "email_verified": True, "email_verify_status": "safe",
+                "email_verified_at": datetime.now(timezone.utc)}]
+    kept, stats = asyncio.run(w._verify_and_filter(targets))
+    assert {t["id"] for t in kept} == {1} and stats["from_cache"] == 1

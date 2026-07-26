@@ -230,6 +230,7 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 | GET | `/admin/gcs-archive/stats` | KL-77: saúde do arquivamento de responses brutos no GCS (arquivos/bytes hoje, último upload, erros) |
 | GET | `/monitoring/admin/list` · `/stats` · POST `/{id}/status` | sites monitorados |
 | GET | `/system/status` · `/system/activity` · `/system/email-health` | operação em tempo real |
+| GET | `/system/email-verification-stats` | KL-110: verificação de deliverability — contagem por `email_verify_status`, role-based, saldo Reoon |
 | GET | `/discovery/status` | estado do CT poller |
 | GET | `/config` | params operacionais (sem segredos) |
 | GET | `/analytics/funnel\|abandoned\|campaigns\|pages\|events\|public-scans` | analytics (KL-21, legado) |
@@ -321,7 +322,8 @@ Svix), `POST /email/webhook` (Hostinger, token próprio fail-closed).
 Wrapper fino sobre a API/store; auth própria (OAuth 2.1/PKCE + `MCP_API_KEY`). Todas
 passam por `_guard` (nunca derrubam a sessão).
 
-- **system.py** — `get_system_status`, `get_email_health`, `get_discovery_status`,
+- **system.py** — `get_system_status`, `get_email_health`, `get_email_verification_stats` (KL-110),
+  `get_discovery_status`,
   `get_config`, `get_gcs_archive_stats` (KL-77), `get_dashboard_stats`,
   `get_enrichment_status`, `get_user_accounts`, `get_email_log`,
   `get_ownership_stats` (KL-68), `admin_remove_user_site` (KL-69, write),

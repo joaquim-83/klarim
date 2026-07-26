@@ -146,6 +146,14 @@ def _is_junk(email: str) -> bool:
         return True
     if local in _JUNK_LOCAL:
         return True
+    # KL-110 — domínios descartáveis (temp-mail) nunca viram contact_email (Camada 0 preventiva,
+    # custo zero). Import tardio para evitar acoplar o import de contact ao pacote api.
+    try:
+        from api.disposable_emails import DISPOSABLE_EMAIL_DOMAINS
+        if domain in DISPOSABLE_EMAIL_DOMAINS:
+            return True
+    except Exception:  # noqa: BLE001 - lista indisponível nunca derruba a extração
+        pass
     if any(domain == d or domain.endswith("." + d) for d in _JUNK_DOMAINS):
         return True
     # e-mails de imagem/asset acidentais (ex.: com extensão no final)

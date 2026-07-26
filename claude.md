@@ -181,6 +181,24 @@ standalone) + **React** (islands) + **Tailwind v4** (CSS-first, sem config) +
   (disparo manual) usa o mesmo formato** (1º remetente). Os builders antigos com link
   (`build_alert_text`, alert-access HMAC do KL-82 S3) **ficam no código** mas o ciclo
   automático NÃO os usa (revertível).
+- **Verificação de deliverability PRÉ-envio (KL-110 — `notifier/email_verifier.py`):** o circuit
+  breaker (KL-108) é REATIVO (pausa DEPOIS do bounce); a verificação é PREVENTIVA — checa se a caixa
+  existe ANTES de enviar. **Camada 0 (local, custo zero):** sintaxe (email-validator, fallback regex),
+  descartáveis (reusa `api.disposable_emails`), MX (dnspython, cache Redis 24h por domínio) e flag
+  role-based (reusa `ROLE_BASED_PREFIXES`). Roda na **extração** (`discovery/contact.py::_is_junk`
+  descarta domínio descartável → nunca vira `contact_email`; o MX já era validado no `extract_email`).
+  **Camada 1 (API Reoon, `REOON_API_KEY`):** modo `power` verifica INBOX existe + catch-all + disabled
+  + inbox_full + spamtrap; semáforo de **5 chamadas simultâneas**; fallback fail-open (API fora →
+  `unknown`, nunca bloqueia). O **alert worker** (`_verify_and_filter`, após o lead scoring, antes do
+  envio) verifica os melhores leads (`EMAIL_VERIFY_MAX_PER_CYCLE`=60/ciclo): blocklista+descarta
+  `invalid`/`disabled`/`disposable`/`spamtrap` e aplica `is_safe_to_send` (`catch_all`/`unknown`/
+  `inbox_full` só com lead_score>50). **Sem `REOON_API_KEY` a verificação do worker é no-op** (o MX da
+  Camada 0 já rodou na extração) — ativa quando a key entra no `.env`. Cache Redis por **SHA-256** do
+  e-mail (60d definitivo / 7d transitório) + cache de domínio catch-all (7d). Campos em `targets`:
+  `email_verified`/`email_verify_status`/`email_verified_at`/`email_is_role_based`. Lead scoring (KL-85)
+  penaliza `catch_all` -10, `unknown` -5, `role` -15 (sem dobrar o prefixo). Stats: `get_email_
+  verification_stats` (MCP) + `GET /system/email-verification-stats` (+ saldo Reoon). Limpeza do backlog:
+  `scripts/cleanup_email_backlog.py` (Fase 0 local + Fase 1 bulk Reoon).
 - **`_proactive_from` (`alerta@klarim.net`, `ALERT_FROM_EMAIL`):** após o KL-101, resta só o
   **bulletin** proativo (a quem tem conta/opt-in). O profile_view saiu daqui (→ perfil.klarim.net);
   o cold alert saiu no KL-91 (→ alertas./aviso.). **2026-07-20:** migrado de `klarimscan.com` →
@@ -479,7 +497,7 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1707 passed** (backend pytest, +10 KL-108) + **108 node --test** (frontend `test:unit`)
+- Testes: **1748 passed** (backend pytest, +41 KL-110) + **108 node --test** (frontend `test:unit`)
 - Páginas públicas: `/metodologia` (KL-100) · descadastro `/remover` (KL-102) · landing com social proof ao vivo (KL-103)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - **Níveis de conta (KL-99):** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado
@@ -1310,6 +1328,26 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   inalterado. +10 testes offline (`test_kl108_hard_soft_bounce.py` +6, `test_kl91_cold_alert.py` +4).
   **Pós-deploy manual na VM:** remover `ALERT_SENDER_MAX_BOUNCE_RATE=12` do `.env` (default 5% hard-only
   já mantém perfil ativo e pausa alertas/aviso). Relatório: `claude/reports/KL-108_hard_soft_bounce.md`.
+- **KL-110** — Verificação de e-mail pré-envio (local + API Reoon) ✅. Ataca a CAUSA do bounce (6-8%
+  hard): e-mails ruins entravam na fila sem validar deliverability; o KL-108 só reagia depois.
+  **`notifier/email_verifier.py`** (fail-open, testável): **Camada 0 local** (`verify_local`: sintaxe
+  via email-validator c/ fallback regex · descartáveis reusando `api.disposable_emails` · MX via
+  dnspython c/ cache Redis 24h/domínio · flag role-based) + **Camada 1 Reoon** (`verify_reoon`/
+  `verify_api`: modo `quick`/`power`, semáforo 5, fallback `unknown`). `verify_email` = pipeline
+  cache→C0→C1 (cache SHA-256 do e-mail, 60d/7d; cache de domínio catch-all). `is_safe_to_send`
+  (invalid/disabled/disposable/spamtrap→nunca; catch_all/unknown/inbox_full→só score>50; safe/valid/
+  role→sim). Integrações: (1) **extração** (`discovery/contact.py::_is_junk` descarta descartável — o
+  MX já era filtrado no `extract_email`); (2) **alert worker** (`_verify_and_filter`, após lead
+  scoring/antes do envio: verifica ≤`EMAIL_VERIFY_MAX_PER_CYCLE`=60/ciclo os melhores leads,
+  blocklista+descarta os ruins, `is_safe_to_send` gate; **no-op sem `REOON_API_KEY`**); (3) **lead
+  scoring** (KL-85: catch_all -10, unknown -5, role -15 sem dobrar prefixo). 4 colunas em `targets`
+  (email_verified/email_verify_status/email_verified_at/email_is_role_based). `GET /system/email-
+  verification-stats` + MCP `get_email_verification_stats` (+ saldo Reoon). Limpeza retroativa:
+  `scripts/cleanup_email_backlog.py` (Fase 0 local custo-zero + Fase 1 bulk Reoon, `--dry-run`/
+  `--local-only`/`--api-limit`). **+41 testes.** Segurança: `REOON_API_KEY` só no `.env` (nunca em
+  log/frontend), cache por hash SHA-256, semáforo 5, fail-open. **Deploy:** a verificação Power ativa
+  só quando o dono configurar `REOON_API_KEY` na VM; rodar então o cleanup e, após bounce hard <5% em
+  7d, remover o `ALERT_SENDER_MAX_BOUNCE_RATE` emergencial. Relatório: `claude/reports/KL-110_email_verification.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

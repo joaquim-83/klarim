@@ -67,8 +67,18 @@ async def get_user_accounts() -> dict:
 async def get_email_health() -> dict:
     """Saúde de e-mail: bounce rate, bounces permanentes, complaints, tamanho da
     blocklist e status de risco (ok/warning/critical). Vital para não estourar a
-    reputação do domínio no Resend/Gmail. Cobre TODOS os caminhos (email_log, KL-62)."""
+    reputação do domínio no Resend/Gmail. Cobre TODOS os caminhos (email_log, KL-62).
+    KL-108: `by_domain` separa hard de soft bounce (bounce_rate = hard-only)."""
     return await _guard(lambda: _api().api_system_email_health())
+
+
+@mcp.tool()
+async def get_email_verification_stats() -> dict:
+    """KL-110 — verificação de deliverability de e-mail ANTES do envio: contagem por
+    `email_verify_status` (safe/invalid/catch_all/role/unknown/…), quantos ainda faltam
+    verificar, total role-based e o saldo de créditos Reoon. Corta o bounce na raiz
+    (o circuit breaker do KL-108 só reage depois do bounce)."""
+    return await _guard(lambda: _api().api_email_verification_stats())
 
 
 @mcp.tool()

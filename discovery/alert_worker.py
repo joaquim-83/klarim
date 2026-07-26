@@ -29,6 +29,7 @@ from typing import Any, Dict, Optional
 
 from notifier import KlarimMailer, KlarimMailerError, site_name
 from notifier import cold_alert
+from notifier import email_verifier
 from .store import get_target_store
 from .heartbeat import publish_heartbeat
 from .contact import email_mx_status, _clean_email
@@ -220,6 +221,12 @@ class AlertWorker:
         self.sender_max_bounce_rate = float(os.environ.get("ALERT_SENDER_MAX_BOUNCE_RATE", "5.0"))
         self.sender_bounce_min_sample = int(os.environ.get(
             "ALERT_SENDER_BOUNCE_MIN_SAMPLE", str(cold_alert.DEFAULT_BOUNCE_MIN_SAMPLE)))
+        # KL-110 — verificação de deliverability (Reoon Power) ANTES do envio. Sem
+        # REOON_API_KEY o pipeline roda só a Camada 0 local (verify_email cai no local).
+        # `email_verify_max` limita quantos alvos verificar por ciclo (custo/tempo da API).
+        self.email_verify_enabled = os.environ.get("EMAIL_VERIFY_ENABLED", "true").lower() != "false"
+        self.email_verify_max = int(os.environ.get("EMAIL_VERIFY_MAX_PER_CYCLE", "60"))
+        self.email_verify_ttl_days = int(os.environ.get("EMAIL_VERIFY_TTL_DAYS", "60"))
         self.store = get_target_store()
         self._redis = None
         self._last_cycle_at = None
@@ -403,6 +410,93 @@ class AlertWorker:
                   f"(< threshold {self.alert_score_threshold}); média dos aprovados {avg}", flush=True)
         return kept, skipped, avg
 
+    async def _verify_and_filter(self, targets: list) -> tuple:
+        """KL-110 — verifica a deliverability (Reoon Power) dos melhores leads ANTES do envio.
+
+        Blocklista+descarta os definitivamente ruins (invalid/disabled/disposable/spamtrap) e
+        aplica `is_safe_to_send` (catch_all/unknown/inbox_full só com lead_score>50). Só os N
+        primeiros da lista já ordenada por score (`email_verify_max`) são verificados por ciclo
+        — controla custo/tempo da API; semáforo de 5 chamadas simultâneas. Fail-open: erro de
+        verificação MANTÉM o alvo (nunca perde um lead bom por falha de infra). Sem REOON_API_KEY,
+        `verify_email` cai na Camada 0 local → status 'valid' → segue como antes."""
+        stats = {"verified": 0, "from_cache": 0, "blocked": 0, "skipped_unsafe": 0, "errors": 0}
+        api_key = os.environ.get("REOON_API_KEY")
+        if not api_key or not targets or not getattr(self, "email_verify_enabled", True):
+            # Sem REOON_API_KEY não há verificação de INBOX possível; o MX (Camada 0) já foi
+            # validado na extração (`extract_email`), então reverificar local aqui só adicionaria
+            # latência de DNS sem ganho. A verificação ativa quando a key for configurada na VM.
+            return targets, stats
+        cap = min(len(targets), max(0, getattr(self, "email_verify_max", 60)))
+        subset, rest = targets[:cap], targets[cap:]
+        redis = await self._redis_client()
+        sem = asyncio.Semaphore(5)
+        ttl = timedelta(days=getattr(self, "email_verify_ttl_days", 60))
+        now = datetime.now(timezone.utc)
+
+        def _is_fresh(t) -> bool:
+            va = t.get("email_verified_at")
+            if not t.get("email_verified") or not isinstance(va, datetime):
+                return False
+            if va.tzinfo is None:
+                va = va.replace(tzinfo=timezone.utc)
+            return (now - va) < ttl
+
+        async def _verify_one(t):
+            email = (t.get("contact_email") or "").strip().lower()
+            if not email:
+                return t, None
+            if _is_fresh(t):
+                status = t.get("email_verify_status") or "safe"
+                return t, email_verifier.VerifyResult(
+                    status, "fresh_db", bool(t.get("email_is_role_based")),
+                    cached=True, source="cache")
+            async with sem:
+                try:
+                    res = await email_verifier.verify_email(
+                        email, mode="power", redis=redis, api_key=api_key)
+                except Exception as exc:  # noqa: BLE001 - fail-open: mantém o alvo
+                    print(f"[alert] verify falhou (mantém) "
+                          f"{email_verifier._mask(email)}: {exc!r}", flush=True)
+                    return t, None
+            try:  # persiste (nunca bloqueia o envio se falhar)
+                await self.store.update_target_email_verification(
+                    t["id"], res.status, res.is_role_based)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[alert] gravar verify falhou (alvo {t.get('id')}): {exc!r}", flush=True)
+            t["email_verify_status"] = res.status
+            t["email_is_role_based"] = res.is_role_based
+            return t, res
+
+        results = await asyncio.gather(*[_verify_one(t) for t in subset])
+        kept = []
+        for t, res in results:
+            if res is None:
+                if not (t.get("contact_email") or "").strip():
+                    continue  # sem e-mail → some da fila
+                stats["errors"] += 1
+                kept.append(t)  # erro de infra → mantém (fail-open)
+                continue
+            stats["from_cache" if res.cached else "verified"] += 1
+            if res.status in email_verifier.BLOCK_STATUSES:
+                email = (t.get("contact_email") or "").strip().lower()
+                try:
+                    await self.store.block_email(email, reason=f"verify_{res.status}")
+                    await self.store.update_status(t["id"], "descartado")
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[alert] blocklist/discard falhou: {exc!r}", flush=True)
+                stats["blocked"] += 1
+                print(f"[alert] verify BLOCK {email_verifier._mask(email)} "
+                      f"({res.status}) → blocklist + descartado", flush=True)
+                continue
+            if not email_verifier.is_safe_to_send(res, t.get("_alert_score", 0)):
+                stats["skipped_unsafe"] += 1
+                continue
+            kept.append(t)
+        if stats["verified"] or stats["blocked"] or stats["skipped_unsafe"]:
+            print(f"[alert] verify KL-110: {stats['verified']} novos + {stats['from_cache']} cache, "
+                  f"{stats['blocked']} bloqueados, {stats['skipped_unsafe']} unsafe pulados", flush=True)
+        return kept + rest, stats
+
     async def _send_cooldown(self) -> None:
         """KL-91 — intervalo randômico ENTRE envios individuais (30-60s por padrão),
         para reduzir a cara de spam. 0/0 (dev/testes) → sem espera."""
@@ -527,6 +621,12 @@ class AlertWorker:
         stats["avg_alert_score"] = avg_score
         # Melhores leads primeiro: dado o send_cap, envia os de MAIOR score (mais provável clique).
         targets.sort(key=lambda t: t.get("_alert_score", 0), reverse=True)
+
+        # KL-110 — verificação de deliverability (Reoon Power) dos melhores leads ANTES do envio:
+        # blocklista os inexistentes/descartáveis e pula os de deliverability incerta. Corta o
+        # bounce na RAIZ (o circuit breaker do KL-108 só reage depois do bounce). Fail-open.
+        targets, verify_stats = await self._verify_and_filter(targets)
+        stats["verification"] = verify_stats
 
         # Envio INDIVIDUAL com rotação + cooldown (KL-91). Sem batch: cada e-mail escolhe o
         # remetente de menor volume hoje, renderiza a variante e há intervalo entre envios.

@@ -104,8 +104,19 @@ def calculate_alert_score(target: Dict[str, Any], contact_email: Optional[str],
     # --- negativos ---
     if MISMATCH_FREE_PENALTY and valid_email and not matches and edomain in FREE_EMAIL_DOMAINS:
         add(MISMATCH_FREE_PENALTY, "email_mismatch_free")   # e-mail genérico de terceiro (hoje 0)
-    if valid_email and local in ROLE_BASED_PREFIXES:
+    role_penalized = valid_email and local in ROLE_BASED_PREFIXES
+    if role_penalized:
         add(-15, "role_based_prefix")
+    # KL-110 — penalidades por status de verificação de e-mail (Reoon). catch_all/unknown têm
+    # deliverability incerta; 'role' (caixa de função detectada pela API) penaliza como o prefixo,
+    # mas sem DOBRAR se o prefixo já penalizou.
+    verify_status = (target.get("email_verify_status") or "").strip().lower()
+    if verify_status == "catch_all":
+        add(-10, "email_catch_all")
+    elif verify_status == "unknown":
+        add(-5, "email_unknown")
+    if verify_status == "role" and not role_penalized:
+        add(-15, "email_role_account")
     if target.get("status") == "descartado" or (sc is not None and sc < 40):
         add(-10, "abandoned_or_low_score")
     # Bounce por DOMÍNIO só penaliza domínio próprio/corporativo. Num provedor genérico

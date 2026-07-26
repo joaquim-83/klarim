@@ -57,6 +57,16 @@ ALTER TABLE targets ADD COLUMN IF NOT EXISTS email_provider VARCHAR(50);
 ALTER TABLE targets ADD COLUMN IF NOT EXISTS related_domains JSONB DEFAULT '[]';
 CREATE INDEX IF NOT EXISTS idx_targets_email_provider ON targets(email_provider)
     WHERE email_provider IS NOT NULL;
+-- KL-110 — verificação de deliverability do contact_email ANTES do envio (reduz o bounce
+-- na raiz; o circuit breaker do KL-108 só reage DEPOIS do bounce). `email_verify_status`:
+-- safe|invalid|disabled|disposable|inbox_full|catch_all|role|spamtrap|unknown|valid.
+-- Preenchido pelo alert worker (Power) e pelo script de limpeza; alimenta o lead scoring (KL-85).
+ALTER TABLE targets ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALSE;
+ALTER TABLE targets ADD COLUMN IF NOT EXISTS email_verify_status VARCHAR(20);
+ALTER TABLE targets ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMPTZ;
+ALTER TABLE targets ADD COLUMN IF NOT EXISTS email_is_role_based BOOLEAN DEFAULT FALSE;
+CREATE INDEX IF NOT EXISTS idx_targets_email_verify_status ON targets(email_verify_status)
+    WHERE email_verify_status IS NOT NULL;
 -- KL-75 Prompt 2 — tipo de site (institucional/ecommerce/saas/portal/blog/parked/
 -- abandonado), classificado no scan a partir dos sinais do HTML; e contagem de
 -- subdomínios vistos nos CT logs (dado público). Ambos p/ inteligência comercial.
@@ -5775,6 +5785,70 @@ class TargetStore:
         def _fn(cur):
             cur.execute("SELECT COUNT(*) FROM email_blocklist")
             return int(cur.fetchone()[0])
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- verificação de e-mail (KL-110) ------------------------------------ #
+
+    async def update_target_email_verification(
+        self, target_id: int, status: Optional[str], is_role_based: bool = False,
+        verified: bool = True,
+    ) -> None:
+        """Grava o resultado da verificação de deliverability no alvo (KL-110)."""
+        status = (status or None)
+        if status is not None:
+            status = status[:20]
+
+        def _fn(cur):
+            cur.execute(
+                "UPDATE targets SET email_verified = %s, email_verify_status = %s, "
+                "email_verified_at = NOW(), email_is_role_based = %s WHERE id = %s",
+                (bool(verified), status, bool(is_role_based), target_id),
+            )
+
+        await asyncio.to_thread(self._run, _fn)
+
+    async def email_verification_stats(self) -> Dict[str, Any]:
+        """KL-110 — contagem por `email_verify_status` (só alvos com contact_email)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT email_verify_status, COUNT(*), "
+                "COUNT(*) FILTER (WHERE email_is_role_based) "
+                "FROM targets WHERE contact_email IS NOT NULL "
+                "GROUP BY email_verify_status ORDER BY 2 DESC")
+            by_status: Dict[str, int] = {}
+            total = verified = role_based = 0
+            for st, cnt, role_cnt in cur.fetchall():
+                cnt = int(cnt or 0)
+                total += cnt
+                role_based += int(role_cnt or 0)
+                key = st if st is not None else "unverified"
+                by_status[key] = cnt
+                if st is not None:
+                    verified += cnt
+            return {
+                "total_with_email": total,
+                "verified": verified,
+                "unverified": by_status.get("unverified", 0),
+                "by_status": by_status,
+                "role_based_total": role_based,
+            }
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def targets_needing_email_verification(
+        self, limit: int = 500, offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """KL-110 — alvos com contact_email ainda NÃO verificado (script de limpeza)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT id, url, domain, contact_email, alert_quality_score "
+                "FROM targets WHERE contact_email IS NOT NULL "
+                "AND (email_verified IS NOT TRUE) AND status != 'descartado' "
+                "ORDER BY id LIMIT %s OFFSET %s",
+                (limit, offset),
+            )
+            return self._rows_to_dicts(cur)
 
         return await asyncio.to_thread(self._run, _fn)
 
