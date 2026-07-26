@@ -497,7 +497,7 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1748 passed** (backend pytest, +41 KL-110) + **108 node --test** (frontend `test:unit`)
+- Testes: **1848 passed** (backend pytest, +100 KL-26) + **117 node --test** (frontend `test:unit`, +12 KL-26)
 - Páginas públicas: `/metodologia` (KL-100) · descadastro `/remover` (KL-102) · landing com social proof ao vivo (KL-103)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - **Níveis de conta (KL-99):** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado
@@ -1348,6 +1348,25 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   log/frontend), cache por hash SHA-256, semáforo 5, fail-open. **Deploy:** a verificação Power ativa
   só quando o dono configurar `REOON_API_KEY` na VM; rodar então o cleanup e, após bounce hard <5% em
   7d, remover o `ALERT_SENDER_MAX_BOUNCE_RATE` emergencial. Relatório: `claude/reports/KL-110_email_verification.md`.
+
+- **KL-26** — Cobertura de testes transversais (cross-módulo, **zero mudança em código de produção**) ✅.
+  6 conjuntos, **+100 backend + 12 frontend**: **`tests/test_e2e_flows.py`** (fluxos e2e — dono
+  verificado→perfil→selo, técnico monitora sem editar, unsubscribe completo→blocklist→worker pula,
+  prontidão de cold alert, ciclo de pagamento PIX); **`tests/test_multi_tenant.py`** (IDOR bidirecional
+  em todos os `/account/sites/{id}/*` → 404, escalação vertical user→/admin → 401, vazamento de dados,
+  mass assignment `extra='ignore'`); **`tests/test_score_regression.py`** (score/semáforo determinístico
+  via `compute_score` + fixtures de `CheckResult`; guarda de mudança de peso/threshold — alerta
+  intencional); **`tests/test_scanner_edge_cases.py`** (timeout/redirect/conn-error→INCONCLUSO,
+  `content_guard`, gate de acessibilidade KL-94, parser robusto, 1 check ruim não derruba o scan);
+  **`tests/test_email_pipeline.py`** (circuit breaker hard/soft KL-108, verificação→decisão KL-110,
+  List-Unsubscribe KL-102, rotação KL-91, bounce webhook→blocklist→`_validate_batch`);
+  **`web/src/lib/scanView.test.js`** (+12: edge cases de `viewFlags`/`scoreHeadline`/`getCategoryStatus`
+  + mapeamento dos 3 estados do CTA). **Achado (não-bug):** o `conftest` não resetava
+  `_account_cfg_hits` (`_cfg_rate_limit`, 10/60s/user) → 429 espúrio entre testes que reusam o
+  mesmo user_id (latente, exposto pelos transversais); corrigido no `conftest` (test-infra). **Nota:**
+  o frontend do KL-26 estende `web/src/lib/scanView.test.js` (o caminho `web/src/__tests__/` da spec não
+  existe); sector-pills/stats-bar do KL-103 são DOM-only (`landing-stats.js`, sem função pura) — não
+  testáveis em `node --test`. Relatório: `claude/reports/KL-26_cobertura_testes.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

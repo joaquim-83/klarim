@@ -236,3 +236,71 @@ test('SCAN_CATEGORIES: 6 camadas, faixas contíguas cobrindo 0–100', () => {
   assert.equal(SCAN_CATEGORIES[0].start, 0)
   assert.equal(SCAN_CATEGORIES.at(-1).end, 100)
 })
+
+// =============================================================================================== #
+// KL-26 — cobertura transversal adicional (edge cases + mapeamento dos 3 estados do CTA)
+// =============================================================================================== #
+
+test('KL-26 viewFlags: entrada nula/indefinida cai em anonymous (nunca vaza LGPD)', () => {
+  for (const bad of [null, undefined, {}, { access_level: 'inexistente' }]) {
+    const f = viewFlags(bad)
+    assert.equal(f.level, 'anonymous')
+    assert.equal(f.showPrivacy, false)  // LGPD travado por padrão
+    assert.equal(f.showEvidence, false)
+  }
+})
+
+test('KL-26 viewFlags: só confirmed abre LGPD E evidência (defesa de PII)', () => {
+  const abertos = ['anonymous', 'unconfirmed', 'confirmed', 'alert_session']
+    .filter((l) => viewFlags({ access_level: l }).showPrivacy)
+  assert.deepEqual(abertos, ['confirmed'])
+})
+
+test('KL-26 scoreHeadline: extremos 0 e 100 preservam a origem', () => {
+  assert.match(scoreHeadline(100, true).lead, /100/)
+  assert.match(scoreHeadline(0, false).lead, /Este site/)
+  assert.equal(scoreHeadline(0, false).question, 'E o seu?')
+})
+
+test('KL-26 três estados do CTA derivam de funções puras distintas', () => {
+  // Estado A (visitante orgânico): coleta e-mail → inlineSignupCopy (botão "Monitorar").
+  const visitante = inlineSignupCopy(2)
+  // Estado C (logado, adiciona ao monitoramento): consentimento → monitorConsentCopy ("Sim, monitorar").
+  const consentimento = monitorConsentCopy('site.com.br')
+  assert.equal(visitante.button, 'Monitorar')
+  assert.equal(consentimento.button, 'Sim, monitorar')
+  assert.notEqual(visitante.button, consentimento.button)  // CTAs distintos por estado
+  // Estado B (logado + já monitora): sem CTA de conta (viewFlags de quem tem conta confirmada).
+  assert.equal(viewFlags({ access_level: 'confirmed' }).showCTA, false)
+})
+
+test('KL-26 copies: 3 benefícios não-vazios em ambos os CTAs', () => {
+  for (const c of [inlineSignupCopy(1), monitorConsentCopy('x.com')]) {
+    assert.equal(c.benefits.length, 3)
+    for (const b of c.benefits) assert.equal(typeof b === 'string' && b.length > 0, true)
+  }
+})
+
+test('KL-26 getCategoryStatus: no início da faixa a categoria está ativa', () => {
+  assert.equal(getCategoryStatus({ start: 34, end: 50 }, 34), 'active')
+  assert.equal(getCategoryStatus({ start: 34, end: 50 }, 33), 'pending')
+})
+
+test('KL-26 SCAN_CATEGORIES: faixas contíguas sem buracos nem sobreposição', () => {
+  for (let i = 1; i < SCAN_CATEGORIES.length; i++) {
+    assert.equal(SCAN_CATEGORIES[i].start, SCAN_CATEGORIES[i - 1].end + 1,
+      `faixa ${i} deve começar logo após a anterior`)
+  }
+})
+
+test('KL-26 reportUrls: sempre devolve strings de executive/technical (PDF público)', () => {
+  const u = reportUrls({ access_level: 'anonymous' }, 'https://a.com.br')
+  assert.equal(typeof u.executive, 'string')
+  assert.equal(typeof u.technical, 'string')
+})
+
+test('KL-26 maskEmail: nunca devolve o e-mail cru completo', () => {
+  const raw = 'joana@empresa.com.br'
+  assert.notEqual(maskEmail(raw), raw)
+  assert.match(maskEmail(raw), /\*\*\*/)  // sempre mascarado
+})

@@ -39,6 +39,9 @@ def _reset_api_rate_limits():
         m._verify_check_hits.clear()         # KL-99: verificação de domínio
         m._magic_email_hits.clear()          # KL-99: magic link por e-mail
         m._magic_ip_hits.clear()             # KL-99: magic link por IP
+        m._account_cfg_hits.clear()          # KL-26: _cfg_rate_limit (10/60s por user_id) — sem
+        #  reset, acumulava entre testes que reusam o mesmo user_id → 429 espúrio (latente,
+        #  exposto pelos testes transversais). Redis indisponível nos testes → só o bucket in-memory.
         import api.admin_analytics as _aa     # KL-83/KL-92: rate bucket do analytics admin
         _aa._rl_bucket.clear()
     except Exception:  # noqa: BLE001 - testes que não tocam a API seguem normais
