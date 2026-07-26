@@ -24,7 +24,8 @@ públicos e monitora silenciosamente — só alerta o dono quando algo importa.
 
 ## 1. Links e acesso
 
-- **Produção:** https://klarim.net · **Admin:** https://painel.klarim.net
+- **Produção:** https://klarim.net · **Admin:** https://klarim.net/painel (KL-106: `painel.klarim.net`
+  agora **redireciona 301** ao domínio principal — servia um build Vite antigo; o admin é Astro em `/painel`)
 - **Repo:** https://github.com/joaquim-83/klarim.git
 - **Jira (board KL):** https://igoove.atlassian.net/jira/software/c/projects/KL/boards/265/backlog
 - **VM GCP:** `klarim-prod` (**e2-standard-4**, 4 vCPU/16GB, disco **200GB pd-ssd**) · zona
@@ -158,9 +159,24 @@ standalone) + **React** (islands) + **Tailwind v4** (CSS-first, sem config) +
   transacional** (isolamento de reputação; `load_senders` descarta `klarim.net` cru). Envio
   **individual** (não batch) com **cooldown 30-60s** (`ALERT_SEND_INTERVAL_MIN/MAX`) e
   **limite diário POR remetente** (`ALERT_SENDER_DAILY_LIMIT`, warmup: 100→250→500→750;
-  editável no painel). **Circuit breaker por remetente:** bounce > 5% (amostra ≥20) →
-  remetente **pausado** no ciclo (o outro continua). Métricas por domínio em
-  `get_email_health.by_domain` + `email_log.from_domain`/`template_variant`. Motivação: o
+  editável no painel). **Circuit breaker por remetente (calibrado 24/07; KL-108 26/07):** **HARD
+  bounce** > 5% (`ALERT_SENDER_MAX_BOUNCE_RATE`, default 5, editável no `.env`/painel) com **amostra
+  ≥100** (`ALERT_SENDER_BOUNCE_MIN_SAMPLE`, era 20 — pausava remetente em warmup por 3-4 bounces
+  aleatórios; ex.: aviso.klarim.net pausado com 34 envios) sobre **janela móvel de 7 dias**
+  (`email_health_by_domain(days=7)` — bounces antigos saem do cálculo, o remetente se recupera após
+  corrigir a lista) → remetente **pausado** no ciclo (o outro continua). **KL-108 (fix):** só o **hard
+  bounce** (permanente) pausa; o **soft bounce** (transitório: caixa cheia, servidor fora,
+  `delivery_delayed`) é medido/logado mas NUNCA pausa. Antes `email_health_by_domain` somava hard+soft
+  num `bounce_rate` único → em 26/07 os 3 senders passaram de 5% pelo COMBINADO e foram pausados
+  simultaneamente (zero cold alerts, backlog 2.683; fix emergencial `ALERT_SENDER_MAX_BOUNCE_RATE=12`
+  no `.env`, depois removido). Ex. da distorção: perfil.klarim.net 1,33% hard + 5,61% soft = 6,94%
+  combinado (quase pausado injustamente). Agora `email_health_by_domain` devolve `hard_bounced`/
+  `soft_bounced` separados; `bounce_rate`=hard-only (é o que `flag_high_bounce` usa) e
+  `soft_bounce_rate`=informativo. O safety net GLOBAL do KL-24
+  (`_check_bounce_health`, all-time, 8%) usa a query SEPARADA `email_health()` (que já contava só
+  `status='bounced'` hard) com `ALERT_BOUNCE_MIN_SAMPLE`=20 (amostra separada) — inalterado.
+  Métricas por domínio em `get_email_health.by_domain` (all-time, com hard/soft separados) +
+  `email_log.from_domain`/`template_variant`. Motivação: o
   `alerta@klarim.net` (cold + urgência + links) caía no spam. **`send_alert_for_target`
   (disparo manual) usa o mesmo formato** (1º remetente). Os builders antigos com link
   (`build_alert_text`, alert-access HMAC do KL-82 S3) **ficam no código** mas o ciclo
@@ -176,6 +192,17 @@ standalone) + **React** (islands) + **Tailwind v4** (CSS-first, sem config) +
   (`scan@`) e o proativo (`alerta@`) **não mudam**.
 - **Proativo respeita a blocklist; transacional pode ignorá-la mas SEMPRE registra**
   (todo e-mail passa por `KlarimMailer._send` → `email_log`).
+- **Bounce transitório = `soft_bounced` (fix 24/07):** o webhook `/webhooks/resend` marcava só bounce
+  PERMANENTE (`bounced` + descarta alvo + blocklist) e **ignorava** os transitórios (`transient`/`soft`/
+  `temporary`/`delivery_delayed`) com um mero `print` → o evento sumia (gap de contadores 78 Resend vs
+  25 DB). Agora o transitório é **rastreado como `soft_bounced`** no `email_log` (o operador vê; o
+  circuit breaker conta) **sem descartar o alvo nem blocklist**. `email_log.status` é texto livre (sem
+  CHECK) → não precisa migração. Ambos os ramos logam se o `email_id` do Resend não casa com
+  `email_log.email_id` (diagnostica update silencioso). Os contadores da página Alertas ("Hoje"/etc.)
+  agora contam **tentativas** (sent+bounced+soft_bounced+complained, `blocked` não), com breakdown
+  `{key}_sent`/`{key}_bounced` (`_email_stats_fn`) — o card mostrava 289 escondendo 22 bounces; agora
+  311 com "22 bounced ⚠️" no `StatCard`. Health check do Resend não chama mais `GET /domains` (401 com
+  key send-only) — HEAD ao host sem auth (`check_resend`).
 - **E-mails proativos (alerta + "perfil consultado") = TEXTO PURO** (`text`, sem
   `html`) — menos cara de marketing, cai menos no spam; CTA → perfil público
   `/site/{domain}` com UTM. Builders em `notifier/email_client.py`
@@ -323,7 +350,8 @@ dashboard usando o access_log como fonte primária. Ver §9 KL-92.
 ### Planos (KL-44 P1) — freemium
 `PAYWALL_ENABLED` (default **`false`**): todo scan autorizado vê os **48 checks** com
 detalhe; PDF sempre gratuito. Assinatura define o **monitoramento**:
-- **Free** — 1 site, monitoramento mensal.
+- **Free** — 1 site, boletim mensal + **as 5 vigílias core ATIVAS** (ssl/domain/score/email/
+  reputation — KL-106; uptime é Pro, changes/phishing são Agency).
 - **Pro** — R$ 19/mês (R$ 99/ano), 5 sites, semanal, vigílias.
 - **Agency** — R$ 49/mês, 15 sites, diário, vigílias avançadas.
 - **Reverse trial 30 dias** no signup (Pro automático; `?plan=agency` no signup começa
@@ -451,7 +479,7 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1633 passed** (backend pytest, KL-104 P1: +2) + **98 node --test** (frontend `test:unit`)
+- Testes: **1707 passed** (backend pytest, +10 KL-108) + **108 node --test** (frontend `test:unit`)
 - Páginas públicas: `/metodologia` (KL-100) · descadastro `/remover` (KL-102) · landing com social proof ao vivo (KL-103)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - **Níveis de conta (KL-99):** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado
@@ -1157,6 +1185,131 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   (site_events já tinha a coluna). **Não coberto (nota):** Leads (lista é por e-mail, sem domínio) e
   Comportamento/IPs (access_log → join com targets; a Parte 3 cobre o comportamento por-alvo).
   Frontend-only + 2 campos `target_id`. +2 testes. Relatório: `claude/reports/KL-104_p1_deep_linking.md`.
+- **KL-104 P2** — Filtros avançados na página Alvos ✅ (Parte 2 de 3). 10 filtros novos + os 5
+  antigos, todos combinando com **AND** e **100% parametrizados** (zero injeção; valor fora do
+  dicionário é descartado). O coração é **`TargetStore._target_filters(f)`** (staticmethod PURA)
+  → `(where, params)`, compartilhado por `list_targets(**filters)` **e** `count_targets_filtered`
+  (a contagem bate com a lista). Filtros: `score` (faixas + `sem`), `semaphore` (derivado do score),
+  `lead_score` (`alert_quality_score`), `has_email`/`monitored`/`owner_verified`/`has_ai_profile`
+  (bool **3-estados**: sim/não/todos — `monitored` via `EXISTS user_sites`, `has_ai_profile` via
+  `EXISTS site_profile.description`), `site_type`/`tech` (CSV → `= ANY(%s)`; `tech` via EXISTS lazy
+  no `site_tech_stack`), `last_scan` (`hoje`/`7d`/`30d`/`nunca`). **`GET /targets`** ganhou os params
+  + response `total` (filtrado) + `total_all` (geral, cache Redis 1h); **`GET /targets/tech-list`**
+  (top-20 tecnologias p/ o dropdown, cache 1h) fica ANTES de `/targets/{id}`. 3 índices parciais
+  (last_scan_score/last_scan_at/owner_verified). Frontend: lógica pura em
+  **`web/src/lib/admin/alvosFilters.js`** (URL⇄estado⇄params, testável), UI em
+  **`AlvosFilters.jsx`** (linha 1 fixa + linha 2 colapsável + barra "N de X" + "Limpar filtros";
+  toggles 3-estados, multi-select via `<details>` CSP-safe). `AlvosPage` sincroniza os 15 filtros
+  com a **URL** (`replaceState`, deep-link/bookmark), debounce 300ms, paginação pelo `total`, e
+  registra **`admin_filter_used`** (KL-57, sem PII — só os nomes dos filtros). Perf validada em
+  prod: filtro combinado em **11ms** (<2s p/ 50k). +11 backend + 9 `node --test`. Relatório:
+  `claude/reports/KL-104_p2_filtros_avancados.md`.
+- **KL-104 P3** — Visão 360° do alvo ✅ (Parte 3 de 3, **fecha o card**). **`GET /admin/targets/{id}/
+  intelligence`** (JWT admin) junta numa chamada o que exigia 4-5 páginas: **4 seções isoladas**
+  (monitoramento · funil · visitantes · timeline). Agregações brutas (SQL) em `discovery/store.py`
+  (`ti_*`, 1 conexão por método → falha isolada); **montagem PURA** em **`api/target_intelligence.py`**
+  (funil, classificação de fonte de tráfego, mascaramento de IP, merge/paginação da timeline) +
+  orquestrador com **degradação graciosa** (`_try` engole erro de sub-query → `null`; `_safe_section`
+  → `{error}`; tabela ausente nunca derruba). **Monitoramento:** monitors (`user_sites`→`users`,
+  e-mail é dado admin), vigílias (por `site_domain`), dono verificado (`owner_verified`+
+  `ownership_verifications`), técnico (`technician_links`). **Funil:** 6 etapas derivadas de
+  timestamps reais (discovered/scanned/alerted/account_created/monitoring/paid — paid via
+  `payments.target_url`), e-mails enviados+summary (`email_log`), lead score (`alert_quality_score`).
+  **Visitantes:** consultas/IPs únicos + top IPs **mascarados /24** (`mask_ip(ip,3)`, LGPD KL-92 — IP
+  completo NUNCA sai) + cross-site (outros domínios do mesmo IP, 1 query batch `ANY(::inet[])`, com
+  `target_id` p/ DomainLink) + fontes de tráfego (por `referrer`). **Timeline:** UNION lógico em
+  Python de scans/alertas/perfil-consultado(`endpoint LIKE '/site/%'`)/status/descoberta, ordem DESC,
+  **cursor** (`before`+`has_more`/`next_cursor`); `email_log.sent_at` (TIMESTAMPTZ) normalizado via
+  `AT TIME ZONE 'UTC'` p/ não misturar naive/aware no merge. 2 índices `access_log(domain_queried,
+  created_at)`/`(ip_address,created_at)`. Frontend: `TargetIntelligence.jsx` (4 `<details>` CSP-safe,
+  funil visual laranja/cinza-tracejado, "Carregar mais" por cursor, cross-site = DomainLinks) montado
+  no topo do `AlvoDetalhePage`. Os 8 padrões SQL validados no Postgres 16 da VM. +18 backend. Relatório:
+  `claude/reports/KL-104_p3_visao_360.md`.
+- **KL-105** — Frontend de conversão do resultado do scan (Fluxo D) ✅. **Mudança-chave:** o
+  **`POST /account/signup-inline`** deixou de exigir confirmação de e-mail (que matava a conversão,
+  lição KL-89) — agora **ativa o monitoramento na hora** (vincula site + vigílias + posse Tier 1,
+  igual ao `monitor-from-alert`) e **loga** (cookie), retornando `{status: monitoring_active}` (+cookie)
+  ou `{status: already_exists}` (o front dispara um **magic link** automático). O welcome valida o
+  endereço: um bounce cai na blocklist → alertas futuros suprimidos (protege a reputação sem bloquear
+  a conversão). Rate limit **5/min & 30/dia por IP** (era 3/h). Novo **`GET /account/monitoring-status
+  ?domain=`** (auth **opcional**, 30/min/IP) → `{logged_in, monitoring, user_email?}` — o CTA do
+  logado usa p/ escolher entre "adicionar ao monitoramento" (estado C) e "você já monitora" (estado B).
+  Frontend (o layout 2 colunas + InlineSignup/MonitorConsent já vinham do KL-99): `InlineSignup.jsx`
+  reescrito — sucesso inline "Monitoramento ativado!" (sem redirect), `already_exists` → dispara magic
+  link + "enviamos um link de acesso", botão desabilitado até e-mail válido (`isValidEmail`), CTA
+  `border-2 border-brand-500`, texto legal (Termos/Privacidade), 4 eventos KL-57 (`inline_signup_shown/
+  click/success/existing`). `MonitorConsent.jsx` (account mode) busca `monitoring-status` → estado B.
+  O `/entrar` já tinha magic link (KL-99). +6 backend (`test_kl99_levels.py`) + 1 `node --test`
+  (`isValidEmail`). **Consideração de segurança (documentada):** ativar monitoramento sem confirmação
+  é um trade-off de consentimento — mitigado pela validação por bounce; follow-up possível: gatear o
+  1º alerta em `email_confirmed`. Relatório: `claude/reports/KL-105_conversao_scan.md`.
+- **KL-97 + KL-98** — Gestão do dono no dashboard (monitoramento/notificações + perfil público/selo) ✅.
+  Compartilham `user_sites`/`vigilias`/`site_profile` + auth. **Ownership em TODO endpoint** (`_owned_site`:
+  auth + `_require_level` + `get_user_site`; nível ≥1 p/ monitoramento, **nível 3 + `is_owner`** p/ perfil/selo).
+  **KL-97:** `GET/PUT /account/sites/{id}/monitoring` — liga/desliga vigílias por-tipo (`set_vigilia_enabled`,
+  cria se não existe, threshold do score no `last_data` JSONB), **plan-gated** (toggle fora do plano → 403
+  `requires_plan`; `_VIGILIA_MIN_PLAN`); `list_site_vigilias` traz TODAS (habilitadas ou não).
+  `GET/PUT /account/notification-preferences` — novas colunas em `users` (`bulletin_frequency` NULL=plano ·
+  `bulletin_hour` · `notify_vigilia/bulletin/news`); `list_users_due_bulletin` reescrito p/ **frequência
+  EFETIVA** (override do user > plano; `off`/`notify_bulletin=false` não recebem; `immediate`→daily).
+  **KL-98:** `PUT /account/sites/{id}/profile` — dono edita 15 campos + tags; `_sanitize_owner_profile`
+  (strip HTML via `_sanitize_str`, limites, valida CNPJ/telefone/URL → 422); `update_site_profile_fields(...,
+  actor='owner')` marca `edited_by_owner` + acumula `owner_edited_fields` (dedup via `ARRAY(SELECT DISTINCT
+  unnest(...))`). **Preservação contra a IA:** `merge_ai_into_profile` pula `owner_edited_fields` E o
+  `upsert_site_profile._upd` ganhou CASE por-campo (`'col' = ANY(owner_edited_fields)`) — o dono, mesmo
+  limpando um campo, não é sobrescrito. `PUT /account/sites/{id}/visibility` (dono liga/desliga a landing).
+  **Selo:** colunas `site_profile.seal_enabled`/`seal_style`; `GET/PUT /account/sites/{id}/seal` (variantes
+  badge/footer/floating com `embed_code`); o público `GET /seal/{domain}` devolve `enabled`/`style`/`verified`
+  e o `web/public/seal/widget.js` ganhou `data-style` (footer=barra, floating=fixed) + esconde se `enabled=false`.
+  4 eventos KL-57 (`vigilia_toggled`/`bulletin_frequency_changed`/`profile_edited`/`seal_configured`).
+  Frontend: `MonitoringConfig.jsx` (modal: toggles + threshold + notif) e `ProfileEditor.jsx` (form + preview
+  ao vivo + selo + visibilidade), abertos por "⚙️ Configurar"/"✏️ Editar perfil" na `MonitoringSection`.
+  +18 backend (`test_kl97_98_owner.py`); SQL (array-dedup/jsonb_set/eff_freq) validado no Postgres 16 da VM.
+  Relatório: `claude/reports/KL-97_98_gestao_dono.md`.
+- **Fix ProfileEditor + vigílias default + KL-106** ✅. **(1) ProfileEditor** (regressão KL-98): os
+  campos não pré-preenchiam (o `initial` do dashboard era parcial) → agora faz `GET /account/sites/{id}`
+  no mount e popula do `profile`; modal alargada (`Modal` ganhou `size="xl"`=max-w-3xl) + grid
+  `md:grid-cols-2` (2 colunas desktop, empilha no mobile). **(2) Vigílias ativas por padrão:** a raiz
+  era uma **corrida** — `_create_account_record` criava o trial Pro via `_spawn` (fire-and-forget), mas
+  `_create_site_vigilias` rodava logo depois e `_vigilia_allowed_types` lia a assinatura antes dela
+  existir → fallback 'free' (sem vigílias) → **5 users ficaram sem vigília nenhuma**. Fix: (a) o trial
+  agora é **awaited** (não `_spawn`) no `_create_account_record`; (b) o plano **Free passa a incluir as
+  5 vigílias core** (`UPDATE plans` idempotente — o seed é `ON CONFLICT DO NOTHING`) → mesmo na corrida,
+  o fallback free já habilita as 5; (c) `_VIGILIA_MIN_PLAN` reduzido a `{uptime:pro, changes/phishing:
+  agency}`; (d) `scripts/backfill_vigilias.py` (idempotente) cria as faltantes + reativa as desligadas,
+  respeitando o plano. **(3) KL-106:** `ScoreCard` "Ver landing page →" apontava para `https://{domain}`
+  (site real do cliente) → corrigido p/ o **perfil Klarim** (`profileUrl`=/site/{domain}) + link separado
+  "Visitar site ↗" p/ o site real (nova aba, noreferrer); `painel.klarim.net` → **301** ao domínio
+  principal (o bloco nginx que servia o build Vite antigo virou redirect; `nginx -t` valida na CI). +1
+  backend. Relatório: `claude/reports/fix_profileeditor_vigilias_kl106.md`.
+- **KL-107** — Segurança (auditoria 24/07: 10 testes IDOR/escalação passaram; 2 achados) ✅.
+  **Achado 1 (IDOR):** `POST /account/sites/{id}/verify/check` devolvia `200 {no_pending}` para site de
+  OUTRO usuário (permitia enumerar quais têm verificação pendente) — era o único `/account/sites/{id}/*`
+  sem ownership check. Fix: `get_user_site` no início → **404** (igual aos demais; `verify/start` já
+  tinha). **Achado 2 (Opção B — permitir + avisar):** `POST /account/sites` deixa um terceiro monitorar
+  (is_owner=false) um site com dono verificado — o modelo agência→técnico (KL-70) depende disso, então
+  não se bloqueia; mas o **dono é avisado**. `store.get_site_owner(target_id)` (is_owner+verified_at) →
+  se houver dono ≠ quem adicionou, `_notify_owner_site_added` (fire-and-forget, nunca derruba o add):
+  e-mail **transacional** `klarim@klarim.net` (`send_owner_site_added`, TEXTO PURO, informativo, **sem
+  link de ação**), `email_type='owner_notification'`, **dedup 1/dia/target** (Redis). Só vaza o e-mail
+  de quem adicionou (nunca id/plano). Evento KL-57 `owner_notification_sent` (`_KNOWN_EVENTS`; a
+  contagem real vem do email_log). +9 backend. Relatório: `claude/reports/KL-107_seguranca.md`;
+  achados em `docs/SECURITY.md`.
+- **KL-108** — Circuit breaker separa HARD de SOFT bounce ✅. Em 26/07 os 3 senders cold passaram de
+  5% pelo bounce rate COMBINADO (hard+soft) e foram pausados juntos → **zero cold alerts, backlog
+  2.683** (fix emergencial `ALERT_SENDER_MAX_BOUNCE_RATE=12` no `.env`, depois removido). Soft bounces
+  são transitórios (caixa cheia, `delivery_delayed`) e não deviam pausar. **Fix:**
+  `store.email_health_by_domain` agora conta `hard_bounced` (`status='bounced'`) e `soft_bounced`
+  (`status='soft_bounced'`) em FILTERs **separados**; `bounce_rate`=**hard-only** (é o que
+  `cold_alert.flag_high_bounce` usa p/ pausar), `soft_bounce_rate`=informativo, `bounced` (=hard+soft)
+  mantido por compat. `flag_high_bounce` lê `hard_bounced` e **loga hard/soft separados por remetente**
+  (`[alert] sender {dom}: hard=X% soft=Y% … → PAUSED|ok`). Ex.: perfil.klarim.net 1,33% hard + 5,61%
+  soft = 6,94% combinado → com hard-only fica **ATIVO** (antes pausava injustamente). `get_email_health`
+  MCP/`/system/email-health` propagam os campos separados. O safety net GLOBAL do KL-24
+  (`_check_bounce_health`→`email_health()`, all-time 8%) tem query **própria** que já contava só hard —
+  inalterado. +10 testes offline (`test_kl108_hard_soft_bounce.py` +6, `test_kl91_cold_alert.py` +4).
+  **Pós-deploy manual na VM:** remover `ALERT_SENDER_MAX_BOUNCE_RATE=12` do `.env` (default 5% hard-only
+  já mantém perfil ativo e pausa alertas/aviso). Relatório: `claude/reports/KL-108_hard_soft_bounce.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

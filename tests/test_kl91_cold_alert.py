@@ -140,8 +140,8 @@ def test_pick_sender_skips_paused():
 
 def test_flag_high_bounce_pauses_over_threshold():
     s = c.load_senders({})
-    by_domain = {"alertas.klarim.net": {"total": 100, "bounced": 8},
-                 "aviso.klarim.net": {"total": 100, "bounced": 2}}
+    by_domain = {"alertas.klarim.net": {"total": 100, "hard_bounced": 8, "soft_bounced": 0},
+                 "aviso.klarim.net": {"total": 100, "hard_bounced": 2, "soft_bounced": 0}}
     paused = c.flag_high_bounce(s, by_domain, max_rate=5.0, min_sample=20)
     assert paused == [("alertas.klarim.net", 8.0)]
     assert s[0].status == "paused" and s[1].status == "active"
@@ -149,8 +149,50 @@ def test_flag_high_bounce_pauses_over_threshold():
 
 def test_flag_high_bounce_respects_min_sample():
     s = c.load_senders({})
-    by_domain = {"alertas.klarim.net": {"total": 5, "bounced": 3}}  # 60% mas amostra 5
+    by_domain = {"alertas.klarim.net": {"total": 5, "hard_bounced": 3, "soft_bounced": 0}}  # 60% mas amostra 5
     paused = c.flag_high_bounce(s, by_domain, max_rate=5.0, min_sample=20)
+    assert paused == [] and s[0].status == "active"
+
+
+# --------------------------------------------------------------------------- #
+# flag_high_bounce — KL-108: só HARD bounce pausa; SOFT nunca
+# --------------------------------------------------------------------------- #
+
+def test_flag_high_bounce_soft_alone_does_not_pause():
+    # 4% hard + 10% soft (14% combinado) → NÃO pausa (hard < 5%). Era o bug: o
+    # combinado passava do threshold e derrubava remetente saudável.
+    s = c.load_senders({})
+    by_domain = {"alertas.klarim.net": {"total": 100, "hard_bounced": 4, "soft_bounced": 10},
+                 "aviso.klarim.net": {"total": 100, "hard_bounced": 0, "soft_bounced": 0}}
+    paused = c.flag_high_bounce(s, by_domain, max_rate=5.0, min_sample=20)
+    assert paused == [] and s[0].status == "active"
+
+
+def test_flag_high_bounce_hard_alone_pauses():
+    # 6% hard + 0% soft → PAUSA (hard > 5%).
+    s = c.load_senders({})
+    by_domain = {"alertas.klarim.net": {"total": 100, "hard_bounced": 6, "soft_bounced": 0},
+                 "aviso.klarim.net": {"total": 100, "hard_bounced": 0, "soft_bounced": 0}}
+    paused = c.flag_high_bounce(s, by_domain, max_rate=5.0, min_sample=20)
+    assert paused == [("alertas.klarim.net", 6.0)] and s[0].status == "paused"
+
+
+def test_flag_high_bounce_hard_over_soft_irrelevant():
+    # 6% hard + 5% soft → PAUSA por hard; o soft é irrelevante p/ a decisão.
+    s = c.load_senders({})
+    by_domain = {"alertas.klarim.net": {"total": 100, "hard_bounced": 6, "soft_bounced": 5},
+                 "aviso.klarim.net": {"total": 100, "hard_bounced": 0, "soft_bounced": 0}}
+    paused = c.flag_high_bounce(s, by_domain, max_rate=5.0, min_sample=20)
+    assert paused == [("alertas.klarim.net", 6.0)] and s[0].status == "paused"
+
+
+def test_flag_high_bounce_perfil_case_stays_active():
+    # Caso real 26/07: perfil.klarim.net 1,33% hard + 5,61% soft (6,94% combinado) →
+    # com hard-only fica ATIVO (antes o combinado o pausava injustamente).
+    s = [c.Sender(name="perfil", email="notifica@perfil.klarim.net",
+                  from_domain="perfil.klarim.net")]
+    by_domain = {"perfil.klarim.net": {"total": 677, "hard_bounced": 9, "soft_bounced": 38}}
+    paused = c.flag_high_bounce(s, by_domain, max_rate=5.0, min_sample=100)
     assert paused == [] and s[0].status == "active"
 
 
@@ -160,18 +202,18 @@ def test_default_min_sample_is_100():
 
 
 def test_flag_high_bounce_warmup_not_paused_below_100():
-    # 50 envios, 5 bounces (10%) — acima do rate, mas amostra insuficiente → NÃO pausa (default 100).
+    # 50 envios, 5 hard bounces (10%) — acima do rate, mas amostra insuficiente → NÃO pausa (default 100).
     s = c.load_senders({})
-    by_domain = {"alertas.klarim.net": {"total": 50, "bounced": 5}}
+    by_domain = {"alertas.klarim.net": {"total": 50, "hard_bounced": 5, "soft_bounced": 0}}
     paused = c.flag_high_bounce(s, by_domain, max_rate=5.0)   # min_sample = default (100)
     assert paused == [] and s[0].status == "active"
 
 
 def test_flag_high_bounce_pauses_at_full_sample():
-    # 100 envios, 6 bounces (6%) — amostra atingida E acima de 5% → pausa.
+    # 100 envios, 6 hard bounces (6%) — amostra atingida E acima de 5% → pausa.
     s = c.load_senders({})
-    by_domain = {"alertas.klarim.net": {"total": 100, "bounced": 6},
-                 "aviso.klarim.net": {"total": 100, "bounced": 4}}
+    by_domain = {"alertas.klarim.net": {"total": 100, "hard_bounced": 6, "soft_bounced": 0},
+                 "aviso.klarim.net": {"total": 100, "hard_bounced": 4, "soft_bounced": 0}}
     paused = c.flag_high_bounce(s, by_domain, max_rate=5.0)   # default 100
     assert paused == [("alertas.klarim.net", 6.0)]
     assert s[0].status == "paused" and s[1].status == "active"
@@ -272,13 +314,17 @@ class _HealthStore:
         return {"total": 200, "bounced": 4, "complained": 1, "blocklist": 3}
 
     async def email_health_by_domain(self):
+        # KL-108: hard/soft separados; bounce_rate = hard only, soft_bounce_rate informativo.
         return {
-            "alertas.klarim.net": {"sent": 100, "delivered": 95, "bounced": 3,
-                                   "complained": 0, "total": 100, "bounce_rate": 3.0},
-            "aviso.klarim.net": {"sent": 98, "delivered": 96, "bounced": 2,
-                                 "complained": 0, "total": 98, "bounce_rate": 2.04},
-            "klarim.net": {"sent": 15, "delivered": 15, "bounced": 0,
-                           "complained": 0, "total": 15, "bounce_rate": 0.0},
+            "alertas.klarim.net": {"sent": 100, "delivered": 92, "hard_bounced": 3,
+                                   "soft_bounced": 5, "bounced": 8, "complained": 0,
+                                   "total": 100, "bounce_rate": 3.0, "soft_bounce_rate": 5.0},
+            "aviso.klarim.net": {"sent": 98, "delivered": 94, "hard_bounced": 2,
+                                 "soft_bounced": 2, "bounced": 4, "complained": 0,
+                                 "total": 98, "bounce_rate": 2.04, "soft_bounce_rate": 2.04},
+            "klarim.net": {"sent": 15, "delivered": 15, "hard_bounced": 0,
+                           "soft_bounced": 0, "bounced": 0, "complained": 0,
+                           "total": 15, "bounce_rate": 0.0, "soft_bounce_rate": 0.0},
         }
 
 
@@ -288,7 +334,11 @@ def test_email_health_by_domain(monkeypatch):
     assert out["total_sent"] == 200
     by = out["by_domain"]
     assert set(by) == {"alertas.klarim.net", "aviso.klarim.net", "klarim.net"}
-    assert by["alertas.klarim.net"]["bounce_status"] == "warning"  # 3% → 2-4%
+    # KL-108: bounce_status deriva do bounce_rate HARD-only (3%), não do combinado (8%).
+    assert by["alertas.klarim.net"]["bounce_status"] == "warning"  # 3% hard → 2-4%
+    assert by["alertas.klarim.net"]["hard_bounced"] == 3
+    assert by["alertas.klarim.net"]["soft_bounced"] == 5
+    assert by["alertas.klarim.net"]["soft_bounce_rate"] == 5.0
     assert by["klarim.net"]["bounce_status"] == "ok"
 
 

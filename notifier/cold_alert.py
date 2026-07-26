@@ -92,21 +92,32 @@ def flag_high_bounce(senders: Sequence[Sender],
                      by_domain: Dict[str, Dict[str, float]],
                      max_rate: float = DEFAULT_MAX_BOUNCE_RATE,
                      min_sample: int = DEFAULT_BOUNCE_MIN_SAMPLE) -> List[Tuple[str, float]]:
-    """Circuit breaker (KL-91 §6): marca `status='paused'` os remetentes cujo bounce
-    rate passou de `max_rate` (com amostra ≥ `min_sample`). **Muta** os senders e
-    devolve [(from_domain, rate)] dos pausados (para o worker logar CRITICAL). O outro
-    remetente continua ativo — a rotação simplesmente o ignora."""
+    """Circuit breaker (KL-91 §6 · KL-108): marca `status='paused'` os remetentes cujo
+    **HARD bounce** rate passou de `max_rate` (com amostra ≥ `min_sample`). **Muta** os
+    senders e devolve [(from_domain, hard_rate)] dos pausados (para o worker logar
+    CRITICAL). O outro remetente continua ativo — a rotação simplesmente o ignora.
+
+    KL-108: só o hard bounce (permanente) pausa. O soft bounce (transitório: caixa cheia,
+    servidor fora, delivery_delayed) é medido e logado, mas NUNCA pausa — antes soma-va no
+    rate e derrubava remetentes saudáveis (ex.: perfil.klarim.net, 1,3% hard + 5,6% soft =
+    6,9% combinado → quase pausado injustamente). Lê `hard_bounced`/`soft_bounced` do
+    `email_health_by_domain` (KL-108); o campo legado `bounced` (=hard+soft) não é usado."""
     paused: List[Tuple[str, float]] = []
     for s in senders:
         d = by_domain.get(s.from_domain) or {}
         total = int(d.get("total") or 0)
-        bounced = int(d.get("bounced") or 0)
-        if total < min_sample:
-            continue
-        rate = 100.0 * bounced / total if total else 0.0
-        if rate > max_rate:
+        hard = int(d.get("hard_bounced") or 0)
+        soft = int(d.get("soft_bounced") or 0)
+        hard_rate = 100.0 * hard / total if total else 0.0
+        soft_rate = 100.0 * soft / total if total else 0.0
+        is_paused = total >= min_sample and hard_rate > max_rate
+        if is_paused:
             s.status = "paused"
-            paused.append((s.from_domain, round(rate, 1)))
+            paused.append((s.from_domain, round(hard_rate, 1)))
+        if total:  # diagnóstico: hard/soft separados por remetente (KL-108)
+            print(f"[alert] sender {s.from_domain}: hard={hard_rate:.1f}% soft={soft_rate:.1f}% "
+                  f"(threshold={max_rate}%, sample={total}/{min_sample}) "
+                  f"→ {'PAUSED' if is_paused else 'ok'}", flush=True)
     return paused
 
 

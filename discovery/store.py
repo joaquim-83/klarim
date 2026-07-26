@@ -5827,7 +5827,14 @@ class TargetStore:
         `by_domain` do `get_email_health` (all-time, `days=None`) e o circuit breaker do
         alert worker (janela móvel `days=7` — fix 24/07: bounces antigos saem do cálculo,
         um remetente se recupera após corrigir a lista). `total` = tentativas rastreáveis
-        (sent+bounced+soft_bounced+complained; exclui `test`)."""
+        (sent+bounced+soft_bounced+complained; exclui `test`).
+
+        KL-108 — separa HARD (`bounced`, permanente) de SOFT (`soft_bounced`, transitório:
+        caixa cheia, delivery_delayed). `bounce_rate` conta **só hard** (é o que pausa o
+        remetente no circuit breaker); `soft_bounce_rate` é informativo e NUNCA pausa —
+        soft bounces são ruído transitório e inflavam o rate a ponto de pausar remetentes
+        saudáveis (ex.: perfil.klarim.net com 1,3% hard e 5,6% soft = 6,9% combinado). O
+        campo `bounced` (=hard+soft) é mantido por compat."""
         def _fn(cur):
             window = ""
             if days is not None:
@@ -5835,23 +5842,29 @@ class TargetStore:
             cur.execute(
                 "SELECT from_domain, "
                 "COUNT(*) FILTER (WHERE status IN ('sent','bounced','soft_bounced','complained')), "
-                "COUNT(*) FILTER (WHERE status IN ('bounced','soft_bounced')), "
+                "COUNT(*) FILTER (WHERE status = 'bounced'), "
+                "COUNT(*) FILTER (WHERE status = 'soft_bounced'), "
                 "COUNT(*) FILTER (WHERE status = 'complained') "
                 "FROM email_log WHERE email_type <> 'test' AND from_domain IS NOT NULL"
                 + window +
                 " GROUP BY from_domain ORDER BY 2 DESC")
             out: Dict[str, Dict[str, Any]] = {}
-            for dom, total, bounced, complained in cur.fetchall():
+            for dom, total, hard_bounced, soft_bounced, complained in cur.fetchall():
                 total = int(total or 0)
-                bounced = int(bounced or 0)
+                hard_bounced = int(hard_bounced or 0)
+                soft_bounced = int(soft_bounced or 0)
                 complained = int(complained or 0)
                 out[dom] = {
                     "sent": total,
-                    "delivered": max(total - bounced - complained, 0),
-                    "bounced": bounced,
+                    "delivered": max(total - hard_bounced - soft_bounced - complained, 0),
+                    "hard_bounced": hard_bounced,
+                    "soft_bounced": soft_bounced,
+                    "bounced": hard_bounced + soft_bounced,  # compat (total de bounces)
                     "complained": complained,
                     "total": total,
-                    "bounce_rate": round(100.0 * bounced / total, 2) if total else 0.0,
+                    # KL-108: só hard pausa o remetente; soft é informativo.
+                    "bounce_rate": round(100.0 * hard_bounced / total, 2) if total else 0.0,
+                    "soft_bounce_rate": round(100.0 * soft_bounced / total, 2) if total else 0.0,
                 }
             return out
 

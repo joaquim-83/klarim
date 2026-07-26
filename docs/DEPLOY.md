@@ -128,7 +128,8 @@ R$49 (4900). **Nenhum dado de cartão/PIX é armazenado.**
 | `ALERT_SENDER_EMAILS` | **KL-91** — CSV dos remetentes cold rotacionados (default `scan@alertas.klarim.net,scan@aviso.klarim.net`; verificados no Resend). `klarim.net` cru é ignorado (isolamento do transacional) |
 | `ALERT_SENDER_DAILY_LIMIT` | **KL-91** — limite diário POR remetente cold (warmup: 100→250→500→750; editável no painel) |
 | `ALERT_SEND_INTERVAL_MIN` / `ALERT_SEND_INTERVAL_MAX` | **KL-91** — cooldown randômico entre envios individuais (default 30/60s; 0/0 em dev) |
-| `ALERT_SENDER_MAX_BOUNCE_RATE` | **KL-91** — circuit breaker: pausa o remetente com bounce acima disto (default 5.0%, amostra ≥`ALERT_BOUNCE_MIN_SAMPLE`) |
+| `ALERT_SENDER_MAX_BOUNCE_RATE` | **KL-91 · KL-108** — circuit breaker: pausa o remetente cujo **HARD bounce rate** passa disto (override opcional do threshold; default **5.0%**, amostra ≥`ALERT_SENDER_BOUNCE_MIN_SAMPLE`). **KL-108:** opera sobre **hard-only** — soft bounces (transitórios) não contam. NÃO usar valores inflados como emergência (o `=12` de 26/07 foi paliativo enquanto o cálculo somava soft; após o KL-108 o default 5% já é correto). |
+| `ALERT_SENDER_BOUNCE_MIN_SAMPLE` | **KL-91** — amostra mínima antes de o circuit breaker julgar um remetente (default 100; evita pausar em warmup por poucos bounces) |
 | `PROFILE_VIEW_FROM_EMAIL` / `PROFILE_VIEW_FROM_NAME` | **KL-101** — remetente dedicado do aviso "perfil consultado" (default `notifica@perfil.klarim.net`). ⚠️ o subdomínio precisa estar **verificado no Resend** antes do deploy |
 | `PROFILE_VIEW_DAILY_LIMIT` | **KL-101** — teto diário de warmup do `perfil.klarim.net` (default 200; editável no painel) |
 | `DRY_RUN_EMAIL` | dev — `true` faz o `KlarimMailer._send_sync` simular (não fala com o Resend), mas grava `email_log` |

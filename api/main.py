@@ -6471,8 +6471,12 @@ async def api_system_email_health() -> dict:
     `bounced`/`complained` refletem o que o webhook/backfill do Resend marcou no
     `alert_log`. Não distinguimos bounce transitório (não descartamos por isso).
     KL-91: `by_domain` quebra as métricas por domínio de envio (`from_domain`) —
-    vital para acompanhar os subdomínios cold (alertas./aviso.) vs. o transacional
-    (klarim.net) separadamente, e para o circuit breaker de rotação.
+    vital para acompanhar os subdomínios cold (alertas./aviso./perfil.) vs. o
+    transacional (klarim.net) separadamente, e para o circuit breaker de rotação.
+    KL-108: cada entrada de `by_domain` separa `hard_bounced` (permanente) de
+    `soft_bounced` (transitório); `bounce_rate` conta **só hard** (é o que pausa o
+    remetente) e `soft_bounce_rate` é informativo. `bounce_status` deriva do
+    `bounce_rate` hard-only.
     """
     store = get_target_store()
     h = await store.email_health()

@@ -316,8 +316,9 @@ def test_run_cycle_pauses_high_bounce_sender():
     # alertas.klarim.net com 12% de bounce (amostra 100) → pausado; aviso continua.
     store = FakeStore(eligible=[_target(i) for i in range(1, 5)])
     store._health_by_domain = {
-        "alertas.klarim.net": {"total": 100, "bounced": 12, "complained": 0},
-        "aviso.klarim.net": {"total": 100, "bounced": 1, "complained": 0}}
+        # KL-108: hard bounce é o que pausa (12% hard > 5%); soft é ignorado.
+        "alertas.klarim.net": {"total": 100, "hard_bounced": 12, "soft_bounced": 0, "complained": 0},
+        "aviso.klarim.net": {"total": 100, "hard_bounced": 1, "soft_bounced": 0, "complained": 0}}
     w = _worker(store)
     w.sender_max_bounce_rate = 5.0
     fm = FakeMailer()
