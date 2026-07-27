@@ -192,7 +192,8 @@ standalone) + **React** (islands) + **Tailwind v4** (CSS-first, sem config) +
   `unknown`, nunca bloqueia). O **alert worker** (`_verify_and_filter`, após o lead scoring, antes do
   envio) verifica os melhores leads (`EMAIL_VERIFY_MAX_PER_CYCLE`=60/ciclo): blocklista+descarta
   `invalid`/`disabled`/`disposable`/`spamtrap` e aplica `is_safe_to_send` (`catch_all`/`unknown`/
-  `inbox_full` só com lead_score>50). **Sem `REOON_API_KEY` a verificação do worker é no-op** (o MX da
+  `inbox_full` só com lead_score **> `ALERT_UNSAFE_SCORE_GATE`**, default **20** — KL-122, baixado de 50).
+  **Sem `REOON_API_KEY` a verificação do worker é no-op** (o MX da
   Camada 0 já rodou na extração) — ativa quando a key entra no `.env`. Cache Redis por **SHA-256** do
   e-mail (60d definitivo / 7d transitório) + cache de domínio catch-all (7d). Campos em `targets`:
   `email_verified`/`email_verify_status`/`email_verified_at`/`email_is_role_based`. Lead scoring (KL-85)
@@ -497,7 +498,7 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1848 passed** (backend pytest, +100 KL-26) + **117 node --test** (frontend `test:unit`, +12 KL-26)
+- Testes: **1853 passed** (backend pytest, +5 KL-122) + **117 node --test** (frontend `test:unit`)
 - Páginas públicas: `/metodologia` (KL-100) · descadastro `/remover` (KL-102) · landing com social proof ao vivo (KL-103)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - **Níveis de conta (KL-99):** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado
@@ -1335,7 +1336,8 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   dnspython c/ cache Redis 24h/domínio · flag role-based) + **Camada 1 Reoon** (`verify_reoon`/
   `verify_api`: modo `quick`/`power`, semáforo 5, fallback `unknown`). `verify_email` = pipeline
   cache→C0→C1 (cache SHA-256 do e-mail, 60d/7d; cache de domínio catch-all). `is_safe_to_send`
-  (invalid/disabled/disposable/spamtrap→nunca; catch_all/unknown/inbox_full→só score>50; safe/valid/
+  (invalid/disabled/disposable/spamtrap→nunca; catch_all/unknown/inbox_full→só score>`ALERT_UNSAFE_SCORE_GATE`
+  [default 20, KL-122]; safe/valid/
   role→sim). Integrações: (1) **extração** (`discovery/contact.py::_is_junk` descarta descartável — o
   MX já era filtrado no `extract_email`); (2) **alert worker** (`_verify_and_filter`, após lead
   scoring/antes do envio: verifica ≤`EMAIL_VERIFY_MAX_PER_CYCLE`=60/ciclo os melhores leads,
@@ -1367,6 +1369,17 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   o frontend do KL-26 estende `web/src/lib/scanView.test.js` (o caminho `web/src/__tests__/` da spec não
   existe); sector-pills/stats-bar do KL-103 são DOM-only (`landing-stats.js`, sem função pura) — não
   testáveis em `node --test`. Relatório: `claude/reports/KL-26_cobertura_testes.md`.
+- **KL-122** — Gate de envio `unknown`/`catch_all` configurável + configs operacionais documentadas ✅.
+  Commita o patch aplicado direto em produção em 27/07/2026: o gate de `is_safe_to_send` para status de
+  deliverability INCERTA (`unknown`/`catch_all`/`inbox_full`) caiu de `lead_score>50` (KL-110) → **>20**.
+  O 50 bloqueava ~3.895 e-mails elegíveis (2.757 `unknown` + 1.138 `catch_all`), muitos de provedores BR
+  legítimos (Locaweb/Hostinger/UOL) que não respondem ao SMTP check da Reoon. Agora **configurável por
+  env** `ALERT_UNSAFE_SCORE_GATE` (default 20, lido a cada chamada → ajuste sem deploy; fail-safe p/ valor
+  inválido). `safe/invalid/disabled/disposable/spamtrap/role` **inalterados** (só o branch incerto mudou).
+  `docs/DEPLOY.md` ganhou a seção "Valores operacionais atuais" (ALERT_DAILY_LIMIT=500, ALERT_SENDER_DAILY_
+  LIMIT=500, ALERT_SENDER_MAX_BOUNCE_RATE=10, ALERT_UNSAFE_SCORE_GATE=20, PROFILE_VIEW_DAILY_LIMIT=500 — o
+  que faz / onde é lido / default / quando ajustar). Testes do KL-110 atualizados p/ o novo default (>20,
+  não >=) + env var. Relatório: `claude/reports/KL-122_gate_configuravel.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

@@ -47,6 +47,13 @@ _TRANSIENT_STATUSES = frozenset({"catch_all", "inbox_full", "unknown", "role"})
 # Status que NUNCA devem receber e-mail (blocklist permanente).
 BLOCK_STATUSES = frozenset({"invalid", "disabled", "disposable", "spamtrap"})
 
+# KL-122 — gate de lead_score para status de deliverability INCERTA (catch_all/unknown/inbox_full):
+# só envia se o lead_score for MAIOR que este valor. Baixado de 50 (KL-110) → 20 em 27/07/2026: o
+# threshold 50 bloqueava ~3.895 e-mails elegíveis (2.757 unknown + 1.138 catch_all), muitos de
+# provedores BR legítimos (Locaweb/Hostinger/UOL) que não respondem ao SMTP check da Reoon.
+# Editável por env var (`ALERT_UNSAFE_SCORE_GATE`) — ajuste sem deploy.
+_UNSAFE_SCORE_GATE = int(os.environ.get("ALERT_UNSAFE_SCORE_GATE", "20"))
+
 _CACHE_TTL_DEFINITIVE = 60 * 24 * 3600   # 60 dias
 _CACHE_TTL_TRANSIENT = 7 * 24 * 3600     # 7 dias
 
@@ -329,16 +336,26 @@ async def verify_email(email: str, mode: str = "power", skip_api: bool = False,
     return api_result
 
 
+def _unsafe_score_gate() -> int:
+    """KL-122 — gate de lead_score para status incertos, lido do env a cada chamada (permite
+    ajustar sem alterar o código; default `_UNSAFE_SCORE_GATE`=20). Fail-safe p/ valor inválido."""
+    try:
+        return int(os.environ.get("ALERT_UNSAFE_SCORE_GATE", _UNSAFE_SCORE_GATE))
+    except (TypeError, ValueError):
+        return _UNSAFE_SCORE_GATE
+
+
 def is_safe_to_send(result: VerifyResult, lead_score: int = 0) -> bool:
     """Decisão de envio (KL-110). Definitivamente ruins → nunca. catch_all/unknown/inbox_full
-    → só leads de qualidade (score > 50). safe/valid/role → envia."""
+    → só leads de qualidade (score > `ALERT_UNSAFE_SCORE_GATE`, default 20 desde o KL-122).
+    safe/valid/role → envia."""
     status = result.status if isinstance(result, VerifyResult) else str(result)
     if status in BLOCK_STATUSES:
         return False
     if status in ("safe", "valid", "role"):
         return True
     if status in ("catch_all", "unknown", "inbox_full"):
-        return (lead_score or 0) > 50
+        return (lead_score or 0) > _unsafe_score_gate()
     return True  # fallback conservador: enviar
 
 

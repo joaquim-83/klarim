@@ -57,7 +57,8 @@ def test_send_decision_safe_high_score():
 
 
 def test_send_decision_catch_all_low_score_skips():
-    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 30) is False
+    # KL-122: gate caiu p/ 20 → um score abaixo do gate (15) ainda pula.
+    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 15) is False
 
 
 def test_send_decision_catch_all_high_score_sends():
@@ -69,8 +70,8 @@ def test_send_decision_invalid_never_sends():
 
 
 def test_send_decision_unknown_is_fail_open_gated():
-    # Reoon fora → 'unknown'; envia só se lead de qualidade.
-    assert ev.is_safe_to_send(ev.VerifyResult("unknown", "api_unavailable"), 30) is False
+    # Reoon fora → 'unknown'; envia só se lead de qualidade (KL-122 gate=20).
+    assert ev.is_safe_to_send(ev.VerifyResult("unknown", "api_unavailable"), 15) is False
     assert ev.is_safe_to_send(ev.VerifyResult("unknown", "api_unavailable"), 60) is True
 
 

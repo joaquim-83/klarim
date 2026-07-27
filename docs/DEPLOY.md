@@ -128,18 +128,31 @@ R$49 (4900). **Nenhum dado de cartão/PIX é armazenado.**
 | `ALERT_SENDER_EMAILS` | **KL-91** — CSV dos remetentes cold rotacionados (default `scan@alertas.klarim.net,scan@aviso.klarim.net`; verificados no Resend). `klarim.net` cru é ignorado (isolamento do transacional) |
 | `ALERT_SENDER_DAILY_LIMIT` | **KL-91** — limite diário POR remetente cold (warmup: 100→250→500→750; editável no painel) |
 | `ALERT_SEND_INTERVAL_MIN` / `ALERT_SEND_INTERVAL_MAX` | **KL-91** — cooldown randômico entre envios individuais (default 30/60s; 0/0 em dev) |
-| `ALERT_SENDER_MAX_BOUNCE_RATE` | **KL-91 · KL-108** — circuit breaker: pausa o remetente cujo **HARD bounce rate** passa disto (override opcional do threshold; default **5.0%**, amostra ≥`ALERT_SENDER_BOUNCE_MIN_SAMPLE`). **KL-108:** opera sobre **hard-only** — soft bounces (transitórios) não contam. NÃO usar valores inflados como emergência (o `=12` de 26/07 foi paliativo enquanto o cálculo somava soft; após o KL-108 o default 5% já é correto). |
+| `ALERT_SENDER_MAX_BOUNCE_RATE` | **KL-91 · KL-108 · KL-122** — circuit breaker: pausa o remetente cujo **HARD bounce rate** passa disto (default **5.0%** no código; **valor operacional atual = 10** no `.env` da VM, amostra ≥`ALERT_SENDER_BOUNCE_MIN_SAMPLE`). **KL-108:** opera sobre **hard-only** — soft bounces (transitórios) não contam. |
 | `ALERT_SENDER_BOUNCE_MIN_SAMPLE` | **KL-91** — amostra mínima antes de o circuit breaker julgar um remetente (default 100; evita pausar em warmup por poucos bounces) |
 | `REOON_API_KEY` | **KL-110** — chave da API de verificação de e-mail (emailverifier.reoon.com). **Só no `.env` da VM, nunca no git/log.** Sem ela, o alert worker NÃO faz verificação Power (o MX da Camada 0 já roda na extração); ao configurar, a verificação de inbox ativa no próximo ciclo |
 | `EMAIL_VERIFY_ENABLED` | **KL-110** — liga/desliga a verificação Power no alert worker (default `true`; só tem efeito com `REOON_API_KEY`) |
 | `EMAIL_VERIFY_MAX_PER_CYCLE` | **KL-110** — máx de alvos verificados por ciclo do alert worker (default 60; controla custo/tempo da API Reoon) |
 | `EMAIL_VERIFY_TTL_DAYS` | **KL-110** — validade de uma verificação antes de re-verificar (default 60 dias) |
 | `REOON_MAX_CONCURRENCY` | **KL-110** — máx de chamadas simultâneas à Reoon (default 5; restrição da API) |
+| `ALERT_UNSAFE_SCORE_GATE` | **KL-122** — gate de `lead_score` para e-mails de deliverability INCERTA (`unknown`/`catch_all`/`inbox_full`): só envia se o score for **maior** que este valor (`>`, não `>=`). Lido do env a cada chamada de `is_safe_to_send` (ajuste **sem deploy**). **Default 20** (baixado de 50 em 27/07/2026: o 50 bloqueava ~3.895 e-mails elegíveis — 2.757 `unknown` + 1.138 `catch_all` — muitos de provedores BR legítimos Locaweb/Hostinger/UOL que não respondem ao SMTP check da Reoon). Suba se o bounce voltar a subir; baixe para liberar mais volume incerto. |
 | `PROFILE_VIEW_FROM_EMAIL` / `PROFILE_VIEW_FROM_NAME` | **KL-101** — remetente dedicado do aviso "perfil consultado" (default `notifica@perfil.klarim.net`). ⚠️ o subdomínio precisa estar **verificado no Resend** antes do deploy |
 | `PROFILE_VIEW_DAILY_LIMIT` | **KL-101** — teto diário de warmup do `perfil.klarim.net` (default 200; editável no painel) |
 | `DRY_RUN_EMAIL` | dev — `true` faz o `KlarimMailer._send_sync` simular (não fala com o Resend), mas grava `email_log` |
 | `RESEND_WEBHOOK_SECRET` | webhook Resend (Svix, bounce/complaint) |
 | `UNSUBSCRIBE_SECRET` | HMAC do link de descadastro (`openssl rand -hex 32`) |
+
+#### Valores operacionais atuais (produção, `.env` da VM — KL-122)
+Os knobs de outreach ajustados na VM (podem divergir do default do código). **Onde é lido:** env
+(`os.environ`) e/ou `admin_settings` (editável no painel, precedência sobre o env).
+
+| Var | Valor atual | Default no código | O que faz / quando ajustar |
+|---|---|---|---|
+| `ALERT_DAILY_LIMIT` | **500** | 500 (`ALERT_MONTHLY_LIMIT` separado) | Teto GLOBAL de cold alerts por dia (todos os senders somados). Subir quando o warmup avançar e o bounce estiver saudável. |
+| `ALERT_SENDER_DAILY_LIMIT` | **500** | 100 | Teto POR sender cold/dia (warmup 100→250→500→750). Editável no painel (`admin_settings` > env). |
+| `ALERT_SENDER_MAX_BOUNCE_RATE` | **10** | 5.0 | % de **hard** bounce (KL-108) que pausa um sender. Baixar p/ 5 quando as listas estiverem limpas. |
+| `ALERT_UNSAFE_SCORE_GATE` | **20** | 20 | Gate de `lead_score` p/ `unknown`/`catch_all`/`inbox_full` (`>`). Subir se o bounce voltar a subir. |
+| `PROFILE_VIEW_DAILY_LIMIT` | **500** | 200 | Teto diário de avisos "perfil consultado" (`perfil.klarim.net`, KL-101). Editável no painel. |
 
 ### Admin / JWT / MCP
 | Var | Uso |

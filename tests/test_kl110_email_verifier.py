@@ -213,6 +213,7 @@ def test_verify_email_domain_catch_all_cache(monkeypatch):
 # is_safe_to_send
 # --------------------------------------------------------------------------- #
 
+# KL-122: o gate de unknown/catch_all/inbox_full caiu de 50 → 20 (default). É `> gate`, não `>=`.
 @pytest.mark.parametrize("status,score,expected", [
     ("safe", 0, True),
     ("valid", 0, True),
@@ -221,14 +222,35 @@ def test_verify_email_domain_catch_all_cache(monkeypatch):
     ("disabled", 90, False),
     ("disposable", 90, False),
     ("spamtrap", 90, False),
-    ("catch_all", 30, False),
-    ("catch_all", 60, True),
-    ("unknown", 30, False),
-    ("unknown", 60, True),
+    ("unknown", 21, True),      # > 20 → envia
+    ("unknown", 20, False),     # == 20 → NÃO (gate é > 20)
+    ("unknown", 0, False),
+    ("catch_all", 25, True),
+    ("catch_all", 20, False),
+    ("inbox_full", 15, False),
     ("inbox_full", 51, True),
 ])
 def test_is_safe_to_send(status, score, expected):
     assert ev.is_safe_to_send(ev.VerifyResult(status, "x"), score) is expected
+
+
+def test_unsafe_gate_default_is_20(monkeypatch):
+    monkeypatch.delenv("ALERT_UNSAFE_SCORE_GATE", raising=False)
+    assert ev._unsafe_score_gate() == 20
+    assert ev.is_safe_to_send(ev.VerifyResult("unknown", "x"), 21) is True
+    assert ev.is_safe_to_send(ev.VerifyResult("unknown", "x"), 20) is False
+
+
+def test_unsafe_gate_reads_env_var(monkeypatch):
+    monkeypatch.setenv("ALERT_UNSAFE_SCORE_GATE", "30")
+    assert ev._unsafe_score_gate() == 30
+    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 25) is False  # 25 <= 30
+    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 31) is True
+
+
+def test_unsafe_gate_invalid_env_falls_back_to_default(monkeypatch):
+    monkeypatch.setenv("ALERT_UNSAFE_SCORE_GATE", "abc")
+    assert ev._unsafe_score_gate() == ev._UNSAFE_SCORE_GATE  # fail-safe, não crasha
 
 
 # --------------------------------------------------------------------------- #
@@ -374,7 +396,7 @@ def test_verify_and_filter_blocks_and_gates(monkeypatch):
     targets = [
         {"id": 1, "contact_email": "safe@x.com", "_alert_score": 40},
         {"id": 2, "contact_email": "bad@x.com", "_alert_score": 40},
-        {"id": 3, "contact_email": "catch@x.com", "_alert_score": 30},   # catch_all + score baixo → pula
+        {"id": 3, "contact_email": "catch@x.com", "_alert_score": 10},   # catch_all + score <=20 → pula
         {"id": 4, "contact_email": "catch@x.com", "_alert_score": 60},   # catch_all + score alto → mantém
     ]
     kept, stats = asyncio.run(w._verify_and_filter(targets))
