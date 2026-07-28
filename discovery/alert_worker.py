@@ -411,21 +411,38 @@ class AlertWorker:
         return kept, skipped, avg
 
     async def _verify_and_filter(self, targets: list) -> tuple:
-        """KL-110 — verifica a deliverability (Reoon Power) dos melhores leads ANTES do envio.
+        """KL-110/125 — verifica a deliverability (Reoon Power) dos melhores leads ANTES do envio.
 
         Blocklista+descarta os definitivamente ruins (invalid/disabled/disposable/spamtrap) e
-        aplica `is_safe_to_send` (catch_all/unknown/inbox_full só com lead_score>50). Só os N
-        primeiros da lista já ordenada por score (`email_verify_max`) são verificados por ciclo
-        — controla custo/tempo da API; semáforo de 5 chamadas simultâneas. Fail-open: erro de
-        verificação MANTÉM o alvo (nunca perde um lead bom por falha de infra). Sem REOON_API_KEY,
-        `verify_email` cai na Camada 0 local → status 'valid' → segue como antes."""
-        stats = {"verified": 0, "from_cache": 0, "blocked": 0, "skipped_unsafe": 0, "errors": 0}
+        aplica `is_safe_to_send`. **KL-125 — reverificação de `unknown`:** 64% dos bounces vinham
+        de e-mails marcados `unknown` pela Bulk API (menos precisa p/ servidores BR). Regras:
+          • Regra 1 — `unknown` de fonte NÃO-power → **reverifica via Power**. Se resolver
+            (safe/catch_all/…) usa o novo status; block → blocklist+descarta; `unknown` de novo
+            (2×) → não envia (mas NÃO blocklist — pode ser servidor temporário), grava
+            `source=power` p/ não regastar crédito.
+          • Regra 2 — `unknown` de `source=power` → skip imediato (já tentou Power).
+          • Regra 3 — demais status → fluxo normal (fresh no DB usa cache; senão Power).
+        `unknown` NUNCA é enviado (`is_safe_to_send`=False). Só os N primeiros por score
+        (`email_verify_max`) tocam a API; os `unknown` além do teto são pulados (voltam ao topo e
+        são reverificados depois). Fail-open: exceção de infra MANTÉM o alvo; resultado `fallback`
+        (Reoon fora) NÃO é persistido (não condena o alvo) e não envia. Sem REOON_API_KEY não há
+        reverificação, mas um `unknown` conhecido ainda não é enviado."""
+        stats = {"verified": 0, "from_cache": 0, "blocked": 0, "skipped_unsafe": 0, "errors": 0,
+                 "reverified": 0, "reverified_safe": 0, "reverified_blocked": 0,
+                 "reverified_unknown": 0, "skipped_unknown_power": 0, "rest_unknown_skipped": 0,
+                 "reverify_infra": 0}
         api_key = os.environ.get("REOON_API_KEY")
+
+        def _status(t) -> str:
+            return (t.get("email_verify_status") or "").strip().lower()
+
         if not api_key or not targets or not getattr(self, "email_verify_enabled", True):
-            # Sem REOON_API_KEY não há verificação de INBOX possível; o MX (Camada 0) já foi
-            # validado na extração (`extract_email`), então reverificar local aqui só adicionaria
-            # latência de DNS sem ganho. A verificação ativa quando a key for configurada na VM.
-            return targets, stats
+            # Sem REOON_API_KEY não há reverificação de INBOX possível; mas KL-125: um `unknown`
+            # conhecido NUNCA é enviado (bounce garantido) — filtra-os (barato, sem API). O resto
+            # segue como antes (o MX da Camada 0 já foi validado na extração).
+            kept = [t for t in targets if _status(t) != "unknown"]
+            stats["rest_unknown_skipped"] = len(targets) - len(kept)
+            return kept, stats
         cap = min(len(targets), max(0, getattr(self, "email_verify_max", 60)))
         subset, rest = targets[:cap], targets[cap:]
         redis = await self._redis_client()
@@ -442,60 +459,99 @@ class AlertWorker:
             return (now - va) < ttl
 
         async def _verify_one(t):
+            """Decide o destino de UM alvo → (t, keep: bool, counters: list[str])."""
             email = (t.get("contact_email") or "").strip().lower()
             if not email:
-                return t, None
-            if _is_fresh(t):
-                status = t.get("email_verify_status") or "safe"
-                return t, email_verifier.VerifyResult(
-                    status, "fresh_db", bool(t.get("email_is_role_based")),
+                return t, False, []
+            status, source = _status(t), (t.get("email_verify_source") or "").strip().lower()
+            score = t.get("_alert_score", 0)
+
+            # Regra 2: unknown já reverificado via Power → skip (não regasta crédito, não envia).
+            if status == "unknown" and source == "power":
+                return t, False, ["skipped_unknown_power"]
+
+            reverify_unknown = status == "unknown" and source != "power"
+
+            # Regra 3 (fresco, não-unknown): usa o status cacheado do DB, sem API.
+            if not reverify_unknown and _is_fresh(t):
+                res = email_verifier.VerifyResult(
+                    status or "safe", "fresh_db", bool(t.get("email_is_role_based")),
                     cached=True, source="cache")
+                keep = email_verifier.is_safe_to_send(res, score)
+                return t, keep, ["from_cache"] + ([] if keep else ["skipped_unsafe"])
+
+            # Verifica via Power (reverify do unknown OU verificação normal do não-fresco).
             async with sem:
                 try:
                     res = await email_verifier.verify_email(
                         email, mode="power", redis=redis, api_key=api_key)
-                except Exception as exc:  # noqa: BLE001 - fail-open: mantém o alvo
+                except Exception as exc:  # noqa: BLE001 - infra → fail-open (mantém)
                     print(f"[alert] verify falhou (mantém) "
                           f"{email_verifier._mask(email)}: {exc!r}", flush=True)
-                    return t, None
-            try:  # persiste (nunca bloqueia o envio se falhar)
+                    return t, True, ["errors"]
+
+            # Reoon fora (fallback de infra): NÃO persiste (não condena o alvo) → retry no
+            # próximo ciclo; um unknown não confirmado nunca é enviado (KL-125).
+            if res.source == "fallback":
+                return t, False, (["reverify_infra"] if reverify_unknown else ["skipped_unsafe"])
+
+            try:  # persiste o resultado Power (source=power; nunca bloqueia o envio se falhar)
                 await self.store.update_target_email_verification(
-                    t["id"], res.status, res.is_role_based)
+                    t["id"], res.status, res.is_role_based, source="power")
             except Exception as exc:  # noqa: BLE001
                 print(f"[alert] gravar verify falhou (alvo {t.get('id')}): {exc!r}", flush=True)
             t["email_verify_status"] = res.status
+            t["email_verify_source"] = "power"
             t["email_is_role_based"] = res.is_role_based
-            return t, res
+            rv = ["reverified"] if reverify_unknown else []
 
-        results = await asyncio.gather(*[_verify_one(t) for t in subset])
-        kept = []
-        for t, res in results:
-            if res is None:
-                if not (t.get("contact_email") or "").strip():
-                    continue  # sem e-mail → some da fila
-                stats["errors"] += 1
-                kept.append(t)  # erro de infra → mantém (fail-open)
-                continue
-            stats["from_cache" if res.cached else "verified"] += 1
+            # Bloqueio definitivo (invalid/disabled/disposable/spamtrap).
             if res.status in email_verifier.BLOCK_STATUSES:
-                email = (t.get("contact_email") or "").strip().lower()
                 try:
-                    await self.store.block_email(email, reason=f"verify_{res.status}")
+                    await self.store.block_email(email, reason=f"power_verify_{res.status}")
                     await self.store.update_status(t["id"], "descartado")
                 except Exception as exc:  # noqa: BLE001
                     print(f"[alert] blocklist/discard falhou: {exc!r}", flush=True)
-                stats["blocked"] += 1
                 print(f"[alert] verify BLOCK {email_verifier._mask(email)} "
                       f"({res.status}) → blocklist + descartado", flush=True)
-                continue
-            if not email_verifier.is_safe_to_send(res, t.get("_alert_score", 0)):
-                stats["skipped_unsafe"] += 1
-                continue
-            kept.append(t)
-        if stats["verified"] or stats["blocked"] or stats["skipped_unsafe"]:
-            print(f"[alert] verify KL-110: {stats['verified']} novos + {stats['from_cache']} cache, "
-                  f"{stats['blocked']} bloqueados, {stats['skipped_unsafe']} unsafe pulados", flush=True)
-        return kept + rest, stats
+                return t, False, rv + (["reverified_blocked"] if reverify_unknown else []) + \
+                    ["verified", "blocked"]
+
+            # unknown 2× (bulk→power ainda unknown) → não envia, mas NÃO blocklist (pode ser
+            # servidor temporário). source=power gravado → o próximo ciclo pula (Regra 2).
+            if res.status == "unknown":
+                return t, False, rv + (["reverified_unknown"] if reverify_unknown else []) + \
+                    ["verified"]
+
+            # Power resolveu (safe/catch_all/role/…) → is_safe_to_send decide.
+            keep = email_verifier.is_safe_to_send(res, score)
+            counters = rv + (["reverified_safe"] if reverify_unknown else []) + ["verified"]
+            if not keep:
+                counters.append("skipped_unsafe")
+            return t, keep, counters
+
+        results = await asyncio.gather(*[_verify_one(t) for t in subset])
+        kept = []
+        for t, keep, counters in results:
+            for k in counters:
+                stats[k] = stats.get(k, 0) + 1
+            if keep:
+                kept.append(t)
+
+        # Além do teto (rest): não gasta API, mas KL-125 — não envia unknown (voltam ao topo e
+        # serão reverificados via Power num próximo ciclo).
+        rest_kept = [t for t in rest if _status(t) != "unknown"]
+        stats["rest_unknown_skipped"] += len(rest) - len(rest_kept)
+
+        if any(stats[k] for k in ("verified", "blocked", "skipped_unsafe", "reverified",
+                                  "skipped_unknown_power", "rest_unknown_skipped")):
+            print(f"[alert] verify KL-110/125: {stats['verified']} verif + {stats['from_cache']} cache, "
+                  f"{stats['blocked']} bloq, {stats['skipped_unsafe']} unsafe · reverify "
+                  f"{stats['reverified']} (→safe {stats['reverified_safe']}, →bloq "
+                  f"{stats['reverified_blocked']}, →unknown {stats['reverified_unknown']}) · "
+                  f"unknown-power {stats['skipped_unknown_power']}, rest-unknown "
+                  f"{stats['rest_unknown_skipped']}", flush=True)
+        return kept + rest_kept, stats
 
     async def _send_cooldown(self) -> None:
         """KL-91 — intervalo randômico ENTRE envios individuais (30-60s por padrão),

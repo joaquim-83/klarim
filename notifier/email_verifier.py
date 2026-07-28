@@ -346,15 +346,21 @@ def _unsafe_score_gate() -> int:
 
 
 def is_safe_to_send(result: VerifyResult, lead_score: int = 0) -> bool:
-    """Decisão de envio (KL-110). Definitivamente ruins → nunca. catch_all/unknown/inbox_full
-    → só leads de qualidade (score > `ALERT_UNSAFE_SCORE_GATE`, default 20 desde o KL-122).
-    safe/valid/role → envia."""
+    """Decisão de envio (KL-110, ajustada no KL-125). Definitivamente ruins → nunca.
+
+    **KL-125 — `unknown` NUNCA envia** (independente do lead_score): 64% dos bounces
+    vinham de `unknown` da Bulk API (servidor não respondeu ao SMTP check = a caixa
+    provavelmente não existe ou recusa verificação = alto risco). Diferente de `catch_all`
+    (servidor aceita tudo, risco moderado) e `inbox_full` (existe mas cheia): esses seguem
+    o gate de qualidade (score > `ALERT_UNSAFE_SCORE_GATE`, default 20). safe/valid/role → envia."""
     status = result.status if isinstance(result, VerifyResult) else str(result)
     if status in BLOCK_STATUSES:
         return False
+    if status == "unknown":
+        return False  # KL-125: se o Power não confirmou a caixa, é suspeito → não envia
     if status in ("safe", "valid", "role"):
         return True
-    if status in ("catch_all", "unknown", "inbox_full"):
+    if status in ("catch_all", "inbox_full"):
         return (lead_score or 0) > _unsafe_score_gate()
     return True  # fallback conservador: enviar
 

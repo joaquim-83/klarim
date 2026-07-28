@@ -213,7 +213,8 @@ def test_verify_email_domain_catch_all_cache(monkeypatch):
 # is_safe_to_send
 # --------------------------------------------------------------------------- #
 
-# KL-122: o gate de unknown/catch_all/inbox_full caiu de 50 → 20 (default). É `> gate`, não `>=`.
+# KL-122: o gate de catch_all/inbox_full caiu de 50 → 20 (default). É `> gate`, não `>=`.
+# KL-125: `unknown` NUNCA envia (independente do score) — separado do catch_all/inbox_full.
 @pytest.mark.parametrize("status,score,expected", [
     ("safe", 0, True),
     ("valid", 0, True),
@@ -222,8 +223,8 @@ def test_verify_email_domain_catch_all_cache(monkeypatch):
     ("disabled", 90, False),
     ("disposable", 90, False),
     ("spamtrap", 90, False),
-    ("unknown", 21, True),      # > 20 → envia
-    ("unknown", 20, False),     # == 20 → NÃO (gate é > 20)
+    ("unknown", 99, False),     # KL-125: unknown nunca envia, mesmo com score alto
+    ("unknown", 21, False),
     ("unknown", 0, False),
     ("catch_all", 25, True),
     ("catch_all", 20, False),
@@ -237,8 +238,10 @@ def test_is_safe_to_send(status, score, expected):
 def test_unsafe_gate_default_is_20(monkeypatch):
     monkeypatch.delenv("ALERT_UNSAFE_SCORE_GATE", raising=False)
     assert ev._unsafe_score_gate() == 20
-    assert ev.is_safe_to_send(ev.VerifyResult("unknown", "x"), 21) is True
-    assert ev.is_safe_to_send(ev.VerifyResult("unknown", "x"), 20) is False
+    # KL-125: o gate agora vale p/ catch_all/inbox_full; unknown é sempre bloqueado.
+    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 21) is True
+    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 20) is False
+    assert ev.is_safe_to_send(ev.VerifyResult("unknown", "x"), 99) is False
 
 
 def test_unsafe_gate_reads_env_var(monkeypatch):
@@ -322,34 +325,44 @@ def test_contact_is_junk_rejects_disposable():
 # --------------------------------------------------------------------------- #
 
 class _FakeCursor:
-    def __init__(self, rows):
+    """KL-125: `email_verification_stats` roda 2 queries (by_status + by_source). Devolve o
+    conjunto certo pela SQL (`email_verify_source` na 2ª)."""
+    def __init__(self, rows, source_rows=None):
         self._rows = rows
+        self._source_rows = source_rows or []
+        self.sql = ""
 
     def execute(self, sql, params=None):
         self.sql = sql
 
     def fetchall(self):
-        return self._rows
+        return self._source_rows if "email_verify_source" in self.sql else self._rows
 
 
 class _StatsStore(TargetStore):
-    def __init__(self, rows):
+    def __init__(self, rows, source_rows=None):
         self._rows = rows
+        self._source_rows = source_rows or []
 
     def _run(self, fn):
-        return fn(_FakeCursor(self._rows))
+        return fn(_FakeCursor(self._rows, self._source_rows))
 
 
 def test_email_verification_stats_mapping():
     rows = [("safe", 4100, 0), ("invalid", 300, 10), ("catch_all", 500, 5),
             ("role", 200, 200), (None, 3523, 0)]
-    out = asyncio.run(_StatsStore(rows).email_verification_stats())
+    source_rows = [("power", 1500), ("bulk", 3200), (None, 3923)]  # KL-125
+    out = asyncio.run(_StatsStore(rows, source_rows).email_verification_stats())
     assert out["total_with_email"] == 4100 + 300 + 500 + 200 + 3523
     assert out["unverified"] == 3523
     assert out["verified"] == 4100 + 300 + 500 + 200
     assert out["by_status"]["safe"] == 4100
     assert out["by_status"]["unverified"] == 3523
     assert out["role_based_total"] == 215
+    # KL-125: breakdown por fonte de verificação.
+    assert out["by_source"]["power"] == 1500
+    assert out["by_source"]["bulk"] == 3200
+    assert out["by_source"]["unverified"] == 3923
 
 
 # --------------------------------------------------------------------------- #
@@ -366,8 +379,9 @@ class _MiniStore:
     async def update_status(self, target_id, status):
         self.discarded.append((target_id, status))
 
-    async def update_target_email_verification(self, tid, status, is_role_based, verified=True):
-        self.verified.append((tid, status))
+    async def update_target_email_verification(self, tid, status, is_role_based,
+                                               verified=True, source=None):
+        self.verified.append((tid, status, source))
 
 
 def _mk_worker(store):
@@ -403,8 +417,10 @@ def test_verify_and_filter_blocks_and_gates(monkeypatch):
     kept_ids = {t["id"] for t in kept}
     assert kept_ids == {1, 4}
     assert stats["blocked"] == 1 and stats["skipped_unsafe"] == 1
-    assert ("bad@x.com", "verify_invalid") in store.blocked
+    assert ("bad@x.com", "power_verify_invalid") in store.blocked  # KL-125: prefixo power_
     assert (2, "descartado") in store.discarded
+    # KL-125: grava source='power' na verificação
+    assert (1, "safe", "power") in store.verified
 
 
 def test_verify_and_filter_noop_without_key(monkeypatch):

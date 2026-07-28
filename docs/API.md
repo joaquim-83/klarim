@@ -233,7 +233,7 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 | GET | `/admin/gcs-archive/stats` | KL-77: saúde do arquivamento de responses brutos no GCS (arquivos/bytes hoje, último upload, erros) |
 | GET | `/monitoring/admin/list` · `/stats` · POST `/{id}/status` | sites monitorados |
 | GET | `/system/status` · `/system/activity` · `/system/email-health` | operação em tempo real |
-| GET | `/system/email-verification-stats` | KL-110: verificação de deliverability — contagem por `email_verify_status`, role-based, saldo Reoon |
+| GET | `/system/email-verification-stats` | KL-110/**125**: verificação de deliverability — `by_status` (`email_verify_status`), **`by_source`** (KL-125: power/quick/bulk/local/unverified — precisão da fonte), role-based, saldo Reoon. Regra KL-125: `unknown` NUNCA envia (`is_safe_to_send`=False); o alert worker reverifica via Power os `unknown` de fonte não-power |
 | GET | `/discovery/status` | estado do CT poller |
 | GET | `/config` | params operacionais (sem segredos) |
 | GET | `/analytics/funnel\|abandoned\|campaigns\|pages\|events\|public-scans` | analytics (KL-21, legado) |

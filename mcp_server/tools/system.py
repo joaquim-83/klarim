@@ -74,10 +74,11 @@ async def get_email_health() -> dict:
 
 @mcp.tool()
 async def get_email_verification_stats() -> dict:
-    """KL-110 — verificação de deliverability de e-mail ANTES do envio: contagem por
-    `email_verify_status` (safe/invalid/catch_all/role/unknown/…), quantos ainda faltam
-    verificar, total role-based e o saldo de créditos Reoon. Corta o bounce na raiz
-    (o circuit breaker do KL-108 só reage depois do bounce)."""
+    """KL-110/125 — verificação de deliverability de e-mail ANTES do envio: contagem por
+    `email_verify_status` (safe/invalid/catch_all/role/unknown/…) + **`by_source`** (KL-125:
+    power/quick/bulk/local/unverified — calibra a confiança por precisão da fonte), quantos
+    ainda faltam verificar, total role-based e o saldo de créditos Reoon. Corta o bounce na
+    raiz (o circuit breaker do KL-108 só reage depois do bounce)."""
     return await _guard(lambda: _api().api_email_verification_stats())
 
 

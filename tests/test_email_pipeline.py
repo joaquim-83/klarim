@@ -69,10 +69,11 @@ def test_send_decision_invalid_never_sends():
     assert ev.is_safe_to_send(ev.VerifyResult("invalid", "x"), 99) is False
 
 
-def test_send_decision_unknown_is_fail_open_gated():
-    # Reoon fora → 'unknown'; envia só se lead de qualidade (KL-122 gate=20).
-    assert ev.is_safe_to_send(ev.VerifyResult("unknown", "api_unavailable"), 15) is False
-    assert ev.is_safe_to_send(ev.VerifyResult("unknown", "api_unavailable"), 60) is True
+def test_send_decision_unknown_never_sends():
+    # KL-125: 'unknown' (Power não confirmou a caixa) NUNCA envia — nem com score alto.
+    # Era a maior fonte de bounce (64%) quando vinha da Bulk API.
+    assert ev.is_safe_to_send(ev.VerifyResult("unknown", "reoon_power"), 15) is False
+    assert ev.is_safe_to_send(ev.VerifyResult("unknown", "reoon_power"), 99) is False
 
 
 def test_verify_api_timeout_fails_open(monkeypatch):

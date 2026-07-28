@@ -6592,9 +6592,10 @@ async def api_system_email_health() -> dict:
 
 @app.get("/system/email-verification-stats")
 async def api_email_verification_stats() -> dict:
-    """KL-110 — verificação de deliverability de e-mail: contagem por `email_verify_status`
-    (safe/invalid/catch_all/role/unknown/…), quantos ainda faltam verificar, total role-based e
-    o saldo de créditos da conta Reoon. Admin-only (prefixo `/system` → JWT admin)."""
+    """KL-110/125 — verificação de deliverability de e-mail: contagem por `email_verify_status`
+    (safe/invalid/catch_all/role/unknown/…) + `by_source` (KL-125: power/quick/bulk/local/
+    unverified), quantos ainda faltam verificar, total role-based e o saldo de créditos da conta
+    Reoon. Admin-only (prefixo `/system` → JWT admin)."""
     store = get_target_store()
     stats = await store.email_verification_stats()
     try:  # fail-open: o saldo Reoon nunca derruba o painel

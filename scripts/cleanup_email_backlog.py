@@ -63,12 +63,12 @@ async def phase0_local(store, redis, dry_run: bool) -> tuple[Counter, list]:
                     await store.block_email(email, reason=f"verify_{res.status}")
                     await store.update_status(t["id"], "descartado")
                     await store.update_target_email_verification(
-                        t["id"], res.status, res.is_role_based)
+                        t["id"], res.status, res.is_role_based, source="local")  # KL-125
                 continue
             # 'valid' → sobrevive para a Fase 1 (API). Grava o status local por ora.
             if not dry_run:
                 await store.update_target_email_verification(
-                    t["id"], res.status, res.is_role_based, verified=False)
+                    t["id"], res.status, res.is_role_based, verified=False, source="local")  # KL-125
             survivors.append({"id": t["id"], "email": email,
                               "role": res.is_role_based})
         offset += BATCH
@@ -137,7 +137,9 @@ async def phase1_api(store, survivors: list, api_limit: int, dry_run: bool) -> C
                 await store.block_email(email, reason=f"verify_{status}")
                 await store.update_status(s["id"], "descartado")
         if not dry_run:
-            await store.update_target_email_verification(s["id"], status, s["role"])
+            # KL-125: source='bulk' — a Bulk API é menos precisa p/ servidores BR; o alert
+            # worker reverifica os `unknown` via Power antes de enviar.
+            await store.update_target_email_verification(s["id"], status, s["role"], source="bulk")
     print(f"[cleanup] fase 1: {len(results)} verificados, {counts['blocked']} bloqueados.",
           flush=True)
     return counts

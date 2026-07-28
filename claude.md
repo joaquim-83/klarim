@@ -191,15 +191,22 @@ standalone) + **React** (islands) + **Tailwind v4** (CSS-first, sem config) +
   + inbox_full + spamtrap; semáforo de **5 chamadas simultâneas**; fallback fail-open (API fora →
   `unknown`, nunca bloqueia). O **alert worker** (`_verify_and_filter`, após o lead scoring, antes do
   envio) verifica os melhores leads (`EMAIL_VERIFY_MAX_PER_CYCLE`=60/ciclo): blocklista+descarta
-  `invalid`/`disabled`/`disposable`/`spamtrap` e aplica `is_safe_to_send` (`catch_all`/`unknown`/
-  `inbox_full` só com lead_score **> `ALERT_UNSAFE_SCORE_GATE`**, default **20** — KL-122, baixado de 50).
-  **Sem `REOON_API_KEY` a verificação do worker é no-op** (o MX da
-  Camada 0 já rodou na extração) — ativa quando a key entra no `.env`. Cache Redis por **SHA-256** do
+  `invalid`/`disabled`/`disposable`/`spamtrap` e aplica `is_safe_to_send`. **KL-125 — `unknown` NUNCA
+  envia** (independente do score; 64% dos bounces vinham de `unknown` da Bulk API, menos precisa p/
+  servidores BR): só `catch_all`/`inbox_full` seguem o gate de lead_score **> `ALERT_UNSAFE_SCORE_GATE`**
+  (default **20**, KL-122). **Reverificação Power (KL-125):** um `unknown` de fonte NÃO-power é
+  **reverificado individualmente via Power** antes do envio (Regra 1: block→blocklist+descarta;
+  resolveu→usa o novo status; `unknown` de novo (2×)→não envia mas NÃO blocklist, grava `source=power`
+  p/ não regastar crédito); `unknown` de `source=power` → skip imediato (Regra 2); resultado `fallback`
+  (Reoon fora) NÃO é persistido (não condena o alvo). Campo **`targets.email_verify_source`** (`power`
+  alta · `quick` média · `bulk` baixa · `local` básica) registra COMO foi verificado. **Sem `REOON_API_KEY`
+  a reverificação é no-op** (mas um `unknown` conhecido ainda não é enviado). Cache Redis por **SHA-256** do
   e-mail (60d definitivo / 7d transitório) + cache de domínio catch-all (7d). Campos em `targets`:
-  `email_verified`/`email_verify_status`/`email_verified_at`/`email_is_role_based`. Lead scoring (KL-85)
-  penaliza `catch_all` -10, `unknown` -5, `role` -15 (sem dobrar o prefixo). Stats: `get_email_
-  verification_stats` (MCP) + `GET /system/email-verification-stats` (+ saldo Reoon). Limpeza do backlog:
-  `scripts/cleanup_email_backlog.py` (Fase 0 local + Fase 1 bulk Reoon).
+  `email_verified`/`email_verify_status`/`email_verified_at`/`email_is_role_based`/`email_verify_source`.
+  Lead scoring (KL-85) penaliza `catch_all` -10, `unknown` -5, `role` -15 (sem dobrar o prefixo). Stats:
+  `get_email_verification_stats` (MCP) + `GET /system/email-verification-stats` (`by_status` + **`by_source`**
+  + saldo Reoon). Limpeza do backlog: `scripts/cleanup_email_backlog.py` (Fase 0 local → `source=local` +
+  Fase 1 bulk Reoon → `source=bulk`).
 - **`_proactive_from` (`alerta@klarim.net`, `ALERT_FROM_EMAIL`):** após o KL-101, resta só o
   **bulletin** proativo (a quem tem conta/opt-in). O profile_view saiu daqui (→ perfil.klarim.net);
   o cold alert saiu no KL-91 (→ alertas./aviso.). **2026-07-20:** migrado de `klarimscan.com` →
@@ -498,7 +505,7 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1873 passed** (backend pytest, +20 KL-123) + **124 node --test** (frontend `test:unit`, +7 KL-123)
+- Testes: **1881 passed** (backend pytest, +20 KL-123, +8 KL-125) + **124 node --test** (frontend `test:unit`, +7 KL-123)
 - Páginas públicas: `/metodologia` (KL-100) · descadastro `/remover` (KL-102) · landing com social proof ao vivo (KL-103)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - **Níveis de conta (KL-99):** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado
@@ -1418,6 +1425,26 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   (3) Log final `Deploy OK: commit <sha> em <ts>`. `deploy.sh` continua válido p/ deploy manual
   (`sudo bash deploy/deploy.sh`). `docs/DEPLOY.md` §2/§3 atualizados. **Validação do pipeline (4 jobs +
   --force-recreate nos logs + health) = pendente de push.** Relatório: `claude/reports/KL-124_deploy_force_recreate_rollback.md`.
+- **KL-125** — Reverificação Power dos `unknown` + `email_verify_source` + bloqueio definitivo ✅.
+  55 de 86 bounces (64%) em 3 dias vieram de e-mails `unknown` da **Bulk API** (menos precisa p/
+  servidores BR — reverificados via Power, muitos são `disabled`). O gate do KL-122 (`unknown` envia se
+  score>20) tratava `unknown` como "incerto mas talvez válido"; na prática `unknown` = alto risco de
+  bounce. **Fix:** (1) `is_safe_to_send` — **`unknown` NUNCA envia** (independente do score); só
+  `catch_all`/`inbox_full` seguem o gate por score (separados do `unknown`). (2) Coluna
+  `targets.email_verify_source` (`power`/`quick`/`bulk`/`local`) registra a precisão da fonte;
+  `update_target_email_verification` ganhou `source` (COALESCE — não sobrescreve com NULL). (3)
+  `_verify_and_filter` reescrito: **Regra 1** — `unknown` de fonte não-power é **reverificado via Power**
+  (resolveu→usa; block→blocklist+descarta; `unknown` 2×→não envia, NÃO blocklist, grava `source=power`);
+  **Regra 2** — `unknown`/`source=power` → skip (não regasta crédito); **Regra 3** — demais status seguem
+  o fluxo (fresh→cache, senão Power). Resultado `fallback` (Reoon fora) NÃO é persistido (não condena o
+  alvo → retry). `unknown` além do teto de verificação é pulado (volta ao topo e é reverificado). Sem
+  `REOON_API_KEY` a reverificação é no-op, mas um `unknown` conhecido ainda não é enviado. (4) Cleanup:
+  Fase 0 → `source=local`, Fase 1 → `source=bulk`. (5) Stats ganham `by_source`. (6) KL-57: contadores de
+  conversão `reverified_safe`/`reverified_blocked`/`reverified_unknown` no log/stats do ciclo (calibra a
+  confiança na Bulk). **`safe`/`catch_all`/`role`/`invalid`/`disabled`/`disposable`/`spamtrap` inalterados.**
+  **+8 backend** (`test_kl125_unknown_reverify.py`) + testes do KL-110/pipeline atualizados. **Fix
+  emergencial 28/07 (já aplicado na VM):** 3.703 unknowns resetados + cache limpo; o worker reverifica via
+  Power. Relatório: `claude/reports/KL-125_unknown_reverify.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

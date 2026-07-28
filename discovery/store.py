@@ -65,6 +65,11 @@ ALTER TABLE targets ADD COLUMN IF NOT EXISTS email_verified BOOLEAN DEFAULT FALS
 ALTER TABLE targets ADD COLUMN IF NOT EXISTS email_verify_status VARCHAR(20);
 ALTER TABLE targets ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMPTZ;
 ALTER TABLE targets ADD COLUMN IF NOT EXISTS email_is_role_based BOOLEAN DEFAULT FALSE;
+-- KL-125 — COMO o e-mail foi verificado (calibra a confiança por precisão da fonte):
+-- 'power' (individual, alta) | 'quick' (profiler, média) | 'bulk' (lote Reoon, baixa p/ BR)
+-- | 'local' (só sintaxe+MX+descartável, básica). Um `unknown` de fonte não-power é
+-- reverificado via Power pelo alert worker (64% dos bounces vinham de unknown da Bulk).
+ALTER TABLE targets ADD COLUMN IF NOT EXISTS email_verify_source VARCHAR(10);
 CREATE INDEX IF NOT EXISTS idx_targets_email_verify_status ON targets(email_verify_status)
     WHERE email_verify_status IS NOT NULL;
 -- KL-75 Prompt 2 — tipo de site (institucional/ecommerce/saas/portal/blog/parked/
@@ -5850,24 +5855,34 @@ class TargetStore:
 
     async def update_target_email_verification(
         self, target_id: int, status: Optional[str], is_role_based: bool = False,
-        verified: bool = True,
+        verified: bool = True, source: Optional[str] = None,
     ) -> None:
-        """Grava o resultado da verificação de deliverability no alvo (KL-110)."""
+        """Grava o resultado da verificação de deliverability no alvo (KL-110).
+
+        KL-125: `source` registra COMO foi verificado (power/quick/bulk/local) — permite
+        reverificar via Power os `unknown` que vieram da Bulk (menos precisa). `source=None`
+        preserva o valor anterior (não sobrescreve com NULL)."""
         status = (status or None)
         if status is not None:
             status = status[:20]
+        source = (source or None)
+        if source is not None:
+            source = source[:10]
 
         def _fn(cur):
             cur.execute(
                 "UPDATE targets SET email_verified = %s, email_verify_status = %s, "
-                "email_verified_at = NOW(), email_is_role_based = %s WHERE id = %s",
-                (bool(verified), status, bool(is_role_based), target_id),
+                "email_verified_at = NOW(), email_is_role_based = %s, "
+                "email_verify_source = COALESCE(%s, email_verify_source) WHERE id = %s",
+                (bool(verified), status, bool(is_role_based), source, target_id),
             )
 
         await asyncio.to_thread(self._run, _fn)
 
     async def email_verification_stats(self) -> Dict[str, Any]:
-        """KL-110 — contagem por `email_verify_status` (só alvos com contact_email)."""
+        """KL-110 — contagem por `email_verify_status` (só alvos com contact_email).
+        KL-125: `by_source` (power/quick/bulk/local/null) para calibrar a confiança por
+        precisão da fonte de verificação."""
         def _fn(cur):
             cur.execute(
                 "SELECT email_verify_status, COUNT(*), "
@@ -5884,11 +5899,19 @@ class TargetStore:
                 by_status[key] = cnt
                 if st is not None:
                     verified += cnt
+            # KL-125 — breakdown por fonte de verificação.
+            cur.execute(
+                "SELECT email_verify_source, COUNT(*) FROM targets "
+                "WHERE contact_email IS NOT NULL GROUP BY email_verify_source ORDER BY 2 DESC")
+            by_source: Dict[str, int] = {}
+            for src, cnt in cur.fetchall():
+                by_source[src if src is not None else "unverified"] = int(cnt or 0)
             return {
                 "total_with_email": total,
                 "verified": verified,
                 "unverified": by_status.get("unverified", 0),
                 "by_status": by_status,
+                "by_source": by_source,
                 "role_based_total": role_based,
             }
 
