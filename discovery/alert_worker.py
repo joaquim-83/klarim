@@ -225,7 +225,7 @@ class AlertWorker:
         # REOON_API_KEY o pipeline roda só a Camada 0 local (verify_email cai no local).
         # `email_verify_max` limita quantos alvos verificar por ciclo (custo/tempo da API).
         self.email_verify_enabled = os.environ.get("EMAIL_VERIFY_ENABLED", "true").lower() != "false"
-        self.email_verify_max = int(os.environ.get("EMAIL_VERIFY_MAX_PER_CYCLE", "60"))
+        self.email_verify_max = int(os.environ.get("EMAIL_VERIFY_MAX_PER_CYCLE", "120"))
         self.email_verify_ttl_days = int(os.environ.get("EMAIL_VERIFY_TTL_DAYS", "60"))
         self.store = get_target_store()
         self._redis = None
@@ -540,7 +540,7 @@ class AlertWorker:
 
         # Além do teto (rest): não gasta API, mas KL-125 — não envia unknown (voltam ao topo e
         # serão reverificados via Power num próximo ciclo).
-        rest_kept = [t for t in rest if _status(t) != "unknown"]
+        rest_kept = [t for t in rest if t.get("email_verified") and _status(t) not in ("unknown", "")]
         stats["rest_unknown_skipped"] += len(rest) - len(rest_kept)
 
         if any(stats[k] for k in ("verified", "blocked", "skipped_unsafe", "reverified",
