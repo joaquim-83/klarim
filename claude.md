@@ -1421,3 +1421,4 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.
+# KL-124 pipeline test: 2026-07-28T10:19:29Z
