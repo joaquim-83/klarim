@@ -1403,6 +1403,21 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `emailStateLabel`, 7 testes `node --test`). KL-57: eventos `vigilia_expand`/`vigilia_dismiss`/
   `vigilia_action_click` no `_KNOWN_EVENTS`. **+20 backend + 7 node**. Relatório:
   `claude/reports/KL-123_vigilias_expansiveis.md`.
+- **KL-124** — CI/CD: `--force-recreate` (escopado) + rollback automático no `deploy/deploy.sh` ✅.
+  O `up -d` sem `--force-recreate` só recria containers cuja **imagem** mudou; o layer cache do Docker
+  (COPY . . com checksums iguais) podia não detectar mudança em `.py` e manter o container antigo
+  rodando código velho (incidente do KL-123: código novo na VM confirmado por `git log`, containers
+  antigos — precisou de `--force-recreate` manual). **Fix:** (1) o recreate agora é `docker compose up
+  -d --force-recreate --no-deps api astro web worker discovery` (precedido de um `up -d --remove-orphans`
+  que garante db/redis no ar) — **escopado aos 5 apps** para NÃO reiniciar postgres/redis a cada deploy
+  (decisão do dono: preserva "zero downtime na camada de dados"; a spec pedia `--force-recreate` cru, que
+  recriaria TUDO incl. db/redis). (2) **Rollback automático:** guarda `PREV_COMMIT=$(git rev-parse HEAD)`
+  antes do pull; se o health check (API `/health` ou Astro `/`) falhar, `git checkout $PREV_COMMIT` +
+  rebuild + recreate dos apps + `exit 1` (função `rollback()`). Após rollback o repo fica em **HEAD
+  destacado** no PREV_COMMIT — o próximo deploy de CI reavança (`git pull --ff-only`) quando o fix chegar.
+  (3) Log final `Deploy OK: commit <sha> em <ts>`. `deploy.sh` continua válido p/ deploy manual
+  (`sudo bash deploy/deploy.sh`). `docs/DEPLOY.md` §2/§3 atualizados. **Validação do pipeline (4 jobs +
+  --force-recreate nos logs + health) = pendente de push.** Relatório: `claude/reports/KL-124_deploy_force_recreate_rollback.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

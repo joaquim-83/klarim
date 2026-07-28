@@ -40,12 +40,26 @@ O `.env` de produção vive **apenas na VM** (`/opt/klarim/.env`) — nunca no g
 sudo bash /opt/klarim/deploy/deploy.sh
 ```
 
-`deploy.sh`: marca `/opt/klarim` como `safe.directory` → `git pull` → `docker compose
-build` (site **no ar** durante o build) → `docker compose up -d --remove-orphans`
-(recria só o que mudou) → prune → `docker compose ps` → health checks
-(`localhost:8000/health` + `:4321/` Astro). Downtime ~10–30s (só o recreate;
-Postgres/Redis nem são tocados). ⚠️ O script se auto-atualiza no `git pull`, mas a
-mudança só vale **no deploy seguinte** (o bash já leu o arquivo no início).
+`deploy.sh` (fluxo, **KL-124**):
+1. marca `/opt/klarim` como `safe.directory`;
+2. guarda o commit atual (`PREV_COMMIT`, alvo do rollback) → `git pull --ff-only origin main`;
+3. `docker compose build` (site **no ar** durante o build);
+4. `docker compose up -d --remove-orphans` (garante db/redis no ar, remove órfãos) +
+   `docker compose up -d --force-recreate --no-deps api astro web worker discovery`
+   (**`--force-recreate` escopado aos 5 apps** — recria SEMPRE mesmo quando o layer cache
+   não detecta mudança em `.py`; **db/redis NÃO reiniciam**, zero downtime na camada de dados);
+5. `docker builder prune -af` + `image prune -f` (limpa disco) → `docker compose ps`;
+6. health checks (`localhost:8000/health` + `:4321/` Astro). **Se falhar → rollback
+   automático:** `git checkout $PREV_COMMIT` + rebuild + recreate dos apps, e `exit 1`;
+7. `certbot renew` (se aplicável) → log `Deploy OK: commit <sha>`.
+
+Downtime ~10–30s (só o recreate dos apps). ⚠️ O `--force-recreate` foi adicionado no KL-124:
+o `up -d` sem ele só recria containers cuja **imagem** mudou — mas o layer cache do Docker
+podia manter o container antigo rodando código velho (incidente do KL-123). ⚠️ O script se
+auto-atualiza no `git pull`, mas a mudança só vale **no deploy seguinte** (o bash já leu o
+arquivo no início). ⚠️ Após um rollback o repositório fica em **HEAD destacado** no
+`PREV_COMMIT`; o próximo deploy de CI reavança (`git pull --ff-only`) quando o fix chegar em
+`origin/main` — investigue os logs antes.
 
 > **Nota:** o build de `api`/`web` na `e2-standard-4` (4 vCPU) leva **~5–15 min**
 > (era 10–50 min na e2-small/medium antiga). Lento ≠ travado.
@@ -59,7 +73,10 @@ A todo push para `main`, com `deploy` dependente de `needs: [test, build-web, ng
 3. **`nginx-check`** — `nginx -t` no `http.conf` e no `https.conf.template` renderizado
    (cert dummy). Config inválida bloqueia o deploy (**não** derruba o site).
 4. **`deploy`** — autentica no GCP via **Workload Identity Federation** (OIDC, keyless,
-   sem chave de SA), conecta via `gcloud compute ssh` e roda `deploy/deploy.sh`.
+   sem chave de SA), conecta via `gcloud compute ssh` e roda `deploy/deploy.sh` (fluxo
+   detalhado na §2: `--force-recreate` escopado aos apps + **rollback automático** se o
+   health check falhar). Nos logs do Actions dá pra ver `up -d --force-recreate … api astro
+   web worker discovery` e o `Deploy OK: commit <sha>` final.
 
 **GitHub Secrets** (configurados manualmente): `GCP_WIF_PROVIDER`, `GCP_SA_EMAIL`,
 `GCP_PROJECT_ID`, `GCP_INSTANCE`, `GCP_ZONE`. Nunca commitar chave SSH / SA key / `.env`.
