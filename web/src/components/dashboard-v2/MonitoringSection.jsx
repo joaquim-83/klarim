@@ -5,13 +5,10 @@
 //      preferências" ainda (persistência = follow-up de backend); mudar cobertura = mudar plano.
 //  5c. boletim (frequência do plano).  5d. gancho para uma página dedicada futura.
 import { useEffect, useState } from 'react';
-import { card, outlineBtn, relDate } from './shared.js';
+import { card, outlineBtn } from './shared.js';
 import MonitoringConfig from './MonitoringConfig.jsx';
 import ProfileEditor from './ProfileEditor.jsx';
-
-const ST = { ok: { i: '🟢', c: '#22c55e', t: 'OK' }, warning: { i: '🟡', c: '#eab308', t: 'Atenção' },
-  alert: { i: '🟡', c: '#eab308', t: 'Atenção' }, critical: { i: '🔴', c: '#ef4444', t: 'Crítico' },
-  error: { i: '🔴', c: '#ef4444', t: 'Erro' } };
+import VigiliaDetail from './VigiliaDetail.jsx';
 
 // Itens monitoráveis (rótulo + tipo de vigília correspondente).
 const MONITORABLE = [
@@ -22,14 +19,6 @@ const MONITORABLE = [
   { tipo: 'changes', label: 'Alteração no site/DNS', hint: 'detecta mudanças' },
   { tipo: 'phishing', label: 'Typosquat / phishing', hint: 'domínios que imitam o seu' },
 ];
-
-function detail(v) {
-  const d = v.last_data || {};
-  if (v.tipo === 'ssl' && d.ssl_days_remaining != null) return `${d.ssl_days_remaining} dias restantes`;
-  if (v.tipo === 'score' && d.detail) return d.detail;
-  if (d.detail) return d.detail;
-  return v.last_check_at ? `verificado ${relDate(v.last_check_at)}` : 'aguardando 1ª verificação';
-}
 
 export default function MonitoringSection({ domain, monitoring, targetId, canEditProfile = false, profile = {} }) {
   const [vigilias, setVigilias] = useState(null);
@@ -54,23 +43,13 @@ export default function MonitoringSection({ domain, monitoring, targetId, canEdi
         {m.vigilias_active ? `${m.vigilias_active} vigília(s) ativa(s) · silenciosas 24/7` : 'Vigílias começam ao ativar o plano.'}
       </p>
 
-      {/* 5a — status das vigílias ativas */}
+      {/* 5a — vigílias ativas: cada card EXPANDE com detalhes contextuais + ações (KL-123) */}
       {mine.length > 0 && (
         <div className="mt-4 space-y-2">
-          {mine.map((v) => {
-            const st = ST[v.last_status] || ST.ok;
-            const meta = MONITORABLE.find((x) => x.tipo === v.tipo);
-            return (
-              <div key={v.id} className="flex items-center gap-3 rounded-lg border border-slate-800 bg-slate-950/40 px-3 py-2.5">
-                <span aria-hidden="true">{st.i}</span>
-                <span className="flex-1">
-                  <span className="block text-sm font-medium text-slate-100">{meta?.label || v.tipo}</span>
-                  <span className="block text-xs text-slate-500">{detail(v)}</span>
-                </span>
-                <span className="text-xs font-semibold" style={{ color: st.c }}>{st.t}</span>
-              </div>
-            );
-          })}
+          {mine.map((v) => (
+            <VigiliaDetail key={v.id} targetId={targetId} domain={domain}
+              tipo={v.tipo} lastStatus={v.last_status} />
+          ))}
         </div>
       )}
 

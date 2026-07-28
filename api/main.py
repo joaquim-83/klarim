@@ -1744,6 +1744,93 @@ async def account_site_monitoring_update(target_id: int, body: MonitoringUpdateB
     return await _monitoring_view(store, user["id"], domain, target)
 
 
+# --- KL-123: detalhe expansível de cada vigília (dados contextuais + ações) --- #
+
+async def _build_vigilia_details(store, user_id: int, target: dict, tipo: str) -> dict:
+    """Monta o payload de detalhes de uma vigília: busca os dados brutos (last_data da
+    vigília, checks do último scan, typosquats) e delega a montagem à função PURA do
+    `api.vigilia_details`. Nunca levanta por dado ausente — cai no payload gracioso."""
+    from api import vigilia_details as vd
+    domain = (target.get("domain") or "").lower().strip()
+    target_id = target["id"]
+    # Estado da vigília (last_data/last_status) + histórico de alertas (uniforme).
+    vigs = {v["tipo"]: v for v in await store.list_site_vigilias(user_id, domain)}
+    vig = vigs.get(tipo) or {}
+    last_data = vig.get("last_data") or {}
+    last_status = vig.get("last_status")
+    history = vd.format_history(
+        await store.get_site_vigilia_alerts(user_id, domain, tipo, limit=10))
+
+    if tipo == "phishing":
+        alerts = await store.get_site_typosquat_alerts(target_id, user_id, limit=50)
+        built = vd.build_phishing(alerts, domain)
+    elif tipo == "domain":
+        built = vd.build_domain(last_data, domain)
+    elif tipo == "uptime":
+        built = vd.build_uptime(last_data, domain)
+    elif tipo == "changes":
+        built = vd.build_changes(last_data, last_status, domain)
+    elif tipo == "ssl":
+        scans = await store.get_recent_scans_with_checks(target_id, limit=1)
+        ssl_check = vd._find_check(vd._checks_of(scans[0]), "check_03_ssl") if scans else None
+        profile = await store.get_site_profile(target_id) or {}
+        built = vd.build_ssl(last_data, ssl_check, profile.get("certificate_authority"), domain)
+    elif tipo == "score":
+        scans = await store.get_recent_scans_with_checks(target_id, limit=5)
+        built = vd.build_score(scans, last_data, domain)
+    elif tipo == "email":
+        scans = await store.get_recent_scans_with_checks(target_id, limit=1)
+        built = vd.build_email(vd._checks_of(scans[0]) if scans else [], domain)
+    elif tipo == "reputation":
+        scans = await store.get_recent_scans_with_checks(target_id, limit=1)
+        built = vd.build_reputation(last_data, vd._checks_of(scans[0]) if scans else [], domain)
+    else:  # nunca chega aqui (o handler valida o tipo)
+        built = vd.unknown_payload(tipo)
+
+    return {"tipo": tipo, "label": vd.VIGILIA_LABELS.get(tipo, tipo),
+            "history": history, **built}
+
+
+@app.get("/account/sites/{target_id}/vigilias/{tipo}/details")
+async def account_vigilia_details(target_id: int, tipo: str, request: Request) -> dict:
+    """KL-123 — detalhes contextuais de uma vigília para o card expansível (nível ≥1 +
+    posse). Dados já disponíveis (last_data/scan/typosquat) em linguagem acessível ao
+    dono. Tipo inválido → 404; site de outro usuário → 404 (`_owned_site`)."""
+    from api.vigilias import VIGILIA_TYPES
+    if tipo not in VIGILIA_TYPES:
+        raise HTTPException(status_code=404, detail="Tipo de vigília desconhecido.")
+    user, _link, target, store = await _owned_site(request, target_id, 1)
+    return await _build_vigilia_details(store, user["id"], target, tipo)
+
+
+@app.post("/account/sites/{target_id}/vigilias/phishing/dismiss/{alert_id}")
+async def account_vigilia_dismiss_typosquat(target_id: int, alert_id: int,
+                                            request: Request) -> dict:
+    """KL-123 — o dono marca um domínio suspeito como "não é ameaça" (nível ≥1 + posse).
+    O descarte é escopado por (id, target, user) — nunca mexe no alerta de outra conta."""
+    user, _link, _target, store = await _owned_site(request, target_id, 1)
+    await _cfg_rate_limit(request, user["id"])
+    ok = await store.dismiss_typosquat_alert(alert_id, target_id, user["id"])
+    if not ok:
+        raise HTTPException(status_code=404, detail="Alerta não encontrado.")
+    return {"ok": True, "dismissed": True, "alert_id": alert_id}
+
+
+@app.post("/account/sites/{target_id}/vigilias/{tipo}/acknowledge")
+async def account_vigilia_acknowledge(target_id: int, tipo: str, request: Request) -> dict:
+    """KL-123 — o dono marca a vigília como vista/resolvida (nível ≥1 + posse). Grava
+    `acknowledged_at` no `last_data` — some o badge do card até um novo alerta."""
+    from api.vigilias import VIGILIA_TYPES
+    if tipo not in VIGILIA_TYPES:
+        raise HTTPException(status_code=404, detail="Tipo de vigília desconhecido.")
+    user, _link, target, store = await _owned_site(request, target_id, 1)
+    await _cfg_rate_limit(request, user["id"])
+    domain = (target.get("domain") or "").lower().strip()
+    now_iso = datetime.now(timezone.utc).isoformat()
+    ok = await store.acknowledge_vigilia(user["id"], domain, tipo, now_iso)
+    return {"ok": True, "acknowledged": bool(ok), "acknowledged_at": now_iso}
+
+
 @app.get("/account/notification-preferences")
 async def account_notification_prefs(request: Request) -> dict:
     """KL-97 — preferências de notificação do usuário (nível ≥ 1). `bulletin_frequency` NULL =
@@ -6574,6 +6661,8 @@ _KNOWN_EVENTS = {
     "vigilia_toggled", "bulletin_frequency_changed", "profile_edited", "seal_configured",
     # KL-107 — dono avisado quando um terceiro adiciona o site dele ao monitoramento
     "owner_notification_sent",
+    # KL-123 — vigílias expandíveis no dashboard (detalhe/ações)
+    "vigilia_expand", "vigilia_dismiss", "vigilia_action_click",
 }
 _EVENT_RL_MAX = 100          # eventos/minuto por sessão
 _event_rl: dict = {}         # session_id -> lista de timestamps (janela de 60s)

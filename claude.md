@@ -498,7 +498,7 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1853 passed** (backend pytest, +5 KL-122) + **117 node --test** (frontend `test:unit`)
+- Testes: **1873 passed** (backend pytest, +20 KL-123) + **124 node --test** (frontend `test:unit`, +7 KL-123)
 - Páginas públicas: `/metodologia` (KL-100) · descadastro `/remover` (KL-102) · landing com social proof ao vivo (KL-103)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - **Níveis de conta (KL-99):** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado
@@ -1380,6 +1380,29 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   LIMIT=500, ALERT_SENDER_MAX_BOUNCE_RATE=10, ALERT_UNSAFE_SCORE_GATE=20, PROFILE_VIEW_DAILY_LIMIT=500 — o
   que faz / onde é lido / default / quando ajustar). Testes do KL-110 atualizados p/ o novo default (>20,
   não >=) + env var. Relatório: `claude/reports/KL-122_gate_configuravel.md`.
+- **KL-123** — Vigílias expandíveis: card clicável com dados contextuais, ações e orientação ✅. Os cards
+  de vigília (`MonitoringSection.jsx`) mostravam só label + status; agora **expandem** com o detalhe que
+  antes só existia no e-mail de alerta. **3 endpoints** (nível ≥1 + posse via `_owned_site`):
+  `GET /account/sites/{id}/vigilias/{tipo}/details` (tipo inválido → 404), `POST .../phishing/dismiss/
+  {alert_id}` ("não é ameaça" → `typosquat_alerts.dismissed=true`, escopado por id+target+user → 404 se
+  não é da conta), `POST .../{tipo}/acknowledge` (grava `acknowledged_at` no `last_data` → some o badge).
+  **Arquitetura testável:** derivação PURA em **`api/vigilia_details.py`** (`build_<tipo>` por tipo →
+  `{status,summary,data,guidance,actions,pending_count}`, reusa `check_num`/`norm_status`+`RISK_MESSAGES`);
+  o orquestrador `_build_vigilia_details` em `api/main.py` faz as queries (reusa `last_data` da vigília +
+  `get_recent_scans_with_checks` + `get_site_typosquat_alerts` + `get_site_profile.certificate_authority`).
+  **Dados por tipo:** ssl (issuer/validade/dias), domain (expiração), score (delta + **checks que mudaram**
+  PASS↔FAIL entre 2 scans + `score_history`), email (SPF/DKIM/DMARC acessível), reputation (blacklists),
+  uptime (código/tempo/falhas), changes (snapshot), phishing (lista de `typosquat_alerts` com ação por
+  domínio). **Linguagem acessível** (regra do card): NADA de OWASP/CWE/header raw — orientação prática.
+  4 store methods novos (`get_site_typosquat_alerts`/`dismiss_typosquat_alert`/`get_site_vigilia_alerts`/
+  `acknowledge_vigilia`; SQL espelha padrões já validados: FILTER, `jsonb_set`+`to_jsonb`). O `status` do
+  SSL/domínio **espelha o worker de vigília** (crítico SSL só ≤1 dia) p/ o detalhe não "virar vermelho" ao
+  expandir um card amarelo. Front: **`web/src/components/dashboard-v2/VigiliaDetail.jsx`** (lazy-load no 1º
+  expand, cacheia no state, badge de `pending_count`, dismiss **otimista** sem reload, acknowledge, mobile
+  ≥44px, CSS spinner) + lógica pura **`web/src/lib/vigiliaDetail.js`** (`statusMeta`/`showBadge`/`applyDismiss`/
+  `emailStateLabel`, 7 testes `node --test`). KL-57: eventos `vigilia_expand`/`vigilia_dismiss`/
+  `vigilia_action_click` no `_KNOWN_EVENTS`. **+20 backend + 7 node**. Relatório:
+  `claude/reports/KL-123_vigilias_expansiveis.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

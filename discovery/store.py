@@ -3560,6 +3560,64 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    # --- KL-123: detalhes das vigílias no dashboard do dono ---------------- #
+
+    async def get_site_typosquat_alerts(self, target_id: int, user_id: int,
+                                        limit: int = 50) -> List[Dict[str, Any]]:
+        """Alertas de typosquat de UM site do próprio usuário (incl. descartados) para o
+        card expansível. Escopado por (target, user) — nunca vaza o de outra conta."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT id, suspicious_domain, similarity_type, distance, detected_at, "
+                "       notified, dismissed FROM typosquat_alerts "
+                "WHERE target_id = %s AND user_id = %s "
+                "ORDER BY dismissed ASC, detected_at DESC LIMIT %s",
+                (target_id, user_id, limit))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def dismiss_typosquat_alert(self, alert_id: int, target_id: int,
+                                      user_id: int) -> bool:
+        """KL-123 — marca um alerta de typosquat como descartado. Escopado por
+        (id, target, user) — só o dono do alerta descarta o SEU. True se afetou."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE typosquat_alerts SET dismissed = TRUE "
+                "WHERE id = %s AND target_id = %s AND user_id = %s",
+                (alert_id, target_id, user_id))
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_site_vigilia_alerts(self, user_id: int, domain: str, tipo: str,
+                                      limit: int = 10) -> List[Dict[str, Any]]:
+        """Histórico de alertas de UMA vigília (user+domínio+tipo), mais recente 1º."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT id, tipo, severity, title, message, created_at FROM vigilia_alerts "
+                "WHERE user_id = %s AND site_domain = %s AND tipo = %s "
+                "ORDER BY created_at DESC LIMIT %s",
+                (user_id, (domain or "").lower().strip(), tipo, limit))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def acknowledge_vigilia(self, user_id: int, domain: str, tipo: str,
+                                  acknowledged_at: str) -> bool:
+        """KL-123 — marca a vigília como "vista pelo dono" (grava `acknowledged_at` no
+        `last_data` JSONB). Escopado por (user, domínio, tipo). True se a vigília existe."""
+        dom = (domain or "").lower().strip()
+        def _fn(cur):
+            cur.execute(
+                "UPDATE vigilias SET last_data = jsonb_set(COALESCE(last_data, '{}'::jsonb), "
+                "'{acknowledged_at}', to_jsonb(%s::text)), updated_at = NOW() "
+                "WHERE user_id = %s AND site_domain = %s AND tipo = %s",
+                (acknowledged_at, user_id, dom, tipo))
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
     async def disable_user_vigilias_except(self, user_id: int, keep_types: List[str]) -> int:
         """Desabilita (não deleta) as vigílias do usuário cujo tipo NÃO está em
         `keep_types` — usado no downgrade de plano. Retorna quantas foram desabilitadas."""
