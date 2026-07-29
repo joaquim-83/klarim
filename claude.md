@@ -191,16 +191,19 @@ standalone) + **React** (islands) + **Tailwind v4** (CSS-first, sem config) +
   + inbox_full + spamtrap; semáforo de **5 chamadas simultâneas**; fallback fail-open (API fora →
   `unknown`, nunca bloqueia). O **alert worker** (`_verify_and_filter`, após o lead scoring, antes do
   envio) verifica os melhores leads (`EMAIL_VERIFY_MAX_PER_CYCLE`=60/ciclo): blocklista+descarta
-  `invalid`/`disabled`/`disposable`/`spamtrap` e aplica `is_safe_to_send`. **KL-125 — `unknown` NUNCA
-  envia** (independente do score; 64% dos bounces vinham de `unknown` da Bulk API, menos precisa p/
-  servidores BR): só `catch_all`/`inbox_full` seguem o gate de lead_score **> `ALERT_UNSAFE_SCORE_GATE`**
-  (default **20**, KL-122). **Reverificação Power (KL-125):** um `unknown` de fonte NÃO-power é
-  **reverificado individualmente via Power** antes do envio (Regra 1: block→blocklist+descarta;
-  resolveu→usa o novo status; `unknown` de novo (2×)→não envia mas NÃO blocklist, grava `source=power`
-  p/ não regastar crédito); `unknown` de `source=power` → skip imediato (Regra 2); resultado `fallback`
-  (Reoon fora) NÃO é persistido (não condena o alvo). Campo **`targets.email_verify_source`** (`power`
-  alta · `quick` média · `bulk` baixa · `local` básica) registra COMO foi verificado. **Sem `REOON_API_KEY`
-  a reverificação é no-op** (mas um `unknown` conhecido ainda não é enviado). Cache Redis por **SHA-256** do
+  `invalid`/`disabled`/`disposable`/`spamtrap` e aplica `is_safe_to_send`. **KL-127 (regra DEFINITIVA):
+  `unknown` segue o gate de score** junto de `catch_all`/`inbox_full` (envia se lead_score **>
+  `ALERT_UNSAFE_SCORE_GATE`**, default **20**). No mercado BR `unknown` = "servidor não respondeu ao SMTP
+  check" (Locaweb/Hostinger/UOL/Titan) — **incerto, não ruim**; o KL-125 chegou a bloquear 100% dos
+  `unknown` e **zerou os alertas** (pipeline travou 4×). `safe`/`valid`/`role` sempre enviam.
+  **Decisão ÚNICA** por e-mail (sem tratamento especial por source/reverify): fresco no DB → status
+  cacheado, senão Power; block → blocklist+descarta; senão gate. **Sem verificação → não envia** (só os
+  N por score tocam a API; além do teto só passam os `email_verified`; `fallback` de infra não persiste
+  nem envia). **Modo degradado sem `REOON_API_KEY`** (dev/fallback): já-verificados seguem o gate, não
+  verificados passam (MX já validado na extração). **Log estruturado por e-mail** (mascarado, LGPD):
+  `[alert] c***@x → status=… source=… score=… gate=… → SENT|BLOCKED|SKIPPED_GATE|SKIPPED_UNVERIFIED`
+  (`docker logs klarim-discovery-1`). Campo **`targets.email_verify_source`** (`power`/`quick`/`bulk`/
+  `local`) registra COMO foi verificado. Cache Redis por **SHA-256** do
   e-mail (60d definitivo / 7d transitório) + cache de domínio catch-all (7d). Campos em `targets`:
   `email_verified`/`email_verify_status`/`email_verified_at`/`email_is_role_based`/`email_verify_source`.
   Lead scoring (KL-85) penaliza `catch_all` -10, `unknown` -5, `role` -15 (sem dobrar o prefixo). Stats:
@@ -505,7 +508,7 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1881 passed** (backend pytest, +20 KL-123, +8 KL-125) + **124 node --test** (frontend `test:unit`, +7 KL-123)
+- Testes: **1881 passed** (backend pytest, +20 KL-123, +7 KL-127 — o KL-125 foi superado pelo KL-127) + **124 node --test** (frontend `test:unit`, +7 KL-123)
 - Páginas públicas: `/metodologia` (KL-100) · descadastro `/remover` (KL-102) · landing com social proof ao vivo (KL-103)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - **Níveis de conta (KL-99):** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado
@@ -1444,7 +1447,30 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   confiança na Bulk). **`safe`/`catch_all`/`role`/`invalid`/`disabled`/`disposable`/`spamtrap` inalterados.**
   **+8 backend** (`test_kl125_unknown_reverify.py`) + testes do KL-110/pipeline atualizados. **Fix
   emergencial 28/07 (já aplicado na VM):** 3.703 unknowns resetados + cache limpo; o worker reverifica via
-  Power. Relatório: `claude/reports/KL-125_unknown_reverify.md`.
+  Power. Relatório: `claude/reports/KL-125_unknown_reverify.md`. **⚠️ SUPERADO pelo KL-127** — a premissa
+  "unknown=ruim, bloquear" estava errada p/ o mercado BR e zerou os alertas; o KL-127 volta o `unknown` ao
+  gate de score e remove a reverificação/Regra 2 (código simplificado).
+- **KL-127** — Solução DEFINITIVA do pipeline de verificação de e-mail ✅. O pipeline de alertas travou
+  **4×** desde o KL-110; a regra do KL-125 (`unknown` NUNCA envia) matou 100% dos alertas — `unknown` no
+  mercado BR = "servidor não respondeu ao SMTP check" (Locaweb/Hostinger/UOL/Titan), **incerto e não ruim**
+  (dados: Power safe/role **0%** bounce, catch_all 2,9%, unknown ~5-8% — mas bloquear tudo = zero alertas).
+  Patches manuais nos containers (`if False`/`# DESABILITADO`) tinham divergido `api` de `discovery`. **Fix
+  (zero código morto):** (1) `is_safe_to_send` — regra ÚNICA: safe/valid/role→envia; block-statuses→nunca;
+  **`unknown`/`catch_all`/`inbox_full`→gate `> ALERT_UNSAFE_SCORE_GATE`** (default 20). (2) `_verify_and_filter`
+  reescrito e SIMPLIFICADO: removidas a Regra 2 (unknown/power skip), a reverificação de `unknown` e o
+  "unknown 2× → drop" do KL-125 — decisão única (fresco→cache, senão Power; block→blocklist+descarta; senão
+  gate). `rest_kept` = já-verificados (`email_verified`, status não-vazio; `unknown` permitido). **Sem
+  verificação → não envia**; `fallback` de infra não persiste nem envia; modo degradado sem key (já-verif
+  gated, não-verif passa). (3) **Log estruturado por e-mail** (`logging`, mascarado): `status=… source=…
+  score=… gate=… → SENT|BLOCKED|SKIPPED_GATE|SKIPPED_UNVERIFIED`. (4) `tests/test_kl127_pipeline_integration.py`
+  (+7: mix de 200 → 170 enviados, tudo-unknown-score>20 → 200, tudo-unknown-score<20 → 0, 100 safe+100 disabled
+  → 100, boundary `>20`, sem-verificação não envia, **guard anti `if False`**); testes KL-110/pipeline
+  atualizados p/ o gate; `test_kl125_unknown_reverify.py` removido. (5) Docker: `api`/`worker`/`discovery`
+  usam a MESMA imagem (`build: .`) → o deploy com `--force-recreate` (KL-124) garante código uniforme;
+  **nunca** editar arquivo via `docker exec` (causou o incidente) — doc em `docs/ARCHITECTURE.md`. **Validação
+  pós-deploy:** `diff` de `alert_worker.py`/`email_verifier.py` entre containers = **vazio**; `grep -c "if
+  False"` = 0; alertas voltam a sair (sent_today cresce); log mostra a decisão por e-mail. Relatório:
+  `claude/reports/KL-127_pipeline_definitivo.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

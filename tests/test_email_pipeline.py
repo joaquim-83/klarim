@@ -69,11 +69,11 @@ def test_send_decision_invalid_never_sends():
     assert ev.is_safe_to_send(ev.VerifyResult("invalid", "x"), 99) is False
 
 
-def test_send_decision_unknown_never_sends():
-    # KL-125: 'unknown' (Power não confirmou a caixa) NUNCA envia — nem com score alto.
-    # Era a maior fonte de bounce (64%) quando vinha da Bulk API.
+def test_send_decision_unknown_follows_gate():
+    # KL-127: 'unknown' (servidor BR não respondeu ao SMTP check) segue o gate de score —
+    # bloquear 100% zerava os alertas; o gate filtra os de menor qualidade.
     assert ev.is_safe_to_send(ev.VerifyResult("unknown", "reoon_power"), 15) is False
-    assert ev.is_safe_to_send(ev.VerifyResult("unknown", "reoon_power"), 99) is False
+    assert ev.is_safe_to_send(ev.VerifyResult("unknown", "reoon_power"), 21) is True
 
 
 def test_verify_api_timeout_fails_open(monkeypatch):

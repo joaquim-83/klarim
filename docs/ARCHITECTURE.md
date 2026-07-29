@@ -34,6 +34,16 @@ Cada peça é **best-effort/fail-open**: uma API externa fora do ar degrada para
 e `worker` montam `:ro`. Imagem Python (`build: .`) é compartilhada por api/worker/
 discovery; `.dockerignore` exclui `frontend/`/`web/` dela.
 
+> **Código uniforme entre containers (KL-127):** como `api`, `worker` e `discovery` usam
+> a MESMA imagem (`build: .`), o código Python é idêntico nos três — desde que a imagem
+> seja **reconstruída e os containers recriados** no deploy. O deploy oficial faz exatamente
+> isso: `docker compose build` + `docker compose up -d --force-recreate --no-deps api astro
+> web worker discovery` (KL-124). **Nunca** aplique patch com `docker exec` editando arquivo
+> dentro de um container: isso cria divergência entre `api`/`discovery`/`worker` (foi a causa
+> do incidente KL-127 — o pipeline de alertas travou 4× com código diferente entre containers).
+> Validação pós-deploy: `diff <(docker exec klarim-api-1 cat /app/discovery/alert_worker.py)
+> <(docker exec klarim-discovery-1 cat /app/discovery/alert_worker.py)` deve ser **vazio**.
+
 ## 3. Nginx — front único de TLS/segurança
 
 - **TLS Let's Encrypt self-healing:** entrypoint escolhe `http.conf` (sem cert) ou

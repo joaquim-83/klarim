@@ -213,8 +213,10 @@ def test_verify_email_domain_catch_all_cache(monkeypatch):
 # is_safe_to_send
 # --------------------------------------------------------------------------- #
 
-# KL-122: o gate de catch_all/inbox_full caiu de 50 → 20 (default). É `> gate`, não `>=`.
-# KL-125: `unknown` NUNCA envia (independente do score) — separado do catch_all/inbox_full.
+# KL-122: o gate caiu de 50 → 20 (default). É `> gate`, não `>=`.
+# KL-127 (definitivo): `unknown` volta ao gate (junto de catch_all/inbox_full) — no mercado BR
+# `unknown` = "servidor não respondeu ao SMTP check" (incerto, não ruim); bloquear 100% zerava
+# os alertas. O gate de score filtra os de menor qualidade.
 @pytest.mark.parametrize("status,score,expected", [
     ("safe", 0, True),
     ("valid", 0, True),
@@ -223,8 +225,9 @@ def test_verify_email_domain_catch_all_cache(monkeypatch):
     ("disabled", 90, False),
     ("disposable", 90, False),
     ("spamtrap", 90, False),
-    ("unknown", 99, False),     # KL-125: unknown nunca envia, mesmo com score alto
-    ("unknown", 21, False),
+    ("unknown", 100, True),     # KL-127: unknown segue o gate de score
+    ("unknown", 21, True),      # > 20 → envia
+    ("unknown", 20, False),     # == 20 → NÃO (gate é > 20)
     ("unknown", 0, False),
     ("catch_all", 25, True),
     ("catch_all", 20, False),
@@ -238,10 +241,10 @@ def test_is_safe_to_send(status, score, expected):
 def test_unsafe_gate_default_is_20(monkeypatch):
     monkeypatch.delenv("ALERT_UNSAFE_SCORE_GATE", raising=False)
     assert ev._unsafe_score_gate() == 20
-    # KL-125: o gate agora vale p/ catch_all/inbox_full; unknown é sempre bloqueado.
+    # KL-127: o gate vale p/ unknown/catch_all/inbox_full (é `>`, não `>=`).
+    assert ev.is_safe_to_send(ev.VerifyResult("unknown", "x"), 21) is True
+    assert ev.is_safe_to_send(ev.VerifyResult("unknown", "x"), 20) is False
     assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 21) is True
-    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 20) is False
-    assert ev.is_safe_to_send(ev.VerifyResult("unknown", "x"), 99) is False
 
 
 def test_unsafe_gate_reads_env_var(monkeypatch):
@@ -416,20 +419,27 @@ def test_verify_and_filter_blocks_and_gates(monkeypatch):
     kept, stats = asyncio.run(w._verify_and_filter(targets))
     kept_ids = {t["id"] for t in kept}
     assert kept_ids == {1, 4}
-    assert stats["blocked"] == 1 and stats["skipped_unsafe"] == 1
-    assert ("bad@x.com", "power_verify_invalid") in store.blocked  # KL-125: prefixo power_
+    assert stats["blocked"] == 1 and stats["skipped_gate"] == 1  # KL-127: gate de score
+    assert ("bad@x.com", "power_verify_invalid") in store.blocked  # prefixo power_
     assert (2, "descartado") in store.discarded
-    # KL-125: grava source='power' na verificação
+    # grava source='power' na verificação
     assert (1, "safe", "power") in store.verified
 
 
 def test_verify_and_filter_noop_without_key(monkeypatch):
+    # KL-127: sem REOON_API_KEY (modo degradado) — não-verificado passa (MX já validado); o já
+    # verificado segue o gate pelo status cacheado (unknown/low-score é gated, não descartado).
     monkeypatch.delenv("REOON_API_KEY", raising=False)
     store = _MiniStore()
     w = _mk_worker(store)
-    targets = [{"id": 1, "contact_email": "a@x.com", "_alert_score": 40}]
+    targets = [{"id": 1, "contact_email": "a@x.com", "_alert_score": 40},              # não verificado → passa
+               {"id": 2, "contact_email": "b@x.com", "_alert_score": 40,               # verificado safe → passa
+                "email_verified": True, "email_verify_status": "safe"},
+               {"id": 3, "contact_email": "c@x.com", "_alert_score": 10,               # verificado unknown, score<gate → gated
+                "email_verified": True, "email_verify_status": "unknown"}]
     kept, stats = asyncio.run(w._verify_and_filter(targets))
-    assert kept == targets and stats["verified"] == 0 and not store.blocked
+    assert {t["id"] for t in kept} == {1, 2}
+    assert stats["from_cache"] == 1 and stats["skipped_gate"] == 1 and not store.blocked
 
 
 def test_verify_and_filter_fresh_skips_api(monkeypatch):

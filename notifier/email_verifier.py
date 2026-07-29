@@ -346,23 +346,27 @@ def _unsafe_score_gate() -> int:
 
 
 def is_safe_to_send(result: VerifyResult, lead_score: int = 0) -> bool:
-    """Decisão de envio (KL-110, ajustada no KL-125). Definitivamente ruins → nunca.
+    """Decisão de envio (KL-110 → KL-127 definitivo).
 
-    **KL-125 — `unknown` NUNCA envia** (independente do lead_score): 64% dos bounces
-    vinham de `unknown` da Bulk API (servidor não respondeu ao SMTP check = a caixa
-    provavelmente não existe ou recusa verificação = alto risco). Diferente de `catch_all`
-    (servidor aceita tudo, risco moderado) e `inbox_full` (existe mas cheia): esses seguem
-    o gate de qualidade (score > `ALERT_UNSAFE_SCORE_GATE`, default 20). safe/valid/role → envia."""
+    Regra:
+      • safe/valid/role → sempre envia (role já é penalizado no lead scoring).
+      • disabled/invalid/disposable/spamtrap → nunca envia (vão p/ blocklist).
+      • unknown/catch_all/inbox_full → envia se `lead_score > ALERT_UNSAFE_SCORE_GATE`
+        (default 20) — o gate de score filtra os de menor qualidade.
+
+    `unknown` no mercado BR = "servidor não respondeu ao SMTP check" (Locaweb, Hostinger,
+    UOL, Titan) — NÃO é sinônimo de "e-mail ruim", é incerto. Bloquear 100% dos `unknown`
+    mata 100% dos alertas (dados KL-127: Power safe/role 0% bounce, catch_all 2,9%, unknown
+    ~5-8%); o gate de score é a regra correta. A obrigatoriedade de verificação (não enviar
+    sem verificar) é garantida no `_verify_and_filter`, não aqui."""
     status = result.status if isinstance(result, VerifyResult) else str(result)
     if status in BLOCK_STATUSES:
         return False
-    if status == "unknown":
-        return False  # KL-125: se o Power não confirmou a caixa, é suspeito → não envia
     if status in ("safe", "valid", "role"):
         return True
-    if status in ("catch_all", "inbox_full"):
+    if status in ("unknown", "catch_all", "inbox_full"):
         return (lead_score or 0) > _unsafe_score_gate()
-    return True  # fallback conservador: enviar
+    return True  # fallback: enviar
 
 
 def _mask(email: str) -> str:
