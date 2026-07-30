@@ -149,7 +149,8 @@ R$49 (4900). **Nenhum dado de cartão/PIX é armazenado.**
 | `ALERT_SENDER_BOUNCE_MIN_SAMPLE` | **KL-91** — amostra mínima antes de o circuit breaker julgar um remetente (default 100; evita pausar em warmup por poucos bounces) |
 | `REOON_API_KEY` | **KL-110** — chave da API de verificação de e-mail (emailverifier.reoon.com). **Só no `.env` da VM, nunca no git/log.** Sem ela, o alert worker NÃO faz verificação Power (o MX da Camada 0 já roda na extração); ao configurar, a verificação de inbox ativa no próximo ciclo |
 | `EMAIL_VERIFY_ENABLED` | **KL-110** — liga/desliga a verificação Power no alert worker (default `true`; só tem efeito com `REOON_API_KEY`) |
-| `EMAIL_VERIFY_MAX_PER_CYCLE` | **KL-110** — máx de alvos verificados por ciclo do alert worker (default 60; controla custo/tempo da API Reoon) |
+| `EMAIL_VERIFY_MAX_PER_CYCLE` | **KL-110 → KL-129** — máx de alvos **NÃO-verificados** verificados via Power por ciclo (default **200**, era 120/60; editável ao vivo no painel). KL-129 prioriza os `email_verified=false` no subset; os já-verificados (sendable/barrados) NÃO consomem vaga. Com 200/ciclo e ciclos de 30 min ≈ 9.600/dia |
+| `ALERT_TRUST_DOMAIN_DOWNGRADE` | **KL-129** — rebaixa `unknown` fresco → `catch_all` (passa a valer o gate) quando o domínio de destinatário teve envio sem bounce nas últimas 48h (recupera volume dos mega-hosts BR). Default `true`; **kill-switch** `false` (lido a cada ciclo, sem deploy) se o bounce voltar a subir |
 | `EMAIL_VERIFY_TTL_DAYS` | **KL-110** — validade de uma verificação antes de re-verificar (default 60 dias) |
 | `REOON_MAX_CONCURRENCY` | **KL-110** — máx de chamadas simultâneas à Reoon (default 5; restrição da API) |
 | `ALERT_UNSAFE_SCORE_GATE` | **KL-122 → KL-128 (definitivo)** — gate de `lead_score` para e-mails de deliverability INCERTA (`catch_all`/`inbox_full`): só envia se o score for **maior** que este valor (`>`, não `>=`). Lido do env a cada chamada de `is_safe_to_send` (ajuste **sem deploy**). **Default 20**. **KL-128:** `unknown` **NÃO** usa mais este gate — é **sempre bloqueado** (`is_safe_to_send`→False): o gate de score não filtra `unknown` (no BR = servidor sem SMTP-check) e o bounce voltou a >10% no KL-127. O gate ficou só p/ `catch_all`/`inbox_full`. Suba se o bounce voltar a subir; baixe para liberar mais volume incerto. |
@@ -169,6 +170,8 @@ Os knobs de outreach ajustados na VM (podem divergir do default do código). **O
 | `ALERT_SENDER_DAILY_LIMIT` | **500** | 100 | Teto POR sender cold/dia (warmup 100→250→500→750). Editável no painel (`admin_settings` > env). |
 | `ALERT_SENDER_MAX_BOUNCE_RATE` | **10** | 5.0 | % de **hard** bounce (KL-108) que pausa um sender. Baixar p/ 5 quando as listas estiverem limpas. |
 | `ALERT_UNSAFE_SCORE_GATE` | **20** | 20 | Gate de `lead_score` p/ `catch_all`/`inbox_full` (`>`). KL-128: `unknown` é sempre bloqueado (não usa o gate). Subir se o bounce voltar a subir. |
+| `EMAIL_VERIFY_MAX_PER_CYCLE` | **200** | 200 (KL-129) | Máx de NÃO-verificados verificados via Power por ciclo. KL-129 prioriza os novos no subset. Editável no painel. |
+| `ALERT_TRUST_DOMAIN_DOWNGRADE` | **true** | true (KL-129) | Rebaixa `unknown`→`catch_all` p/ domínios com histórico limpo 48h. **Kill-switch:** `false` se o bounce subir. |
 | `PROFILE_VIEW_DAILY_LIMIT` | **500** | 200 | Teto diário de avisos "perfil consultado" (`perfil.klarim.net`, KL-101). Editável no painel. |
 
 ### Admin / JWT / MCP

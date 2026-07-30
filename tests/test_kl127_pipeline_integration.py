@@ -30,6 +30,9 @@ class _MiniStore:
                                                verified=True, source=None):
         self.verified.append((tid, status, source))
 
+    async def trusted_recipient_domains(self, domains, hours=48):
+        return set()
+
 
 def _mk_worker(store, verify_max=1000):
     from discovery.alert_worker import AlertWorker
@@ -55,6 +58,7 @@ def _run(worker, targets):
 def _key(monkeypatch):
     monkeypatch.setenv("REOON_API_KEY", "test-key")
     monkeypatch.delenv("ALERT_UNSAFE_SCORE_GATE", raising=False)  # gate = 20
+    monkeypatch.setenv("ALERT_TRUST_DOMAIN_DOWNGRADE", "false")   # trust↓ testado à parte (KL-129)
 
 
 # --------------------------- mix realista de 200 -------------------------- #
@@ -86,8 +90,10 @@ def test_mixed_batch_sends_nonzero():
     # 40 safe + 30 role + 10 catch + 10 safe + 10 inbox = 100 (nenhum unknown; 15 block)
     assert len(kept) == 100
     assert len(kept) > 0                       # NUNCA zera
-    assert stats["skipped_gate"] == 85         # os 85 unknown barrados (todos os scores)
-    assert stats["blocked"] == 15              # disabled/invalid/spamtrap
+    assert stats["from_cache"] == 100          # sendable (já verificados aprovados)
+    # KL-129: os já-verificados barrados (85 unknown + 15 block-status) não tocam a API.
+    assert stats["blocked_known"] == 100
+    assert stats["verified"] == 0              # nenhuma chamada Reoon (todos frescos)
     assert all(k["email_verify_status"] != "unknown" for k in kept)   # nenhum unknown enviado
 
 
@@ -96,14 +102,14 @@ def test_all_unknown_sends_zero():
     targets = [_t(i, "unknown", 25, source="bulk") for i in range(1, 201)]
     kept, stats = _run(_mk_worker(_MiniStore()), targets)
     assert kept == []
-    assert stats["skipped_gate"] == 200
+    assert stats["blocked_known"] == 200 and stats["verified"] == 0   # 0 API (não gira em falso)
 
 
 def test_all_unknown_low_score_sends_zero():
     targets = [_t(i, "unknown", 15, source="bulk") for i in range(1, 201)]
     kept, stats = _run(_mk_worker(_MiniStore()), targets)
     assert kept == []
-    assert stats["skipped_gate"] == 200
+    assert stats["blocked_known"] == 200
 
 
 def test_100_safe_100_disabled_sends_exactly_100():
@@ -130,17 +136,20 @@ def test_gate_boundary_is_strict_greater_than():
 # --------------- _verify_and_filter: decisão por estado de verificação -------- #
 
 @pytest.mark.parametrize("verified,status,score,should_send", [
-    (False, "safe", 90, False),     # não verificado → não envia
-    (True, "", 90, False),          # verificado mas sem status → não envia
+    (False, "safe", 90, False),     # não verificado → não envia (deferido; cap=0 → sem API)
+    (True, "", 90, False),          # verificado mas sem status → não fresco → deferido → não envia
     (True, "safe", 40, True),       # verificado safe → envia
     (True, "unknown", 90, False),   # verificado unknown → NÃO envia (KL-128)
     (True, "catch_all", 25, True),  # catch_all + score>20 → envia (gate)
     (True, "catch_all", 15, False), # catch_all + score<=20 → não envia (gate)
 ])
 def test_verify_and_filter_decision_by_state(verified, status, score, should_send):
-    # verify_max=0 → todos no `rest`, decididos pelo status cacheado (sem tocar a API).
+    # verify_max=0 → nenhum toque na API. Os frescos-verificados são decididos na partição pelo
+    # status cacheado (KL-129); os não-verificados/sem-status ficam deferidos (não enviam).
     t = {"id": 1, "contact_email": "x@dominio.com.br", "_alert_score": score,
          "email_verified": verified, "email_verify_status": status}
+    if verified:
+        t["email_verified_at"] = datetime.now(timezone.utc)   # fresco → cai na partição
     kept, _ = _run(_mk_worker(_MiniStore(), verify_max=0), [t])
     assert (len(kept) == 1) is should_send
 

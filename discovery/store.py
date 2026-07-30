@@ -5851,6 +5851,29 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    async def trusted_recipient_domains(self, domains: List[str], hours: int = 48) -> set:
+        """KL-129 — dos `domains` de DESTINATÁRIO passados, quais têm envio 'sent'/'delivered'
+        e **ZERO** bounce/reclamação nas últimas `hours` h (histórico limpo). Usado p/ rebaixar
+        `unknown` → `catch_all` (recupera volume de mega-hosts BR que retornam unknown no SMTP).
+        Domínio de destinatário extraído de `to_email` (`email_log.domain` guarda o site-alvo)."""
+        doms = [d.strip().lower() for d in (domains or []) if d and "@" not in d]
+        if not doms:
+            return set()
+
+        def _fn(cur):
+            cur.execute(
+                "SELECT split_part(lower(to_email), '@', 2) AS dom, "
+                "  COUNT(*) FILTER (WHERE status IN ('sent', 'delivered')) AS ok, "
+                "  COUNT(*) FILTER (WHERE status IN ('bounced', 'soft_bounced', 'complained')) AS bad "
+                "FROM email_log "
+                "WHERE sent_at >= NOW() - make_interval(hours => %s) "
+                "  AND split_part(lower(to_email), '@', 2) = ANY(%s) "
+                "GROUP BY 1",
+                (int(hours), doms))
+            return {row[0] for row in cur.fetchall() if int(row[1] or 0) > 0 and int(row[2] or 0) == 0}
+
+        return await asyncio.to_thread(self._run, _fn)
+
     # --- verificação de e-mail (KL-110) ------------------------------------ #
 
     async def update_target_email_verification(

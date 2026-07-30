@@ -230,7 +230,9 @@ class AlertWorker:
         # REOON_API_KEY o pipeline roda só a Camada 0 local (verify_email cai no local).
         # `email_verify_max` limita quantos alvos verificar por ciclo (custo/tempo da API).
         self.email_verify_enabled = os.environ.get("EMAIL_VERIFY_ENABLED", "true").lower() != "false"
-        self.email_verify_max = int(os.environ.get("EMAIL_VERIFY_MAX_PER_CYCLE", "120"))
+        # KL-129: 200/ciclo (era 120). Com a priorização dos NÃO-verificados no subset, mais vagas =
+        # mais e-mails novos verificados por ciclo (~9.600/dia em ciclos de 30 min).
+        self.email_verify_max = int(os.environ.get("EMAIL_VERIFY_MAX_PER_CYCLE", "200"))
         self.email_verify_ttl_days = int(os.environ.get("EMAIL_VERIFY_TTL_DAYS", "60"))
         self.store = get_target_store()
         self._redis = None
@@ -255,6 +257,9 @@ class AlertWorker:
             # KL-91 — limite diário por remetente (knob do warmup, editável no painel).
             self.sender_daily_limit = int(
                 await g("ALERT_SENDER_DAILY_LIMIT", self.sender_daily_limit))
+            # KL-129 — teto de verificações Reoon por ciclo (editável ao vivo no painel).
+            self.email_verify_max = int(
+                await g("EMAIL_VERIFY_MAX_PER_CYCLE", self.email_verify_max))
         except Exception as exc:  # noqa: BLE001
             print(f"[alert] reload settings falhou (mantém atual): {exc!r}", flush=True)
 
@@ -416,30 +421,40 @@ class AlertWorker:
         return kept, skipped, avg
 
     async def _verify_and_filter(self, targets: list) -> tuple:
-        """KL-110 → KL-128 (definitivo) — verifica a deliverability (Reoon Power) ANTES do envio
+        """KL-110 → KL-129 (definitivo) — verifica a deliverability (Reoon Power) ANTES do envio
         e decide por e-mail com uma regra ÚNICA (`is_safe_to_send`).
 
-        Fluxo por alvo: fresco no DB → usa o status cacheado; senão → verifica via Power (semáforo
-        de 5). Depois, decisão única:
-          • `invalid`/`disabled`/`disposable`/`spamtrap` → blocklist + descarta (nunca envia).
-          • demais → `is_safe_to_send`: safe/valid/role sempre enviam; **`unknown` NÃO envia**
-            (KL-128 — bounce ~5-8%); catch_all/inbox_full enviam se `lead_score >
-            ALERT_UNSAFE_SCORE_GATE` (default 20).
+        **KL-129 — prioriza a verificação dos NOVOS.** O bug: o cap de verificação era consumido
+        pelos já-verificados do cache (unknown/catch_all barrados pelo gate) → 0 vaga para os
+        `email_verified=false` → o pipeline girava em falso (120 cache → 120 barrados → 0 enviados,
+        0 novos verificados). Agora particionamos ANTES:
+          • **sendable** — já verificados e aprovados (safe/role/valid, catch_all+gate) → envia
+            DIRETO, sem re-tocar a API.
+          • **blocked_known** — já verificados e barrados (`unknown`, ou catch_all/inbox_full com
+            score ≤ gate) → descartados **sem consumir vaga**.
+          • **unverified** — `email_verified=false`/status vazio/TTL expirado → **prioridade** no
+            subset (`unverified[:cap]`) → verificados via Power NESTE ciclo; o excedente fica p/ o
+            próximo (`deferred`).
 
-        **`unknown` é bloqueado** (KL-128): no mercado BR = "servidor não respondeu ao SMTP check";
-        o gate de score não o filtra e o bounce voltou a >10% no KL-127. **Sem verificação → não
-        envia** (obrigatório): só os N primeiros por score (`email_verify_max`) tocam a API; além do
-        teto, só passam os já verificados que o gate aprova (`unknown` no rest também é barrado).
-        Sem REOON_API_KEY, só os já verificados (gate) enviam. Fail-open: exceção de infra MANTÉM o
-        alvo; resultado `fallback` (Reoon fora) NÃO é persistido e não envia (sem verificação). Log
-        estruturado por e-mail (mascarado, LGPD)."""
-        stats = {"verified": 0, "from_cache": 0, "blocked": 0, "skipped_gate": 0,
-                 "skipped_unverified": 0, "errors": 0, "rest_skipped": 0}
+        Regra por status (KL-128): safe/valid/role → envia; invalid/disabled/disposable/spamtrap →
+        blocklist+descarta; **`unknown` NÃO envia** (bounce ~5-8%); catch_all/inbox_full → gate
+        `lead_score > ALERT_UNSAFE_SCORE_GATE`. **Domínio confiável (KL-129):** um `unknown` fresco
+        cujo domínio de destinatário teve envio 'sent' sem bounce nas últimas 48h é rebaixado a
+        `catch_all` (passa a valer o gate) — recupera volume (mega-hosts BR retornam `unknown` no
+        SMTP-check). Kill-switch `ALERT_TRUST_DOMAIN_DOWNGRADE=false`. Fail-open: exceção de infra
+        MANTÉM o alvo; `fallback` (Reoon fora) não persiste e não envia. Log por e-mail (mascarado)."""
+        stats = {"verified": 0, "from_cache": 0, "blocked": 0, "blocked_known": 0,
+                 "skipped_gate": 0, "skipped_unverified": 0, "errors": 0, "deferred": 0,
+                 "trust_downgraded": 0}
         api_key = os.environ.get("REOON_API_KEY")
         gate = email_verifier._unsafe_score_gate()
 
         def _status(t) -> str:
             return (t.get("email_verify_status") or "").strip().lower()
+
+        def _rcpt_domain(t) -> str:
+            e = (t.get("contact_email") or "").strip().lower()
+            return e.rsplit("@", 1)[1] if "@" in e else ""
 
         def _log(t, status, decision):
             logger.info("[alert] %s → status=%s source=%s score=%d gate=%d → %s",
@@ -461,13 +476,12 @@ class AlertWorker:
                         stats["from_cache"] += 1
                         kept.append(t)
                     else:
-                        stats["skipped_gate"] += 1
+                        stats["blocked_known"] += 1
                         _log(t, st, "SKIPPED_GATE")
                 else:
                     kept.append(t)  # não verificável sem key → passa (MX já validado na extração)
             return kept, stats
-        cap = min(len(targets), max(0, getattr(self, "email_verify_max", 60)))
-        subset, rest = targets[:cap], targets[cap:]
+
         redis = await self._redis_client()
         sem = asyncio.Semaphore(5)
         ttl = timedelta(days=getattr(self, "email_verify_ttl_days", 60))
@@ -483,95 +497,113 @@ class AlertWorker:
                 va = va.replace(tzinfo=timezone.utc)
             return (now - va) < ttl
 
+        # KL-129 (domínio confiável): 1 query p/ os domínios dos `unknown` frescos → rebaixa os de
+        # histórico limpo (48h). Best-effort/fail-open (erro → conjunto vazio, nada rebaixado).
+        trust_on = os.environ.get("ALERT_TRUST_DOMAIN_DOWNGRADE", "true").lower() != "false"
+        trusted: set = set()
+        if trust_on:
+            unk_domains = {_rcpt_domain(t) for t in targets
+                           if _is_fresh(t) and _status(t) == "unknown"}
+            unk_domains.discard("")
+            if unk_domains:
+                try:
+                    trusted = await self.store.trusted_recipient_domains(list(unk_domains), hours=48)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[alert] trusted_recipient_domains falhou (segue): {exc!r}", flush=True)
+
+        # --- Partição (KL-129): não gasta o cap com quem já sabemos o resultado. --- #
+        sendable, unverified = [], []
+        for t in targets:
+            if not _is_fresh(t):
+                unverified.append(t)
+                continue
+            st = _status(t)
+            score = t.get("_alert_score", 0)
+            # Rebaixa `unknown` de domínio confiável → catch_all (passa a valer o gate).
+            if st == "unknown" and _rcpt_domain(t) in trusted:
+                res = email_verifier.VerifyResult("catch_all", "domain_trusted",
+                                                  bool(t.get("email_is_role_based")),
+                                                  cached=True, source="cache", catch_all=True)
+                stats["trust_downgraded"] += 1
+            else:
+                res = email_verifier.VerifyResult(st or "safe", "fresh_db",
+                                                  bool(t.get("email_is_role_based")),
+                                                  cached=True, source="cache")
+            if res.status in email_verifier.BLOCK_STATUSES:
+                stats["blocked_known"] += 1   # já blocklistado quando foi verificado; não reenvia
+                _log(t, res.status, "BLOCKED_KNOWN")
+            elif email_verifier.is_safe_to_send(res, score):
+                stats["from_cache"] += 1
+                sendable.append(t)
+            else:
+                stats["blocked_known"] += 1
+                _log(t, res.status, "SKIPPED_GATE")
+
+        # --- Subset: NÃO verificados primeiro (prioridade), até o cap. --- #
+        cap = max(0, getattr(self, "email_verify_max", 200))
+        subset = unverified[:cap]
+        stats["deferred"] = max(0, len(unverified) - len(subset))
+
         async def _verify_one(t):
-            """Decide o destino de UM alvo → (t, keep: bool, counters: list[str])."""
+            """Verifica UM alvo NÃO-verificado via Power → (t, keep, counters)."""
             email = (t.get("contact_email") or "").strip().lower()
             if not email:
                 return t, False, []
             score = t.get("_alert_score", 0)
-
-            # Fresco no DB → usa o status cacheado (sem API).
-            if _is_fresh(t):
-                res = email_verifier.VerifyResult(
-                    _status(t) or "safe", "fresh_db", bool(t.get("email_is_role_based")),
-                    cached=True, source="cache")
-                cached = True
-            else:
-                # Verifica via Power (semáforo de 5 chamadas simultâneas).
-                async with sem:
-                    try:
-                        res = await email_verifier.verify_email(
-                            email, mode="power", redis=redis, api_key=api_key)
-                    except Exception as exc:  # noqa: BLE001 - infra → fail-open (mantém)
-                        print(f"[alert] verify falhou (mantém) "
-                              f"{email_verifier._mask(email)}: {exc!r}", flush=True)
-                        _log(t, "error", "SENT")
-                        return t, True, ["errors"]
-                # Reoon fora (fallback de infra): NÃO persiste (não condena o alvo) → retry no
-                # próximo ciclo; KL-127: sem verificação → não envia.
-                if res.source == "fallback":
-                    _log(t, "unknown", "SKIPPED_UNVERIFIED")
-                    return t, False, ["skipped_unverified"]
-                try:  # persiste o resultado Power (source=power; nunca bloqueia o envio se falhar)
-                    await self.store.update_target_email_verification(
-                        t["id"], res.status, res.is_role_based, source="power")
-                except Exception as exc:  # noqa: BLE001
-                    print(f"[alert] gravar verify falhou (alvo {t.get('id')}): {exc!r}", flush=True)
-                t["email_verify_status"] = res.status
-                t["email_verify_source"] = "power"
-                t["email_is_role_based"] = res.is_role_based
-                cached = False
-
-            base = ["from_cache" if cached else "verified"]
+            async with sem:
+                try:
+                    res = await email_verifier.verify_email(
+                        email, mode="power", redis=redis, api_key=api_key)
+                except Exception as exc:  # noqa: BLE001 - infra → fail-open (mantém)
+                    print(f"[alert] verify falhou (mantém) "
+                          f"{email_verifier._mask(email)}: {exc!r}", flush=True)
+                    _log(t, "error", "SENT")
+                    return t, True, ["errors"]
+            # Reoon fora (fallback de infra): NÃO persiste (não condena o alvo) → retry no próximo
+            # ciclo; KL-128: sem verificação → não envia.
+            if res.source == "fallback":
+                _log(t, "unknown", "SKIPPED_UNVERIFIED")
+                return t, False, ["skipped_unverified"]
+            try:  # persiste o resultado Power (source=power; nunca bloqueia o envio se falhar)
+                await self.store.update_target_email_verification(
+                    t["id"], res.status, res.is_role_based, source="power")
+            except Exception as exc:  # noqa: BLE001
+                print(f"[alert] gravar verify falhou (alvo {t.get('id')}): {exc!r}", flush=True)
+            t["email_verify_status"] = res.status
+            t["email_verify_source"] = "power"
+            t["email_is_role_based"] = res.is_role_based
 
             # Bloqueio definitivo (invalid/disabled/disposable/spamtrap).
             if res.status in email_verifier.BLOCK_STATUSES:
-                if not cached:  # já verificado antes já foi blocklistado; não repete
-                    try:
-                        await self.store.block_email(email, reason=f"power_verify_{res.status}")
-                        await self.store.update_status(t["id"], "descartado")
-                    except Exception as exc:  # noqa: BLE001
-                        print(f"[alert] blocklist/discard falhou: {exc!r}", flush=True)
+                try:
+                    await self.store.block_email(email, reason=f"power_verify_{res.status}")
+                    await self.store.update_status(t["id"], "descartado")
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[alert] blocklist/discard falhou: {exc!r}", flush=True)
                 _log(t, res.status, "BLOCKED")
-                return t, False, base + ["blocked"]
+                return t, False, ["verified", "blocked"]
 
-            # Regra ÚNICA: gate de score (unknown/catch_all/inbox_full) ou envia (safe/role).
+            # Regra ÚNICA: gate (unknown nunca; catch_all/inbox_full por score) ou envia (safe/role).
             keep = email_verifier.is_safe_to_send(res, score)
             _log(t, res.status, "SENT" if keep else "SKIPPED_GATE")
-            return t, keep, base + ([] if keep else ["skipped_gate"])
+            return t, keep, ["verified"] + ([] if keep else ["skipped_gate"])
 
-        results = await asyncio.gather(*[_verify_one(t) for t in subset])
-        kept = []
-        for t, keep, counters in results:
-            for k in counters:
-                stats[k] = stats.get(k, 0) + 1
-            if keep:
-                kept.append(t)
+        new_kept = []
+        if subset:
+            for t, keep, counters in await asyncio.gather(*[_verify_one(t) for t in subset]):
+                for k in counters:
+                    stats[k] = stats.get(k, 0) + 1
+                if keep:
+                    new_kept.append(t)
 
-        # Além do teto de verificação (rest): não gasta API, mas aplica o MESMO gate pelo status
-        # cacheado (KL-128) — assim `unknown`/block/low-score não escapam pelo rest. Só passam os
-        # JÁ verificados (`email_verified` + status não-vazio) que `is_safe_to_send` aprova; os
-        # não-verificados ficam para um próximo ciclo (voltam ao topo por score).
-        rest_kept = []
-        for t in rest:
-            st = _status(t)
-            if not (t.get("email_verified") and st):
-                stats["rest_skipped"] += 1
-                continue
-            res = email_verifier.VerifyResult(st, "cache", source="cache")
-            if email_verifier.is_safe_to_send(res, t.get("_alert_score", 0)):
-                rest_kept.append(t)
-            else:
-                stats["rest_skipped"] += 1
-                _log(t, st, "SKIPPED_GATE")
-
-        if any(stats[k] for k in ("verified", "blocked", "skipped_gate", "skipped_unverified",
-                                  "rest_skipped")):
-            print(f"[alert] verify KL-128: {stats['verified']} verif + {stats['from_cache']} cache, "
-                  f"{stats['blocked']} bloq, {stats['skipped_gate']} gate, "
-                  f"{stats['skipped_unverified']} sem-verif, rest-skip {stats['rest_skipped']}",
-                  flush=True)
-        return kept + rest_kept, stats
+        if any(stats[k] for k in ("verified", "from_cache", "blocked", "blocked_known",
+                                  "skipped_gate", "deferred")):
+            print(f"[alert] verify KL-129: sendable {stats['from_cache']} (cache) + {stats['verified']} "
+                  f"verif (API), {stats['blocked']} bloq, {stats['blocked_known']} já-barrado, "
+                  f"{stats['skipped_gate']} gate, {stats['trust_downgraded']} trust↓, "
+                  f"deferidos {stats['deferred']}", flush=True)
+        # Aprovados = já-verificados-OK (envio direto) + novos-verificados-OK (verificados agora).
+        return sendable + new_kept, stats
 
     async def _send_cooldown(self) -> None:
         """KL-91 — intervalo randômico ENTRE envios individuais (30-60s por padrão),

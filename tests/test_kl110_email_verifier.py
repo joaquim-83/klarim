@@ -454,7 +454,7 @@ def test_verify_and_filter_noop_without_key(monkeypatch):
                 "email_verified": True, "email_verify_status": "unknown"}]
     kept, stats = asyncio.run(w._verify_and_filter(targets))
     assert {t["id"] for t in kept} == {1, 2}
-    assert stats["from_cache"] == 1 and stats["skipped_gate"] == 1 and not store.blocked
+    assert stats["from_cache"] == 1 and stats["blocked_known"] == 1 and not store.blocked
 
 
 def test_verify_and_filter_fresh_skips_api(monkeypatch):

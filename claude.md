@@ -190,17 +190,23 @@ standalone) + **React** (islands) + **Tailwind v4** (CSS-first, sem config) +
   **Camada 1 (API Reoon, `REOON_API_KEY`):** modo `power` verifica INBOX existe + catch-all + disabled
   + inbox_full + spamtrap; semáforo de **5 chamadas simultâneas**; fallback fail-open (API fora →
   `unknown`, nunca bloqueia). O **alert worker** (`_verify_and_filter`, após o lead scoring, antes do
-  envio) verifica os melhores leads (`EMAIL_VERIFY_MAX_PER_CYCLE`=60/ciclo): blocklista+descarta
-  `invalid`/`disabled`/`disposable`/`spamtrap` e aplica `is_safe_to_send`. **KL-128 (regra DEFINITIVA):
-  `unknown` NUNCA envia** — o gate de score NÃO filtra `unknown` (no BR = servidor sem SMTP-check, bounce
-  ~5-8%); o KL-127 tentou `unknown`→gate e o bounce voltou a **>10%**. **`catch_all`/`inbox_full`** seguem o
-  gate (`> ALERT_UNSAFE_SCORE_GATE`, default **20**); `safe`/`valid`/`role` sempre enviam. **KL-128 no parse:**
-  `parse_reoon_response` rebaixa **`safe`/`valid` + `is_catch_all` → `catch_all`** (num servidor catch-all o
-  "safe" do Reoon não é confiável — ataca o "catch-all disfarçado de safe" na origem). **Decisão ÚNICA** por
-  e-mail (sem tratamento especial por source/reverify): fresco no DB (status não-vazio) → status cacheado,
-  senão Power; block → blocklist+descarta; senão gate (com `unknown` sempre barrado). **Sem verificação → não
-  envia** (só os N por score tocam a API; além do teto o `rest` aplica o MESMO gate pelo cache — `unknown` não
-  escapa; `fallback` de infra não persiste nem envia). **Modo degradado sem `REOON_API_KEY`** (dev/fallback):
+  envio) blocklista+descarta `invalid`/`disabled`/`disposable`/`spamtrap` e aplica `is_safe_to_send`.
+  **KL-128 (regra DEFINITIVA): `unknown` NUNCA envia** — o gate de score NÃO filtra `unknown` (no BR =
+  servidor sem SMTP-check, bounce ~5-8%); o KL-127 tentou `unknown`→gate e o bounce voltou a **>10%**.
+  **`catch_all`/`inbox_full`** seguem o gate (`> ALERT_UNSAFE_SCORE_GATE`, default **20**); `safe`/`valid`/
+  `role` sempre enviam. **KL-128 no parse:** `parse_reoon_response` rebaixa **`safe`/`valid` + `is_catch_all`
+  → `catch_all`** (num servidor catch-all o "safe" do Reoon não é confiável). **KL-129 (prioriza os NOVOS):**
+  o cap de verificação (`EMAIL_VERIFY_MAX_PER_CYCLE`=**200**, era 120) era consumido pelos já-verificados do
+  cache (unknown barrado) → 0 vaga p/ os `email_verified=false` → o pipeline girava em falso (0 sent, 0 API).
+  Agora `_verify_and_filter` **particiona ANTES**: **sendable** (já-verificado aprovado → envia direto, sem
+  re-tocar a API) · **blocked_known** (já-verificado barrado → descarta SEM consumir vaga) · **unverified**
+  (`email_verified=false`/status vazio/TTL expirado → **prioridade** no subset `unverified[:cap]` → verifica
+  via Power NESTE ciclo; excedente = `deferred`, próximo ciclo). **Domínio confiável (KL-129):** um `unknown`
+  fresco cujo domínio de DESTINATÁRIO teve envio 'sent' sem bounce nas últimas 48h (`store.
+  trusted_recipient_domains`) é rebaixado a `catch_all` (passa a valer o gate) — recupera volume (mega-hosts
+  BR retornam unknown no SMTP-check). Kill-switch `ALERT_TRUST_DOMAIN_DOWNGRADE=false` (lido a cada ciclo). O
+  canário ativo (envio 1 + recheck 24h + blocklist por domínio) fica p/ card futuro. **Sem verificação → não
+  envia** (`fallback` de infra não persiste nem envia). **Modo degradado sem `REOON_API_KEY`** (dev/fallback):
   já-verificados seguem o gate, não verificados passam (MX já validado na extração). **Log estruturado por
   e-mail** (mascarado, LGPD):
   `[alert] c***@x → status=… source=… score=… gate=… → SENT|BLOCKED|SKIPPED_GATE|SKIPPED_UNVERIFIED`
@@ -510,7 +516,7 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1889 passed** (backend pytest; KL-128 alinhou unknown=blocked + testes de parse/verify) + **124 node --test** (frontend `test:unit`, +7 KL-123)
+- Testes: **1899 passed** (backend pytest; +10 KL-129 priorização do subset) + **124 node --test** (frontend `test:unit`, +7 KL-123)
 - Páginas públicas: `/metodologia` (KL-100) · descadastro `/remover` (KL-102) · landing com social proof ao vivo (KL-103)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - **Níveis de conta (KL-99):** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado
@@ -1489,6 +1495,26 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   (`unknown`→False; +3 `parse_reoon` demote; +6 casos parametrizados de `_verify_and_filter`). **1889 pytest
   passed.** Validação pós-deploy: `diff`/md5 de `email_verifier.py`+`alert_worker.py` entre containers = vazio;
   `is_safe_to_send(unknown,100)` → `False`. Relatório: `claude/reports/KL-128_regra_definitiva_email.md`.
+- **KL-129** — Prioriza a verificação dos NOVOS no subset + filtra unknowns + canário por domínio ✅.
+  **Bug (alertas parados 3+h):** o cap de verificação (120/ciclo) era consumido pelos e-mails **já
+  verificados** do cache (unknown/catch_all barrados pelo gate KL-128) → **0 vaga** p/ os `email_verified=
+  false` → pipeline girava em falso (`eligible 200, from_cache 120, skipped_gate 120, sent 0, verified 0`).
+  **Fix (`discovery/alert_worker.py::_verify_and_filter` reescrito):** particiona ANTES de montar o subset —
+  **sendable** (já-verificado aprovado → envia direto, sem re-API) · **blocked_known** (já-verificado barrado
+  → descarta **sem consumir vaga**) · **unverified** (`email_verified=false`/status vazio/TTL expirado →
+  **prioridade** no `subset=unverified[:cap]` → Power NESTE ciclo; excedente `deferred`). Removido o conceito
+  de `rest`. **Cap 120→200** (`EMAIL_VERIFY_MAX_PER_CYCLE`, default 200, editável ao vivo no painel via
+  `_reload_settings`). **Domínio confiável (item 4, parcial):** `store.trusted_recipient_domains(domains,48h)`
+  (envio 'sent'/'delivered' sem bounce/complaint em 48h, domínio de destinatário via `split_part(to_email)`);
+  um `unknown` fresco de domínio confiável é rebaixado a `catch_all` (passa a valer o gate) — recupera volume
+  dos mega-hosts BR (Locaweb/Hostinger retornam unknown no SMTP-check). Kill-switch
+  `ALERT_TRUST_DOMAIN_DOWNGRADE=false` (lido a cada ciclo). **Canário ativo** (envio 1 + recheck 24h +
+  blocklist por domínio + coluna `email_log.is_canary`) **deferido** p/ card futuro (permitido pelo card).
+  Novas stats: `blocked_known`/`deferred`/`trust_downgraded`; log de ciclo `[alert] verify KL-129: …`. **+10
+  backend** (`test_kl129_subset_priority.py`: prioridade dos novos, unknown não consome vaga, novo verificado
+  e enviado no mesmo ciclo, 0 API se tudo unknown, deferimento, trust↓/gate, cap por env) + testes KL-127/128
+  ajustados às novas stats. SQL validado no Postgres 16 da VM. **1899 pytest passed.** `docs/DEPLOY.md`
+  atualizado. Relatório: `claude/reports/KL-129_prioriza_novos_subset.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.
