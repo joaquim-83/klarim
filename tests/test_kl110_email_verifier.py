@@ -122,6 +122,23 @@ def test_parse_reoon_catch_all():
     assert r.status == "catch_all" and r.catch_all is True
 
 
+# KL-128 — servidor catch-all engana o SMTP-check: o Reoon devolve safe/valid mas o servidor
+# aceita QUALQUER caixa → rebaixa para catch_all (que passa pelo gate de score).
+def test_parse_reoon_safe_plus_catch_all_demoted():
+    r = ev.parse_reoon_response({"status": "safe", "overall_score": 95, "is_catch_all": True}, "power")
+    assert r.status == "catch_all" and r.catch_all is True
+
+
+def test_parse_reoon_valid_plus_catch_all_demoted():
+    r = ev.parse_reoon_response({"status": "valid", "is_catch_all": True}, "power")
+    assert r.status == "catch_all" and r.catch_all is True
+
+
+def test_parse_reoon_safe_without_catch_all_unchanged():
+    r = ev.parse_reoon_response({"status": "safe", "overall_score": 95, "is_catch_all": False}, "power")
+    assert r.status == "safe" and r.catch_all is False
+
+
 def test_parse_reoon_unknown_status():
     r = ev.parse_reoon_response({"status": "algo_estranho"}, "power")
     assert r.status == "unknown"
@@ -214,9 +231,8 @@ def test_verify_email_domain_catch_all_cache(monkeypatch):
 # --------------------------------------------------------------------------- #
 
 # KL-122: o gate caiu de 50 → 20 (default). É `> gate`, não `>=`.
-# KL-127 (definitivo): `unknown` volta ao gate (junto de catch_all/inbox_full) — no mercado BR
-# `unknown` = "servidor não respondeu ao SMTP check" (incerto, não ruim); bloquear 100% zerava
-# os alertas. O gate de score filtra os de menor qualidade.
+# KL-128 (definitivo): `unknown` NUNCA envia (o gate de score não filtra `unknown`, que no BR é
+# servidor sem SMTP-check → bounce ~5-8% >10% no KL-127). O gate fica só p/ catch_all/inbox_full.
 @pytest.mark.parametrize("status,score,expected", [
     ("safe", 0, True),
     ("valid", 0, True),
@@ -225,9 +241,8 @@ def test_verify_email_domain_catch_all_cache(monkeypatch):
     ("disabled", 90, False),
     ("disposable", 90, False),
     ("spamtrap", 90, False),
-    ("unknown", 100, True),     # KL-127: unknown segue o gate de score
-    ("unknown", 21, True),      # > 20 → envia
-    ("unknown", 20, False),     # == 20 → NÃO (gate é > 20)
+    ("unknown", 100, False),    # KL-128: unknown nunca envia, mesmo com score alto
+    ("unknown", 25, False),
     ("unknown", 0, False),
     ("catch_all", 25, True),
     ("catch_all", 20, False),
@@ -241,10 +256,10 @@ def test_is_safe_to_send(status, score, expected):
 def test_unsafe_gate_default_is_20(monkeypatch):
     monkeypatch.delenv("ALERT_UNSAFE_SCORE_GATE", raising=False)
     assert ev._unsafe_score_gate() == 20
-    # KL-127: o gate vale p/ unknown/catch_all/inbox_full (é `>`, não `>=`).
-    assert ev.is_safe_to_send(ev.VerifyResult("unknown", "x"), 21) is True
-    assert ev.is_safe_to_send(ev.VerifyResult("unknown", "x"), 20) is False
+    # KL-128: o gate vale p/ catch_all/inbox_full (é `>`, não `>=`); unknown é sempre bloqueado.
     assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 21) is True
+    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 20) is False
+    assert ev.is_safe_to_send(ev.VerifyResult("unknown", "x"), 100) is False
 
 
 def test_unsafe_gate_reads_env_var(monkeypatch):

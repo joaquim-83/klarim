@@ -47,11 +47,10 @@ _TRANSIENT_STATUSES = frozenset({"catch_all", "inbox_full", "unknown", "role"})
 # Status que NUNCA devem receber e-mail (blocklist permanente).
 BLOCK_STATUSES = frozenset({"invalid", "disabled", "disposable", "spamtrap"})
 
-# KL-122 — gate de lead_score para status de deliverability INCERTA (catch_all/unknown/inbox_full):
-# só envia se o lead_score for MAIOR que este valor. Baixado de 50 (KL-110) → 20 em 27/07/2026: o
-# threshold 50 bloqueava ~3.895 e-mails elegíveis (2.757 unknown + 1.138 catch_all), muitos de
-# provedores BR legítimos (Locaweb/Hostinger/UOL) que não respondem ao SMTP check da Reoon.
-# Editável por env var (`ALERT_UNSAFE_SCORE_GATE`) — ajuste sem deploy.
+# KL-122 — gate de lead_score para status de deliverability INCERTA (catch_all/inbox_full):
+# só envia se o lead_score for MAIOR que este valor. Baixado de 50 (KL-110) → 20 em 27/07/2026.
+# KL-128: `unknown` NÃO usa mais este gate (é bloqueado em `is_safe_to_send`) — o gate ficou só
+# p/ catch_all/inbox_full. Editável por env var (`ALERT_UNSAFE_SCORE_GATE`) — ajuste sem deploy.
 _UNSAFE_SCORE_GATE = int(os.environ.get("ALERT_UNSAFE_SCORE_GATE", "20"))
 
 _CACHE_TTL_DEFINITIVE = 60 * 24 * 3600   # 60 dias
@@ -195,7 +194,12 @@ def _map_reoon_status(raw: str) -> str:
 
 
 def parse_reoon_response(data: dict, mode: str = "power") -> VerifyResult:
-    """Função PURA: JSON da Reoon → VerifyResult. Testável sem rede."""
+    """Função PURA: JSON da Reoon → VerifyResult. Testável sem rede.
+
+    KL-128: num servidor **catch-all** (`is_catch_all=true`) o Reoon costuma devolver
+    `safe`/`valid` porque o servidor aceita QUALQUER caixa no SMTP-check — não é confiável.
+    Rebaixamos `safe`/`valid` + `is_catch_all` → `catch_all` (que passa pelo gate de score),
+    atacando na origem o bounce de "catch-all disfarçado de safe"."""
     status = _map_reoon_status(data.get("status", "unknown"))
     score = data.get("overall_score")
     try:
@@ -349,27 +353,28 @@ def _unsafe_score_gate() -> int:
 
 
 def is_safe_to_send(result: VerifyResult, lead_score: int = 0) -> bool:
-    """Decisão de envio (KL-110 → KL-127 definitivo).
+    """Decisão de envio (KL-128 definitivo).
 
     Regra:
       • safe/valid/role → sempre envia (role já é penalizado no lead scoring).
       • disabled/invalid/disposable/spamtrap → nunca envia (vão p/ blocklist).
-      • unknown/catch_all/inbox_full → envia se `lead_score > ALERT_UNSAFE_SCORE_GATE`
-        (default 20) — o gate de score filtra os de menor qualidade.
+      • unknown → NÃO envia. Bounce rate ~5-8% contamina os senders. Reverificações
+        futuras podem promover para safe/catch_all (aí sim seguem a regra deles).
+      • catch_all/inbox_full → envia se `lead_score > ALERT_UNSAFE_SCORE_GATE` (default 20).
+      • parse_reoon_response rebaixa safe+catch_all → catch_all (KL-128): num servidor
+        catch-all o "safe" do Reoon não é confiável (o servidor aceita QUALQUER caixa).
+      • Sem verificação → nunca envia (garantido pelo `_verify_and_filter`).
 
-    `unknown` no mercado BR = "servidor não respondeu ao SMTP check" (Locaweb, Hostinger,
-    UOL, Titan) — NÃO é sinônimo de "e-mail ruim", é incerto. Bloquear 100% dos `unknown`
-    mata 100% dos alertas (dados KL-127: Power safe/role 0% bounce, catch_all 2,9%, unknown
-    ~5-8%); o gate de score é a regra correta. A obrigatoriedade de verificação (não enviar
-    sem verificar) é garantida no `_verify_and_filter`, não aqui."""
+    Histórico: o KL-127 tentou `unknown`→gate p/ não zerar alertas, mas o bounce voltou a
+    >10% (o gate de score não filtra `unknown`, que no BR é servidor sem SMTP-check). O KL-128
+    volta a bloquear `unknown` e ataca o catch-all-disfarçado-de-safe na origem (parse)."""
     status = result.status if isinstance(result, VerifyResult) else str(result)
     if status in BLOCK_STATUSES:
         return False
     if status in ("safe", "valid", "role"):
         return True
     if status == "unknown":
-        return False  # unknown = servidor BR não respondeu, bounce rate alto (~5-8%)
-
+        return False  # KL-128: unknown = servidor BR sem SMTP-check, bounce ~5-8% → não envia
     if status in ("catch_all", "inbox_full"):
         return (lead_score or 0) > _unsafe_score_gate()
     return True  # fallback: enviar

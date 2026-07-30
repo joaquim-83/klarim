@@ -152,7 +152,7 @@ R$49 (4900). **Nenhum dado de cartão/PIX é armazenado.**
 | `EMAIL_VERIFY_MAX_PER_CYCLE` | **KL-110** — máx de alvos verificados por ciclo do alert worker (default 60; controla custo/tempo da API Reoon) |
 | `EMAIL_VERIFY_TTL_DAYS` | **KL-110** — validade de uma verificação antes de re-verificar (default 60 dias) |
 | `REOON_MAX_CONCURRENCY` | **KL-110** — máx de chamadas simultâneas à Reoon (default 5; restrição da API) |
-| `ALERT_UNSAFE_SCORE_GATE` | **KL-122 → KL-127 (definitivo)** — gate de `lead_score` para e-mails de deliverability INCERTA (`unknown`/`catch_all`/`inbox_full`): só envia se o score for **maior** que este valor (`>`, não `>=`). Lido do env a cada chamada de `is_safe_to_send` (ajuste **sem deploy**). **Default 20**. **KL-127:** `unknown` volta a seguir ESTE gate (o KL-125 chegou a bloquear 100% dos `unknown`, o que **zerou os alertas** — `unknown` no mercado BR = "servidor não respondeu ao SMTP check", incerto e não ruim; Locaweb/Hostinger/UOL/Titan). Suba se o bounce voltar a subir; baixe para liberar mais volume incerto. |
+| `ALERT_UNSAFE_SCORE_GATE` | **KL-122 → KL-128 (definitivo)** — gate de `lead_score` para e-mails de deliverability INCERTA (`catch_all`/`inbox_full`): só envia se o score for **maior** que este valor (`>`, não `>=`). Lido do env a cada chamada de `is_safe_to_send` (ajuste **sem deploy**). **Default 20**. **KL-128:** `unknown` **NÃO** usa mais este gate — é **sempre bloqueado** (`is_safe_to_send`→False): o gate de score não filtra `unknown` (no BR = servidor sem SMTP-check) e o bounce voltou a >10% no KL-127. O gate ficou só p/ `catch_all`/`inbox_full`. Suba se o bounce voltar a subir; baixe para liberar mais volume incerto. |
 | `PROFILE_VIEW_FROM_EMAIL` / `PROFILE_VIEW_FROM_NAME` | **KL-101** — remetente dedicado do aviso "perfil consultado" (default `notifica@perfil.klarim.net`). ⚠️ o subdomínio precisa estar **verificado no Resend** antes do deploy |
 | `PROFILE_VIEW_DAILY_LIMIT` | **KL-101** — teto diário de warmup do `perfil.klarim.net` (default 200; editável no painel) |
 | `DRY_RUN_EMAIL` | dev — `true` faz o `KlarimMailer._send_sync` simular (não fala com o Resend), mas grava `email_log` |
@@ -168,7 +168,7 @@ Os knobs de outreach ajustados na VM (podem divergir do default do código). **O
 | `ALERT_DAILY_LIMIT` | **500** | 500 (`ALERT_MONTHLY_LIMIT` separado) | Teto GLOBAL de cold alerts por dia (todos os senders somados). Subir quando o warmup avançar e o bounce estiver saudável. |
 | `ALERT_SENDER_DAILY_LIMIT` | **500** | 100 | Teto POR sender cold/dia (warmup 100→250→500→750). Editável no painel (`admin_settings` > env). |
 | `ALERT_SENDER_MAX_BOUNCE_RATE` | **10** | 5.0 | % de **hard** bounce (KL-108) que pausa um sender. Baixar p/ 5 quando as listas estiverem limpas. |
-| `ALERT_UNSAFE_SCORE_GATE` | **20** | 20 | Gate de `lead_score` p/ `unknown`/`catch_all`/`inbox_full` (`>`). Subir se o bounce voltar a subir. |
+| `ALERT_UNSAFE_SCORE_GATE` | **20** | 20 | Gate de `lead_score` p/ `catch_all`/`inbox_full` (`>`). KL-128: `unknown` é sempre bloqueado (não usa o gate). Subir se o bounce voltar a subir. |
 | `PROFILE_VIEW_DAILY_LIMIT` | **500** | 200 | Teto diário de avisos "perfil consultado" (`perfil.klarim.net`, KL-101). Editável no painel. |
 
 ### Admin / JWT / MCP
