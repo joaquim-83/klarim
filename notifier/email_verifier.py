@@ -204,6 +204,9 @@ def parse_reoon_response(data: dict, mode: str = "power") -> VerifyResult:
         score = None
     role = bool(data.get("is_role_account")) or status == "role"
     catch_all = bool(data.get("is_catch_all")) or status == "catch_all"
+    if catch_all and status in ("safe", "valid"):
+        status = "catch_all"  # catch-all server: safe do Reoon não é confiável
+
     reason = f"reoon_{mode}"
     return VerifyResult(status, reason, is_role_based=role, score=score,
                         source="reoon", catch_all=catch_all)
