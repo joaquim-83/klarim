@@ -364,7 +364,10 @@ def is_safe_to_send(result: VerifyResult, lead_score: int = 0) -> bool:
         return False
     if status in ("safe", "valid", "role"):
         return True
-    if status in ("unknown", "catch_all", "inbox_full"):
+    if status == "unknown":
+        return False  # unknown = servidor BR não respondeu, bounce rate alto (~5-8%)
+
+    if status in ("catch_all", "inbox_full"):
         return (lead_score or 0) > _unsafe_score_gate()
     return True  # fallback: enviar
 
