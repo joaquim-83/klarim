@@ -2935,7 +2935,7 @@ def _sm_response(xml: str) -> Response:
     return Response(content=xml, media_type="application/xml; charset=utf-8")
 
 
-@app.get("/sitemap.xml")
+@app.api_route("/sitemap.xml", methods=["GET", "HEAD"])
 async def sitemap_index() -> Response:
     """KL-131 — índice de sitemaps: estático + setores + N páginas de perfis."""
     cached = await _cache_get("sitemap:index")
@@ -2959,7 +2959,7 @@ async def sitemap_index() -> Response:
     return _sm_response(xml)
 
 
-@app.get("/sitemap-static.xml")
+@app.api_route("/sitemap-static.xml", methods=["GET", "HEAD"])
 async def sitemap_static() -> Response:
     """KL-131 — páginas estáticas indexáveis."""
     urls = [f'<url><loc>{_SITEMAP_SITE}{p}</loc><changefreq>{cf}</changefreq>'
@@ -2967,7 +2967,7 @@ async def sitemap_static() -> Response:
     return _sm_response(_sm_urlset(urls))
 
 
-@app.get("/sitemap-sectors.xml")
+@app.api_route("/sitemap-sectors.xml", methods=["GET", "HEAD"])
 async def sitemap_sectors() -> Response:
     """KL-131 — 1 URL por setor com perfil público (`/setor/{slug}`), exceto 'outro'."""
     cached = await _cache_get("sitemap:sectors")
@@ -2990,7 +2990,7 @@ async def sitemap_sectors() -> Response:
     return _sm_response(xml)
 
 
-@app.get("/sitemap-profiles-{page:int}.xml")
+@app.api_route("/sitemap-profiles-{page:int}.xml", methods=["GET", "HEAD"])
 async def sitemap_profiles(page: int) -> Response:
     """KL-131 — 1 página de ≤10k perfis públicos (`/site/{domain}`)."""
     if page < 1 or page > 1000:

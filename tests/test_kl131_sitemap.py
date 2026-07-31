@@ -96,6 +96,14 @@ def test_sitemap_sectors_excludes_outro(client):
     assert "/setor/outro" not in body          # 'outro' nunca é indexado
 
 
+def test_sitemap_head_is_allowed(client):
+    # Google usa GET, mas validadores/crawlers usam HEAD — deve responder 200 + xml (não 405).
+    for path in ("/sitemap.xml", "/sitemap-static.xml", "/sitemap-sectors.xml",
+                 "/sitemap-profiles-1.xml"):
+        r = client.head(path)
+        assert r.status_code == 200 and _xml_ct(r), f"{path} HEAD → {r.status_code}"
+
+
 def test_sitemap_static(client):
     r = client.get("/sitemap-static.xml")
     assert r.status_code == 200 and _xml_ct(r)
