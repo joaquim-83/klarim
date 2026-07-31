@@ -51,6 +51,7 @@ const ICONS = {
   subscribers: I(<><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="8.5" cy="7" r="4" /><polyline points="17 11 19 13 23 9" /></>),
   vigilias: I(<><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z" /><circle cx="12" cy="12" r="3" /></>),
   logout: I(<><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" /><polyline points="16 17 21 12 16 7" /><line x1="21" y1="12" x2="9" y2="12" /></>),
+  blog: I(<><path d="M4 3h11l5 5v13a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" /><polyline points="14 3 14 8 19 8" /><line x1="8" y1="13" x2="16" y2="13" /><line x1="8" y1="17" x2="13" y2="17" /></>),
 }
 
 const NAV = [
@@ -69,6 +70,9 @@ const NAV = [
   { to: '/painel/vigilias', label: 'Vigílias', icon: 'vigilias', key: 'vigilias' },
   { to: '/painel/sistema', label: 'Sistema', icon: 'system', key: 'sistema' },
   { to: '/painel/config', label: 'Configurações', icon: 'config', key: 'config' },
+  // KL-133: o blog é publicado por MCP/API (sem painel visual) — o link abre o site público
+  // em nova aba para o operador ver os posts publicados.
+  { to: '/blog', label: 'Blog', icon: 'blog', key: 'blog', external: true },
 ]
 
 export default function AdminShell({ active, children }) {
@@ -109,6 +113,7 @@ export default function AdminShell({ active, children }) {
             key={item.to}
             href={item.to}
             onClick={() => setOpen(false)}
+            {...(item.external ? { target: '_blank', rel: 'noopener noreferrer' } : {})}
             className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition ${
               isActive
                 ? 'bg-klarim-alert/15 text-klarim-alert'
@@ -117,6 +122,7 @@ export default function AdminShell({ active, children }) {
           >
             {ICONS[item.icon]}
             {item.label}
+            {item.external && <span className="ml-auto text-xs text-klarim-muted" aria-hidden="true">↗</span>}
             {badge > 0 && (
               <span className="ml-auto rounded-full bg-klarim-alert px-2 py-0.5 text-[11px] font-bold text-black">
                 {badge}
