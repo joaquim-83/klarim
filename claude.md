@@ -526,7 +526,7 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1911 passed** (backend pytest; +7 KL-131 sitemap) + **132 node --test** (frontend `test:unit`, +8 KL-132 SEO)
+- Testes: **1926 passed** (backend pytest; +14 KL-133 blog) + **142 node --test** (frontend `test:unit`, +10 KL-133 blog)
 - Páginas públicas: `/metodologia` (KL-100) · descadastro `/remover` (KL-102) · landing com social proof ao vivo (KL-103)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - **Níveis de conta (KL-99):** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado
@@ -1562,6 +1562,25 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   reprovou em 17/07 — decisão do dono); páginas de setor ganham **`CollectionPage`** (tipo válido). **Internal
   linking** ("Outros sites do setor", KL-74) e **canonical** (Base.astro, `path`) já existiam. **+8 node**
   (`seo.test.js`). ⚠️ Validar no **Rich Results Test** pós-deploy. Relatório: `claude/reports/KL-131_132_sitemap_seo.md`.
+- **KL-133** — Blog editorial (conteúdo no banco, publicação via MCP) ✅. Captura busca informacional
+  ("meu site é seguro?") com o dado proprietário de 74k sites. **INFRA apenas** (o card pede 1 draft de
+  teste, não artigos). **Tabela `blog_posts`** (`ensure_schema`): slug único, title/subtitle/content
+  (markdown)/meta_description/og_image/category/tags[]/status(draft/published/archived)/author/
+  data_snapshot(JSONB)/reading_time_min/published_at. Helpers puros `_blog_slugify` (sem acento, [a-z0-9-])
+  + `_blog_reading_time` (ceil(palavras/200)). **Store:** create/update (publicar seta `published_at`;
+  mudar conteúdo recalcula reading_time)/archive/get_by_id/get_by_slug(published_only)/list_published/
+  list_all. **API** (`api/main.py`): público `GET /blog/posts` (paginado, sem corpo), `GET /blog/posts/{slug}`
+  (404 se draft), `GET /blog/rss.xml` (RSS 2.0, 20 últimos); admin (JWT via prefixo `/admin`)
+  `POST/PUT/DELETE /admin/blog/posts` (+`GET` lista) — rate limit 30/min público, 10/min admin.
+  **`/sitemap-blog.xml`** no sitemapindex (KL-131). **MCP:** `mcp_server/tools/blog.py` (5 tools:
+  create/update/list/get/archive; registradas no `__init__`) — **reconectar o MCP** pós-deploy p/ aparecerem.
+  **Frontend Astro SSR:** `/blog` (listagem paginada) + `/blog/{slug}` (artigo com `web/src/lib/blog.js::
+  renderMarkdown` = **marked + sanitize-html**, allowlist estrita → strip de `<script>`/`<iframe>`/`on*=`/
+  `javascript:`; Schema.org **Article**, OG article, CTA de scan, sidebar por categoria, breadcrumb,
+  canonical). **Nginx:** `blog` na allowlist Astro (http+https) + `location = /blog/rss.xml` → FastAPI
+  (exato, vence a regex; `/blog/{slug}` vai ao Astro). Deps novas: `marked` + `sanitize-html` (SSR).
+  Draft de teste: `scripts/seed_blog_draft.py` (idempotente, NÃO publica). **+14 backend + 10 node**;
+  `nginx -t` OK, build OK. Relatório: `claude/reports/KL-133_blog.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

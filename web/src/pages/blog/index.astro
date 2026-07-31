@@ -1,0 +1,76 @@
+---
+export const prerender = false; // SSR: lista os posts do banco
+
+import Base from '../../layouts/Base.astro';
+import Header from '../../components/Header.astro';
+import Footer from '../../components/Footer.astro';
+import { PAGE_CONTAINER } from '../../lib/layout.js';
+import { categoryLabel, formatBlogDate } from '../../lib/blog.js';
+
+const API = process.env.KLARIM_API_URL || 'http://api:8000';
+const page = Math.max(1, parseInt(Astro.url.searchParams.get('page') || '1', 10) || 1);
+const category = (Astro.url.searchParams.get('category') || '').toLowerCase();
+
+let data = { posts: [], total: 0, page, per_page: 10, has_more: false };
+try {
+  const qs = `page=${page}&per_page=10${category ? `&category=${encodeURIComponent(category)}` : ''}`;
+  const res = await fetch(`${API}/blog/posts?${qs}`, { signal: AbortSignal.timeout(6000) });
+  if (res.ok) data = await res.json();
+} catch { /* API fora → lista vazia (não quebra a página) */ }
+
+const posts = data.posts || [];
+const totalPages = Math.max(1, Math.ceil((data.total || 0) / (data.per_page || 10)));
+const pageUrl = (n) => `/blog?page=${n}${category ? `&category=${category}` : ''}`;
+const card = 'rounded-2xl border border-slate-800 bg-slate-900/60 p-6 transition-colors';
+---
+
+<Base
+  title="Blog"
+  fullTitleOverride="Blog — Segurança web com dados reais | Klarim"
+  description="Análises de segurança web para PMEs brasileiras, com dados de 74.000+ sites: HTTPS, LGPD, SSL e boas práticas."
+  path="/blog"
+>
+  <Header />
+  <main class={PAGE_CONTAINER}>
+    <header class="border-b border-slate-800 pb-6">
+      <h1 class="text-3xl font-bold tracking-tight text-white sm:text-4xl">Blog Klarim</h1>
+      <p class="mt-2 text-slate-400">
+        Segurança web explicada, com dados reais de 74.000+ sites brasileiros analisados.
+      </p>
+    </header>
+
+    {posts.length === 0 && (
+      <p class="mt-10 text-slate-400">Em breve, os primeiros artigos. Enquanto isso,
+        <a href="/scan" class="text-brand-400 hover:text-brand-300">verifique seu site →</a></p>
+    )}
+
+    <div class="mt-8 space-y-5">
+      {posts.map((p) => (
+        <a href={`/blog/${p.slug}`} class={`${card} block hover:border-brand-500/40`}>
+          <span class="inline-flex rounded-full bg-brand-500/15 px-2.5 py-0.5 text-xs font-semibold text-brand-400">
+            {categoryLabel(p.category)}
+          </span>
+          <h2 class="mt-3 text-xl font-bold text-white">{p.title}</h2>
+          {p.subtitle && <p class="mt-1.5 text-slate-400">{p.subtitle}</p>}
+          <p class="mt-3 text-xs text-slate-500">
+            {formatBlogDate(p.published_at)} · {p.reading_time_min} min de leitura · {p.author}
+          </p>
+        </a>
+      ))}
+    </div>
+
+    {totalPages > 1 && (
+      <nav class="mt-10 flex items-center justify-center gap-2 text-sm" aria-label="Paginação">
+        {page > 1 && <a href={pageUrl(page - 1)} class="rounded-lg border border-slate-700 px-3 py-2 text-slate-200 hover:bg-slate-800">← Anterior</a>}
+        <span class="px-3 py-2 text-slate-500">Página {page} de {totalPages}</span>
+        {page < totalPages && <a href={pageUrl(page + 1)} class="rounded-lg border border-slate-700 px-3 py-2 text-slate-200 hover:bg-slate-800">Próxima →</a>}
+      </nav>
+    )}
+
+    <p class="mt-10 border-t border-slate-800 pt-6 text-center text-sm text-slate-500">
+      <a href="/blog/rss.xml" class="text-brand-400 hover:text-brand-300">Assine o RSS</a> ·
+      <a href="/scan" class="text-brand-400 hover:text-brand-300"> Verifique seu site</a>
+    </p>
+  </main>
+  <Footer />
+</Base>

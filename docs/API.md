@@ -139,6 +139,11 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 | GET | `/sitemap-static.xml` | **KL-131** — páginas estáticas indexáveis (~8 URLs) |
 | GET | `/sitemap-sectors.xml` | **KL-131** — 1 URL por setor com perfil público (`/setor/{slug}`, exclui 'outro'). Cache 1h |
 | GET | `/sitemap-profiles-{page}.xml` | **KL-131** — 1 página de ≤10k perfis (`/site/{domain}`, `ORDER BY domain`), `<lastmod>` do último scan. Cache 1h; page fora de 1..1000 → 404 |
+| GET | `/sitemap-blog.xml` | **KL-133** — sub-sitemap dos posts de blog publicados (`/blog/{slug}`). No sitemapindex. Cache 1h |
+| GET | `/blog/posts?page=&per_page=&category=` | **KL-133** — lista pública de posts **publicados** (paginada; sem o corpo markdown). `{posts, total, page, per_page, has_more}`. RL 30/min/IP |
+| GET | `/blog/posts/{slug}` | **KL-133** — post público por slug (corpo markdown incluído). **404 se não publicado**. RL 30/min/IP |
+| GET | `/blog/rss.xml` | **KL-133** — RSS 2.0 dos 20 últimos posts publicados (`application/rss+xml`). O nginx roteia `/blog/rss.xml`→FastAPI (exato); `/blog`+`/blog/{slug}` vão ao Astro |
+| POST/PUT/DELETE/GET | `/admin/blog/posts[/{id}]` | **KL-133** — CRUD admin (JWT via prefixo `/admin`). POST cria (default draft; slug gerado do título; 409 se slug duplicado; 422 sem title/content). PUT partial (publicar → seta `published_at`; mudar conteúdo → recalcula reading_time). DELETE = arquiva (soft). GET = lista todos os status. RL 10/min/IP. **Também disponível via MCP** (5 tools em `blog.py`) |
 | GET | `/og/{domain}.png` | og:image dinâmico (SVG→PNG, fail-open→favicon) |
 | GET | `/card/{domain}.png?format=square\|landscape` | card compartilhável |
 | GET | `/widget/{domain}.js?style=` | widget "Verificado por Klarim" (embeddable) |

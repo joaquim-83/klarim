@@ -2946,7 +2946,7 @@ async def sitemap_index() -> Response:
     except Exception:  # noqa: BLE001
         total = 0
     pages = max(1, (total + _SITEMAP_PAGE_SIZE - 1) // _SITEMAP_PAGE_SIZE)
-    names = ["sitemap-static.xml", "sitemap-sectors.xml"] + \
+    names = ["sitemap-static.xml", "sitemap-sectors.xml", "sitemap-blog.xml"] + \
             [f"sitemap-profiles-{i}.xml" for i in range(1, pages + 1)]
     lastmod = datetime.now(timezone.utc).date().isoformat()
     parts = ['<?xml version="1.0" encoding="UTF-8"?>',
@@ -3017,6 +3017,200 @@ async def sitemap_profiles(page: int) -> Response:
     if urls:
         await _cache_set(f"sitemap:profiles:{page}", {"xml": xml}, ttl=3600)
     return _sm_response(xml)
+
+
+@app.api_route("/sitemap-blog.xml", methods=["GET", "HEAD"])
+async def sitemap_blog() -> Response:
+    """KL-133 — sub-sitemap dos posts de blog publicados (`/blog/{slug}`)."""
+    cached = await _cache_get("sitemap:blog")
+    if cached and cached.get("xml"):
+        return _sm_response(cached["xml"])
+    try:
+        posts = (await get_target_store().list_published_blog_posts(page=1, per_page=1000))["posts"]
+    except Exception:  # noqa: BLE001
+        posts = []
+    urls = []
+    for p in posts:
+        slug = p.get("slug")
+        if not slug:
+            continue
+        lm = p["updated_at"].date().isoformat() if p.get("updated_at") else None
+        u = f'<url><loc>{_SITEMAP_SITE}/blog/{_sm_esc(slug)}</loc>'
+        if lm:
+            u += f'<lastmod>{lm}</lastmod>'
+        urls.append(u + '<changefreq>weekly</changefreq><priority>0.7</priority></url>')
+    xml = _sm_urlset(urls)
+    if urls:
+        await _cache_set("sitemap:blog", {"xml": xml}, ttl=3600)
+    return _sm_response(xml)
+
+
+# --- KL-133: blog editorial (público: lista/post/RSS · admin: CRUD via /admin) --------- #
+_blog_rl_hits: dict = {}
+_blog_admin_rl_hits: dict = {}
+
+
+def _blog_iso(dt) -> Optional[str]:
+    return dt.isoformat() if hasattr(dt, "isoformat") else (dt or None)
+
+
+def _blog_public(p: dict) -> dict:
+    return {
+        "id": p.get("id"), "slug": p.get("slug"), "title": p.get("title"),
+        "subtitle": p.get("subtitle"), "content": p.get("content"),
+        "meta_description": p.get("meta_description"), "og_image_url": p.get("og_image_url"),
+        "category": p.get("category"), "tags": list(p.get("tags") or []),
+        "author": p.get("author"), "reading_time_min": p.get("reading_time_min"),
+        "published_at": _blog_iso(p.get("published_at")), "updated_at": _blog_iso(p.get("updated_at")),
+        "data_snapshot": p.get("data_snapshot"),
+    }
+
+
+def _blog_admin(p: dict) -> dict:
+    d = _blog_public(p)
+    d["status"] = p.get("status")
+    d["created_at"] = _blog_iso(p.get("created_at"))
+    return d
+
+
+def _blog_card(p: dict) -> dict:
+    d = _blog_public(p)
+    d.pop("content", None)
+    d.pop("data_snapshot", None)
+    return d
+
+
+class BlogPostBody(BaseModel):
+    title: Optional[str] = None
+    content: Optional[str] = None
+    subtitle: Optional[str] = None
+    meta_description: Optional[str] = None
+    og_image_url: Optional[str] = None
+    category: Optional[str] = None
+    tags: Optional[list] = None
+    status: Optional[str] = None
+    author: Optional[str] = None
+    slug: Optional[str] = None
+    data_snapshot: Optional[dict] = None
+
+
+async def _blog_rl(request: Request, admin: bool = False) -> None:
+    ns, mx, store = ("blog_admin", 10, _blog_admin_rl_hits) if admin else ("blog", 30, _blog_rl_hits)
+    allowed, retry = await _redis_allow(ns, _client_ip(request), mx, 60, store)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Muitas requisições. Aguarde um momento.",
+                            headers={"Retry-After": str(retry)})
+
+
+@app.get("/blog/posts")
+async def api_blog_list(request: Request, page: int = Query(default=1, ge=1),
+                        per_page: int = Query(default=10, ge=1, le=50),
+                        category: Optional[str] = Query(default=None)) -> dict:
+    """KL-133 — lista pública de posts publicados (paginada, opcional por categoria)."""
+    await _blog_rl(request)
+    res = await get_target_store().list_published_blog_posts(
+        page=page, per_page=per_page, category=(category or None))
+    total, pp, pg = res["total"], res["per_page"], res["page"]
+    return {"posts": [_blog_card(p) for p in res["posts"]], "total": total,
+            "page": pg, "per_page": pp, "has_more": pg * pp < total}
+
+
+@app.get("/blog/posts/{slug}")
+async def api_blog_get(slug: str, request: Request) -> dict:
+    """KL-133 — post público por slug (404 se não publicado)."""
+    await _blog_rl(request)
+    post = await get_target_store().get_blog_post_by_slug(slug, published_only=True)
+    if not post:
+        raise HTTPException(status_code=404, detail="Post não encontrado.")
+    return _blog_public(post)
+
+
+@app.api_route("/blog/rss.xml", methods=["GET", "HEAD"])
+async def blog_rss() -> Response:
+    """KL-133 — RSS 2.0 dos últimos 20 posts publicados."""
+    from email.utils import format_datetime
+    try:
+        posts = (await get_target_store().list_published_blog_posts(page=1, per_page=20))["posts"]
+    except Exception:  # noqa: BLE001
+        posts = []
+    items = []
+    for p in posts:
+        pub = p.get("published_at")
+        pubdate = format_datetime(pub) if pub is not None and hasattr(pub, "isoformat") else ""
+        link = f"{_SITEMAP_SITE}/blog/{_sm_esc(p.get('slug'))}"
+        items.append(
+            "<item>"
+            f"<title>{_sm_esc(p.get('title'))}</title>"
+            f"<link>{link}</link>"
+            f"<description>{_sm_esc(p.get('meta_description') or p.get('subtitle') or '')}</description>"
+            f"<pubDate>{pubdate}</pubDate>"
+            f'<guid isPermaLink="true">{link}</guid>'
+            "</item>")
+    xml = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">\n<channel>\n'
+        '<title>Blog Klarim — Segurança Web para o Brasil</title>\n'
+        f'<link>{_SITEMAP_SITE}/blog</link>\n'
+        '<description>Análises de segurança web com dados de 74.000+ sites brasileiros</description>\n'
+        '<language>pt-BR</language>\n'
+        f'<atom:link href="{_SITEMAP_SITE}/blog/rss.xml" rel="self" type="application/rss+xml"/>\n'
+        + "\n".join(items) + ("\n" if items else "") + "</channel>\n</rss>\n")
+    return Response(content=xml, media_type="application/rss+xml; charset=utf-8")
+
+
+@app.post("/admin/blog/posts")
+async def admin_blog_create(body: BlogPostBody, request: Request):
+    """KL-133 — cria um post (admin JWT via prefixo /admin). Default draft."""
+    await _blog_rl(request, admin=True)
+    if not (body.title and body.content):
+        raise HTTPException(status_code=422, detail="title e content são obrigatórios.")
+    try:
+        post = await get_target_store().create_blog_post(
+            title=body.title, content=body.content, slug=body.slug, subtitle=body.subtitle,
+            meta_description=body.meta_description, og_image_url=body.og_image_url,
+            category=(body.category or "seguranca"), tags=body.tags,
+            status=(body.status or "draft"), author=(body.author or "Klarim"),
+            data_snapshot=body.data_snapshot)
+    except Exception as exc:  # noqa: BLE001 - slug duplicado (UniqueViolation) etc.
+        raise HTTPException(status_code=409,
+                            detail=f"Não foi possível criar o post (slug duplicado?): {type(exc).__name__}")
+    return JSONResponse(_blog_admin(post), status_code=201)
+
+
+@app.put("/admin/blog/posts/{post_id}")
+async def admin_blog_update(post_id: int, body: BlogPostBody, request: Request) -> dict:
+    """KL-133 — atualiza (partial) um post; publicar seta published_at."""
+    await _blog_rl(request, admin=True)
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    try:
+        post = await get_target_store().update_blog_post(post_id, **fields)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=409, detail=f"Falha ao atualizar: {type(exc).__name__}")
+    if not post:
+        raise HTTPException(status_code=404, detail="Post não encontrado.")
+    return _blog_admin(post)
+
+
+@app.delete("/admin/blog/posts/{post_id}")
+async def admin_blog_delete(post_id: int, request: Request) -> dict:
+    """KL-133 — soft delete (arquiva) um post."""
+    await _blog_rl(request, admin=True)
+    post = await get_target_store().archive_blog_post(post_id)
+    if not post:
+        raise HTTPException(status_code=404, detail="Post não encontrado.")
+    return _blog_admin(post)
+
+
+@app.get("/admin/blog/posts")
+async def admin_blog_list(request: Request, page: int = Query(default=1, ge=1),
+                          per_page: int = Query(default=20, ge=1, le=100),
+                          status: Optional[str] = Query(default=None)) -> dict:
+    """KL-133 — lista admin (todos os status)."""
+    await _blog_rl(request, admin=True)
+    res = await get_target_store().list_all_blog_posts(
+        page=page, per_page=per_page, status=(status or None))
+    return {"posts": [_blog_admin(p) for p in res["posts"]], "total": res["total"],
+            "page": res["page"], "per_page": res["per_page"]}
 
 
 # --- og:image dinâmico (SVG → PNG via cairosvg; cairo já vem do WeasyPrint) --- #

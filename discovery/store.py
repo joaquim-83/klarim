@@ -846,7 +846,47 @@ CREATE INDEX IF NOT EXISTS idx_access_ip_created ON access_log(ip_address, creat
 -- 'nginx' (parser do access_log do Nginx, páginas Astro que não tocam a API). Fontes
 -- disjuntas (o parser pula /api e /mcp) → cobertura completa sem duplicar.
 ALTER TABLE access_log ADD COLUMN IF NOT EXISTS source VARCHAR(20) DEFAULT 'middleware';
+
+-- KL-133 — blog editorial (conteúdo no banco, publicação via MCP). Captura busca
+-- informacional ("meu site é seguro?"); a vantagem é o dado proprietário de 74k sites.
+CREATE TABLE IF NOT EXISTS blog_posts (
+    id SERIAL PRIMARY KEY,
+    slug VARCHAR(200) UNIQUE NOT NULL,
+    title VARCHAR(200) NOT NULL,
+    subtitle VARCHAR(300),
+    content TEXT NOT NULL,                     -- markdown
+    meta_description VARCHAR(200),
+    og_image_url VARCHAR(500),
+    category VARCHAR(50) DEFAULT 'seguranca',  -- seguranca/lgpd/dados/setor/tutorial
+    tags TEXT[] DEFAULT '{}',
+    status VARCHAR(20) DEFAULT 'draft',        -- draft/published/archived
+    author VARCHAR(100) DEFAULT 'Klarim',
+    data_snapshot JSONB,                       -- dados proprietários usados no artigo
+    reading_time_min INTEGER,                  -- ceil(word_count / 200)
+    published_at TIMESTAMPTZ,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_blog_posts_status ON blog_posts(status);
+CREATE INDEX IF NOT EXISTS idx_blog_posts_slug ON blog_posts(slug);
+CREATE INDEX IF NOT EXISTS idx_blog_posts_published ON blog_posts(published_at DESC)
+    WHERE status = 'published';
 """
+
+
+def _blog_slugify(text: str) -> str:
+    """KL-133 — slug de URL a partir do título: minúsculo, sem acento, [a-z0-9-]."""
+    import re
+    import unicodedata
+    t = unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode("ascii")
+    t = re.sub(r"[^a-z0-9]+", "-", t.lower()).strip("-")
+    return t[:200] or "post"
+
+
+def _blog_reading_time(content: str) -> int:
+    """KL-133 — tempo de leitura em minutos: ceil(palavras / 200), mínimo 1."""
+    words = len((content or "").split())
+    return max(1, -(-words // 200))
 
 # --------------------------------------------------------------------------- #
 # Seleção de alvos que precisam de enriquecimento (perfil + IA) — usado por
@@ -4106,6 +4146,149 @@ class TargetStore:
                 f"WHERE {self._SITEMAP_PROFILE_WHERE} "
                 f"ORDER BY t.domain OFFSET %s LIMIT %s", (max(0, offset), max(0, limit)))
             return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- KL-133: blog editorial ------------------------------------------- #
+
+    _BLOG_STATUSES = ("draft", "published", "archived")
+
+    async def create_blog_post(self, title: str, content: str, slug: Optional[str] = None,
+                               subtitle: Optional[str] = None, meta_description: Optional[str] = None,
+                               og_image_url: Optional[str] = None, category: str = "seguranca",
+                               tags: Optional[list] = None, status: str = "draft",
+                               author: str = "Klarim", data_snapshot: Optional[dict] = None
+                               ) -> Dict[str, Any]:
+        """Cria um post. `slug` gerado do título se ausente; `reading_time_min` calculado.
+        `status='published'` seta `published_at=NOW()`. Slug duplicado → UniqueViolation."""
+        slug = _blog_slugify(slug or title)
+        status = status if status in self._BLOG_STATUSES else "draft"
+        rt = _blog_reading_time(content)
+        ds = json.dumps(data_snapshot) if data_snapshot is not None else None
+
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO blog_posts (slug, title, subtitle, content, meta_description, "
+                "  og_image_url, category, tags, status, author, data_snapshot, reading_time_min, "
+                "  published_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, "
+                "  CASE WHEN %s = 'published' THEN NOW() ELSE NULL END) RETURNING *",
+                (slug, (title or "")[:200], subtitle, content, meta_description, og_image_url,
+                 category, list(tags or []), status, author, ds, rt, status))
+            return self._rows_to_dicts(cur)[0]
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def update_blog_post(self, post_id: int, **fields) -> Optional[Dict[str, Any]]:
+        """Atualiza (partial) um post. Recalcula `reading_time_min` se o conteúdo mudar;
+        ao publicar, seta `published_at` se ainda nulo. Whitelist estrita de colunas."""
+        sets, params = [], []
+        for col in ("title", "subtitle", "content", "meta_description", "og_image_url",
+                    "category", "author"):
+            if fields.get(col) is not None:
+                sets.append(f"{col} = %s")
+                params.append(fields[col])
+        if fields.get("slug"):
+            sets.append("slug = %s")
+            params.append(_blog_slugify(fields["slug"]))
+        if fields.get("content") is not None:
+            sets.append("reading_time_min = %s")
+            params.append(_blog_reading_time(fields["content"]))
+        if fields.get("tags") is not None:
+            sets.append("tags = %s")
+            params.append(list(fields["tags"]))
+        if fields.get("data_snapshot") is not None:
+            sets.append("data_snapshot = %s::jsonb")
+            params.append(json.dumps(fields["data_snapshot"]))
+        st = fields.get("status")
+        if st in self._BLOG_STATUSES:
+            sets.append("status = %s")
+            params.append(st)
+            if st == "published":
+                sets.append("published_at = COALESCE(published_at, NOW())")
+        if not sets:
+            return await self.get_blog_post_by_id(post_id)
+        sets.append("updated_at = NOW()")
+
+        def _fn(cur):
+            cur.execute(f"UPDATE blog_posts SET {', '.join(sets)} WHERE id = %s RETURNING *",
+                        [*params, post_id])
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def archive_blog_post(self, post_id: int) -> Optional[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute("UPDATE blog_posts SET status = 'archived', updated_at = NOW() "
+                        "WHERE id = %s RETURNING *", (post_id,))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_blog_post_by_id(self, post_id: int) -> Optional[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute("SELECT * FROM blog_posts WHERE id = %s", (post_id,))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_blog_post_by_slug(self, slug: str, published_only: bool = True
+                                    ) -> Optional[Dict[str, Any]]:
+        def _fn(cur):
+            if published_only:
+                cur.execute("SELECT * FROM blog_posts WHERE slug = %s AND status = 'published'",
+                            (slug,))
+            else:
+                cur.execute("SELECT * FROM blog_posts WHERE slug = %s", (slug,))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def list_published_blog_posts(self, page: int = 1, per_page: int = 10,
+                                        category: Optional[str] = None) -> Dict[str, Any]:
+        """Posts PUBLICADOS, paginado, `published_at DESC`. Devolve {posts,total,page,per_page}."""
+        page = max(1, int(page or 1))
+        per_page = max(1, min(100, int(per_page or 10)))
+        offset = (page - 1) * per_page
+
+        def _fn(cur):
+            where = "status = 'published'"
+            params: list = []
+            if category:
+                where += " AND category = %s"
+                params.append(category)
+            cur.execute(f"SELECT COUNT(*) FROM blog_posts WHERE {where}", params)
+            total = int(cur.fetchone()[0])
+            cur.execute(f"SELECT * FROM blog_posts WHERE {where} "
+                        f"ORDER BY published_at DESC NULLS LAST LIMIT %s OFFSET %s",
+                        [*params, per_page, offset])
+            return {"posts": self._rows_to_dicts(cur), "total": total,
+                    "page": page, "per_page": per_page}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def list_all_blog_posts(self, page: int = 1, per_page: int = 20,
+                                  status: Optional[str] = None) -> Dict[str, Any]:
+        """Posts de QUALQUER status (admin), paginado, mais recente 1º."""
+        page = max(1, int(page or 1))
+        per_page = max(1, min(100, int(per_page or 20)))
+        offset = (page - 1) * per_page
+
+        def _fn(cur):
+            where, params = "TRUE", []
+            if status in self._BLOG_STATUSES:
+                where = "status = %s"
+                params.append(status)
+            cur.execute(f"SELECT COUNT(*) FROM blog_posts WHERE {where}", params)
+            total = int(cur.fetchone()[0])
+            cur.execute(f"SELECT * FROM blog_posts WHERE {where} "
+                        f"ORDER BY created_at DESC LIMIT %s OFFSET %s",
+                        [*params, per_page, offset])
+            return {"posts": self._rows_to_dicts(cur), "total": total,
+                    "page": page, "per_page": per_page}
 
         return await asyncio.to_thread(self._run, _fn)
 
