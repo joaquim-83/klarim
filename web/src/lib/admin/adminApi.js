@@ -35,6 +35,7 @@ const patch = (path, body) =>
   req(path, { method: 'PATCH', body: body ? JSON.stringify(body) : undefined })
 const put = (path, body) =>
   req(path, { method: 'PUT', body: body ? JSON.stringify(body) : undefined })
+const del = (path) => req(path, { method: 'DELETE' })
 
 // Baixa um arquivo protegido (envia o Bearer token e dispara o download).
 export async function adminDownload(path, fallbackName) {
@@ -89,6 +90,12 @@ export async function login(username, password) {
 // --- endpoints de gestão --------------------------------------------------- //
 
 export const admin = {
+  // blog (KL-133) — gestão dos posts (o corpo markdown vem na lista, edita do estado local)
+  blogList: (params) => get(`/admin/blog/posts${qs(params)}`),
+  blogCreate: (body) => post('/admin/blog/posts', body),
+  blogUpdate: (id, body) => put(`/admin/blog/posts/${id}`, body),
+  blogDelete: (id) => del(`/admin/blog/posts/${id}`),   // arquiva (soft delete)
+
   // dashboard
   dashboardStats: () => get('/admin/dashboard-stats'),  // totalizadores KL-57
   targetsStats: () => get('/targets/stats'),
