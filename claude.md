@@ -205,7 +205,17 @@ standalone) + **React** (islands) + **Tailwind v4** (CSS-first, sem config) +
   fresco cujo domínio de DESTINATÁRIO teve envio 'sent' sem bounce nas últimas 48h (`store.
   trusted_recipient_domains`) é rebaixado a `catch_all` (passa a valer o gate) — recupera volume (mega-hosts
   BR retornam unknown no SMTP-check). Kill-switch `ALERT_TRUST_DOMAIN_DOWNGRADE=false` (lido a cada ciclo). O
-  canário ativo (envio 1 + recheck 24h + blocklist por domínio) fica p/ card futuro. **Sem verificação → não
+  canário ativo (envio 1 + recheck 24h + blocklist por domínio) fica p/ card futuro. **KL-130 — status
+  TERMINAIS fora do pool de elegíveis:** a partição só prioriza DENTRO do batch buscado; mas o
+  `_ALERT_ELIGIBLE_WHERE` (`get_eligible_targets_for_alert`, ordenado por `last_scan_at ASC`) trazia 173
+  `unknown`+`power` velhos que **entupiam o fetch** (200) e starvavam 3.247 e-mails NOVOS (0 API, 0 sent, 10
+  alertas/dia). Fix: o WHERE **exclui** `unknown`+`power` (irrecuperável — o Power não confirmou a caixa) e os
+  block-statuses (defesa-em-profundidade). ⚠️ **NULL-safe (COALESCE):** `NULL = 'unknown'` vira NULL e o
+  `AND NOT(...)` excluiria os não-verificados (status NULL) — o `COALESCE(...,'')` evita (validado no Postgres
+  da VM: 3.444→3.272 elegíveis, 0 unknown+power, 3.247 novos preservados). Além disso, um alvo verificado como
+  `unknown` via Power é marcado **`sem_contato`** (`_verify_one`, sai do pool de vez, NÃO blocklist) +
+  limpeza retroativa `scripts/retire_unknown_power.py` (`store.retire_unknown_power_targets`). Log de partição
+  `[alert] KL-130 partição: …`. **Sem verificação → não
   envia** (`fallback` de infra não persiste nem envia). **Modo degradado sem `REOON_API_KEY`** (dev/fallback):
   já-verificados seguem o gate, não verificados passam (MX já validado na extração). **Log estruturado por
   e-mail** (mascarado, LGPD):
@@ -516,7 +526,7 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1899 passed** (backend pytest; +10 KL-129 priorização do subset) + **124 node --test** (frontend `test:unit`, +7 KL-123)
+- Testes: **1904 passed** (backend pytest; +5 KL-130 exclusão de terminais do pool) + **124 node --test** (frontend `test:unit`, +7 KL-123)
 - Páginas públicas: `/metodologia` (KL-100) · descadastro `/remover` (KL-102) · landing com social proof ao vivo (KL-103)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - **Níveis de conta (KL-99):** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado
@@ -1515,6 +1525,21 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   e enviado no mesmo ciclo, 0 API se tudo unknown, deferimento, trust↓/gate, cap por env) + testes KL-127/128
   ajustados às novas stats. SQL validado no Postgres 16 da VM. **1899 pytest passed.** `docs/DEPLOY.md`
   atualizado. Relatório: `claude/reports/KL-129_prioriza_novos_subset.md`.
+- **KL-130** — Exclui status TERMINAIS do pool de elegíveis + destrava 3.247 e-mails novos ✅. Mesmo com a
+  partição do KL-129, o log dava `verified: 0 (API)`: o `get_eligible_targets_for_alert` (fetch 200, ordenado
+  por `last_scan_at ASC`) trazia **173 `unknown`+`power`** velhos que enchiam o batch → a partição não via os
+  NOVOS (3.247 `email_verified=false` presos; ex.: `bengazzi2012@hotmail.com`, target 70444, 0 alertas). A
+  API Reoon E a key estavam OK — o bug era a QUERY. **Fix:** (1) `_ALERT_ELIGIBLE_WHERE` **exclui**
+  `unknown`+`power` + block-statuses. ⚠️ **NULL-safe com `COALESCE(...,'')`** — sem ele o `NULL='unknown'` vira
+  NULL e o `AND NOT(...)` excluía os 3.247 não-verificados (status NULL); **o 1º draft caiu de 3.444→92
+  elegíveis** e foi pego validando no Postgres da VM (após COALESCE: 3.444→3.272, 0 unknown+power, bengazzi
+  passa). (2) alvo verificado `unknown` via Power → **`sem_contato`** (`_verify_one`, sai do pool; NÃO
+  blocklist) + `store.retire_unknown_power_targets` + `scripts/retire_unknown_power.py` (limpeza retroativa dos
+  173). (3) log de partição `[alert] KL-130 partição: N sendable, N blocked_known, N unverified …` +
+  contador `retired_unknown`. **Investigação (item 3):** a partição do KL-129 estava correta — o `verified:0`
+  era 100% causado pela query. **+5 backend** (`test_kl130_exclude_terminals.py`: WHERE NULL-safe, worker
+  aposenta unknown+power, safe/disabled não aposentam, método de retire). SQL validado no Postgres 16 da VM.
+  **1904 pytest passed.** Relatório: `claude/reports/KL-130_exclui_terminais_pool.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

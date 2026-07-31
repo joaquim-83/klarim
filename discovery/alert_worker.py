@@ -445,7 +445,7 @@ class AlertWorker:
         MANTÉM o alvo; `fallback` (Reoon fora) não persiste e não envia. Log por e-mail (mascarado)."""
         stats = {"verified": 0, "from_cache": 0, "blocked": 0, "blocked_known": 0,
                  "skipped_gate": 0, "skipped_unverified": 0, "errors": 0, "deferred": 0,
-                 "trust_downgraded": 0}
+                 "trust_downgraded": 0, "retired_unknown": 0}
         api_key = os.environ.get("REOON_API_KEY")
         gate = email_verifier._unsafe_score_gate()
 
@@ -543,6 +543,10 @@ class AlertWorker:
         cap = max(0, getattr(self, "email_verify_max", 200))
         subset = unverified[:cap]
         stats["deferred"] = max(0, len(unverified) - len(subset))
+        # KL-130 — diagnóstico da partição (esperado após o fix: unverified > 0 → verified > 0).
+        logger.info("[alert] KL-130 partição: %d sendable, %d blocked_known, %d unverified (de %d) "
+                    "→ subset %d, deferidos %d", len(sendable), stats["blocked_known"],
+                    len(unverified), len(targets), len(subset), stats["deferred"])
 
         async def _verify_one(t):
             """Verifica UM alvo NÃO-verificado via Power → (t, keep, counters)."""
@@ -583,7 +587,18 @@ class AlertWorker:
                 _log(t, res.status, "BLOCKED")
                 return t, False, ["verified", "blocked"]
 
-            # Regra ÚNICA: gate (unknown nunca; catch_all/inbox_full por score) ou envia (safe/role).
+            # KL-130: `unknown` via Power = irrecuperável (o servidor não confirmou a caixa) →
+            # tira do pool (`sem_contato`) para NÃO circular todo ciclo consumindo vaga do fetch.
+            # NÃO blocklist (pode ser servidor temporário; o e-mail não é "ruim", só não confirmável).
+            if res.status == "unknown":
+                try:
+                    await self.store.update_status(t["id"], "sem_contato")
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[alert] sem_contato falhou (alvo {t.get('id')}): {exc!r}", flush=True)
+                _log(t, res.status, "RETIRED_UNKNOWN")
+                return t, False, ["verified", "retired_unknown"]
+
+            # Regra ÚNICA: gate (catch_all/inbox_full por score) ou envia (safe/role).
             keep = email_verifier.is_safe_to_send(res, score)
             _log(t, res.status, "SENT" if keep else "SKIPPED_GATE")
             return t, keep, ["verified"] + ([] if keep else ["skipped_gate"])
@@ -597,11 +612,11 @@ class AlertWorker:
                     new_kept.append(t)
 
         if any(stats[k] for k in ("verified", "from_cache", "blocked", "blocked_known",
-                                  "skipped_gate", "deferred")):
-            print(f"[alert] verify KL-129: sendable {stats['from_cache']} (cache) + {stats['verified']} "
+                                  "skipped_gate", "deferred", "retired_unknown")):
+            print(f"[alert] verify KL-130: sendable {stats['from_cache']} (cache) + {stats['verified']} "
                   f"verif (API), {stats['blocked']} bloq, {stats['blocked_known']} já-barrado, "
-                  f"{stats['skipped_gate']} gate, {stats['trust_downgraded']} trust↓, "
-                  f"deferidos {stats['deferred']}", flush=True)
+                  f"{stats['skipped_gate']} gate, {stats['retired_unknown']} unknown→sem_contato, "
+                  f"{stats['trust_downgraded']} trust↓, deferidos {stats['deferred']}", flush=True)
         # Aprovados = já-verificados-OK (envio direto) + novos-verificados-OK (verificados agora).
         return sendable + new_kept, stats
 
