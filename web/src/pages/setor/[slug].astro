@@ -57,6 +57,15 @@ const jsonLd = indexable ? [
       { '@type': 'ListItem', position: 3, name: label, item: `${SITE}/setor/${slug}` },
     ],
   },
+  // KL-132 — CollectionPage: descreve a página como coleção de {count} sites do setor
+  // (tipo Schema.org válido, sem o Review em WebSite que o Search Console reprovou).
+  {
+    '@context': 'https://schema.org', '@type': 'CollectionPage',
+    name: `Segurança web no setor ${label} brasileiro`,
+    description: `Ranking de segurança de ${count} sites ${label} brasileiros analisados pelo Klarim`,
+    url: `${SITE}/setor/${slug}`,
+    numberOfItems: count,
+  },
   {
     '@context': 'https://schema.org', '@type': 'ItemList',
     name: title,

@@ -526,7 +526,7 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1904 passed** (backend pytest; +5 KL-130 exclusão de terminais do pool) + **124 node --test** (frontend `test:unit`, +7 KL-123)
+- Testes: **1911 passed** (backend pytest; +7 KL-131 sitemap) + **132 node --test** (frontend `test:unit`, +8 KL-132 SEO)
 - Páginas públicas: `/metodologia` (KL-100) · descadastro `/remover` (KL-102) · landing com social proof ao vivo (KL-103)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - **Níveis de conta (KL-99):** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado
@@ -1540,6 +1540,28 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   era 100% causado pela query. **+5 backend** (`test_kl130_exclude_terminals.py`: WHERE NULL-safe, worker
   aposenta unknown+power, safe/disabled não aposentam, método de retire). SQL validado no Postgres 16 da VM.
   **1904 pytest passed.** Relatório: `claude/reports/KL-130_exclui_terminais_pool.md`.
+- **KL-131** — Sitemap dinâmico (index + sub-sitemaps) p/ 43k+ perfis, servido pelo FastAPI ✅. O sitemap
+  Astro era um **único urlset** (33.232 URLs, SSR pesado por request, `Cache-Control` DUPLICADO — 3600 do
+  Astro + 300 do nginx) e o `sitemap-index.xml`/`sitemap-0.xml` caíam no fallback SPA (HTML). Agora o
+  **FastAPI** serve: `GET /sitemap.xml` (**sitemapindex** → static + sectors + N páginas de perfis, N =
+  ceil(total/10k)), `/sitemap-static.xml`, `/sitemap-sectors.xml` (`/setor/{slug}`, exclui 'outro'),
+  `/sitemap-profiles-{page}.xml` (≤10k perfis, `ORDER BY domain` p/ paginação estável por OFFSET). Cache
+  **Redis 1h** (`sitemap:index`/`:sectors`/`:profiles:N`; não cacheia vazio), `Content-Type application/xml`,
+  **UM só `Cache-Control`** (no nginx). Store: `count_visible_profiles` + `get_visible_profiles_for_sitemap`
+  (mesma elegibilidade do `list_public_profile_domains`). **Nginx:** nova `location ~ ^/sitemap[...]\.xml$`
+  → FastAPI **sem strip de prefixo** (como `/remover`) em http.conf + https.conf.template; `sitemap\.xml`
+  **removido** da allowlist Astro; `web/src/pages/sitemap.xml.js` **deletado**. `robots.txt` ganhou
+  `/dashboard/`, `/api/account/`, `/webhooks/`, `/remover`. `nginx -t` OK (http + https renderizado). **+7
+  backend.** Relatório: `claude/reports/KL-131_132_sitemap_seo.md`.
+- **KL-132** — SEO programático dos perfis (títulos, meta, Schema.org, internal linking) ✅. **`web/src/lib/
+  seo.js`** (puro/testável): `profileTitle` → "**{empresa} é seguro? Score {score}/100 | Klarim**" (≤60,
+  trunca o nome; capta buscas de reputação), `profileDescription` → score + **semáforo em texto**
+  (Excelente/Atenção/Crítico) + "**48 pontos**" (≤155), `formatDomainName` (`lotusforme.com.br`→`Lotusforme`).
+  Usados em `site/[domain].astro` (`fullTitleOverride`/`description`). **JSON-LD:** mantém Organization +
+  WebSite (site-wide, Base.astro) + BreadcrumbList; **NÃO re-adiciona o Review em WebSite** (o Search Console
+  reprovou em 17/07 — decisão do dono); páginas de setor ganham **`CollectionPage`** (tipo válido). **Internal
+  linking** ("Outros sites do setor", KL-74) e **canonical** (Base.astro, `path`) já existiam. **+8 node**
+  (`seo.test.js`). ⚠️ Validar no **Rich Results Test** pós-deploy. Relatório: `claude/reports/KL-131_132_sitemap_seo.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

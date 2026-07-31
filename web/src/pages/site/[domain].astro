@@ -7,6 +7,7 @@ import Footer from '../../components/Footer.astro';
 import ClaimSite from '../../components/account/ClaimSite.jsx';
 import PrivacyPanel from '../../components/PrivacyPanel.jsx';
 import { PAGE_CONTAINER } from '../../lib/layout.js';
+import { profileTitle, profileDescription } from '../../lib/seo.js';
 
 const SITE = 'https://klarim.net';
 const API = process.env.KLARIM_API_URL || 'http://api:8000';
@@ -58,10 +59,10 @@ const pct = bench && bench.count > 0 && scoreN != null && bench.avg_score
   ? Math.min(99, Math.max(1, Math.round((scoreN / (bench.avg_score * 2 || 100)) * 100)))
   : null;
 
-// SEO
-const okTitle = `${domain} — Score de segurança: ${scoreN}/100 | Klarim`;
-const okDesc = ((p.description ? p.description + ' ' : '')
-  + `Score de segurança do site: ${scoreN}/100. Análise com 48 verificações.`).slice(0, 300);
+// SEO (KL-132) — título capta buscas de reputação ("{empresa} é seguro?"); meta description
+// com score + semáforo + "48 pontos". Ambos com limites do Google (≤60 / ≤155).
+const okTitle = profileTitle({ companyName: p.company_name, domain, score: scoreN });
+const okDesc = profileDescription({ domain, score: scoreN, semaphore: t.semaphore });
 const ogImage = status === 'ok' ? `${SITE}/api/og/${encodeURIComponent(domain)}.png` : undefined;
 // Fix Schema.org (2026-07-17): o Review/`itemReviewed: WebSite` era INVÁLIDO (Google
 // Search Console reprova WebSite como itemReviewed). Removido — o Organization + WebSite

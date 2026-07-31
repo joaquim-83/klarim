@@ -4077,6 +4077,38 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    # KL-131 — sitemap paginado (index + sub-sitemaps). Mesma elegibilidade do
+    # `list_public_profile_domains`, mas ORDER BY domain (estável p/ paginação por OFFSET —
+    # last_scan_at muda e embaralharia as páginas).
+    _SITEMAP_PROFILE_WHERE = (
+        "t.status IN ('scanned', 'alerted') AND t.last_scan_score IS NOT NULL "
+        "AND t.domain IS NOT NULL AND t.domain <> '' "
+        "AND COALESCE(sp.public_visible, TRUE) = TRUE")
+
+    async def count_visible_profiles(self) -> int:
+        """KL-131 — total de perfis públicos (para calcular o nº de sub-sitemaps)."""
+        def _fn(cur):
+            cur.execute(
+                f"SELECT COUNT(*) FROM targets t JOIN site_profile sp ON sp.target_id = t.id "
+                f"WHERE {self._SITEMAP_PROFILE_WHERE}")
+            return int(cur.fetchone()[0])
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_visible_profiles_for_sitemap(self, offset: int = 0, limit: int = 10000
+                                               ) -> List[Dict[str, Any]]:
+        """KL-131 — 1 página de perfis públicos p/ um sub-sitemap. `domain` + `last_scan_at`
+        (lastmod), ordenado por `domain` (estável para OFFSET/LIMIT)."""
+        def _fn(cur):
+            cur.execute(
+                f"SELECT t.domain, t.last_scan_at FROM targets t "
+                f"JOIN site_profile sp ON sp.target_id = t.id "
+                f"WHERE {self._SITEMAP_PROFILE_WHERE} "
+                f"ORDER BY t.domain OFFSET %s LIMIT %s", (max(0, offset), max(0, limit)))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
     async def list_users_with_sites(self) -> List[Dict[str, Any]]:
         """Contas de usuário (KL-51 f3) + os sites vinculados (via `user_sites`), para a
         Gestão de Clientes no painel admin. 2 queries numa conexão (evita N+1)."""

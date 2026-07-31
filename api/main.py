@@ -2906,6 +2906,119 @@ async def public_sitemap_domains() -> dict:
         for r in rows if r.get("domain")]}
 
 
+# --- KL-131: sitemap dinâmico (index + sub-sitemaps) servido pelo FastAPI ------------- #
+# O sitemap Astro (único, 33k URLs, SSR pesado por request) foi trocado por um sitemapindex
+# + sub-sitemaps paginados (≤10k URLs cada — folga sob o teto de 50k do Google), com cache
+# Redis 1h. Content-Type `application/xml`; o nginx roteia `/sitemap*.xml` → FastAPI.
+_SITEMAP_SITE = "https://klarim.net"
+_SITEMAP_PAGE_SIZE = 10000
+_SITEMAP_STATIC: list = [
+    ("/", "weekly", "1.0"), ("/scan", "weekly", "0.6"), ("/sobre", "monthly", "0.5"),
+    ("/metodologia", "monthly", "0.5"), ("/ranking", "daily", "0.8"),
+    ("/setores", "daily", "0.8"), ("/melhores", "daily", "0.7"), ("/estatisticas", "daily", "0.6"),
+]
+
+
+def _sm_esc(s: Any) -> str:
+    return str(s).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _sm_urlset(urls: list) -> str:
+    return ('<?xml version="1.0" encoding="UTF-8"?>\n'
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n'
+            + "\n".join(urls) + ("\n" if urls else "") + "</urlset>\n")
+
+
+def _sm_response(xml: str) -> Response:
+    # Sem Cache-Control aqui — o nginx (location /sitemap*.xml) adiciona um ÚNICO
+    # `Cache-Control` (evita o header duplicado que existia no sitemap Astro).
+    return Response(content=xml, media_type="application/xml; charset=utf-8")
+
+
+@app.get("/sitemap.xml")
+async def sitemap_index() -> Response:
+    """KL-131 — índice de sitemaps: estático + setores + N páginas de perfis."""
+    cached = await _cache_get("sitemap:index")
+    if cached and cached.get("xml"):
+        return _sm_response(cached["xml"])
+    try:
+        total = await get_target_store().count_visible_profiles()
+    except Exception:  # noqa: BLE001
+        total = 0
+    pages = max(1, (total + _SITEMAP_PAGE_SIZE - 1) // _SITEMAP_PAGE_SIZE)
+    names = ["sitemap-static.xml", "sitemap-sectors.xml"] + \
+            [f"sitemap-profiles-{i}.xml" for i in range(1, pages + 1)]
+    lastmod = datetime.now(timezone.utc).date().isoformat()
+    parts = ['<?xml version="1.0" encoding="UTF-8"?>',
+             '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">']
+    for n in names:
+        parts.append(f'<sitemap><loc>{_SITEMAP_SITE}/{n}</loc><lastmod>{lastmod}</lastmod></sitemap>')
+    parts.append('</sitemapindex>\n')
+    xml = "\n".join(parts)
+    await _cache_set("sitemap:index", {"xml": xml}, ttl=3600)
+    return _sm_response(xml)
+
+
+@app.get("/sitemap-static.xml")
+async def sitemap_static() -> Response:
+    """KL-131 — páginas estáticas indexáveis."""
+    urls = [f'<url><loc>{_SITEMAP_SITE}{p}</loc><changefreq>{cf}</changefreq>'
+            f'<priority>{pr}</priority></url>' for p, cf, pr in _SITEMAP_STATIC]
+    return _sm_response(_sm_urlset(urls))
+
+
+@app.get("/sitemap-sectors.xml")
+async def sitemap_sectors() -> Response:
+    """KL-131 — 1 URL por setor com perfil público (`/setor/{slug}`), exceto 'outro'."""
+    cached = await _cache_get("sitemap:sectors")
+    if cached and cached.get("xml"):
+        return _sm_response(cached["xml"])
+    try:
+        sectors = await get_target_store().public_sector_index(min_count=10)
+    except Exception:  # noqa: BLE001
+        sectors = []
+    urls = []
+    for s in sectors:
+        slug = s.get("sector")
+        if not slug or slug == "outro":
+            continue
+        urls.append(f'<url><loc>{_SITEMAP_SITE}/setor/{_sm_esc(slug)}</loc>'
+                    f'<changefreq>weekly</changefreq><priority>0.7</priority></url>')
+    xml = _sm_urlset(urls)
+    if urls:  # não cacheia vazio (backend transitoriamente fora)
+        await _cache_set("sitemap:sectors", {"xml": xml}, ttl=3600)
+    return _sm_response(xml)
+
+
+@app.get("/sitemap-profiles-{page:int}.xml")
+async def sitemap_profiles(page: int) -> Response:
+    """KL-131 — 1 página de ≤10k perfis públicos (`/site/{domain}`)."""
+    if page < 1 or page > 1000:
+        raise HTTPException(status_code=404, detail="página fora do intervalo")
+    cached = await _cache_get(f"sitemap:profiles:{page}")
+    if cached and cached.get("xml"):
+        return _sm_response(cached["xml"])
+    try:
+        rows = await get_target_store().get_visible_profiles_for_sitemap(
+            offset=(page - 1) * _SITEMAP_PAGE_SIZE, limit=_SITEMAP_PAGE_SIZE)
+    except Exception:  # noqa: BLE001
+        rows = []
+    urls = []
+    for r in rows:
+        dom = r.get("domain")
+        if not dom:
+            continue
+        lm = r["last_scan_at"].date().isoformat() if r.get("last_scan_at") else None
+        u = f'<url><loc>{_SITEMAP_SITE}/site/{_sm_esc(dom)}</loc>'
+        if lm:
+            u += f'<lastmod>{lm}</lastmod>'
+        urls.append(u + '<changefreq>weekly</changefreq><priority>0.6</priority></url>')
+    xml = _sm_urlset(urls)
+    if urls:
+        await _cache_set(f"sitemap:profiles:{page}", {"xml": xml}, ttl=3600)
+    return _sm_response(xml)
+
+
 # --- og:image dinâmico (SVG → PNG via cairosvg; cairo já vem do WeasyPrint) --- #
 _OG_CACHE: dict = {}  # domain -> (png_bytes, expiry_monotonic)
 _OG_TTL = 86400

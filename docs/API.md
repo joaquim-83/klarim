@@ -134,7 +134,11 @@ Exigem `charge_id` pago ou scan token `full` **se** o paywall estiver ligado; co
 | Método | Path | Descrição |
 |---|---|---|
 | GET | `/public/profile/{domain}` | perfil agregado (sem e-mail/CNPJ/WhatsApp) |
-| GET | `/public/sitemap-domains` | domínios do sitemap |
+| GET | `/public/sitemap-domains` | domínios do sitemap (legado; o sitemap ao vivo é o `/sitemap*.xml` do KL-131) |
+| GET | `/sitemap.xml` | **KL-131** — **sitemapindex** (`application/xml`): aponta p/ `/sitemap-static.xml`, `/sitemap-sectors.xml` e N × `/sitemap-profiles-{page}.xml` (N=ceil(perfis/10k)). Cache Redis 1h. O nginx roteia `/sitemap*.xml`→FastAPI |
+| GET | `/sitemap-static.xml` | **KL-131** — páginas estáticas indexáveis (~8 URLs) |
+| GET | `/sitemap-sectors.xml` | **KL-131** — 1 URL por setor com perfil público (`/setor/{slug}`, exclui 'outro'). Cache 1h |
+| GET | `/sitemap-profiles-{page}.xml` | **KL-131** — 1 página de ≤10k perfis (`/site/{domain}`, `ORDER BY domain`), `<lastmod>` do último scan. Cache 1h; page fora de 1..1000 → 404 |
 | GET | `/og/{domain}.png` | og:image dinâmico (SVG→PNG, fail-open→favicon) |
 | GET | `/card/{domain}.png?format=square\|landscape` | card compartilhável |
 | GET | `/widget/{domain}.js?style=` | widget "Verificado por Klarim" (embeddable) |
