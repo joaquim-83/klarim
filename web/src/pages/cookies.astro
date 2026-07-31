@@ -1,0 +1,67 @@
+---
+export const prerender = true;
+import Page from '../layouts/Page.astro';
+---
+
+<Page
+  title="Política de Cookies"
+  description="Como o Klarim usa cookies: essenciais (sempre ativos) e de analytics (Google Analytics, só com o seu consentimento). Gerencie suas preferências a qualquer momento."
+  path="/cookies"
+  updated="31 de julho de 2026"
+>
+  <p>
+    Esta página explica quais cookies o Klarim utiliza e como você controla o seu uso,
+    em conformidade com a Lei Geral de Proteção de Dados (LGPD, Lei nº 13.709/2018).
+  </p>
+
+  <h2>1. O que são cookies</h2>
+  <p>
+    Cookies são pequenos arquivos que o site grava no seu navegador. Nós os usamos para
+    manter a sua sessão, lembrar a sua preferência de tema e — <strong>somente com o seu
+    consentimento</strong> — entender como o site é usado.
+  </p>
+
+  <h2>2. Cookies essenciais (sempre ativos)</h2>
+  <p>
+    Necessários para o funcionamento do site; não exigem consentimento (Art. 7º da LGPD).
+  </p>
+  <ul>
+    <li><strong>Sessão de login</strong> — mantém você autenticado no painel/dashboard.</li>
+    <li><strong>Tema</strong> (<code>klarim-theme</code>) — lembra se você prefere o modo claro ou escuro.</li>
+    <li><strong>Consentimento</strong> (<code>klarim_consent</code>) — guarda a sua escolha nesta página, para não perguntarmos de novo.</li>
+  </ul>
+
+  <h2>3. Cookies de analytics (opcionais — só com consentimento)</h2>
+  <p>
+    Usamos o <strong>Google Analytics 4</strong> para entender, de forma agregada, como os
+    visitantes usam o site (páginas mais vistas, origem do tráfego). Esses cookies
+    <strong>só são carregados se você aceitar</strong> — nada é enviado ao Google antes disso.
+  </p>
+  <ul>
+    <li><strong>Google Analytics</strong> (<code>_ga</code>, <code>_ga_*</code>) — métricas de uso anônimas/agregadas.</li>
+  </ul>
+
+  <h2>4. Cookies de marketing</h2>
+  <p>
+    Não utilizamos cookies de marketing ou de publicidade no momento.
+  </p>
+
+  <h2>5. Como gerenciar suas preferências</h2>
+  <p>
+    Na sua primeira visita, um banner permite <strong>Aceitar todos</strong>,
+    <strong>Recusar</strong> ou <strong>Configurar</strong> quais categorias autorizar.
+    Você pode mudar de ideia a qualquer momento pelo link
+    <button type="button" data-cc="reopen" class="text-brand-400 underline hover:text-brand-300">Preferências de cookies</button>
+    (também disponível no rodapé). Recusar os cookies de analytics não afeta o uso do site.
+  </p>
+  <p>
+    Você também pode bloquear ou apagar cookies nas configurações do seu navegador.
+  </p>
+
+  <h2>6. Mais informações</h2>
+  <p>
+    Sobre o tratamento de dados pessoais, consulte a nossa
+    <a href="/privacidade">Política de Privacidade</a>. Dúvidas:
+    <a href="mailto:scan@klarim.net">scan@klarim.net</a>.
+  </p>
+</Page>

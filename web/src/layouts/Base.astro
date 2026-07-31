@@ -1,5 +1,6 @@
 ---
 import '../styles/global.css';
+import CookieBanner from '../components/CookieBanner.astro';
 
 export interface Props {
   title: string;
@@ -105,12 +106,10 @@ const allJsonLd = [ORG_JSONLD, WEBSITE_JSONLD, ...extraLd];
       <script type="application/ld+json" set:html={JSON.stringify(ld)} is:inline />
     ))}
 
-    {/* Google Analytics 4 (KL-92 P4) — substitui o Cloudflare Web Analytics: o beacon.min.js era o
-        ÚNICO script externo sem SRI (travava o score 100 do próprio klarim.net). O loader externo é
-        coberto pela CSP (`script-src https://www.googletagmanager.com`); o inline abaixo tem o hash
-        SHA-256 na CSP (security_headers.conf). NÃO editar o inline sem recalcular o hash. */}
-    <script async src="https://www.googletagmanager.com/gtag/js?id=G-7WPZN66JTB"></script>
-    <script is:inline>window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}gtag('js',new Date());gtag('config','G-7WPZN66JTB');</script>
+    {/* KL-135 (LGPD): o GA4 (G-7WPZN66JTB) NÃO carrega mais aqui incondicionalmente — era opt-out,
+        violava a LGPD. Agora o /cookie-consent.js injeta o gtag.js SÓ com consentimento de analytics
+        (cookie `klarim_consent` = all|analytics). O loader segue coberto pela CSP
+        (`script-src https://www.googletagmanager.com`); sem inline → sem hash novo. */}
 
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   </head>
@@ -124,7 +123,9 @@ const allJsonLd = [ORG_JSONLD, WEBSITE_JSONLD, ...extraLd];
          uma entrada de cache do Cloudflare envenenada (o /theme.js caiu no fallback SSR — HTML
          com max-age=14400 — enquanto NÃO estava na allowlist do Nginx; já corrigido). -->
     <script src="/theme.js?v=2" is:inline></script>
-    {/* KL-92 P4: Cloudflare Web Analytics (beacon.min.js) REMOVIDO — era o único script externo
-        sem SRI (travava o score 100). Substituído pelo Google Analytics 4 no <head>. */}
+    {/* KL-135 (LGPD): banner de consentimento + carregamento CONDICIONAL do GA4. O /cookie-consent.js
+        (externo, CSP `script-src 'self'`) só injeta o gtag.js com opt-in de analytics. */}
+    <CookieBanner />
+    <script src="/cookie-consent.js?v=1" is:inline></script>
   </body>
 </html>

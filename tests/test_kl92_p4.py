@@ -33,14 +33,18 @@ def test_csp_swapped_cloudflare_for_ga4():
     assert "https://www.google-analytics.com" in csp
 
 
-def test_base_layout_has_ga4_no_cf_beacon():
+def test_base_layout_ga4_is_conditional_no_cf_beacon():
+    # KL-135 (LGPD): o GA4 NÃO carrega mais incondicionalmente no Base.astro (era opt-out).
+    # Quem injeta o gtag.js é o cookie-consent.js, só com consentimento.
     base = (_ROOT / "web/src/layouts/Base.astro").read_text()
-    # o SCRIPT do Cloudflare foi removido (o comentário pode mencionar "beacon.min.js"):
-    assert 'src="https://static.cloudflareinsights.com' not in base
-    assert "googletagmanager.com/gtag/js?id=G-7WPZN66JTB" in base
-    # o init inline tem que casar EXATAMENTE o conteúdo hasheado na CSP.
-    assert ("window.dataLayer=window.dataLayer||[];function gtag(){dataLayer.push(arguments);}"
-            "gtag('js',new Date());gtag('config','G-7WPZN66JTB');") in base
+    assert 'src="https://static.cloudflareinsights.com' not in base       # CF beacon segue fora
+    assert "googletagmanager.com/gtag/js" not in base                     # GA4 NÃO no <head>
+    assert "gtag('config','G-7WPZN66JTB')" not in base                    # sem init inline
+    assert "cookie-consent.js" in base                                    # carrega o consent JS
+    consent = (_ROOT / "web/public/cookie-consent.js").read_text()
+    assert "G-7WPZN66JTB" in consent                                      # GA_ID no consent JS
+    assert "googletagmanager.com/gtag/js" in consent                      # loadGA4 condicional
+    assert "klarim_consent" in consent                                    # cookie de consentimento
 
 
 def test_ga4_inline_hash_matches_content():

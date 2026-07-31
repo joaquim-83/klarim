@@ -9,6 +9,7 @@ const links = [
   { href: '/estatisticas', label: 'Estatísticas' },
   { href: '/termos', label: 'Termos de Uso' },
   { href: '/privacidade', label: 'Política de Privacidade' },
+  { href: '/cookies', label: 'Cookies' },
   { href: '/metodologia', label: 'Metodologia' },
   { href: '/sobre', label: 'Sobre' },
 ];
@@ -24,6 +25,8 @@ const links = [
         <a href={l.href} class="text-slate-400 transition-colors hover:text-white">{l.label}</a>
       ))}
       <a href="/contato" class="text-slate-400 transition-colors hover:text-white">Contato</a>
+      {/* KL-135: reabre o banner de consentimento (o /cookie-consent.js escuta [data-cc]). */}
+      <button type="button" data-cc="reopen" class="text-slate-400 transition-colors hover:text-white">Preferências de cookies</button>
     </nav>
 
     <p class="max-w-md text-xs leading-relaxed text-slate-600">
