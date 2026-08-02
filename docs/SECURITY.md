@@ -97,6 +97,22 @@ Na dúvida, trate o alvo como site de terceiro que só autorizou olhar o que é 
 
   Cleanup: `scripts/cleanup_phantom_payments.py` (idempotente, `store.delete` por charge_id) remove
   as 2 cobranças fantasma criadas no teste de segurança.
+- **Exposição de superfície + paths de exploit (KL-138 — hardening, varredura 02/08).** 2 achados
+  (bots já sondavam `.env`: 8 views de 1 IP):
+  - **(Alta) `GET /` (nginx serve como `/api/`) vazava o mapa da API** sem auth — lista de endpoints
+    (pagamento/e-mail/webhook), `scanner_version`, `payments_enabled`, `email_enabled`, `dev_mode`.
+    Corrigido: resposta mínima `{"name":"Klarim API","status":"ok"}` (nenhuma flag/versão/endpoint).
+  - **(Média) Fallback SPA devolvia 200+HTML a QUALQUER path** → scanner interpreta como endpoint ativo
+    e intensifica. Novo `location ~*` (http.conf + https.conf.template) devolve **404** a mais paths de
+    exploit (`swagger`/`redoc`/`graphql`/`_debug`/`config.json`/`actuator`/`phpmyadmin`/`wp-config`/
+    `cgi-bin`/`shell`/`xmlrpc.php`/`vendor/phpunit`/`api-docs`/`v[23]/api-docs`), complementando os blocos
+    já existentes (dotfiles/`.php`/`wp-admin`/`phpinfo`…). Regex validado por `nginx -t` (http+https) e
+    por teste unitário Python (não pega `/a/`/`/site/`/`/setores`/`/scan`/`/blog`).
+  - **Redirect curto `/a/{target_id}` (novo endpoint, KL-138):** substitui o link direto dos e-mails.
+    **Anti open-redirect:** o destino é FIXO (`/site/{domain}` do próprio alvo, domínio vindo de
+    `targets` — NUNCA de parâmetro de URL). Rate limit **30/min/IP** (anti-enumeração). IP **mascarado
+    /24** no log de cliques (`email_clicks`, LGPD — o completo nunca é gravado). `target_id` não-inteiro
+    → 422; inexistente/descartado → 404. O log de clique roda em try/except (nunca derruba o redirect).
 - **Anti stored-XSS no `/events`:** `_sanitize_str`/`_sanitize_metadata` removem tags e
   esquemas (`javascript:`/`data:`), limitam tamanho/profundidade. React escapa `{}` (sem
   `dangerouslySetInnerHTML`).

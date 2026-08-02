@@ -168,7 +168,7 @@ async def send_alert_for_target(store, mailer: KlarimMailer, target: Dict[str, A
     variant = cold_alert.choose_variant(payload.get("sector_avg") is not None)
     domain = site_name(target["url"])
     subject, text = cold_alert.build_cold_email(
-        variant, domain=domain, score=score,
+        variant, domain=domain, score=score, target_id=target["id"],
         sector_label=payload.get("sector_label") or "", sector_avg=payload.get("sector_avg"))
 
     res = await mailer.send_cold_alert(
@@ -712,7 +712,7 @@ class AlertWorker:
             domain = site_name(payload["target_url"])
             variant = cold_alert.choose_variant(payload.get("sector_avg") is not None)
             subject, text = cold_alert.build_cold_email(
-                variant, domain=domain, score=payload["score"],
+                variant, domain=domain, score=payload["score"], target_id=payload["target_id"],
                 sector_label=payload.get("sector_label") or "",
                 sector_avg=payload.get("sector_avg"))
             try:

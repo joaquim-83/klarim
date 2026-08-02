@@ -158,11 +158,12 @@ standalone) + **React** (islands) + **Tailwind v4** (CSS-first, sem config) +
   warmup** `PROFILE_VIEW_DAILY_LIMIT` (200, editável no painel; contador `profileview:daily:{date}`).
   ⚠️ `perfil.klarim.net` precisa estar **verificado no Resend** antes do deploy (senão os envios
   falham). `bulletin` segue em `_proactive_from` (`alerta@klarim.net`) — a quem tem conta/opt-in.
-- **Alertas cold (KL-91 → KL-137):** o alerta a quem NÃO tem conta usa o **módulo cold**
+- **Alertas cold (KL-91 → KL-137 → KL-138):** o alerta a quem NÃO tem conta usa o **módulo cold**
   (`notifier/cold_alert.py` + `alert_worker`): **texto puro (text/plain, NUNCA HTML)** com **UM
-  link** (KL-137, 02/08 — reverte o 'sem links' do KL-91, que gerava quase zero visitas): o perfil
-  do site `klarim.net/site/{domain}?utm_source=alerta&utm_medium=email` (`cold_alert.report_link`),
-  3 variantes informativa/setorial/educativa, opt-out **por resposta** ("responda com remover"), e
+  link CURTO** — **KL-138:** `klarim.net/a/{target_id}` (`cold_alert.report_link(target_id)`), que a
+  API redireciona 302 p/ `/site/{domain}` e registra o clique server-side (`email_clicks`); substituiu
+  o link direto com UTM do KL-137 (que reverteu o 'sem links' do KL-91). 3 variantes informativa/
+  setorial/educativa, opt-out **por resposta** ("responda com remover"), e
   **rotação round-robin** entre 2 subdomínios verificados no Resend — `alertas.klarim.net`
   e `aviso.klarim.net` (`ALERT_SENDER_EMAILS`). O `klarim.net` fica **exclusivo do
   transacional** (isolamento de reputação; `load_senders` descarta `klarim.net` cru). Envio
@@ -544,7 +545,7 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1948 passed** (backend pytest; KL-137 simplificação do pipeline de e-mail) + **142 node --test** (frontend `test:unit`)
+- Testes: **1956 passed** (backend pytest; KL-138 hardening +8) + **142 node --test** (frontend `test:unit`)
 - Páginas públicas: `/metodologia` (KL-100) · descadastro `/remover` (KL-102) · landing com social proof ao vivo (KL-103)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - **Níveis de conta (KL-99):** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado
@@ -1669,6 +1670,28 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   **1948 pytest passed.** **Pós-deploy:** apagar `ALERT_UNSAFE_SCORE_GATE`/`ALERT_CATCH_ALL_SCORE_GATE`/
   `ALERT_TRUST_DOMAIN_DOWNGRADE` do `.env` da VM (ignoradas, mas confundem). Relatório:
   `claude/reports/KL-137_simplificacao_pipeline.md`.
+- **KL-138** — Hardening: remover exposição de endpoints + bloquear paths de exploit + redirect curto
+  nos e-mails ✅ (varredura 02/08; bots já sondam `.env`). **Fix 1 (Alta):** `GET /` (que o nginx serve
+  como `/api/`) devolvia sem auth o **mapa completo** da API (endpoints de pagamento/e-mail/webhook +
+  `scanner_version`/`payments_enabled`/`email_enabled`/`dev_mode`) → agora só `{"name":"Klarim API",
+  "status":"ok"}`. **Fix 2 (Média):** nginx bloqueia MAIS paths de exploit ANTES do fallback SPA (que
+  devolvia 200+HTML → scanner intensifica) — novo `location ~*` em `http.conf` + `https.conf.template`
+  (`wp-config|phpmyadmin|swagger|redoc|graphql|_debug|config\.(json|yml|php)|dump\.sql|database\.sql|
+  xmlrpc\.php|cgi-bin|shell|eval-stdin|vendor/phpunit|actuator|api-docs|v[23]/api-docs` → 404), complementa
+  os blocos já existentes (`.env`/`.git`/`.DS_Store`/`.htaccess`/`.htpasswd` caem em `location ~ /\.`;
+  `wp-admin`/`phpinfo`/`server-status` já cobertos). `nginx -t` validado local (http + https renderizado).
+  **Fix 3 — redirect curto `/a/{target_id}`:** `GET /a/{id}` (FastAPI, roteado pelo nginx `location ~ ^/a/`
+  sem strip, como `/remover`) valida o id (inteiro→422, inexistente/descartado→404), registra o clique
+  server-side e **302 p/ `/site/{domain}`**. **Segurança:** destino **FIXO** (o domínio vem de `targets`,
+  NÃO de parâmetro de URL → **sem open redirect**), rate limit **30/min por IP** (`_redis_allow`, anti-
+  enumeração), IP **mascarado /24** no log (LGPD, `mask_ip(ip,3)`), clique nunca derruba o redirect
+  (try/except). Tabela nova **`email_clicks`** (`target_id`/`clicked_at`/`ip_masked`, 2 índices) +
+  `store.get_target_domain`/`log_email_click`. Os 3 templates cold (`cold_alert.report_link(target_id)`
+  → `build_cold_email(..., target_id=)`) + `profile_view` (`build_profile_view_text(domain, target_id)`)
+  passaram a usar o link curto `/a/{target_id}` (**sem UTM** — o rastreio virou server-side, substitui o
+  UTM do KL-137). **+8 backend** (`test_kl138_hardening.py`) + testes de e-mail atualizados; regex do nginx
+  validado por Python (bloqueia exploit, não pega `/a/`/`/site/`/`/setores`/`/scan`/`/blog`). **1956 pytest
+  passed.** Relatório: `claude/reports/KL-138_hardening.md`; achados em `docs/SECURITY.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

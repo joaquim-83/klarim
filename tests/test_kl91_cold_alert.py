@@ -23,8 +23,8 @@ from notifier.email_client import KlarimMailer
 # Templates — texto puro, SEM links, opt-out por resposta
 # --------------------------------------------------------------------------- #
 
-# KL-137 — as variantes cold agora incluem UM link (perfil do site). Continua text/plain
-# (sem HTML/multipart): não deve haver `<a `/`href=` (marcadores de HTML).
+# KL-137 → KL-138 — as variantes cold incluem UM link CURTO (`/a/{target_id}`). Continua
+# text/plain (sem HTML/multipart): não deve haver `<a `/`href=` (marcadores de HTML).
 _HTML_MARKERS = ("<a ", "href=", "<html", "<body", "<div", "<table")
 
 
@@ -34,17 +34,18 @@ def _assert_no_html(text: str):
         assert marker not in low, f"marcador HTML inesperado ({marker!r}) — deve ser text/plain"
 
 
-def _report_link(domain: str) -> str:
-    return f"https://klarim.net/site/{domain}?utm_source=alerta&utm_medium=email"
+def _report_link(target_id) -> str:
+    return f"https://klarim.net/a/{target_id}"
 
 
 @pytest.mark.parametrize("variant", [1, 3])
 def test_variant_plain_has_report_link(variant):
-    subject, body = c.build_cold_email(variant, domain="igoove.com.br", score=78)
+    subject, body = c.build_cold_email(variant, domain="igoove.com.br", score=78, target_id=42)
     _assert_no_html(body)   # continua text/plain
     _assert_no_html(subject)
     assert "igoove.com.br" in body and "78" in body
-    assert _report_link("igoove.com.br") in body   # KL-137: link do perfil com UTM
+    assert _report_link(42) in body                  # KL-138: link curto /a/{target_id}
+    assert "utm_" not in body                         # KL-138: sem UTM no link
     assert '"remover"' in body or "remover" in body  # opt-out por resposta
     assert "48" in body                          # 48 verificações
     # sem emoji comum
@@ -52,10 +53,10 @@ def test_variant_plain_has_report_link(variant):
 
 
 def test_variant2_sector_and_average():
-    subject, body = c.build_cold_email(2, domain="hotelx.com.br", score=60,
+    subject, body = c.build_cold_email(2, domain="hotelx.com.br", score=60, target_id=7,
                                        sector_label="Hotelaria", sector_avg=72)
     _assert_no_html(body)
-    assert _report_link("hotelx.com.br") in body   # KL-137: link do perfil
+    assert _report_link(7) in body                 # KL-138: link curto
     assert "hotelx.com.br" in body
     assert "Hotelaria" in body
     assert "Score obtido: 60 de 100." in body
@@ -64,14 +65,14 @@ def test_variant2_sector_and_average():
 
 def test_variant2_falls_back_to_v1_without_sector():
     # Sem sector_label/sector_avg a variante 2 cai para a 1 (nunca imprime 'None').
-    subject, body = c.build_cold_email(2, domain="x.com.br", score=50)
+    subject, body = c.build_cold_email(2, domain="x.com.br", score=50, target_id=1)
     assert subject == "x.com.br - análise de segurança disponível"
     assert "None" not in body
 
 
 def test_all_variants_mention_passive_and_free():
     for v in (1, 2, 3):
-        _, body = c.build_cold_email(v, domain="x.com.br", score=40,
+        _, body = c.build_cold_email(v, domain="x.com.br", score=40, target_id=1,
                                      sector_label="Hotelaria", sector_avg=70)
         low = body.lower()
         # sem preço/urgência

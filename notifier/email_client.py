@@ -346,12 +346,14 @@ def build_welcome_confirmation_text(confirm_url: str) -> str:
     )
 
 
-def build_profile_view_text(domain: str) -> str:
-    """KL-101 → KL-137 — corpo em TEXTO PURO do aviso 'perfil consultado'. Continua text/plain,
-    sem HTML, opt-out por resposta. **KL-137 (02/08):** volta a incluir UM link — o perfil público
-    do site (`utm_source=profile_view`) — depois da mensagem, antes da assinatura."""
+def build_profile_view_text(domain: str, target_id=None) -> str:
+    """KL-101 → KL-137 → KL-138 — corpo em TEXTO PURO do aviso 'perfil consultado'. Continua
+    text/plain, sem HTML, opt-out por resposta. **KL-138:** o link vira o redirect CURTO
+    `/a/{target_id}` (a API registra o clique e redireciona p/ `/site/{domain}`) — o rastreio é
+    server-side, sem UTM. Sem `target_id` (compat) cai no link direto ao perfil."""
     domain = (domain or "").strip()
-    link = f"https://klarim.net/site/{domain}?utm_source=profile_view&utm_medium=email"
+    link = (f"https://klarim.net/a/{target_id}" if target_id is not None
+            else f"https://klarim.net/site/{domain}")
     return (
         "Olá,\n\n"
         f"O perfil público do site {domain} foi consultado na\n"
@@ -1167,7 +1169,7 @@ class KlarimMailer:
             "from": from_addr,
             "to": [to_email],
             "subject": f"{domain} foi consultado na Klarim",
-            "text": build_profile_view_text(domain),
+            "text": build_profile_view_text(domain, target_id),
             # KL-102: mailto (opt-out por resposta) + https one-click (/remover, RFC 8058).
             "headers": build_cold_unsubscribe_headers(to_email, domain, _domain_of_from(from_addr)),
         }

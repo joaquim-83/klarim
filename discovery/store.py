@@ -576,6 +576,18 @@ CREATE INDEX IF NOT EXISTS idx_email_log_type ON email_log(email_type);
 CREATE INDEX IF NOT EXISTS idx_email_log_status ON email_log(status);
 CREATE INDEX IF NOT EXISTS idx_email_log_email_id ON email_log(email_id);
 
+-- ===== KL-138: cliques nos redirects curtos de e-mail (/a/{target_id}) ===== --
+-- Rastreio server-side (substitui o UTM do KL-137). Sem PII: só target_id + timestamp + IP
+-- mascarado /24 (LGPD, mesmo padrão do access_log do KL-92).
+CREATE TABLE IF NOT EXISTS email_clicks (
+    id SERIAL PRIMARY KEY,
+    target_id INTEGER NOT NULL,
+    clicked_at TIMESTAMPTZ DEFAULT NOW(),
+    ip_masked VARCHAR(45)
+);
+CREATE INDEX IF NOT EXISTS idx_email_clicks_target ON email_clicks(target_id);
+CREATE INDEX IF NOT EXISTS idx_email_clicks_at ON email_clicks(clicked_at DESC);
+
 -- ===== KL-44 (Guardião Digital): planos, assinaturas e trial reverse de 30 dias ===== --
 -- ⚠️ Não existe tabela `accounts` neste schema: a "conta" é o `users`. Portanto
 -- `account_id` (nome do card e da API) referencia users(id).
@@ -6168,6 +6180,28 @@ class TargetStore:
             return int(cur.fetchone()[0])
 
         return await asyncio.to_thread(self._run, _fn)
+
+    async def get_target_domain(self, target_id: int) -> Optional[Dict[str, Any]]:
+        """KL-138 — `{domain}` de um alvo p/ o redirect curto `/a/{target_id}`. None se o alvo
+        não existe ou foi descartado (não redireciona p/ perfil de alvo removido)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT domain FROM targets WHERE id = %s AND status <> 'descartado'",
+                (target_id,))
+            row = cur.fetchone()
+            return {"domain": row[0]} if row and row[0] else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def log_email_click(self, target_id: int, ip_masked: Optional[str] = None) -> None:
+        """KL-138 — registra um clique no redirect de e-mail. Sem PII: só target_id + timestamp +
+        IP já mascarado /24 (LGPD). Best-effort — nunca derruba o redirect."""
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO email_clicks (target_id, ip_masked) VALUES (%s, %s)",
+                (target_id, (ip_masked or None)))
+
+        await asyncio.to_thread(self._run, _fn)
 
     async def targets_needing_email_verification(
         self, limit: int = 500, offset: int = 0,

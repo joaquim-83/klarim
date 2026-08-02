@@ -31,7 +31,6 @@ from pydantic import BaseModel
 
 from scanner import (run_scan, summarize_fails, Severity, ScanReport,
                      ALL_CHECKS, FREE_CHECKS, CHECK_META, FREE_CHECK_MAX_ORDER)
-from scanner import __version__ as scanner_version
 from scanner.cache import ScanCache
 from scanner.checks.base import normalize_url, registrable_domain, domain_of
 from scanner.checks.classifications import classify as classify_compliance
@@ -282,7 +281,7 @@ async def _admin_auth_mw(request: Request, call_next):
 # KL-92 — middleware de access log server-side (fonte de verdade das métricas de visitante).
 # Registrado DEPOIS do auth => fica OUTERMOST => enxerga o status final (inclusive 401 de bot).
 # Fail-safe: a gravação roda em background e nunca atrasa/quebra o response.
-from api.access_log_middleware import access_log_middleware  # noqa: E402
+from api.access_log_middleware import access_log_middleware, mask_ip  # noqa: E402
 
 app.middleware("http")(access_log_middleware)
 
@@ -2527,28 +2526,9 @@ async def public_laudo(code: str, request: Request) -> dict:
 
 @app.get("/")
 async def root() -> dict:
-    return {
-        "name": "Klarim API",
-        "scanner_version": scanner_version,
-        "endpoints": [
-            "/health",
-            "/scan/summary?url=",
-            "/payment/create (POST)",
-            "/payment/status?charge_id=",
-            "/webhooks/abacatepay (POST)",
-            "/report/executive?url=&charge_id=",
-            "/report/technical?url=&charge_id=",
-            "/email/test (POST)",
-            "/email/send-alert (POST)",
-            "/email/send-report (POST)",
-            "/recovery/request (POST)",
-            "/recovery/validate?token=",
-            "/recovery/download?token=&charge_id=&type=",
-        ],
-        "payments_enabled": _payments_enabled(),
-        "email_enabled": _email_enabled(),
-        "dev_mode": _dev_mode(),
-    }
+    # KL-138 (hardening): NÃO expõe o mapa de endpoints, versão do scanner nem as flags
+    # (payments/email/dev) — davam ao atacante a superfície da API sem auth. Resposta mínima.
+    return {"name": "Klarim API", "status": "ok"}
 
 
 @app.get("/health")
@@ -7944,6 +7924,32 @@ async def _remover_apply(info: dict) -> bool:
     except Exception:  # noqa: BLE001
         pass
     return already
+
+
+_email_click_attempts: dict = {}   # KL-138: rate limit dos redirects /a/ por IP (fallback in-memory)
+
+
+@app.get("/a/{target_id}")
+async def email_redirect(target_id: int, request: Request):
+    """KL-138 — redirect curto dos links de e-mail. Registra o clique (server-side, sem PII) e
+    redireciona 302 para o perfil público `/site/{domain}`.
+
+    Segurança: o destino é FIXO (`/site/{domain}` do próprio alvo) — NÃO aceita parâmetro de URL,
+    logo não há open redirect. Rate limit 30/min por IP (anti-enumeração). O `target_id` é validado
+    como inteiro pelo FastAPI (não-inteiro → 422); alvo inexistente/descartado → 404."""
+    ip = _client_ip(request)
+    allowed, _ = await _redis_allow("email_click", ip, 30, 60, _email_click_attempts)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="rate_limited")
+    store = get_target_store()
+    row = await store.get_target_domain(target_id)
+    if not row or not row.get("domain"):
+        raise HTTPException(status_code=404)
+    try:  # clique: só target_id + timestamp + IP mascarado /24 (LGPD, KL-92). Nunca derruba o redirect.
+        await store.log_email_click(target_id, mask_ip(ip, 3))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[email_click] log falhou (segue): {exc!r}", flush=True)
+    return RedirectResponse(url=f"/site/{row['domain']}", status_code=302)
 
 
 @app.get("/remover")

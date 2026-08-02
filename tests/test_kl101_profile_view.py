@@ -28,11 +28,11 @@ def test_profile_view_from_default_and_override(monkeypatch):
 
 
 def test_profile_view_text_has_report_link():
-    # KL-137: o aviso 'perfil consultado' volta a incluir UM link (perfil do site, utm profile_view).
+    # KL-137 → KL-138: o aviso 'perfil consultado' inclui o link CURTO /a/{target_id} (sem UTM).
     # Continua text/plain (sem HTML), opt-out por resposta.
-    t = build_profile_view_text("igoove.com.br")
+    t = build_profile_view_text("igoove.com.br", target_id=99)
     assert "igoove.com.br foi consultado" in t
-    assert "https://klarim.net/site/igoove.com.br?utm_source=profile_view&utm_medium=email" in t
+    assert "https://klarim.net/a/99" in t and "utm_" not in t
     for marker in ("<a ", "href=", "<html", "<body"):   # continua text/plain
         assert marker not in t.lower()
     assert '"remover"' in t and "klarim.net" in t
