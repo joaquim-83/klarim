@@ -126,14 +126,11 @@ def calculate_alert_score(target: Dict[str, Any], contact_email: Optional[str],
     role_penalized = valid_email and local in ROLE_BASED_PREFIXES
     if role_penalized:
         add(role_pts, "role_based_prefix")
-    # KL-110 — penalidades por status de verificação de e-mail (Reoon). catch_all/unknown têm
-    # deliverability incerta; 'role' (caixa de função detectada pela API) penaliza como o prefixo,
-    # mas sem DOBRAR se o prefixo já penalizou (mesma penalidade `_role_penalty` do KL-136).
+    # KL-137 — as penalidades de deliverability (catch_all -10, unknown -5) SAÍRAM: a deliverability
+    # é decidida binariamente pelo `is_safe_to_send` (catch_all/unknown nunca enviam), não pelo
+    # score. O score só ORDENA. Mantém-se só o 'role' da Reoon (caixa de função) para ordenação —
+    # mesma penalidade do prefixo, sem DOBRAR se o prefixo já penalizou.
     verify_status = (target.get("email_verify_status") or "").strip().lower()
-    if verify_status == "catch_all":
-        add(-10, "email_catch_all")
-    elif verify_status == "unknown":
-        add(-5, "email_unknown")
     if verify_status == "role" and not role_penalized:
         add(role_pts, "email_role_account")
     if target.get("status") == "descartado" or (sc is not None and sc < 40):

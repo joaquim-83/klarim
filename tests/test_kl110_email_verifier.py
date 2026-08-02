@@ -230,10 +230,8 @@ def test_verify_email_domain_catch_all_cache(monkeypatch):
 # is_safe_to_send
 # --------------------------------------------------------------------------- #
 
-# KL-122: o gate caiu de 50 → 20 (default). É `> gate`, não `>=`.
-# KL-128 (definitivo): `unknown` NUNCA envia (o gate de score não filtra `unknown`, que no BR é
-# servidor sem SMTP-check → bounce ~5-8% >10% no KL-127).
-# KL-136: gates SEPARADOS — catch_all usa gate 30 (mais alto, 37% dos bounces); inbox_full usa 20.
+# KL-137 — regra BINÁRIA: só safe/valid/role enviam; todo o resto (catch_all/unknown/inbox_full/
+# block-statuses/vazio) NÃO envia. O score é IGNORADO na decisão (só ordena).
 @pytest.mark.parametrize("status,score,expected", [
     ("safe", 0, True),
     ("valid", 0, True),
@@ -242,62 +240,30 @@ def test_verify_email_domain_catch_all_cache(monkeypatch):
     ("disabled", 90, False),
     ("disposable", 90, False),
     ("spamtrap", 90, False),
-    ("unknown", 100, False),    # KL-128: unknown nunca envia, mesmo com score alto
-    ("unknown", 25, False),
+    ("unknown", 100, False),
     ("unknown", 0, False),
-    ("catch_all", 25, False),   # KL-136: 25 <= 30 (gate catch_all) → não envia
-    ("catch_all", 31, True),    # KL-136: 31 > 30 → envia
-    ("catch_all", 30, False),   # KL-136: `>`, não `>=`
-    ("inbox_full", 15, False),
-    ("inbox_full", 51, True),
-    ("inbox_full", 21, True),   # KL-136: inbox_full segue o gate 20 (não o de catch_all)
+    ("catch_all", 25, False),    # KL-137: catch_all nunca envia (score irrelevante)
+    ("catch_all", 100, False),
+    ("inbox_full", 51, False),   # KL-137: inbox_full nunca envia
+    ("inbox_full", 21, False),
+    ("", 100, False),
 ])
 def test_is_safe_to_send(status, score, expected):
     assert ev.is_safe_to_send(ev.VerifyResult(status, "x"), score) is expected
 
 
-def test_unsafe_gate_default_is_20(monkeypatch):
-    monkeypatch.delenv("ALERT_UNSAFE_SCORE_GATE", raising=False)
-    assert ev._unsafe_score_gate() == 20
-    # KL-136: o gate 20 vale p/ inbox_full (é `>`, não `>=`); unknown é sempre bloqueado.
-    assert ev.is_safe_to_send(ev.VerifyResult("inbox_full", "x"), 21) is True
-    assert ev.is_safe_to_send(ev.VerifyResult("inbox_full", "x"), 20) is False
-    assert ev.is_safe_to_send(ev.VerifyResult("unknown", "x"), 100) is False
+def test_is_safe_to_send_ignores_score(monkeypatch):
+    # KL-137: o lead_score NÃO entra na decisão — safe sempre, catch_all nunca (qualquer score).
+    assert ev.is_safe_to_send(ev.VerifyResult("safe", "x"), 0) is True
+    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 999) is False
+    assert ev.is_safe_to_send(ev.VerifyResult("unknown", "x"), 999) is False
 
 
-def test_unsafe_gate_reads_env_var(monkeypatch):
-    monkeypatch.setenv("ALERT_UNSAFE_SCORE_GATE", "40")
-    assert ev._unsafe_score_gate() == 40
-    assert ev.is_safe_to_send(ev.VerifyResult("inbox_full", "x"), 35) is False  # 35 <= 40
-    assert ev.is_safe_to_send(ev.VerifyResult("inbox_full", "x"), 41) is True
-
-
-def test_unsafe_gate_invalid_env_falls_back_to_default(monkeypatch):
-    monkeypatch.setenv("ALERT_UNSAFE_SCORE_GATE", "abc")
-    assert ev._unsafe_score_gate() == ev._UNSAFE_SCORE_GATE  # fail-safe, não crasha
-
-
-# KL-136 — gate SEPARADO de catch_all
-def test_catch_all_gate_default_is_30(monkeypatch):
-    monkeypatch.delenv("ALERT_CATCH_ALL_SCORE_GATE", raising=False)
-    assert ev._catch_all_gate() == 30
-    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 31) is True
-    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 30) is False   # `>`, não `>=`
-    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 25) is False
-
-
-def test_catch_all_gate_reads_env_var(monkeypatch):
-    monkeypatch.setenv("ALERT_CATCH_ALL_SCORE_GATE", "50")
-    assert ev._catch_all_gate() == 50
-    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 45) is False   # 45 <= 50
-    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 51) is True
-    # inbox_full continua no gate 20 (independente do de catch_all)
-    assert ev.is_safe_to_send(ev.VerifyResult("inbox_full", "x"), 21) is True
-
-
-def test_catch_all_gate_invalid_env_falls_back_to_default(monkeypatch):
-    monkeypatch.setenv("ALERT_CATCH_ALL_SCORE_GATE", "xyz")
-    assert ev._catch_all_gate() == ev._CATCH_ALL_SCORE_GATE  # fail-safe, não crasha
+def test_sendable_statuses_constant():
+    # A regra binária vive na constante SENDABLE_STATUSES (sem gates/funções de env).
+    assert ev.SENDABLE_STATUSES == frozenset({"safe", "valid", "role"})
+    assert not hasattr(ev, "_unsafe_score_gate")
+    assert not hasattr(ev, "_catch_all_gate")
 
 
 # --------------------------------------------------------------------------- #
@@ -329,16 +295,18 @@ def test_reoon_semaphore_limits_concurrency():
 # Lead scoring — penalidades por status de verificação (KL-110)
 # --------------------------------------------------------------------------- #
 
-def test_lead_scoring_catch_all_penalty():
+def test_lead_scoring_catch_all_no_penalty():
+    # KL-137: as penalidades de deliverability (catch_all/unknown) saíram — a deliverability é
+    # decidida binariamente pelo is_safe_to_send, não pelo score. O score só ordena.
     t = {"domain": "x.com", "last_scan_score": 60, "email_verify_status": "catch_all"}
     out = calculate_alert_score(t, "pessoa@outrodominio.com")
-    assert any(s["signal"] == "email_catch_all" and s["points"] == -10 for s in out["signals"])
+    assert not any(s["signal"] == "email_catch_all" for s in out["signals"])
 
 
-def test_lead_scoring_unknown_penalty():
+def test_lead_scoring_unknown_no_penalty():
     t = {"domain": "x.com", "last_scan_score": 60, "email_verify_status": "unknown"}
     out = calculate_alert_score(t, "pessoa@outrodominio.com")
-    assert any(s["signal"] == "email_unknown" and s["points"] == -5 for s in out["signals"])
+    assert not any(s["signal"] == "email_unknown" for s in out["signals"])
 
 
 def test_lead_scoring_role_status_no_double_penalty():
@@ -439,7 +407,8 @@ def _mk_worker(store):
 
 
 def test_verify_and_filter_blocks_and_gates(monkeypatch):
-    from datetime import datetime, timezone
+    # KL-137: regra BINÁRIA. safe→envia; invalid→blocklist+descarta; catch_all→bloqueia (score
+    # irrelevante — os DOIS catch_all bloqueiam mesmo com score alto).
     monkeypatch.setenv("REOON_API_KEY", "test-key")
 
     async def _fake_verify(email, mode="power", redis=None, api_key=None):
@@ -450,39 +419,40 @@ def test_verify_and_filter_blocks_and_gates(monkeypatch):
         }
         return table[email]
 
+    async def _bal(api_key=None, client=None):
+        return 5000
     monkeypatch.setattr(ev, "verify_email", _fake_verify)
+    monkeypatch.setattr(ev, "check_balance", _bal)
     store = _MiniStore()
     w = _mk_worker(store)
     targets = [
         {"id": 1, "contact_email": "safe@x.com", "_alert_score": 40},
         {"id": 2, "contact_email": "bad@x.com", "_alert_score": 40},
-        {"id": 3, "contact_email": "catch@x.com", "_alert_score": 10},   # catch_all + score <=20 → pula
-        {"id": 4, "contact_email": "catch@x.com", "_alert_score": 60},   # catch_all + score alto → mantém
+        {"id": 3, "contact_email": "catch@x.com", "_alert_score": 10},   # catch_all → bloqueia
+        {"id": 4, "contact_email": "catch@x.com", "_alert_score": 60},   # catch_all → bloqueia (score alto NÃO salva)
     ]
     kept, stats = asyncio.run(w._verify_and_filter(targets))
-    kept_ids = {t["id"] for t in kept}
-    assert kept_ids == {1, 4}
-    assert stats["blocked"] == 1 and stats["skipped_gate"] == 1  # KL-127: gate de score
+    assert {t["id"] for t in kept} == {1}
+    assert stats["sendable"] == 1 and stats["blocked"] == 3 and stats["verified"] == 4
     assert ("bad@x.com", "power_verify_invalid") in store.blocked  # prefixo power_
     assert (2, "descartado") in store.discarded
-    # grava source='power' na verificação
-    assert (1, "safe", "power") in store.verified
+    assert (1, "safe", "power") in store.verified  # grava source='power'
 
 
 def test_verify_and_filter_noop_without_key(monkeypatch):
-    # KL-127: sem REOON_API_KEY (modo degradado) — não-verificado passa (MX já validado); o já
-    # verificado segue o gate pelo status cacheado (unknown/low-score é gated, não descartado).
+    # KL-137: sem REOON_API_KEY (modo degradado) — não-verificado passa (MX já validado); o já
+    # verificado segue a regra binária pelo status cacheado (unknown é bloqueado, não descartado).
     monkeypatch.delenv("REOON_API_KEY", raising=False)
     store = _MiniStore()
     w = _mk_worker(store)
     targets = [{"id": 1, "contact_email": "a@x.com", "_alert_score": 40},              # não verificado → passa
                {"id": 2, "contact_email": "b@x.com", "_alert_score": 40,               # verificado safe → passa
                 "email_verified": True, "email_verify_status": "safe"},
-               {"id": 3, "contact_email": "c@x.com", "_alert_score": 10,               # verificado unknown, score<gate → gated
+               {"id": 3, "contact_email": "c@x.com", "_alert_score": 10,               # verificado unknown → bloqueia
                 "email_verified": True, "email_verify_status": "unknown"}]
     kept, stats = asyncio.run(w._verify_and_filter(targets))
     assert {t["id"] for t in kept} == {1, 2}
-    assert stats["from_cache"] == 1 and stats["blocked_known"] == 1 and not store.blocked
+    assert stats["from_cache"] == 2 and stats["blocked"] == 1 and not store.blocked
 
 
 def test_verify_and_filter_fresh_skips_api(monkeypatch):

@@ -1,10 +1,9 @@
-"""KL-127/128 — teste de integração do pipeline de verificação de e-mail (solução definitiva).
+"""KL-127/128 → KL-137 — teste de integração do pipeline de verificação de e-mail.
 
-Garante que um lote realista de elegíveis **nunca zera** os envios e que a regra ÚNICA
-(`is_safe_to_send`) governa a decisão. **KL-128 (definitivo):** `unknown` NUNCA envia (o gate
-`> ALERT_UNSAFE_SCORE_GATE` vale só p/ catch_all/inbox_full); safe/valid/role sempre enviam.
-Offline: os alvos entram JÁ verificados e frescos (source=power, `email_verified_at`=agora) para
-exercitar a decisão sem tocar a API; `verify_max=0` força o caminho `rest` (gate por cache).
+**KL-137 (regra BINÁRIA):** só `safe`/`valid`/`role` enviam; todo o resto (catch_all/unknown/
+inbox_full/block-statuses) NÃO envia, independentemente do score. Sem gates de score, sem
+trust-downgrade. Offline: os alvos entram JÁ verificados e frescos (source=power,
+`email_verified_at`=agora) para exercitar a decisão sem tocar a API.
 """
 from __future__ import annotations
 
@@ -61,14 +60,13 @@ def _key(monkeypatch):
     async def _bal(api_key=None, client=None):  # KL-136: offline — saldo ilegível (fail-open)
         return None
     monkeypatch.setattr(ev, "check_balance", _bal)
-    monkeypatch.delenv("ALERT_UNSAFE_SCORE_GATE", raising=False)  # gate = 20
-    monkeypatch.setenv("ALERT_TRUST_DOMAIN_DOWNGRADE", "false")   # trust↓ testado à parte (KL-129)
+    monkeypatch.delenv("ALERT_UNSAFE_SCORE_GATE", raising=False)
 
 
 # --------------------------- mix realista de 200 -------------------------- #
 
-def test_mixed_batch_sends_nonzero():
-    """200 elegíveis com mix realista → envia os não-unknown válidos, NUNCA os unknown (KL-128)."""
+def test_mixed_batch_sends_only_sendable():
+    """200 elegíveis com mix realista → envia SÓ safe/valid/role (KL-137); resto bloqueado."""
     targets = []
     tid = 0
 
@@ -80,40 +78,38 @@ def test_mixed_batch_sends_nonzero():
 
     add(40, "safe", 50)                    # → enviam
     add(30, "role", 50)                    # → enviam
-    add(50, "unknown", 35, source="bulk")  # KL-128: unknown NUNCA envia
-    add(20, "unknown", 35, source="power") # KL-128: unknown NUNCA envia
-    add(15, "unknown", 10)                 # KL-128: unknown NUNCA envia
-    add(10, "catch_all", 35)               # score>20 → enviam via gate
+    add(50, "unknown", 35, source="bulk")  # → bloqueia
+    add(20, "unknown", 35, source="power") # → bloqueia
+    add(15, "unknown", 10)                 # → bloqueia
+    add(10, "catch_all", 35)               # KL-137: catch_all nunca envia
     add(5, "disabled", 90)                 # nunca (block)
     add(5, "invalid", 90)                  # nunca (block)
     add(5, "spamtrap", 90)                 # nunca (block)
     add(10, "safe", 0, source=None)        # verificado safe → enviam
-    add(10, "inbox_full", 35)              # score>20 → enviam via gate
+    add(10, "inbox_full", 35)              # KL-137: inbox_full nunca envia
 
     kept, stats = _run(_mk_worker(_MiniStore()), targets)
-    # 40 safe + 30 role + 10 catch + 10 safe + 10 inbox = 100 (nenhum unknown; 15 block)
-    assert len(kept) == 100
-    assert len(kept) > 0                       # NUNCA zera
-    assert stats["from_cache"] == 100          # sendable (já verificados aprovados)
-    # KL-129: os já-verificados barrados (85 unknown + 15 block-status) não tocam a API.
-    assert stats["blocked_known"] == 100
-    assert stats["verified"] == 0              # nenhuma chamada Reoon (todos frescos)
-    assert all(k["email_verify_status"] != "unknown" for k in kept)   # nenhum unknown enviado
+    # 40 safe + 30 role + 10 safe = 80 (nenhum unknown/catch_all/inbox_full/block)
+    assert len(kept) == 80
+    assert stats["from_cache"] == 200          # todos frescos (nenhuma chamada à API)
+    assert stats["sendable"] == 80 and stats["blocked"] == 120
+    assert stats["verified"] == 0
+    assert all(k["email_verify_status"] in ("safe", "role") for k in kept)
 
 
 def test_all_unknown_sends_zero():
-    # KL-128: unknown NUNCA envia — nem com score alto (o KL-127 mandava 200; era o bug).
+    # KL-137: unknown NUNCA envia — regra binária.
     targets = [_t(i, "unknown", 25, source="bulk") for i in range(1, 201)]
     kept, stats = _run(_mk_worker(_MiniStore()), targets)
     assert kept == []
-    assert stats["blocked_known"] == 200 and stats["verified"] == 0   # 0 API (não gira em falso)
+    assert stats["blocked"] == 200 and stats["verified"] == 0   # 0 API (todos frescos)
 
 
 def test_all_unknown_low_score_sends_zero():
     targets = [_t(i, "unknown", 15, source="bulk") for i in range(1, 201)]
     kept, stats = _run(_mk_worker(_MiniStore()), targets)
     assert kept == []
-    assert stats["blocked_known"] == 200
+    assert stats["blocked"] == 200
 
 
 def test_100_safe_100_disabled_sends_exactly_100():
@@ -124,17 +120,16 @@ def test_100_safe_100_disabled_sends_exactly_100():
     assert all(k["email_verify_status"] == "safe" for k in kept)
 
 
-# --------------------------- regra do gate (`>` 20) ----------------------- #
+# --------------------------- regra binária -------------------------------- #
 
-def test_gate_boundary_is_strict_greater_than():
-    # KL-128: unknown NUNCA envia. KL-136: gates SEPARADOS — catch_all `>`30, inbox_full `>`20.
-    assert ev.is_safe_to_send(ev.VerifyResult("unknown", "x"), 21) is False
+def test_binary_rule_ignores_score():
+    # KL-137: só safe/valid/role enviam; catch_all/inbox_full/unknown nunca (score irrelevante).
     assert ev.is_safe_to_send(ev.VerifyResult("unknown", "x"), 100) is False
-    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 31) is True
-    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 30) is False
+    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 100) is False
+    assert ev.is_safe_to_send(ev.VerifyResult("inbox_full", "x"), 100) is False
     assert ev.is_safe_to_send(ev.VerifyResult("safe", "x"), 0) is True
+    assert ev.is_safe_to_send(ev.VerifyResult("role", "x"), 0) is True
     assert ev.is_safe_to_send(ev.VerifyResult("disabled", "x"), 100) is False
-    assert ev.is_safe_to_send(ev.VerifyResult("inbox_full", "x"), 25) is True
 
 
 # --------------- _verify_and_filter: decisão por estado de verificação -------- #
@@ -143,13 +138,13 @@ def test_gate_boundary_is_strict_greater_than():
     (False, "safe", 90, False),     # não verificado → não envia (deferido; cap=0 → sem API)
     (True, "", 90, False),          # verificado mas sem status → não fresco → deferido → não envia
     (True, "safe", 40, True),       # verificado safe → envia
-    (True, "unknown", 90, False),   # verificado unknown → NÃO envia (KL-128)
-    (True, "catch_all", 31, True),  # KL-136: catch_all + score>30 → envia (gate)
-    (True, "catch_all", 25, False), # KL-136: catch_all + score<=30 → não envia (gate)
+    (True, "unknown", 90, False),   # verificado unknown → NÃO envia
+    (True, "catch_all", 31, False), # KL-137: catch_all nunca envia (score irrelevante)
+    (True, "catch_all", 25, False),
 ])
 def test_verify_and_filter_decision_by_state(verified, status, score, should_send):
-    # verify_max=0 → nenhum toque na API. Os frescos-verificados são decididos na partição pelo
-    # status cacheado (KL-129); os não-verificados/sem-status ficam deferidos (não enviam).
+    # verify_max=0 → nenhum toque na API. Os frescos-verificados são decididos pelo status
+    # cacheado (regra binária); os não-verificados/sem-status ficam deferidos (não enviam).
     t = {"id": 1, "contact_email": "x@dominio.com.br", "_alert_score": score,
          "email_verified": verified, "email_verify_status": status}
     if verified:
@@ -173,7 +168,7 @@ def test_unverified_target_not_sent_when_key_present():
         store = _MiniStore()
         target = {"id": 1, "contact_email": "novo@x.com.br", "_alert_score": 90}  # não verificado
         kept, stats = _run(_mk_worker(store), [target])
-        assert kept == [] and stats["skipped_unverified"] == 1
+        assert kept == [] and stats["deferred"] == 1   # KL-137: fallback → deferido (não envia)
         assert store.verified == []   # fallback não persiste
     finally:
         evmod.verify_email = orig

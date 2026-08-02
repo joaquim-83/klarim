@@ -161,24 +161,24 @@ def _worker(monkeypatch, store):
     monkeypatch.setattr(aw, "get_target_store", lambda: store)
     w = aw.AlertWorker()
     w.store = store
-    w.alert_score_threshold = 20
     w._redis = False   # sem Redis nos testes → bounce cai direto no store
     return w
 
 
-def test_worker_filters_below_threshold(monkeypatch):
+def test_worker_scores_all_no_filter(monkeypatch):
+    # KL-137: o score NÃO filtra mais — ambos os alvos são MANTIDOS (o run_cycle só os ordena).
     store = FakeStore()
     w = _worker(monkeypatch, store)
     targets = [
-        {"id": 1, "domain": "hotel.com.br", "last_scan_score": 70, "contact_email": "dono@hotel.com.br"},  # 60 → passa
-        {"id": 2, "domain": "hotel.com.br", "last_scan_score": None, "contact_email": "x@gmail.com"},       # 0 (sem score) → filtra
+        {"id": 1, "domain": "hotel.com.br", "last_scan_score": 70, "contact_email": "dono@hotel.com.br"},  # 60
+        {"id": 2, "domain": "hotel.com.br", "last_scan_score": None, "contact_email": "x@gmail.com"},       # 0
     ]
-    kept, skipped, avg = _run(w._apply_alert_scoring(targets))
-    assert [t["id"] for t in kept] == [1] and skipped == 1
-    assert avg == 60
+    kept, avg = _run(w._apply_alert_scoring(targets))
+    assert {t["id"] for t in kept} == {1, 2}   # nenhum filtrado
+    assert avg == 30   # (60 + 0) / 2
 
 
-def test_worker_writes_score_for_all_even_skipped(monkeypatch):
+def test_worker_writes_score_for_all(monkeypatch):
     store = FakeStore()
     w = _worker(monkeypatch, store)
     targets = [
@@ -186,16 +186,16 @@ def test_worker_writes_score_for_all_even_skipped(monkeypatch):
         {"id": 2, "domain": "hotel.com.br", "last_scan_score": None, "contact_email": "x@gmail.com"},
     ]
     _run(w._apply_alert_scoring(targets))
-    assert store.scores == {1: 60, 2: 0}   # gravou o score de TODOS, mesmo o filtrado (gmail sem score = 0)
+    assert store.scores == {1: 60, 2: 0}   # grava o score de TODOS (gmail sem score = 0)
 
 
-def test_worker_bounce_penalizes(monkeypatch):
+def test_worker_bounce_penalizes_score(monkeypatch):
     store = FakeStore(bounce_domains={"empresa.com.br"})
     w = _worker(monkeypatch, store)
-    # e-mail corporativo de outro domínio (não-match) que bounçou → +10 -40 = -30 → filtra
+    # e-mail corporativo de outro domínio (não-match) que bounçou → +10 -40 = -30 (só afeta a ORDEM).
     targets = [{"id": 5, "domain": "site.com.br", "last_scan_score": None, "contact_email": "a@empresa.com.br"}]
-    kept, skipped, _ = _run(w._apply_alert_scoring(targets))
-    assert kept == [] and skipped == 1 and store.scores[5] == -30
+    kept, _ = _run(w._apply_alert_scoring(targets))
+    assert [t["id"] for t in kept] == [5] and store.scores[5] == -30   # KL-137: mantido
 
 
 # --- Fix 2026-07-20: bounce por-domínio NÃO penaliza provedores genéricos ---------------------- #
@@ -222,16 +222,14 @@ def test_calc_score_bounce_applies_for_corporate_domain():
     assert "bounce_domain" in _sig(r)
 
 
-def test_worker_gmail_good_lead_now_passes(monkeypatch):
-    # E2E dos DOIS fixes (2026-07-20): alvo gmail (mismatch) score 70 + gmail COM bounce no banco.
-    # (1) bounce não penaliza (provedor genérico) e (2) mismatch_free=0 → 0 + 20 (zona de ação) = 20
-    # → PASSA o threshold 20. Antes era -20-40+20 = -40 (massivamente filtrado). Este é o desbloqueio
-    # do backlog de leads de e-mail comercial gmail.
+def test_worker_gmail_good_lead_scored(monkeypatch):
+    # E2E dos fixes (2026-07-20): gmail (mismatch) score 70 + gmail COM bounce no banco →
+    # (1) bounce não penaliza (provedor genérico) e (2) mismatch_free=0 → 0 + 20 (zona de ação) = 20.
     store = FakeStore(bounce_domains={"gmail.com"})
     w = _worker(monkeypatch, store)
     targets = [{"id": 9, "domain": "hotel.com.br", "last_scan_score": 70, "contact_email": "x@gmail.com"}]
-    kept, skipped, _ = _run(w._apply_alert_scoring(targets))
-    assert store.scores[9] == 20 and [t["id"] for t in kept] == [9] and skipped == 0
+    kept, _ = _run(w._apply_alert_scoring(targets))
+    assert store.scores[9] == 20 and [t["id"] for t in kept] == [9]   # KL-137: mantido (score só ordena)
 
 
 def test_worker_scoring_failsafe_keeps_target(monkeypatch):
@@ -241,8 +239,8 @@ def test_worker_scoring_failsafe_keeps_target(monkeypatch):
     from discovery import alert_worker as aw
     monkeypatch.setattr(aw, "calculate_alert_score", lambda *a, **k: (_ for _ in ()).throw(ValueError("boom")))
     targets = [{"id": 9, "domain": "x.com.br", "last_scan_score": 70, "contact_email": "a@x.com.br"}]
-    kept, skipped, _ = _run(w._apply_alert_scoring(targets))
-    assert [t["id"] for t in kept] == [9] and skipped == 0   # mantido apesar do erro
+    kept, _ = _run(w._apply_alert_scoring(targets))
+    assert [t["id"] for t in kept] == [9]   # mantido apesar do erro
 
 
 # =========================================================================== #

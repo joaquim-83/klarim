@@ -56,13 +56,11 @@ def test_send_decision_safe_high_score():
     assert ev.is_safe_to_send(ev.VerifyResult("safe", "x"), 60) is True
 
 
-def test_send_decision_catch_all_low_score_skips():
-    # KL-122: gate caiu p/ 20 → um score abaixo do gate (15) ainda pula.
+def test_send_decision_catch_all_never_sends():
+    # KL-137: regra binária — catch_all NUNCA envia, independentemente do score.
     assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 15) is False
-
-
-def test_send_decision_catch_all_high_score_sends():
-    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 60) is True
+    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 60) is False
+    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 100) is False
 
 
 def test_send_decision_invalid_never_sends():
@@ -70,8 +68,7 @@ def test_send_decision_invalid_never_sends():
 
 
 def test_send_decision_unknown_never_sends():
-    # KL-128: 'unknown' (servidor BR sem SMTP-check) NUNCA envia — o gate de score não o filtra
-    # e o bounce voltou a >10% no KL-127. Reverificações futuras podem promovê-lo p/ safe/catch_all.
+    # KL-137: 'unknown' nunca envia (regra binária, score ignorado).
     assert ev.is_safe_to_send(ev.VerifyResult("unknown", "reoon_power"), 15) is False
     assert ev.is_safe_to_send(ev.VerifyResult("unknown", "reoon_power"), 100) is False
 

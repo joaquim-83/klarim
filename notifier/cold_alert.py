@@ -4,9 +4,11 @@ de remetentes entre subdomínios verificados no Resend.
 Motivação: os alertas caíam no spam (linguagem de urgência + links trackáveis +
 envio por um único domínio recém-criado). A correção:
 
-  1. 3 variantes de **texto puro**, SEM links clicáveis, sem emojis, sem urgência,
-     sem CTA. Opt-out por RESPOSTA ("responda com remover"). O `klarim.net` é
-     mencionado como TEXTO, nunca como link.
+  1. 3 variantes de **texto puro** (text/plain — NUNCA HTML/multipart), sem emojis,
+     sem urgência. Opt-out por RESPOSTA ("responda com remover"). **KL-137 (02/08):**
+     cada variante agora inclui UM link — o perfil público do site
+     (`klarim.net/site/{domain}?utm_source=alerta&utm_medium=email`, `report_link`) — depois
+     da mensagem do score, antes da assinatura. O 'sem links' do KL-91 gerava quase zero visitas.
   2. **Rotação round-robin** entre `alertas.klarim.net` e `aviso.klarim.net` (ambos
      verificados no Resend — DKIM/SPF/DMARC). O domínio principal `klarim.net` fica
      EXCLUSIVO do transacional (isolamento de reputação, ver `docs/ARCHITECTURE.md`).
@@ -162,6 +164,18 @@ _OPT_OUT_REPLY_SHORT = 'Para não receber mais, responda com "remover".'
 _OPT_OUT_REPLY_ALT = 'Se preferir não receber mais, responda "remover".'
 
 
+def report_link(domain: str, utm_source: str = "alerta") -> str:
+    """KL-137 — link do perfil público do site (texto puro; o e-mail continua text/plain).
+    Decisão de 02/08: reverte o 'sem links' do KL-91 e adiciona o link — os e-mails sem link
+    geravam quase nenhuma visita. UTM só `source`+`medium` (sem `utm_campaign`, simplicidade)."""
+    return (f"https://klarim.net/site/{(domain or '').strip()}"
+            f"?utm_source={utm_source}&utm_medium=email")
+
+
+def _report_link_block(domain: str) -> str:
+    return f"Veja o relatório completo do seu site:\n{report_link(domain)}"
+
+
 def _variant1(domain: str, score: int) -> Tuple[str, str]:
     subject = f"{domain} - análise de segurança disponível"
     body = (
@@ -172,8 +186,7 @@ def _variant1(domain: str, score: int) -> Tuple[str, str]:
         "A análise verifica 48 itens de segurança usando apenas\n"
         "informações que o site já expõe publicamente. Nenhum dado\n"
         "privado é acessado ou coletado.\n\n"
-        "O resultado completo está disponível para consulta em\n"
-        "klarim.net.\n\n"
+        f"{_report_link_block(domain)}\n\n"
         f"{_OPT_OUT_REPLY}\n\n"
         f"{_SIGNATURE_FULL}"
     )
@@ -192,8 +205,7 @@ def _variant2(domain: str, score: int, sector_label: str, sector_avg: int) -> Tu
         "A análise é gratuita e automática. Verificamos apenas o\n"
         "que o site expõe publicamente - cabeçalhos HTTP,\n"
         "certificados SSL, registros DNS e configurações visíveis.\n\n"
-        "O resultado pode ser consultado em klarim.net pesquisando\n"
-        "pelo domínio.\n\n"
+        f"{_report_link_block(domain)}\n\n"
         f"{_OPT_OUT_REPLY_SHORT}\n\n"
         f"{_SIGNATURE_SHORT}"
     )
@@ -212,7 +224,7 @@ def _variant3(domain: str, score: int) -> Tuple[str, str]:
         "Essas verificações incluem certificado SSL, cabeçalhos\n"
         "de proteção, configurações de e-mail (SPF, DKIM, DMARC)\n"
         "e outros itens que qualquer pessoa pode consultar.\n\n"
-        "O resultado completo está em klarim.net.\n\n"
+        f"{_report_link_block(domain)}\n\n"
         f"{_OPT_OUT_REPLY_ALT}\n\n"
         f"{_SIGNATURE_FULL}"
     )

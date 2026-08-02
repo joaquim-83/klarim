@@ -203,7 +203,6 @@ def _worker(store):
     w.batch_size, w.batches_per_cycle, w.batch_pause = 50, 4, 0
     w.monthly_limit = 45000
     w.validate_mx = False  # sem DNS nos testes de fluxo
-    w.alert_score_threshold = -100000  # KL-85: não filtrar nos testes de fluxo
     w.max_bounce_rate = 8.0
     w.bounce_min_sample = 20
     # KL-91: limite por remetente alto (não binda), cooldown 0 (sem espera), breaker off.
@@ -417,37 +416,31 @@ def test_validate_batch_discards_invalid_email():
 
 
 def test_run_cycle_sends_best_leads_first(monkeypatch):
-    # Fix livelock 2026-07-23: busca TODOS os candidatos, filtra pelo threshold e envia os de
-    # MAIOR score primeiro. Antes, os de baixa qualidade da frente entupiam e mandava 0.
+    # KL-137: o score só ORDENA (não filtra) — envia TODOS, os de MAIOR score primeiro.
     import discovery.alert_worker as aw
-    scores = {1: 5, 2: 25, 3: 50, 4: 10, 5: 40}   # threshold 20 mantém 2, 3, 5
+    scores = {1: 5, 2: 25, 3: 50, 4: 10, 5: 40}
     monkeypatch.setattr(aw, "calculate_alert_score",
                         lambda t, e, b: {"score": scores[t["id"]], "signals": []})
     store = FakeStore(eligible=[_target(i) for i in range(1, 6)])
     w = _worker(store)
-    w.alert_score_threshold = 20
     fm = FakeMailer()
     w._mailer = lambda: fm  # noqa: E731
     stats = asyncio.run(w.run_cycle())
-    assert stats["sent"] == 3 and stats["skipped_low_quality"] == 2
-    # ordenados por score DESC: t3(50) → t5(40) → t2(25)
-    assert [e["target_id"] for e in fm.sent] == [3, 5, 2]
+    assert stats["sent"] == 5   # nenhum filtrado por baixa qualidade (KL-137)
+    # ordenados por score DESC: t3(50) → t5(40) → t2(25) → t4(10) → t1(5)
+    assert [e["target_id"] for e in fm.sent] == [3, 5, 2, 4, 1]
 
 
-def test_apply_scoring_logs_skip_with_reason(monkeypatch, capsys):
-    # Fix 2026-07-23: log PERMANENTE do porquê do skip (score + sinais + e-mail mascarado).
+def test_apply_scoring_stores_and_does_not_filter(monkeypatch):
+    # KL-137: o scoring grava o `alert_quality_score` e NÃO filtra (todo alvo é mantido).
     import discovery.alert_worker as aw
     monkeypatch.setattr(aw, "calculate_alert_score", lambda t, e, b: {
-        "score": 5, "signals": [{"signal": "corporate_email", "points": 10},
-                                 {"signal": "role_based_prefix", "points": -15}]})
-    w = _worker(FakeStore())
-    w.alert_score_threshold = 20
-    kept, skipped, _ = asyncio.run(
+        "score": 5, "signals": [{"signal": "role_based_prefix", "points": -5}]})
+    store = FakeStore()
+    w = _worker(store)
+    targets, avg = asyncio.run(
         w._apply_alert_scoring([_target(1, email="contato@x.com.br")]))
-    out = capsys.readouterr().out
-    assert skipped == 1 and kept == []
-    assert "skip lead t=1" in out and "role_based_prefix=-15" in out
-    assert "c***o@x.com.br" in out          # e-mail mascarado (privacidade)
+    assert len(targets) == 1 and targets[0]["_alert_score"] == 5 and avg == 5
 
 
 def test_run_cycle_isolates_bad_email():

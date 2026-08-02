@@ -347,16 +347,19 @@ def build_welcome_confirmation_text(confirm_url: str) -> str:
 
 
 def build_profile_view_text(domain: str) -> str:
-    """KL-101 — corpo em TEXTO PURO, SEM links, do aviso 'perfil consultado'. Mesmo padrão
-    dos cold alerts do KL-91: sem link clicável, sem urgência, opt-out por resposta,
-    `klarim.net` só como texto. Antes tinha link (`/site/{domain}`) + link de descadastro."""
+    """KL-101 → KL-137 — corpo em TEXTO PURO do aviso 'perfil consultado'. Continua text/plain,
+    sem HTML, opt-out por resposta. **KL-137 (02/08):** volta a incluir UM link — o perfil público
+    do site (`utm_source=profile_view`) — depois da mensagem, antes da assinatura."""
+    domain = (domain or "").strip()
+    link = f"https://klarim.net/site/{domain}?utm_source=profile_view&utm_medium=email"
     return (
         "Olá,\n\n"
         f"O perfil público do site {domain} foi consultado na\n"
         "plataforma Klarim.\n\n"
         "A Klarim disponibiliza análises públicas de segurança\n"
-        "web de sites brasileiros. O resultado do seu site está\n"
-        "disponível para consulta em klarim.net.\n\n"
+        "web de sites brasileiros.\n\n"
+        "Veja o que encontramos no seu site:\n"
+        f"{link}\n\n"
         "Se não deseja receber este tipo de comunicação, basta\n"
         'responder este e-mail com "remover".\n\n'
         "--\n"

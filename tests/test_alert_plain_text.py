@@ -56,12 +56,12 @@ def test_unsub_line_omitted_when_absent():
 
 
 def test_profile_view_text():
-    # KL-101: texto puro SEM links, opt-out por resposta (era HTML/link antes).
+    # KL-101 → KL-137: texto puro (sem HTML), opt-out por resposta, AGORA com UM link do perfil.
     t = build_profile_view_text("hotelparaiso.com.br")
     assert "hotelparaiso.com.br foi consultado" in t
-    assert "http" not in t.lower() and "www." not in t.lower()   # sem links
+    assert "https://klarim.net/site/hotelparaiso.com.br?utm_source=profile_view&utm_medium=email" in t
     assert '"remover"' in t                                       # opt-out por resposta
-    assert "klarim.net" in t and "<" not in t
+    assert "klarim.net" in t and "<a " not in t.lower()           # continua text/plain (sem HTML)
 
 
 # --- integração: o payload chega ao Resend como `text` (sem html) ----------- #
@@ -110,8 +110,8 @@ def test_send_profile_view_is_plain_text(monkeypatch):
     m = KlarimMailer("re_fake")
     asyncio.run(m.send_profile_view("d@e.com", "hotelparaiso.com.br", 65, "amarelo",
                                     "https://klarim.net/site/hotelparaiso.com.br"))
-    assert "html" not in captured and "text" in captured
+    assert "html" not in captured and "text" in captured               # continua text/plain
     assert captured["from"] == "Klarim <notifica@perfil.klarim.net>"   # subdomínio dedicado
     assert captured["subject"] == "hotelparaiso.com.br foi consultado na Klarim"
-    assert "http" not in captured["text"].lower()                      # sem links
+    assert "utm_source=profile_view" in captured["text"]               # KL-137: link do perfil
     assert captured["headers"]["List-Unsubscribe"] == "<mailto:scan@klarim.net?subject=remover>"

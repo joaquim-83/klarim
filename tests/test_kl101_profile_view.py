@@ -27,10 +27,13 @@ def test_profile_view_from_default_and_override(monkeypatch):
     assert "avisos@perfil.klarim.net" in KlarimMailer("re_x")._profile_view_from()
 
 
-def test_profile_view_text_has_no_links():
+def test_profile_view_text_has_report_link():
+    # KL-137: o aviso 'perfil consultado' volta a incluir UM link (perfil do site, utm profile_view).
+    # Continua text/plain (sem HTML), opt-out por resposta.
     t = build_profile_view_text("igoove.com.br")
     assert "igoove.com.br foi consultado" in t
-    for marker in ("http://", "https://", "www.", "<a ", "href", "utm_"):
+    assert "https://klarim.net/site/igoove.com.br?utm_source=profile_view&utm_medium=email" in t
+    for marker in ("<a ", "href=", "<html", "<body"):   # continua text/plain
         assert marker not in t.lower()
     assert '"remover"' in t and "klarim.net" in t
 

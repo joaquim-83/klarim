@@ -78,40 +78,43 @@ def test_eligible_where_excludes_unknown_power_and_block_statuses():
         assert f"'{s}'" in w
 
 
-# --------------------- worker aposenta unknown+power ---------------------- #
+# --------------------- worker: unknown via Power → bloqueado -------------- #
+# KL-137: o worker NÃO aposenta mais `unknown`+`power` em `sem_contato` (removida a lógica de
+# aposentar do KL-130). O SQL `_ALERT_ELIGIBLE_WHERE` (que EXCLUI unknown+power do fetch) fica —
+# então eles não voltam ao pool. `retire_unknown_power_targets` (limpeza retroativa) também fica.
 
-def test_new_unknown_power_marked_sem_contato(monkeypatch):
+def test_new_unknown_power_blocked_not_retired(monkeypatch):
     async def _fake(email, mode="power", redis=None, api_key=None):
         return ev.VerifyResult("unknown", "reoon_power", source="reoon")
 
     monkeypatch.setattr(ev, "verify_email", _fake)
     store = _MiniStore()
     kept, stats = _run(_mk_worker(store), [_new(1)])
-    assert kept == []                              # unknown não envia
-    assert stats["verified"] == 1 and stats["retired_unknown"] == 1
-    assert (1, "sem_contato") in store.discarded   # saiu do pool
-    assert store.blocked == []                     # NÃO blocklist (não é "ruim", só não confirmável)
+    assert kept == []                                  # unknown não envia (regra binária)
+    assert stats["verified"] == 1 and stats["blocked"] == 1
+    assert (1, "sem_contato") not in store.discarded   # KL-137: não aposenta mais em ciclo
+    assert store.blocked == []                         # unknown NÃO blocklist
 
 
-def test_new_safe_sends_and_is_not_retired(monkeypatch):
+def test_new_safe_sends(monkeypatch):
     async def _fake(email, mode="power", redis=None, api_key=None):
         return ev.VerifyResult("safe", "reoon_power", source="reoon")
 
     monkeypatch.setattr(ev, "verify_email", _fake)
     store = _MiniStore()
     kept, stats = _run(_mk_worker(store), [_new(1)])
-    assert {t["id"] for t in kept} == {1} and stats["verified"] == 1
-    assert stats["retired_unknown"] == 0 and (1, "sem_contato") not in store.discarded
+    assert {t["id"] for t in kept} == {1} and stats["verified"] == 1 and stats["sendable"] == 1
+    assert (1, "sem_contato") not in store.discarded
 
 
-def test_new_disabled_blocklisted_not_retired_unknown(monkeypatch):
+def test_new_disabled_blocklisted(monkeypatch):
     async def _fake(email, mode="power", redis=None, api_key=None):
         return ev.VerifyResult("disabled", "reoon_power", source="reoon")
 
     monkeypatch.setattr(ev, "verify_email", _fake)
     store = _MiniStore()
     kept, stats = _run(_mk_worker(store), [_new(1)])
-    assert kept == [] and stats["blocked"] == 1 and stats["retired_unknown"] == 0
+    assert kept == [] and stats["blocked"] == 1
     assert ("n1@hotmail.com", "power_verify_disabled") in store.blocked
     assert (1, "descartado") in store.discarded
 

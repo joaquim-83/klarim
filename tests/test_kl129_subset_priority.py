@@ -93,9 +93,10 @@ def test_mixed_new_and_cached_verifies_new_and_sends_direct(monkeypatch):
                + [_verified(300 + i, "safe") for i in range(1, 51)])
     kept, stats = _run(_mk_worker(_MiniStore()), targets)
     assert len(calls) == 50                     # só os 50 NOVOS tocaram a API
-    assert stats["verified"] == 50 and stats["from_cache"] == 50
-    assert stats["blocked_known"] == 100        # os 100 unknown já-barrados (sem vaga)
-    assert len(kept) == 100                     # 50 novos(safe) + 50 safe(cache)
+    assert stats["verified"] == 50 and stats["from_cache"] == 150   # 100 unknown + 50 safe frescos
+    assert stats["blocked"] == 100              # os 100 unknown (regra binária)
+    assert stats["sendable"] == 100             # 50 novos(safe) + 50 safe(cache)
+    assert len(kept) == 100
 
 
 def test_cached_unknown_does_not_consume_subset(monkeypatch):
@@ -120,7 +121,7 @@ def test_all_unknown_cached_makes_zero_api_calls(monkeypatch):
     targets = [_verified(i, "unknown") for i in range(1, 121)]
     kept, stats = _run(_mk_worker(_MiniStore()), targets)
     assert calls == [] and kept == []
-    assert stats["verified"] == 0 and stats["blocked_known"] == 120
+    assert stats["verified"] == 0 and stats["blocked"] == 120   # KL-137: unknown → blocked
 
 
 def test_deferred_when_more_new_than_cap(monkeypatch):
@@ -130,42 +131,9 @@ def test_deferred_when_more_new_than_cap(monkeypatch):
     assert len(calls) == 4 and stats["deferred"] == 6   # 4 verificados, 6 p/ o próximo ciclo
 
 
-# --------------------------- domínio confiável (canário) ------------------ #
-
-def test_trusted_domain_downgrades_unknown_to_catch_all(monkeypatch):
-    monkeypatch.setenv("ALERT_TRUST_DOMAIN_DOWNGRADE", "true")
-    _mock_verify(monkeypatch, {})
-    store = _MiniStore(trusted={"locaweb.com.br"})
-    # unknown fresco, score 40 > gate, domínio confiável → rebaixa p/ catch_all → envia.
-    t = {"id": 1, "contact_email": "site@locaweb.com.br", "_alert_score": 40,
-         "email_verified": True, "email_verify_status": "unknown",
-         "email_verify_source": "power", "email_verified_at": datetime.now(timezone.utc)}
-    kept, stats = _run(_mk_worker(store), [t])
-    assert {x["id"] for x in kept} == {1}
-    assert stats["trust_downgraded"] == 1 and stats["from_cache"] == 1
-
-
-def test_untrusted_domain_unknown_stays_blocked(monkeypatch):
-    monkeypatch.setenv("ALERT_TRUST_DOMAIN_DOWNGRADE", "true")
-    _mock_verify(monkeypatch, {})
-    store = _MiniStore(trusted=set())            # nenhum domínio confiável
-    t = {"id": 1, "contact_email": "site@desconhecido.com.br", "_alert_score": 40,
-         "email_verified": True, "email_verify_status": "unknown",
-         "email_verify_source": "power", "email_verified_at": datetime.now(timezone.utc)}
-    kept, stats = _run(_mk_worker(store), [t])
-    assert kept == [] and stats["trust_downgraded"] == 0 and stats["blocked_known"] == 1
-
-
-def test_trusted_downgrade_still_respects_gate(monkeypatch):
-    # domínio confiável, mas score <= gate → catch_all barrado pelo gate (não envia).
-    monkeypatch.setenv("ALERT_TRUST_DOMAIN_DOWNGRADE", "true")
-    _mock_verify(monkeypatch, {})
-    store = _MiniStore(trusted={"locaweb.com.br"})
-    t = {"id": 1, "contact_email": "site@locaweb.com.br", "_alert_score": 10,
-         "email_verified": True, "email_verify_status": "unknown",
-         "email_verify_source": "power", "email_verified_at": datetime.now(timezone.utc)}
-    kept, stats = _run(_mk_worker(store), [t])
-    assert kept == [] and stats["trust_downgraded"] == 1 and stats["blocked_known"] == 1
+# KL-137 — o trust-downgrade (KL-129: `unknown`→`catch_all` p/ domínios confiáveis) FOI REMOVIDO:
+# com a regra binária, catch_all/unknown nunca enviam, então rebaixar não muda nada. Os testes de
+# `test_trusted_domain_downgrades_*` foram removidos junto com a feature.
 
 
 # --------------------------- cap por env ---------------------------------- #

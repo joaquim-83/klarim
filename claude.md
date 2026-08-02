@@ -158,9 +158,11 @@ standalone) + **React** (islands) + **Tailwind v4** (CSS-first, sem config) +
   warmup** `PROFILE_VIEW_DAILY_LIMIT` (200, editável no painel; contador `profileview:daily:{date}`).
   ⚠️ `perfil.klarim.net` precisa estar **verificado no Resend** antes do deploy (senão os envios
   falham). `bulletin` segue em `_proactive_from` (`alerta@klarim.net`) — a quem tem conta/opt-in.
-- **Alertas cold (KL-91, atual):** o alerta a quem NÃO tem conta usa o **módulo cold**
-  (`notifier/cold_alert.py` + `alert_worker`): **texto puro SEM links** (3 variantes
-  informativa/setorial/educativa), opt-out **por resposta** ("responda com remover"), e
+- **Alertas cold (KL-91 → KL-137):** o alerta a quem NÃO tem conta usa o **módulo cold**
+  (`notifier/cold_alert.py` + `alert_worker`): **texto puro (text/plain, NUNCA HTML)** com **UM
+  link** (KL-137, 02/08 — reverte o 'sem links' do KL-91, que gerava quase zero visitas): o perfil
+  do site `klarim.net/site/{domain}?utm_source=alerta&utm_medium=email` (`cold_alert.report_link`),
+  3 variantes informativa/setorial/educativa, opt-out **por resposta** ("responda com remover"), e
   **rotação round-robin** entre 2 subdomínios verificados no Resend — `alertas.klarim.net`
   e `aviso.klarim.net` (`ALERT_SENDER_EMAILS`). O `klarim.net` fica **exclusivo do
   transacional** (isolamento de reputação; `load_senders` descarta `klarim.net` cru). Envio
@@ -188,6 +190,15 @@ standalone) + **React** (islands) + **Tailwind v4** (CSS-first, sem config) +
   (disparo manual) usa o mesmo formato** (1º remetente). Os builders antigos com link
   (`build_alert_text`, alert-access HMAC do KL-82 S3) **ficam no código** mas o ciclo
   automático NÃO os usa (revertível).
+- ⚠️ **REGRA DE ENVIO ATUAL (KL-137, 02/08 — simplificação radical):** `is_safe_to_send` é
+  **BINÁRIA** — só `safe`/`valid`/`role` enviam; **todo o resto** (catch_all/unknown/inbox_full/
+  block-statuses) **NÃO envia**, independentemente do score. **O lead_score NÃO decide envio — só
+  ORDENA a fila.** Foram **REMOVIDOS**: gates de score (`_unsafe_score_gate`/`_catch_all_gate` +
+  `ALERT_UNSAFE_SCORE_GATE`/`ALERT_CATCH_ALL_SCORE_GATE`), trust-downgrade
+  (`trusted_recipient_domains`/`ALERT_TRUST_DOMAIN_DOWNGRADE`), o filtro por threshold
+  (`skipped_low_quality`/`ALERT_SCORE_THRESHOLD`) e o "aposentar unknown" em ciclo. Toda a descrição
+  de gates/trust/catch_all-condicional dos KL-122..KL-136 ABAIXO é **histórica** — a regra viva é esta.
+  Stats do ciclo de verificação: `verified/from_cache/sendable/blocked/deferred/errors` (ver KL-137).
 - **Verificação de deliverability PRÉ-envio (KL-110 — `notifier/email_verifier.py`):** o circuit
   breaker (KL-108) é REATIVO (pausa DEPOIS do bounce); a verificação é PREVENTIVA — checa se a caixa
   existe ANTES de enviar. **Camada 0 (local, custo zero):** sintaxe (email-validator, fallback regex),
@@ -533,7 +544,7 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1956 passed** (backend pytest; +23 KL-136 saúde operacional) + **142 node --test** (frontend `test:unit`)
+- Testes: **1948 passed** (backend pytest; KL-137 simplificação do pipeline de e-mail) + **142 node --test** (frontend `test:unit`)
 - Páginas públicas: `/metodologia` (KL-100) · descadastro `/remover` (KL-102) · landing com social proof ao vivo (KL-103)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - **Níveis de conta (KL-99):** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado
@@ -1630,6 +1641,34 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   **`sent_month`** (`count_proactive_emails_this_month`, cota mensal) = PROATIVO (alert_log + rescan_log),
   mês-**calendário UTC**; **`email_metrics.sent_week`** = `email_log`, TODOS os tipos, 7 dias móveis — no dia 1
   do mês `sent_month` < `sent_week` é ESPERADO (fontes/janelas diferentes, NÃO bug).
+- **KL-137** — Simplificação RADICAL do pipeline de e-mail (reverte a complexidade acumulada nos
+  KL-108..KL-136) ✅. O pipeline consumiu 10 cards e piorou (bounce oscilando, volume 4-400/dia); os
+  e-mails sem link geravam ~7 visitas/semana. **(P1) Link no e-mail** (mantendo **text/plain**, NÃO
+  HTML — decisão 02/08): as 3 variantes cold (`notifier/cold_alert.py::report_link`/`_report_link_block`)
+  e o `profile_view` (`email_client.build_profile_view_text`) ganham UM link ao perfil do site
+  (`klarim.net/site/{domain}?utm_source=alerta|profile_view&utm_medium=email`, só `source`+`medium`).
+  **(P2) `is_safe_to_send` BINÁRIA** (`notifier/email_verifier.py`): `status in SENDABLE_STATUSES`
+  (`{safe,valid,role}`) → envia; **todo o resto NÃO** (catch_all/unknown/inbox_full/block). `lead_score`
+  fica na assinatura por compat mas é **ignorado**. **(P3) Lead scoring só ORDENA** (`alert_scoring.py`
+  + `alert_worker._apply_alert_scoring`): removido o filtro por threshold (`skipped_low_quality`) — todo
+  e-mail sendable é enviado, o score define só a ORDEM (maior primeiro; excedente do cap → próximo ciclo).
+  Removidas as penalidades de deliverability (`catch_all` -10, `unknown` -5); mantida a de `role` (-5,
+  `ALERT_ROLE_PENALTY`) e a de bounce-domínio (-40). **(P4) Limpeza:** removidos `_unsafe_score_gate`/
+  `_catch_all_gate` (+ `ALERT_UNSAFE_SCORE_GATE`/`ALERT_CATCH_ALL_SCORE_GATE`), `trusted_recipient_domains`
+  + trust-downgrade (`ALERT_TRUST_DOMAIN_DOWNGRADE`), `ALERT_SCORE_THRESHOLD`, o "aposentar unknown→
+  sem_contato" em ciclo, e os counters `skipped_low_quality`/`skipped_gate`/`blocked_known`/
+  `trust_downgraded`/`retired_unknown`. **`_verify_and_filter` reescrito** (~50 linhas de condicionais →
+  regra binária): particiona frescos (`from_cache`) vs não-verificados → verifica via Power até o cap
+  (`EMAIL_VERIFY_MAX_PER_CYCLE`; excedente `deferred`) → aplica a regra binária → `sendable`/`blocked`.
+  **MANTIDOS:** circuit breaker hard-bounce (KL-108), verificação Reoon Power (decisão binária), blocklist
+  (invalid/disabled/disposable/spamtrap), List-Unsubscribe (KL-102), rotação de senders (KL-91), cache de
+  verificação, fail-safe de saldo Reoon (KL-136: saldo 0 → defere), o SQL `_ALERT_ELIGIBLE_WHERE` (que já
+  exclui unknown+power) e `retire_unknown_power_targets` (limpeza retroativa via script). **Testes:**
+  `test_kl91`/`test_kl101`/`test_alert_plain_text` (link presente, continua text/plain), `test_kl110`/`127`/
+  `129`/`130`/`136` reescritos p/ a regra binária, `test_kl85`/`test_alert_worker` (scoring não filtra).
+  **1948 pytest passed.** **Pós-deploy:** apagar `ALERT_UNSAFE_SCORE_GATE`/`ALERT_CATCH_ALL_SCORE_GATE`/
+  `ALERT_TRUST_DOMAIN_DOWNGRADE` do `.env` da VM (ignoradas, mas confundem). Relatório:
+  `claude/reports/KL-137_simplificacao_pipeline.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

@@ -23,22 +23,28 @@ from notifier.email_client import KlarimMailer
 # Templates — texto puro, SEM links, opt-out por resposta
 # --------------------------------------------------------------------------- #
 
-_LINK_MARKERS = ("http://", "https://", "www.", "<a ", "href=", "mailto:")
+# KL-137 — as variantes cold agora incluem UM link (perfil do site). Continua text/plain
+# (sem HTML/multipart): não deve haver `<a `/`href=` (marcadores de HTML).
+_HTML_MARKERS = ("<a ", "href=", "<html", "<body", "<div", "<table")
 
 
-def _assert_no_links(text: str):
+def _assert_no_html(text: str):
     low = text.lower()
-    for marker in _LINK_MARKERS:
-        assert marker not in low, f"link inesperado ({marker!r}) no corpo cold"
+    for marker in _HTML_MARKERS:
+        assert marker not in low, f"marcador HTML inesperado ({marker!r}) — deve ser text/plain"
+
+
+def _report_link(domain: str) -> str:
+    return f"https://klarim.net/site/{domain}?utm_source=alerta&utm_medium=email"
 
 
 @pytest.mark.parametrize("variant", [1, 3])
-def test_variant_plain_no_links(variant):
+def test_variant_plain_has_report_link(variant):
     subject, body = c.build_cold_email(variant, domain="igoove.com.br", score=78)
-    _assert_no_links(body)
-    _assert_no_links(subject)
+    _assert_no_html(body)   # continua text/plain
+    _assert_no_html(subject)
     assert "igoove.com.br" in body and "78" in body
-    assert "klarim.net" in body                 # menciona como TEXTO
+    assert _report_link("igoove.com.br") in body   # KL-137: link do perfil com UTM
     assert '"remover"' in body or "remover" in body  # opt-out por resposta
     assert "48" in body                          # 48 verificações
     # sem emoji comum
@@ -48,7 +54,8 @@ def test_variant_plain_no_links(variant):
 def test_variant2_sector_and_average():
     subject, body = c.build_cold_email(2, domain="hotelx.com.br", score=60,
                                        sector_label="Hotelaria", sector_avg=72)
-    _assert_no_links(body)
+    _assert_no_html(body)
+    assert _report_link("hotelx.com.br") in body   # KL-137: link do perfil
     assert "hotelx.com.br" in body
     assert "Hotelaria" in body
     assert "Score obtido: 60 de 100." in body

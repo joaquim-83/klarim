@@ -47,16 +47,11 @@ _TRANSIENT_STATUSES = frozenset({"catch_all", "inbox_full", "unknown", "role"})
 # Status que NUNCA devem receber e-mail (blocklist permanente).
 BLOCK_STATUSES = frozenset({"invalid", "disabled", "disposable", "spamtrap"})
 
-# KL-122 — gate de lead_score para status de deliverability INCERTA (catch_all/inbox_full):
-# só envia se o lead_score for MAIOR que este valor. Baixado de 50 (KL-110) → 20 em 27/07/2026.
-# KL-128: `unknown` NÃO usa mais este gate (é bloqueado em `is_safe_to_send`) — o gate ficou só
-# p/ catch_all/inbox_full. Editável por env var (`ALERT_UNSAFE_SCORE_GATE`) — ajuste sem deploy.
-_UNSAFE_SCORE_GATE = int(os.environ.get("ALERT_UNSAFE_SCORE_GATE", "20"))
-# KL-136 — gate SEPARADO e MAIS ALTO para `catch_all` (default 30, editável por
-# `ALERT_CATCH_ALL_SCORE_GATE`). Um servidor catch-all aceita QUALQUER caixa no SMTP, mas a caixa
-# pode não existir → responde 37% dos bounces (12 de 32 em 48h). O gate de 20 (inbox_full) era
-# permissivo demais; exigir score > 30 restringe o catch_all aos leads de maior qualidade.
-_CATCH_ALL_SCORE_GATE = int(os.environ.get("ALERT_CATCH_ALL_SCORE_GATE", "30"))
+# KL-137 — status que PODEM receber e-mail. Regra binária: só estes enviam; todo o resto (catch_all,
+# unknown, inbox_full, block-statuses, vazio) NÃO envia. `safe`/`valid`/`role` têm 0% de bounce
+# comprovado via Power. Reverte os gates de score condicionais dos KL-122..KL-136 (complexidade que
+# piorou o bounce); o lead_score deixa de decidir envio e passa só a ORDENAR a fila.
+SENDABLE_STATUSES = frozenset({"safe", "valid", "role"})
 
 _CACHE_TTL_DEFINITIVE = 60 * 24 * 3600   # 60 dias
 _CACHE_TTL_TRANSIENT = 7 * 24 * 3600     # 7 dias
@@ -348,55 +343,19 @@ async def verify_email(email: str, mode: str = "power", skip_api: bool = False,
     return api_result
 
 
-def _unsafe_score_gate() -> int:
-    """KL-122 — gate de lead_score para `inbox_full`, lido do env a cada chamada (permite ajustar
-    sem alterar o código; default `_UNSAFE_SCORE_GATE`=20). Fail-safe p/ valor inválido."""
-    try:
-        return int(os.environ.get("ALERT_UNSAFE_SCORE_GATE", _UNSAFE_SCORE_GATE))
-    except (TypeError, ValueError):
-        return _UNSAFE_SCORE_GATE
-
-
-def _catch_all_gate() -> int:
-    """KL-136 — gate de lead_score SEPARADO (mais alto) para `catch_all`, lido do env a cada
-    chamada (default `_CATCH_ALL_SCORE_GATE`=30). Fail-safe p/ valor inválido."""
-    try:
-        return int(os.environ.get("ALERT_CATCH_ALL_SCORE_GATE", _CATCH_ALL_SCORE_GATE))
-    except (TypeError, ValueError):
-        return _CATCH_ALL_SCORE_GATE
-
-
 def is_safe_to_send(result: VerifyResult, lead_score: int = 0) -> bool:
-    """Decisão de envio (KL-128 definitivo).
+    """KL-137 — decisão de envio em 2 regras. Sem gates, sem score, sem condicionais.
 
-    Regra (KL-136 — gates SEPARADOS por status):
-      • safe/valid/role → sempre envia (role já é penalizado no lead scoring).
-      • disabled/invalid/disposable/spamtrap → nunca envia (vão p/ blocklist).
-      • unknown → NÃO envia. Bounce rate ~5-8% contamina os senders. Reverificações
-        futuras podem promover para safe/catch_all (aí sim seguem a regra deles).
-      • catch_all → envia só se `lead_score > ALERT_CATCH_ALL_SCORE_GATE` (default 30) — gate
-        MAIS ALTO: catch-all aceita tudo no SMTP mas a caixa pode não existir (37% dos bounces).
-      • inbox_full → envia se `lead_score > ALERT_UNSAFE_SCORE_GATE` (default 20).
-      • parse_reoon_response rebaixa safe+catch_all → catch_all (KL-128): num servidor
-        catch-all o "safe" do Reoon não é confiável (o servidor aceita QUALQUER caixa).
-      • Sem verificação → nunca envia (garantido pelo `_verify_and_filter`).
+      • safe/valid/role → envia (0% de bounce comprovado via Power).
+      • Tudo o resto (catch_all/unknown/inbox_full/disabled/invalid/disposable/spamtrap/vazio) → NÃO.
 
-    Histórico: o KL-127 tentou `unknown`→gate p/ não zerar alertas, mas o bounce voltou a
-    >10% (o gate de score não filtra `unknown`, que no BR é servidor sem SMTP-check). O KL-128
-    volta a bloquear `unknown` e ataca o catch-all-disfarçado-de-safe na origem (parse). O KL-136
-    separa o gate do `catch_all` (30) do `inbox_full` (20) — catch_all é o maior culpado dos bounces."""
+    `lead_score` é IGNORADO na decisão (fica na assinatura por compatibilidade) — serve apenas para
+    ORDENAR a fila (quem é enviado primeiro). Reverte os gates condicionais dos KL-122..KL-136: a
+    complexidade acumulada (gate por score, catch_all condicional, trust-downgrade) piorou o bounce.
+    `parse_reoon_response` já rebaixa 'safe' num servidor catch-all → 'catch_all' (KL-128), então
+    esses não entram em SENDABLE_STATUSES por acidente."""
     status = result.status if isinstance(result, VerifyResult) else str(result)
-    if status in BLOCK_STATUSES:
-        return False
-    if status in ("safe", "valid", "role"):
-        return True
-    if status == "unknown":
-        return False  # KL-128: unknown = servidor BR sem SMTP-check, bounce ~5-8% → não envia
-    if status == "catch_all":
-        return (lead_score or 0) > _catch_all_gate()   # KL-136: gate mais alto (30)
-    if status == "inbox_full":
-        return (lead_score or 0) > _unsafe_score_gate()
-    return True  # fallback: enviar
+    return status in SENDABLE_STATUSES
 
 
 def _mask(email: str) -> str:

@@ -78,7 +78,7 @@ async def test_profile_view_uses_dedicated_perfil_sender(monkeypatch):
     cap = _capture(mailer)
     await mailer.send_profile_view("dono@x.com", "x.com.br", 70, "amarelo", "https://k/cta")
     assert cap["params"]["from"] == "Klarim <notifica@perfil.klarim.net>"
-    assert "http" not in cap["params"]["text"].lower()   # sem links (KL-101)
+    assert "utm_source=profile_view" in cap["params"]["text"]   # KL-137: link do perfil (text/plain)
 
 
 def test_profile_view_from_env_override(monkeypatch):

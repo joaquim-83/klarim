@@ -6,7 +6,6 @@ existentes de KL-85/KL-110/KL-127/KL-129/KL-130 que foram atualizados p/ os novo
 from __future__ import annotations
 
 import asyncio
-import logging
 from datetime import datetime, timezone
 
 import pytest
@@ -61,36 +60,26 @@ def test_role_status_and_prefix_never_double(monkeypatch):
 
 
 # =========================================================================== #
-# Fix 2 — gate SEPARADO de catch_all (30) vs inbox_full (20)
+# Fix 2 (SUPERADO pelo KL-137) — os gates de score SAÍRAM; regra binária
 # =========================================================================== #
 
-@pytest.mark.parametrize("score,expected", [
-    (31, True), (30, False), (25, False), (0, False), (100, True),
-])
-def test_catch_all_uses_gate_30(monkeypatch, score, expected):
-    monkeypatch.delenv("ALERT_CATCH_ALL_SCORE_GATE", raising=False)
-    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), score) is expected
+@pytest.mark.parametrize("score", [0, 25, 30, 31, 100, 999])
+def test_catch_all_never_sends(score):
+    # KL-137: catch_all nunca envia, independentemente do score (gate de catch_all removido).
+    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), score) is False
 
 
-@pytest.mark.parametrize("score,expected", [(21, True), (20, False), (25, True)])
-def test_inbox_full_still_uses_gate_20(monkeypatch, score, expected):
-    monkeypatch.delenv("ALERT_UNSAFE_SCORE_GATE", raising=False)
-    assert ev.is_safe_to_send(ev.VerifyResult("inbox_full", "x"), score) is expected
+@pytest.mark.parametrize("score", [0, 20, 21, 25, 100])
+def test_inbox_full_never_sends(score):
+    assert ev.is_safe_to_send(ev.VerifyResult("inbox_full", "x"), score) is False
 
 
-def test_catch_all_gate_env_override(monkeypatch):
-    monkeypatch.setenv("ALERT_CATCH_ALL_SCORE_GATE", "40")
-    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 35) is False
-    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 41) is True
-
-
-def test_unknown_never_sends_regardless_of_gate(monkeypatch):
-    monkeypatch.setenv("ALERT_CATCH_ALL_SCORE_GATE", "0")  # gate 0 não libera unknown
+def test_unknown_never_sends(monkeypatch):
     assert ev.is_safe_to_send(ev.VerifyResult("unknown", "x"), 100) is False
 
 
 # =========================================================================== #
-# Fix 4 — fail-safe de saldo Reoon + breakdown de blocked_known
+# Fix 4 (mantido no KL-137) — fail-safe de saldo Reoon
 # =========================================================================== #
 
 class _MiniStore:
@@ -214,20 +203,16 @@ def test_balance_not_checked_when_no_unverified(monkeypatch):
     assert not stats.get("reoon_exhausted")
 
 
-def test_blocked_known_breakdown_logged(monkeypatch, caplog):
-    # catch_all com score baixo + disabled (já-barrado) → log com breakdown por status.
+def test_cached_mix_binary_decision(monkeypatch):
+    # KL-137: catch_all + disabled (cacheados) → blocked; safe → sendable. Sem breakdown/gates.
     _mock_balance(monkeypatch, 5000)
     _mock_verify(monkeypatch)
-    targets = [_verified(1, "catch_all", score=10),   # gate → blocked_known
-               _verified(2, "disabled"),              # block status → blocked_known
-               _verified(3, "safe")]                  # sendable
-    with caplog.at_level(logging.INFO, logger="alert_worker"):
-        kept, stats = _run(_mk_worker(_MiniStore()), targets)
-    assert stats["blocked_known"] == 2
+    targets = [_verified(1, "catch_all", score=10),
+               _verified(2, "disabled"),
+               _verified(3, "safe")]
+    kept, stats = _run(_mk_worker(_MiniStore()), targets)
     assert [t["id"] for t in kept] == [3]
-    breakdown_logs = [r.message for r in caplog.records if "blocked_known breakdown" in r.message]
-    assert breakdown_logs, "esperava um log de breakdown"
-    assert "catch_all" in breakdown_logs[-1] and "disabled" in breakdown_logs[-1]
+    assert stats["blocked"] == 2 and stats["sendable"] == 1 and stats["from_cache"] == 3
 
 
 # =========================================================================== #
