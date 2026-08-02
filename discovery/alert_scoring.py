@@ -9,6 +9,7 @@ o breakdown no detalhe admin. Lead scoring **nunca** impede scan; só a decisão
 
 from __future__ import annotations
 
+import os
 from typing import Any, Dict, Optional
 
 # Provedores de e-mail gratuitos (um e-mail nesses domínios ≠ dono verificável do site).
@@ -40,6 +41,23 @@ ROLE_BASED_PREFIXES = {
 # Setores com click rate alto — começa VAZIO (não inventar dados). Popular quando o
 # KL-83 funnel-by-sector tiver >100 alertas/setor e click_rate > 15%.
 HIGH_CLICK_SECTORS: set = set()
+
+# KL-136 — penalidade de prefixo role-based. No Brasil, `contato@`/`vendas@`/`sac@` são o
+# e-mail PADRÃO de PME, NÃO indicador de baixa qualidade. O -15 (KL-85) barrava a maioria dos
+# leads action-zone: `contato@` = +10 (corp) +20 (action) -15 = 15 < threshold 20 → rejeitado.
+# Com -5: +10 +20 -5 = 25 > 20 → PASSA. Editável por env `ALERT_ROLE_PENALTY` (ajuste sem deploy;
+# lido a cada chamada, como o gate de deliverability). Vale para os DOIS sinais de caixa de função
+# (`role_based_prefix` por prefixo + `email_role_account` da verificação Reoon) — mesmo semântica,
+# nunca DOBRAM (o segundo só entra se o prefixo não penalizou).
+ROLE_BASED_PENALTY_DEFAULT = -5
+
+
+def _role_penalty() -> int:
+    """Penalidade de caixa de função, lida do env a cada chamada (fail-safe p/ valor inválido)."""
+    try:
+        return int(os.environ.get("ALERT_ROLE_PENALTY", ROLE_BASED_PENALTY_DEFAULT))
+    except (TypeError, ValueError):
+        return ROLE_BASED_PENALTY_DEFAULT
 
 
 def _norm_domain(d: Optional[str]) -> str:
@@ -104,19 +122,20 @@ def calculate_alert_score(target: Dict[str, Any], contact_email: Optional[str],
     # --- negativos ---
     if MISMATCH_FREE_PENALTY and valid_email and not matches and edomain in FREE_EMAIL_DOMAINS:
         add(MISMATCH_FREE_PENALTY, "email_mismatch_free")   # e-mail genérico de terceiro (hoje 0)
+    role_pts = _role_penalty()  # KL-136: -5 por padrão (era -15), editável por env
     role_penalized = valid_email and local in ROLE_BASED_PREFIXES
     if role_penalized:
-        add(-15, "role_based_prefix")
+        add(role_pts, "role_based_prefix")
     # KL-110 — penalidades por status de verificação de e-mail (Reoon). catch_all/unknown têm
     # deliverability incerta; 'role' (caixa de função detectada pela API) penaliza como o prefixo,
-    # mas sem DOBRAR se o prefixo já penalizou.
+    # mas sem DOBRAR se o prefixo já penalizou (mesma penalidade `_role_penalty` do KL-136).
     verify_status = (target.get("email_verify_status") or "").strip().lower()
     if verify_status == "catch_all":
         add(-10, "email_catch_all")
     elif verify_status == "unknown":
         add(-5, "email_unknown")
     if verify_status == "role" and not role_penalized:
-        add(-15, "email_role_account")
+        add(role_pts, "email_role_account")
     if target.get("status") == "descartado" or (sc is not None and sc < 40):
         add(-10, "abandoned_or_low_score")
     # Bounce por DOMÍNIO só penaliza domínio próprio/corporativo. Num provedor genérico

@@ -57,6 +57,10 @@ def _run(worker, targets):
 @pytest.fixture(autouse=True)
 def _key(monkeypatch):
     monkeypatch.setenv("REOON_API_KEY", "test-key")
+
+    async def _bal(api_key=None, client=None):  # KL-136: offline — saldo ilegível (fail-open)
+        return None
+    monkeypatch.setattr(ev, "check_balance", _bal)
     monkeypatch.delenv("ALERT_UNSAFE_SCORE_GATE", raising=False)  # gate = 20
     monkeypatch.setenv("ALERT_TRUST_DOMAIN_DOWNGRADE", "false")   # trust↓ testado à parte (KL-129)
 
@@ -123,11 +127,11 @@ def test_100_safe_100_disabled_sends_exactly_100():
 # --------------------------- regra do gate (`>` 20) ----------------------- #
 
 def test_gate_boundary_is_strict_greater_than():
-    # KL-128: unknown NUNCA envia; o gate `>` 20 vale só p/ catch_all/inbox_full.
+    # KL-128: unknown NUNCA envia. KL-136: gates SEPARADOS — catch_all `>`30, inbox_full `>`20.
     assert ev.is_safe_to_send(ev.VerifyResult("unknown", "x"), 21) is False
     assert ev.is_safe_to_send(ev.VerifyResult("unknown", "x"), 100) is False
-    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 21) is True
-    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 20) is False
+    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 31) is True
+    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 30) is False
     assert ev.is_safe_to_send(ev.VerifyResult("safe", "x"), 0) is True
     assert ev.is_safe_to_send(ev.VerifyResult("disabled", "x"), 100) is False
     assert ev.is_safe_to_send(ev.VerifyResult("inbox_full", "x"), 25) is True
@@ -140,8 +144,8 @@ def test_gate_boundary_is_strict_greater_than():
     (True, "", 90, False),          # verificado mas sem status → não fresco → deferido → não envia
     (True, "safe", 40, True),       # verificado safe → envia
     (True, "unknown", 90, False),   # verificado unknown → NÃO envia (KL-128)
-    (True, "catch_all", 25, True),  # catch_all + score>20 → envia (gate)
-    (True, "catch_all", 15, False), # catch_all + score<=20 → não envia (gate)
+    (True, "catch_all", 31, True),  # KL-136: catch_all + score>30 → envia (gate)
+    (True, "catch_all", 25, False), # KL-136: catch_all + score<=30 → não envia (gate)
 ])
 def test_verify_and_filter_decision_by_state(verified, status, score, should_send):
     # verify_max=0 → nenhum toque na API. Os frescos-verificados são decididos na partição pelo

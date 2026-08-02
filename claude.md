@@ -103,14 +103,21 @@ standalone) + **React** (islands) + **Tailwind v4** (CSS-first, sem config) +
 - **CSP relaxada no `/painel`** (decisão KL-51: `script-src 'unsafe-inline'`, painel é
   noindex/operator-only). O **público** usa CSP estrita (scripts inline por hash SHA-256).
   **Ao adicionar/alterar um script inline público, recompute o hash e atualize
-  `frontend/nginx/security_headers.conf`** (hoje: **5 hashes** — 3 do Astro + 1 anti-FOUC de tema
-  do KL-87 + 1 do init do GA4/gtag do KL-92 P4). **KL-92 P4:** o Cloudflare Web Analytics
-  (`static.cloudflareinsights.com/beacon.min.js`) foi **removido** — era o único script externo
-  SEM SRI (travava o score 100) — e trocado por **Google Analytics 4** (`G-7WPZN66JTB`): loader
-  `www.googletagmanager.com` no `script-src` + hash do init inline; `connect-src`/`img-src` liberam
+  `frontend/nginx/security_headers.conf`** (hoje: 3 do Astro + 1 anti-FOUC de tema do KL-87; o hash
+  do init do GA4/gtag do KL-92 P4 ficou **ocioso** após o KL-135 — inofensivo, não removido). **KL-92
+  P4:** o Cloudflare Web Analytics (`static.cloudflareinsights.com/beacon.min.js`) foi **removido** —
+  era o único script externo SEM SRI (travava o score 100) — e trocado por **Google Analytics 4**
+  (`G-7WPZN66JTB`): loader `www.googletagmanager.com` no `script-src`; `connect-src`/`img-src` liberam
   `*.google-analytics.com`. O check 13 (SRI) ganhou uma **allowlist de CDN dinâmico**
   (`SRI_ALLOWLIST_DOMAINS`: googletagmanager/google-analytics/cloudflareinsights) — esses não contam
   como FAIL (SRI inviável em bundle que o provedor atualiza sem aviso) → `klarim.net` volta a 100.
+- **Consentimento de cookies (KL-135, LGPD):** o GA4 é **opt-in** — NUNCA carrega sem consentimento.
+  O `Base.astro` NÃO tem mais o GA4 no `<head>` (era incondicional/opt-out); quem injeta o `gtag.js` é
+  o **`web/public/cookie-consent.js`** (externo, CSP `'self'`), só se o cookie `klarim_consent` for
+  `all`/`analytics`. Banner `CookieBanner.astro` (1ª visita) grava a escolha (`Path=/; SameSite=Lax;
+  Max-Age=1a; Secure`). Página `/cookies` + `/privacidade` §5/§8 atualizadas; rodapé tem "Preferências
+  de cookies" (`data-cc="reopen"` → `window.klarimReopenConsent`). **Ao adicionar um `.js` público
+  novo, some ao allowlist do nginx** (`cookie-consent\.js` já lá) + `?v=N`.
 - **Tema light/dark (KL-87):** **light é o padrão**. Mecanismo: os tokens `--color-slate-*` e
   `--color-white` do Tailwind são **sobrescritos por tema** em `web/src/styles/global.css`
   (`:root`=light com a escala slate INVERTIDA; `[data-theme='dark']`=defaults). Como todo
@@ -526,7 +533,7 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1926 passed** (backend pytest; +14 KL-133 blog) + **142 node --test** (frontend `test:unit`, +10 KL-133 blog)
+- Testes: **1956 passed** (backend pytest; +23 KL-136 saúde operacional) + **142 node --test** (frontend `test:unit`)
 - Páginas públicas: `/metodologia` (KL-100) · descadastro `/remover` (KL-102) · landing com social proof ao vivo (KL-103)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - **Níveis de conta (KL-99):** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado
@@ -1581,6 +1588,48 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   (exato, vence a regex; `/blog/{slug}` vai ao Astro). Deps novas: `marked` + `sanitize-html` (SSR).
   Draft de teste: `scripts/seed_blog_draft.py` (idempotente, NÃO publica). **+14 backend + 10 node**;
   `nginx -t` OK, build OK. Relatório: `claude/reports/KL-133_blog.md`.
+- **KL-136** — Saúde operacional do pipeline de alerta (funil travado: 200 elegíveis → 4 enviados,
+  bounce 14%) ✅. **6 fixes:** **(1 P0) Lead scoring role penalty -15 → -5** (`discovery/alert_scoring.py`,
+  env `ALERT_ROLE_PENALTY`, lido a cada chamada): no BR `contato@`/`vendas@`/`sac@` é o e-mail PADRÃO de
+  PME, NÃO baixa qualidade — o -15 barrava a maioria dos leads action-zone (`contato@`: +10 corp +20
+  action -15 = 15 < threshold 20 → rejeitado; com -5 = 25 > 20 → passa). Vale p/ os DOIS sinais de caixa
+  de função (`role_based_prefix` por prefixo + `email_role_account` do status `role` da Reoon) via
+  `_role_penalty()` — MESMA penalidade, nunca DOBRAM (o 2º só entra se o prefixo não penalizou; sem
+  duplicação). **(2 P0) Gate SEPARADO por status** (`notifier/email_verifier.py::is_safe_to_send`): o
+  `catch_all` ganhou gate PRÓPRIO `ALERT_CATCH_ALL_SCORE_GATE` (default **30**, `>`) — servidor catch-all
+  aceita tudo no SMTP mas a caixa pode não existir → respondia por ~37% dos bounces; o gate 20 herdado do
+  `inbox_full` era permissivo demais. `inbox_full` segue `ALERT_UNSAFE_SCORE_GATE` (20). `unknown` continua
+  SEMPRE bloqueado (KL-128); safe/valid/role sempre enviam. **(3 P1) Breakdown de `blocked_known`**
+  (`discovery/alert_worker.py`): coleta o status EFETIVO de cada já-barrado e loga
+  `[alert] blocked_known breakdown: {catch_all: N, disabled: M, …}` (revela o que polui o fetch). A query
+  `_ALERT_ELIGIBLE_WHERE` já exclui todos os terminais (unknown+power, disabled/invalid/disposable/spamtrap);
+  a partição do KL-129 já filtra `blocked_known` ANTES do subset (não consomem vaga de verificação) —
+  confirmado, sem regressão. **(4 P0) Fail-safe de saldo Reoon** (`email_verifier` + `alert_worker` +
+  `api/main.py`): se `REOON_API_KEY` existe mas o saldo está ESGOTADO (0/negativo), o worker NÃO verifica
+  novas caixas — **defere TODAS as não-verificadas** (`cap=0`) em vez do fail-open do KL-110 que enviava
+  SEM verificar (causa dos 12 bounces "sem verificação"). Saldo `None` (ilegível) = fail-open (não bloqueia);
+  só consulta o saldo se há caixas novas a verificar (cache Redis 1h `reoon:balance`, compartilhada API↔worker).
+  `GET /system/status` ganhou bloco **`email_verification`** (`reoon_balance` + `reoon_balance_warning`
+  [<1000 OU None] + `unverified_count` + `verified/deferred_last_cycle` + `reoon_exhausted`). **Nota (não-bug):**
+  `by_source` só mostra `power` porque os 16k unverified têm `email_verify_source=NULL` (campo do KL-125 nunca
+  backfilled) — ausência de backfill, não bug. **(5 P1) Diagnóstico de re-scan** (`store.rescan_diagnostics`
+  + `rescan_worker`): quando o ciclo acha `eligible: 0`, loga o funil `engajados → com_email → elegíveis →
+  recentes_demais` (revela se o problema é a janela `RESCAN_AGE_DAYS`=30 ou o pool). Critério real de
+  elegibilidade (documentado): `status IN ('scanned','alerted') AND contact_email IS NOT NULL AND last_scan_at
+  < NOW() - N days`. **(6 P2) Divergências de métrica:** `count_proactive_emails_this_month` com boundary
+  explicitamente **UTC** (`date_trunc('month', NOW() AT TIME ZONE 'UTC')` — as colunas `sent_at`/`rescanned_at`
+  são `TIMESTAMP` naive-UTC). Fontes autoritativas documentadas abaixo. **+23 testes** (`test_kl136_
+  operational_health.py`) + KL-85/110/127/129/130 atualizados aos novos defaults. **1956 pytest passed.**
+  Relatório: `claude/reports/KL-136_saude_operacional.md`.
+
+  **Fontes autoritativas de métrica (KL-95 + KL-136):** **Contas criadas** = `COUNT(*) FROM users` no período
+  (server-side, KL-95 — NÃO o funil do tracker.js, inflado por pre-fetch; server_metrics é autoritativo).
+  **Scans (Analytics/dashboard)** = `COUNT(*) FROM scans WHERE source IS DISTINCT FROM 'discovery'` (MANUAIS,
+  KL-95); **scans (`/system/status`)** = `scan_today_stats` = TODOS os scans do dia (`scanned_at >= hoje`, incl.
+  o worker discovery) — medem coisas diferentes por design (a divergência dashboard×system_status é esperada).
+  **`sent_month`** (`count_proactive_emails_this_month`, cota mensal) = PROATIVO (alert_log + rescan_log),
+  mês-**calendário UTC**; **`email_metrics.sent_week`** = `email_log`, TODOS os tipos, 7 dias móveis — no dia 1
+  do mês `sent_month` < `sent_week` é ESPERADO (fontes/janelas diferentes, NÃO bug).
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

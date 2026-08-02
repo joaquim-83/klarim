@@ -232,7 +232,8 @@ def test_verify_email_domain_catch_all_cache(monkeypatch):
 
 # KL-122: o gate caiu de 50 → 20 (default). É `> gate`, não `>=`.
 # KL-128 (definitivo): `unknown` NUNCA envia (o gate de score não filtra `unknown`, que no BR é
-# servidor sem SMTP-check → bounce ~5-8% >10% no KL-127). O gate fica só p/ catch_all/inbox_full.
+# servidor sem SMTP-check → bounce ~5-8% >10% no KL-127).
+# KL-136: gates SEPARADOS — catch_all usa gate 30 (mais alto, 37% dos bounces); inbox_full usa 20.
 @pytest.mark.parametrize("status,score,expected", [
     ("safe", 0, True),
     ("valid", 0, True),
@@ -244,10 +245,12 @@ def test_verify_email_domain_catch_all_cache(monkeypatch):
     ("unknown", 100, False),    # KL-128: unknown nunca envia, mesmo com score alto
     ("unknown", 25, False),
     ("unknown", 0, False),
-    ("catch_all", 25, True),
-    ("catch_all", 20, False),
+    ("catch_all", 25, False),   # KL-136: 25 <= 30 (gate catch_all) → não envia
+    ("catch_all", 31, True),    # KL-136: 31 > 30 → envia
+    ("catch_all", 30, False),   # KL-136: `>`, não `>=`
     ("inbox_full", 15, False),
     ("inbox_full", 51, True),
+    ("inbox_full", 21, True),   # KL-136: inbox_full segue o gate 20 (não o de catch_all)
 ])
 def test_is_safe_to_send(status, score, expected):
     assert ev.is_safe_to_send(ev.VerifyResult(status, "x"), score) is expected
@@ -256,22 +259,45 @@ def test_is_safe_to_send(status, score, expected):
 def test_unsafe_gate_default_is_20(monkeypatch):
     monkeypatch.delenv("ALERT_UNSAFE_SCORE_GATE", raising=False)
     assert ev._unsafe_score_gate() == 20
-    # KL-128: o gate vale p/ catch_all/inbox_full (é `>`, não `>=`); unknown é sempre bloqueado.
-    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 21) is True
-    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 20) is False
+    # KL-136: o gate 20 vale p/ inbox_full (é `>`, não `>=`); unknown é sempre bloqueado.
+    assert ev.is_safe_to_send(ev.VerifyResult("inbox_full", "x"), 21) is True
+    assert ev.is_safe_to_send(ev.VerifyResult("inbox_full", "x"), 20) is False
     assert ev.is_safe_to_send(ev.VerifyResult("unknown", "x"), 100) is False
 
 
 def test_unsafe_gate_reads_env_var(monkeypatch):
-    monkeypatch.setenv("ALERT_UNSAFE_SCORE_GATE", "30")
-    assert ev._unsafe_score_gate() == 30
-    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 25) is False  # 25 <= 30
-    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 31) is True
+    monkeypatch.setenv("ALERT_UNSAFE_SCORE_GATE", "40")
+    assert ev._unsafe_score_gate() == 40
+    assert ev.is_safe_to_send(ev.VerifyResult("inbox_full", "x"), 35) is False  # 35 <= 40
+    assert ev.is_safe_to_send(ev.VerifyResult("inbox_full", "x"), 41) is True
 
 
 def test_unsafe_gate_invalid_env_falls_back_to_default(monkeypatch):
     monkeypatch.setenv("ALERT_UNSAFE_SCORE_GATE", "abc")
     assert ev._unsafe_score_gate() == ev._UNSAFE_SCORE_GATE  # fail-safe, não crasha
+
+
+# KL-136 — gate SEPARADO de catch_all
+def test_catch_all_gate_default_is_30(monkeypatch):
+    monkeypatch.delenv("ALERT_CATCH_ALL_SCORE_GATE", raising=False)
+    assert ev._catch_all_gate() == 30
+    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 31) is True
+    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 30) is False   # `>`, não `>=`
+    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 25) is False
+
+
+def test_catch_all_gate_reads_env_var(monkeypatch):
+    monkeypatch.setenv("ALERT_CATCH_ALL_SCORE_GATE", "50")
+    assert ev._catch_all_gate() == 50
+    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 45) is False   # 45 <= 50
+    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 51) is True
+    # inbox_full continua no gate 20 (independente do de catch_all)
+    assert ev.is_safe_to_send(ev.VerifyResult("inbox_full", "x"), 21) is True
+
+
+def test_catch_all_gate_invalid_env_falls_back_to_default(monkeypatch):
+    monkeypatch.setenv("ALERT_CATCH_ALL_SCORE_GATE", "xyz")
+    assert ev._catch_all_gate() == ev._CATCH_ALL_SCORE_GATE  # fail-safe, não crasha
 
 
 # --------------------------------------------------------------------------- #
@@ -316,17 +342,19 @@ def test_lead_scoring_unknown_penalty():
 
 
 def test_lead_scoring_role_status_no_double_penalty():
-    # prefixo 'contato' já penaliza -15; o status 'role' NÃO deve dobrar.
+    # KL-136: prefixo 'contato' já penaliza -5; o status 'role' NÃO deve dobrar.
     t = {"domain": "x.com", "last_scan_score": 60, "email_verify_status": "role"}
     out = calculate_alert_score(t, "contato@x.com")
     role_signals = [s for s in out["signals"] if "role" in s["signal"]]
     assert len(role_signals) == 1 and role_signals[0]["signal"] == "role_based_prefix"
+    assert role_signals[0]["points"] == -5   # KL-136: penalidade reduzida
 
 
 def test_lead_scoring_role_status_penalizes_when_prefix_absent():
+    # KL-136: o status 'role' da Reoon (prefixo fora da lista) penaliza com a MESMA penalidade -5.
     t = {"domain": "x.com", "last_scan_score": 60, "email_verify_status": "role"}
     out = calculate_alert_score(t, "joao@x.com")  # prefixo não é role
-    assert any(s["signal"] == "email_role_account" and s["points"] == -15 for s in out["signals"])
+    assert any(s["signal"] == "email_role_account" and s["points"] == -5 for s in out["signals"])
 
 
 # --------------------------------------------------------------------------- #

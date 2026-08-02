@@ -6650,6 +6650,29 @@ async def _redis_json(key: str):
         return None
 
 
+async def _reoon_balance_cached(redis) -> Optional[int]:
+    """KL-136 — saldo Reoon com cache Redis 1h (`reoon:balance`, MESMA chave do alert worker).
+    Best-effort: sem key/erro/timeout → None (nunca derruba o status)."""
+    if redis is not None:
+        try:
+            v = await redis.get("reoon:balance")
+            if v is not None:
+                return int(v)
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        from notifier.email_verifier import check_balance
+        bal = await check_balance()
+    except Exception:  # noqa: BLE001
+        return None
+    if bal is not None and redis is not None:
+        try:
+            await redis.set("reoon:balance", str(int(bal)), ex=3600)
+        except Exception:  # noqa: BLE001
+            pass
+    return bal
+
+
 @app.get("/system/status")
 async def api_system_status() -> dict:
     """Status dos workers + health das dependências + métricas de e-mail (KL-16)."""
@@ -6686,6 +6709,15 @@ async def api_system_status() -> dict:
             queue_size = await redis.llen(os.environ.get("KLARIM_SCAN_QUEUE", "klarim:scan_queue"))
         except Exception:  # noqa: BLE001
             queue_size = None
+
+    # KL-136 (Fix 4) — visibilidade do saldo Reoon + verificação de e-mail. Best-effort: nada
+    # aqui pode derrubar o status. `reoon_balance=None` (ilegível/sem key) já dispara o warning.
+    reoon_balance = await _reoon_balance_cached(redis)
+    try:
+        unverified_count = await store.count_unverified_targets()
+    except Exception:  # noqa: BLE001
+        unverified_count = None
+    _last_verif = ((alert_hb or {}).get("last_cycle_stats") or {}).get("verification") or {}
 
     deps = await health_checks.run_all(redis)
     ctrl = worker_control.load()  # KL-32: estado de pausa por worker
@@ -6747,6 +6779,17 @@ async def api_system_status() -> dict:
             "monthly_limit": monthly_limit,
             "monthly_usage_pct": f"{usage_pct}%",
             "backlog": backlog,
+        },
+        # KL-136 (Fix 4) — saldo Reoon + estado da verificação de e-mail. `reoon_balance_warning`
+        # alerta o operador quando o saldo está baixo (<1000) OU ilegível (None) — sem saldo o
+        # alert worker DEFERE os não-verificados (fail-safe) em vez de enviar sem verificar.
+        "email_verification": {
+            "reoon_balance": reoon_balance,
+            "reoon_balance_warning": (reoon_balance is None) or (reoon_balance < 1000),
+            "unverified_count": unverified_count,
+            "verified_last_cycle": _last_verif.get("verified", 0),
+            "deferred_last_cycle": _last_verif.get("deferred", 0),
+            "reoon_exhausted": bool(_last_verif.get("reoon_exhausted", False)),
         },
         # KL-77 (Fase 2): saúde do arquivamento de responses brutos no GCS.
         "gcs_archive": await _gcs_archive_stats_safe(redis),

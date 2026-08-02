@@ -58,6 +58,10 @@ def _env(monkeypatch):
     monkeypatch.setenv("ALERT_TRUST_DOMAIN_DOWNGRADE", "false")
     monkeypatch.delenv("ALERT_UNSAFE_SCORE_GATE", raising=False)
 
+    async def _bal(api_key=None, client=None):  # KL-136: offline — saldo ilegível (fail-open)
+        return None
+    monkeypatch.setattr(ev, "check_balance", _bal)
+
 
 # --------------------- WHERE exclui os terminais -------------------------- #
 

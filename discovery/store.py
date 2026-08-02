@@ -6178,6 +6178,16 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    async def count_unverified_targets(self) -> int:
+        """KL-136 — contagem LEVE de alvos com e-mail ainda sem verificação de deliverability
+        (status NULL), para o painel Sistema (sem os GROUP BY do `email_verification_stats`)."""
+        def _fn(cur):
+            cur.execute("SELECT COUNT(*) FROM targets "
+                        "WHERE contact_email IS NOT NULL AND email_verify_status IS NULL")
+            return int(cur.fetchone()[0])
+
+        return await asyncio.to_thread(self._run, _fn)
+
     async def targets_needing_email_verification(
         self, limit: int = 500, offset: int = 0,
     ) -> List[Dict[str, Any]]:
@@ -6384,20 +6394,53 @@ class TargetStore:
         """Cota mensal GLOBAL (KL-23): alertas (alert_log) + evolução (rescan_log)
         enviados no mês corrente (calendário). Substitui o antigo throttle horário/
         diário — com o Resend Pro (50k/mês) o único teto é a cota mensal.
+
+        KL-136 (Fix 6): boundary explicitamente UTC. `sent_at`/`rescanned_at` são `TIMESTAMP`
+        naive (gravam `NOW()` = wall-clock UTC no container). `date_trunc('month', NOW())` truncava
+        na TZ da SESSÃO — se ela não fosse UTC o início do mês saía deslocado. `NOW() AT TIME ZONE
+        'UTC'` dá o naive-UTC-agora, e o `date_trunc` sobre ele bate com a coluna naive-UTC. ⚠️ Esta
+        contagem é o USO DA COTA (proativo, mês-calendário) — NÃO confundir com `email_metrics.
+        sent_week` (email_log, TODOS os tipos, 7 dias móveis): no dia 1 do mês `sent_month` <
+        `sent_week` é ESPERADO (fontes/janelas diferentes).
         """
         def _fn(cur):
             cur.execute(
                 "SELECT "
                 "(SELECT COUNT(*) FROM alert_log WHERE status = 'sent' "
-                "  AND sent_at >= date_trunc('month', NOW())) + "
+                "  AND sent_at >= date_trunc('month', NOW() AT TIME ZONE 'UTC')) + "
                 "(SELECT COUNT(*) FROM rescan_log WHERE email_id IS NOT NULL "
-                "  AND rescanned_at >= date_trunc('month', NOW()))"
+                "  AND rescanned_at >= date_trunc('month', NOW() AT TIME ZONE 'UTC'))"
             )
             return int(cur.fetchone()[0])
 
         return await asyncio.to_thread(self._run, _fn)
 
     # --- re-scan (KL-13) --------------------------------------------------- #
+
+    async def rescan_diagnostics(self, days: int = 30) -> Dict[str, int]:
+        """KL-136 (Fix 5) — decompõe o funil de elegibilidade do re-scan para diagnosticar
+        `eligible: 0`. Conta o pool por etapa do filtro real de `get_targets_for_rescan`:
+        engajados (scanned/alerted) → com e-mail → escaneados há > N dias (= elegíveis) vs.
+        escaneados há < N dias (recentes demais). Assim o log revela SE o problema é a janela
+        (todos re-escaneados recentemente) ou o pool (poucos engajados-com-e-mail)."""
+        def _fn(cur):
+            out: Dict[str, int] = {}
+            cur.execute("SELECT COUNT(*) FROM targets WHERE status IN ('scanned','alerted')")
+            out["engaged"] = int(cur.fetchone()[0])
+            cur.execute("SELECT COUNT(*) FROM targets WHERE status IN ('scanned','alerted') "
+                        "AND contact_email IS NOT NULL")
+            out["engaged_with_email"] = int(cur.fetchone()[0])
+            cur.execute("SELECT COUNT(*) FROM targets WHERE status IN ('scanned','alerted') "
+                        "AND contact_email IS NOT NULL AND last_scan_at IS NOT NULL "
+                        "AND last_scan_at < NOW() - (%s || ' days')::interval", (str(days),))
+            out["eligible"] = int(cur.fetchone()[0])
+            cur.execute("SELECT COUNT(*) FROM targets WHERE status IN ('scanned','alerted') "
+                        "AND contact_email IS NOT NULL AND last_scan_at IS NOT NULL "
+                        "AND last_scan_at >= NOW() - (%s || ' days')::interval", (str(days),))
+            out["too_recent"] = int(cur.fetchone()[0])
+            return out
+
+        return await asyncio.to_thread(self._run, _fn)
 
     async def get_targets_for_rescan(self, days: int = 30, limit: int = 50) -> List[Dict[str, Any]]:
         """Alvos já engajados (scanned/alerted), com e-mail, escaneados há > N dias."""

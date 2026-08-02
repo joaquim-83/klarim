@@ -66,6 +66,10 @@ def _key(monkeypatch):
     monkeypatch.delenv("ALERT_UNSAFE_SCORE_GATE", raising=False)  # gate = 20
     monkeypatch.setenv("ALERT_TRUST_DOMAIN_DOWNGRADE", "false")   # ligado só nos testes de trust
 
+    async def _bal(api_key=None, client=None):  # KL-136: offline — saldo ilegível (fail-open)
+        return None
+    monkeypatch.setattr(ev, "check_balance", _bal)
+
 
 def _mock_verify(monkeypatch, by_email):
     calls = []

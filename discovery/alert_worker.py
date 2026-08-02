@@ -25,6 +25,7 @@ import os
 import random
 import re
 import time
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Optional
 
@@ -342,6 +343,29 @@ class AlertWorker:
                 self._redis = False
         return self._redis or None
 
+    async def _reoon_balance(self, api_key: str) -> Optional[int]:
+        """KL-136 (Fix 4) — saldo Reoon com cache Redis 1h (`reoon:balance`). None = não deu p/ ler
+        (fail-open: na dúvida NÃO trata como esgotado). Best-effort; nunca derruba o ciclo."""
+        r = await self._redis_client()
+        if r is not None:
+            try:
+                v = await r.get("reoon:balance")
+                if v is not None:
+                    return int(v)
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            bal = await email_verifier.check_balance(api_key)
+        except Exception as exc:  # noqa: BLE001 - saldo indisponível → None (não bloqueia)
+            print(f"[alert] saldo Reoon indisponível (segue): {exc!r}", flush=True)
+            return None
+        if bal is not None and r is not None:
+            try:
+                await r.set("reoon:balance", str(int(bal)), ex=3600)
+            except Exception:  # noqa: BLE001
+                pass
+        return bal
+
     async def _domain_bounced(self, domain: str, cache: dict) -> bool:
         """Domínio com bounce anterior? Cache em memória (por ciclo) + Redis (24h). Fail-open:
         qualquer erro → False (não penaliza por falha de infra)."""
@@ -467,7 +491,7 @@ class AlertWorker:
             # Os já verificados seguem o gate pelo status cacheado (KL-128: `unknown` é barrado pelo
             # gate); os não verificados passam (o MX da Camada 0 já foi validado na extração —
             # bloquear tudo aqui zeraria os alertas, e a verificação real ativa com a key na VM).
-            kept = []
+            kept, blocked_known_status = [], []
             for t in targets:
                 st = _status(t)
                 if t.get("email_verified") and st:
@@ -477,9 +501,13 @@ class AlertWorker:
                         kept.append(t)
                     else:
                         stats["blocked_known"] += 1
+                        blocked_known_status.append(st or "none")
                         _log(t, st, "SKIPPED_GATE")
                 else:
                     kept.append(t)  # não verificável sem key → passa (MX já validado na extração)
+            if blocked_known_status:  # KL-136 (Fix 3): breakdown no modo degradado também
+                logger.info("[alert] blocked_known breakdown: %s",
+                            dict(Counter(blocked_known_status)))
             return kept, stats
 
         redis = await self._redis_client()
@@ -512,7 +540,9 @@ class AlertWorker:
                     print(f"[alert] trusted_recipient_domains falhou (segue): {exc!r}", flush=True)
 
         # --- Partição (KL-129): não gasta o cap com quem já sabemos o resultado. --- #
-        sendable, unverified = [], []
+        # KL-136 (Fix 3): coleciona o STATUS EFETIVO de cada `blocked_known` p/ o breakdown no log
+        # (revela o que está poluindo: catch_all com score baixo? role? disabled que passou o SQL?).
+        sendable, unverified, blocked_known_status = [], [], []
         for t in targets:
             if not _is_fresh(t):
                 unverified.append(t)
@@ -531,18 +561,39 @@ class AlertWorker:
                                                   cached=True, source="cache")
             if res.status in email_verifier.BLOCK_STATUSES:
                 stats["blocked_known"] += 1   # já blocklistado quando foi verificado; não reenvia
+                blocked_known_status.append(res.status)
                 _log(t, res.status, "BLOCKED_KNOWN")
             elif email_verifier.is_safe_to_send(res, score):
                 stats["from_cache"] += 1
                 sendable.append(t)
             else:
                 stats["blocked_known"] += 1
+                blocked_known_status.append(res.status or "none")
                 _log(t, res.status, "SKIPPED_GATE")
+        # KL-136 (Fix 3): breakdown de status dos já-barrados (só quando houver). Diagnostica se a
+        # query de elegíveis está deixando passar status bloqueáveis que deveriam ser filtrados no SQL.
+        if blocked_known_status:
+            logger.info("[alert] blocked_known breakdown: %s", dict(Counter(blocked_known_status)))
 
         # --- Subset: NÃO verificados primeiro (prioridade), até o cap. --- #
-        cap = max(0, getattr(self, "email_verify_max", 200))
+        base_cap = max(0, getattr(self, "email_verify_max", 200))
+        # KL-136 (Fix 4) — fail-safe de saldo. Só consulta o saldo se há caixas NOVAS a verificar
+        # (evita HTTP à toa — inclusive em testes com verify_max=0). Se a REOON_API_KEY existe mas
+        # o saldo está ESGOTADO (0/negativo), NÃO verifica: defere TODAS as não-verificadas (o
+        # fail-open do KL-110 as enviava SEM verificar → bounce). Os já-verificados-OK (sendable)
+        # seguem. None (saldo ilegível) = fail-open: NÃO trata como esgotado.
+        reoon_exhausted, balance = False, None
+        if unverified and base_cap > 0:
+            balance = await self._reoon_balance(api_key)
+            reoon_exhausted = balance is not None and balance <= 0
+            if reoon_exhausted:
+                stats["reoon_exhausted"] = True
+        cap = 0 if reoon_exhausted else base_cap
         subset = unverified[:cap]
         stats["deferred"] = max(0, len(unverified) - len(subset))
+        if reoon_exhausted:
+            logger.warning("[alert] KL-136: saldo Reoon esgotado (%s) — %d não-verificados deferidos "
+                           "(fail-safe: não envia sem verificar)", balance, stats["deferred"])
         # KL-130 — diagnóstico da partição (esperado após o fix: unverified > 0 → verified > 0).
         logger.info("[alert] KL-130 partição: %d sendable, %d blocked_known, %d unverified (de %d) "
                     "→ subset %d, deferidos %d", len(sendable), stats["blocked_known"],

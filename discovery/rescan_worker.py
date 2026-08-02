@@ -303,6 +303,17 @@ class RescanWorker:
         # 1. Reescaneia cada alvo (e-mail adiado — sai em batch no passo 2).
         targets = await self.store.get_targets_for_rescan(self.age_days, limit=self.batch)
         stats["eligible"] = len(targets)
+        # KL-136 (Fix 5): se o ciclo achou 0, decompõe o funil de elegibilidade p/ diagnóstico
+        # (janela x pool). Só quando eligible=0 (evita query extra no caminho normal). Fail-open.
+        if not targets:
+            try:
+                diag = await self.store.rescan_diagnostics(self.age_days)
+                stats["diagnostics"] = diag
+                print(f"[rescan] 0 elegíveis (janela {self.age_days}d): engajados={diag['engaged']}, "
+                      f"com_email={diag['engaged_with_email']}, elegíveis={diag['eligible']}, "
+                      f"recentes_demais={diag['too_recent']}", flush=True)
+            except Exception as exc:  # noqa: BLE001 - diagnóstico nunca derruba o ciclo
+                print(f"[rescan] diagnóstico de elegibilidade falhou: {exc!r}", flush=True)
         for t in targets:
             try:
                 res = await rescan_target(self.store, mailer, cache, t, send_email=False)

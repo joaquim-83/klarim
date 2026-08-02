@@ -41,9 +41,28 @@ def test_free_third_party_no_penalty():
     assert "corporate_email" not in _sig(r)    # gmail é free → não corporativo
 
 
-def test_role_based_minus_15():
+def test_role_based_minus_5():
+    # KL-136: penalidade de prefixo role-based reduzida de -15 → -5 (contato@ é o e-mail PADRÃO
+    # de PME no BR, não sinal de baixa qualidade). +30 (domain) +10 (corp) -5 (role) = 35.
     r = calculate_alert_score({"domain": "x.com.br", "last_scan_score": None}, "contato@x.com.br")
-    # +30 (domain) +10 (corp) -15 (role) = 25
+    assert r["score"] == 35 and "role_based_prefix" in _sig(r)
+
+
+def test_role_penalty_reads_env_var(monkeypatch):
+    # ALERT_ROLE_PENALTY editável: com -15 (antigo) o contato@ na action_zone falha (15 < 20).
+    monkeypatch.setenv("ALERT_ROLE_PENALTY", "-15")
+    r = calculate_alert_score({"domain": "x.com.br", "last_scan_score": 70}, "contato@x.com.br")
+    assert r["score"] == 45   # 30+10+20-15 (action_zone com prefixo role)
+    # default (-5) → contato@ na action_zone passa (55 > 20).
+    monkeypatch.delenv("ALERT_ROLE_PENALTY", raising=False)
+    r2 = calculate_alert_score({"domain": "x.com.br", "last_scan_score": 70}, "contato@x.com.br")
+    assert r2["score"] == 55   # 30+10+20-5
+
+
+def test_role_based_prefix_action_zone_passes_threshold():
+    # KL-136 (cenário do card): contato@ genérico (não casa domínio) na action_zone com -5 → 25 (>20).
+    r = calculate_alert_score({"domain": "hotel.com.br", "last_scan_score": 70}, "contato@x.com.br")
+    # +10 (corp) +20 (action_zone) -5 (role) = 25 → passa o threshold (20)
     assert r["score"] == 25 and "role_based_prefix" in _sig(r)
 
 
