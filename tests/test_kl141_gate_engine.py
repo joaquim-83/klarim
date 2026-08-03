@@ -77,7 +77,7 @@ def test_run_all_returns_report(monkeypatch):
     for k in list(sge._CHECKS):
         monkeypatch.setitem(sge._CHECKS, k, _fake)
     rep = _run(sge.run_all("https://x.test"))
-    assert isinstance(rep, GateReport) and len(rep.results) == 3   # headers+ssl+exposure
+    assert isinstance(rep, GateReport) and len(rep.results) == 4   # headers+ssl+exposure+credentials
     assert rep.duration_ms >= 0
 
 
@@ -103,9 +103,10 @@ def test_run_all_check_error_isolated(monkeypatch):
     monkeypatch.setitem(sge._CHECKS, "headers", _boom)
     monkeypatch.setitem(sge._CHECKS, "ssl", _ok)
     monkeypatch.setitem(sge._CHECKS, "exposure", _ok)
+    monkeypatch.setitem(sge._CHECKS, "credentials", _ok)
     rep = _run(sge.run_all("https://x.test"))
     assert any(r.status == Status.ERROR and "headers" in r.check for r in rep.results)
-    assert sum(1 for r in rep.results if r.status == Status.PASS) == 2   # ssl+exposure seguiram
+    assert sum(1 for r in rep.results if r.status == Status.PASS) == 3   # ssl+exposure+credentials seguiram
 
 
 def test_engine_respects_timeout(monkeypatch):

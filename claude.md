@@ -545,7 +545,7 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1997 passed** (backend pytest; KL-141 security gate +41) + **142 node --test** (frontend `test:unit`)
+- Testes: **2026 passed** (backend pytest; KL-141 P2 credenciais +29) + **142 node --test** (frontend `test:unit`)
 - Páginas públicas: `/metodologia` (KL-100) · descadastro `/remover` (KL-102) · landing com social proof ao vivo (KL-103)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - **Níveis de conta (KL-99):** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado
@@ -1709,8 +1709,22 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   SPA:** rodando real contra `klarim.net` (score 65, passed=True, 7s) flagou `/adminer`/`/docs`/`/_profiler`
   /`/main.js.map` — o Astro/Vite devolve 200+HTML para paths fora do blocklist do nginx (KL-138). É RUÍDO
   (HIGH/MEDIUM, não bloqueia o `passed`, que só olha CRÍTICO); a correção adequada é o **allowlist do
-  config YAML no Prompt 3** (ou estender o 404 do nginx). Prompts 2-4 (não neste): credenciais, API
-  security+CLI+config, GitHub Actions. Relatório: `claude/reports/KL-141_p1_security_gate_engine.md`.
+  config YAML no Prompt 3** (ou estender o 404 do nginx). Prompt 1 relatório:
+  `claude/reports/KL-141_p1_security_gate_engine.md`.
+  **Prompt 2/4 ✅ — check de credenciais** (`security_gate/checks/credentials.py`; registrado no engine
+  como `"credentials"`, no default order). **Regra inviolável:** o VALOR da credencial NUNCA é
+  armazenado/logado/transmitido — o `Result` só tem tipo+localização(arquivo:linha)+severidade (teste
+  dedicado falha se qualquer fragmento do segredo vazar no `detail`/`path`). Cobertura completa: ~50
+  patterns fixos em 7 categorias (payment/cloud/baas_database/ai_ml/auth_identity/communication/generic
+  — Stripe/AWS/Google/Azure/Supabase/Firebase/Mongo/Postgres/OpenAI/Anthropic/JWT/NextAuth/SendGrid/
+  Slack/Twilio/GitHub/GitLab/npm/private-keys/…) + **entropia** (reforço: atribuição a variável de nome
+  "de segredo" com valor entropia>4.5 e len>20 → MEDIUM; o gate de LHS-secreto evita flood em JS
+  minificado). **Fontes:** HTML + **TODOS** os `<script src>` mesma-origem (sem limite, dedup) + crawl
+  de até 9 páginas internas (10 no total); CDN de terceiro ignorado. **Anti-FP:** placeholders (YOUR_/
+  xxx/changeme/…), `<code>`/`<pre>`/doc (só em HTML), valores curtos/vazios; `pk_test_`=LOW. **Dogfooding
+  real (klarim.net): score 100, 0 findings, ~16s** (nenhum FP nos bundles minificados). **+29 testes**
+  (`test_kl141_credentials.py`); os 2 testes de engine do P1 atualizados p/ 4 checks. Relatório:
+  `claude/reports/KL-141_p2_credentials.md`. Prompts 3-4 (não neste): CLI, config YAML, GitHub Actions.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

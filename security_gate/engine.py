@@ -14,6 +14,7 @@ from typing import List, Optional
 
 import httpx
 
+from .checks.credentials import check_credentials
 from .checks.exposure import check_exposure
 from .checks.headers import check_headers
 from .checks.ssl import check_ssl
@@ -34,8 +35,9 @@ _CHECKS = {
     "headers": check_headers,
     "ssl": check_ssl,
     "exposure": check_exposure,
+    "credentials": check_credentials,
 }
-_DEFAULT_ORDER = ["headers", "ssl", "exposure"]
+_DEFAULT_ORDER = ["headers", "ssl", "exposure", "credentials"]
 
 
 async def _warn_if_stale(client: httpx.AsyncClient, url: str, deploy_ts: float) -> None:
