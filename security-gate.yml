@@ -1,0 +1,46 @@
+# KL-141 — Klarim Security Gate: config do dogfooding no CI/CD da própria Klarim.
+# Scanner de EXPOSIÇÃO/configuração pós-deploy (não é DAST). Ver security_gate/ + scripts/security_gate.py.
+target: https://klarim.net
+fail_on: critical
+timeout: 60
+
+checks:
+  headers:
+    enabled: true
+    hsts_min_age: 31536000        # 1 ano
+  ssl:
+    enabled: true
+    min_days: 14                  # avisa (HIGH) se expira em ≤14 dias; ≤7 é CRÍTICO
+  exposure:
+    enabled: true
+    # Allowlist — falsos positivos de SPA (o Astro/Vite devolve 200 p/ paths inexistentes fora do
+    # blocklist do nginx, KL-138). Os recursos NÃO-HTML (source maps, .json/.sql/.env/.yml/.config)
+    # já são resolvidos automaticamente pelo Content-Type guard do check (não precisam de allowlist);
+    # aqui ficam só os paths HTML-capazes (painéis/UI/debug), onde o Content-Type não desambigua.
+    allowlist:
+      - /docs          # UI de docs (FastAPI off em prod; o SPA devolve HTML 200)
+      - /adminer       # fallback de SPA, não é painel real
+      - /cpanel        # fallback de SPA
+      - /_profiler     # fallback de SPA
+      - /elmah.axd     # fallback de SPA (.axd real seria HTML → não usa o guard)
+      - /trace.axd     # fallback de SPA
+    extra_paths: []
+  credentials:
+    enabled: true
+  api:
+    enabled: true
+    root_path: /api/
+    protected_endpoints:
+      - /api/admin/
+      - /api/account/
+      - /api/system/
+      - /mcp/
+
+notifications:                    # usadas no Prompt 4 (e-mail/webhook)
+  email:
+    enabled: true
+    recipients:
+      - seguranca@klarim.net
+    on: failure
+  webhook:
+    enabled: false

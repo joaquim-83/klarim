@@ -21,17 +21,18 @@ _MAX_AGE_RE = re.compile(r"max-age\s*=\s*(\d+)", re.I)
 _SERVER_VERSION_RE = re.compile(r"/\s*\d")   # "nginx/1.25.3", "Apache/2.4" → expõe versão
 
 
-def _check_hsts(header: str, value: Optional[str]) -> Tuple[Status, str]:
+def _check_hsts(header: str, value: Optional[str],
+                min_age: int = HSTS_MAX_AGE_RECOMMENDED) -> Tuple[Status, str]:
     if not value:
         return Status.FAIL, "Strict-Transport-Security ausente na resposta HTTPS."
     m = _MAX_AGE_RE.search(value)
     max_age = int(m.group(1)) if m else 0
-    if max_age >= HSTS_MAX_AGE_RECOMMENDED:
+    if max_age >= min_age:
         return Status.PASS, f"HSTS presente (max-age={max_age})."
     if max_age <= 0:
         return Status.FAIL, f"HSTS presente porém sem max-age válido: '{value}'."
     return (Status.FAIL,
-            f"HSTS com max-age curto ({max_age}s); recomendado ≥ {HSTS_MAX_AGE_RECOMMENDED} (1 ano).")
+            f"HSTS com max-age curto ({max_age}s); recomendado ≥ {min_age} (1 ano).")
 
 
 def _check_csp(header: str, value: Optional[str]) -> Tuple[Status, str]:
@@ -75,13 +76,18 @@ _HEADER_CHECKS = (
 )
 
 
-async def check_headers(client: httpx.AsyncClient, base_url: str) -> List[Result]:
-    """Um GET no alvo → valida os 7 headers de segurança sobre o MESMO response."""
+async def check_headers(client: httpx.AsyncClient, base_url: str, config=None) -> List[Result]:
+    """Um GET no alvo → valida os 7 headers de segurança sobre o MESMO response.
+    `config.hsts_min_age` ajusta o threshold do HSTS (default: 1 ano)."""
     r = await client.get(base_url)
+    min_age = getattr(config, "hsts_min_age", None) or HSTS_MAX_AGE_RECOMMENDED
     results: List[Result] = []
     for check_name, header, severity, validator in _HEADER_CHECKS:
         value = r.headers.get(header)   # httpx.Headers.get é case-insensitive
-        status, detail = validator(header, value)
+        if validator is _check_hsts:
+            status, detail = validator(header, value, min_age)
+        else:
+            status, detail = validator(header, value)
         results.append(Result(
             check=f"header_{check_name}", category="headers", path="/",
             status=status, severity=severity, detail=detail))

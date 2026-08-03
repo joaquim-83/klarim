@@ -28,8 +28,10 @@ def _days_left(not_after) -> Optional[int]:
     return (not_after - datetime.now(timezone.utc)).days
 
 
-async def check_ssl(client: httpx.AsyncClient, base_url: str) -> List[Result]:
-    """Certificado (expiração/validade) + protocolo TLS negociado."""
+async def check_ssl(client: httpx.AsyncClient, base_url: str, config=None) -> List[Result]:
+    """Certificado (expiração/validade) + protocolo TLS negociado. `config.ssl_min_days` define a
+    janela de aviso (HIGH) antes da expiração; ≤7 dias é sempre CRÍTICO."""
+    min_days = getattr(config, "ssl_min_days", None) or 14
     host = _hostname(base_url)
     results: List[Result] = []
     try:
@@ -59,7 +61,7 @@ async def check_ssl(client: httpx.AsyncClient, base_url: str) -> List[Result]:
     elif days <= 7:
         results.append(Result("ssl_expiring", "ssl", "/", Status.FAIL, Severity.CRITICAL,
                               f"Certificado expira em {days} dia(s)"))
-    elif days <= 14:
+    elif days <= min_days:
         results.append(Result("ssl_expiring", "ssl", "/", Status.FAIL, Severity.HIGH,
                               f"Certificado expira em {days} dia(s)"))
     else:

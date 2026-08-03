@@ -33,6 +33,9 @@ email-validator>=2.1,<3.0  # KL-110: sintaxe RFC 5322 + IDN + normalização na 
 # --- MCP (KL-18): operar o Klarim via Claude (servidor MCP montado no FastAPI) ---
 mcp>=1.27,<2
 
+# --- Security Gate (KL-141): loader do config YAML da CLI (import lazy; o core do Gate é stdlib+httpx) ---
+pyyaml>=6.0,<7.0
+
 # --- Tests (dev) ---
 pytest>=8.0,<9.0
 pytest-asyncio>=0.23,<0.25

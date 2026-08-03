@@ -25,6 +25,17 @@ class Status(Enum):
     SKIP = "skip"
 
 
+# Ordem de gravidade (para o `--fail-on` da CLI e para a cor do terminal). `.value` é string,
+# então comparar diretamente seria lexicográfico e ERRADO — use este rank.
+SEVERITY_RANK = {
+    Severity.CRITICAL: 4,
+    Severity.HIGH: 3,
+    Severity.MEDIUM: 2,
+    Severity.LOW: 1,
+    Severity.INFO: 0,
+}
+
+
 @dataclass
 class Result:
     """Resultado de UM check contra UM path/aspecto do alvo."""

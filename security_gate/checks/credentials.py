@@ -240,9 +240,10 @@ def _extract_internal_links(html: str, base_url: str) -> List[str]:
 # --------------------------------------------------------------------------- #
 # Check principal
 # --------------------------------------------------------------------------- #
-async def check_credentials(client: httpx.AsyncClient, base_url: str) -> List[Result]:
+async def check_credentials(client: httpx.AsyncClient, base_url: str, config=None) -> List[Result]:
     """Crawla homepage + até 9 páginas internas (10 no total), scaneia HTML + TODOS os JS da
-    mesma origem (dedup) por credenciais. NUNCA armazena/loga/transmite o VALOR encontrado."""
+    mesma origem (dedup) por credenciais. NUNCA armazena/loga/transmite o VALOR encontrado.
+    (`config` reservado p/ `credential_extra_patterns` em prompt futuro — não usado aqui.)"""
     results: List[Result] = []
     checked_js: set = set()
     pages_to_check: List[str] = [base_url]

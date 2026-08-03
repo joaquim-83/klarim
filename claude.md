@@ -545,7 +545,7 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **2026 passed** (backend pytest; KL-141 P2 credenciais +29) + **142 node --test** (frontend `test:unit`)
+- Testes: **2054 passed** (backend pytest; KL-141 P3 CLI/config/API +35) + **142 node --test** (frontend `test:unit`)
 - Páginas públicas: `/metodologia` (KL-100) · descadastro `/remover` (KL-102) · landing com social proof ao vivo (KL-103)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - **Níveis de conta (KL-99):** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado
@@ -1724,7 +1724,25 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   xxx/changeme/…), `<code>`/`<pre>`/doc (só em HTML), valores curtos/vazios; `pk_test_`=LOW. **Dogfooding
   real (klarim.net): score 100, 0 findings, ~16s** (nenhum FP nos bundles minificados). **+29 testes**
   (`test_kl141_credentials.py`); os 2 testes de engine do P1 atualizados p/ 4 checks. Relatório:
-  `claude/reports/KL-141_p2_credentials.md`. Prompts 3-4 (não neste): CLI, config YAML, GitHub Actions.
+  `claude/reports/KL-141_p2_credentials.md`.
+  **Prompt 3/4 ✅ — CLI + config YAML + API security + formatters + allowlist.** CLI executável
+  `scripts/security_gate.py <url> [--fail-on/--timeout/--checks/--config/--json/--quiet]` (exit 0 passou
+  · 1 falhou [FAIL ≥ `--fail-on`, por RANK, não string] · 2 erro). Config `security_gate/config.py`
+  (`GateConfig` + `load_config`: YAML → args da CLI; **`import yaml` lazy**, core sem dep; `pyyaml` no
+  requirements) + **`security-gate.yml`** commitado (config da Klarim). Check **API security**
+  (`api_security.py`): raiz `/api/` não lista endpoints (valida o KL-138) + `protected_endpoints`
+  respondem 401/403 (200 sem auth → FAIL CRITICAL). Formatters `terminal.py` (terminal ícones/score/
+  veredito, `--quiet` omite PASS; + `format_json`). Engine: `run_all(..., config)` passa `config` a
+  TODOS os checks (assinatura `check(client,url,config=None)`); `api` no default order. **Falsos
+  positivos de SPA resolvidos de fato:** o allowlist do card sozinho é whack-a-mole (o SPA 200 tudo);
+  a solução real é o **Content-Type guard** (novo, HEAD-only) no `check_exposure` — recurso não-HTML
+  (`.map`/`.sql`/`.json`/`.yml`/`.env`/`.config`…) que responde `text/html` = fallback de SPA → não é
+  exposição (zero falso NEGATIVO; `.php`/`.axd` de fora pois phpinfo/elmah reais são HTML) + allowlist
+  só p/ os HTML-capazes (painéis/UI/debug). **Dogfooding `python scripts/security_gate.py https://
+  klarim.net`: score 100/100 🟢, 0 findings, ~16s.** **+35 testes** (`test_kl141_cli_config.py`); engine
+  P1/P2 atualizados p/ `(client,url,config)` + 5 checks. Relatório: `claude/reports/KL-141_p3_cli_config_api.md`.
+  Prompt 4 (não neste): GitHub Actions + notificação e-mail/webhook (campos já no GateConfig). **KL-139**
+  (catálogo de checks) tem todos os checks cobertos — fecha junto com o KL-141 no Prompt 4.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

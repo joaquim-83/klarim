@@ -14,10 +14,12 @@ from typing import List, Optional
 
 import httpx
 
+from .checks.api_security import check_api_security
 from .checks.credentials import check_credentials
 from .checks.exposure import check_exposure
 from .checks.headers import check_headers
 from .checks.ssl import check_ssl
+from .config import GateConfig
 from .models import GateReport, Result, Severity, Status
 
 logger = logging.getLogger("security_gate")
@@ -36,8 +38,9 @@ _CHECKS = {
     "ssl": check_ssl,
     "exposure": check_exposure,
     "credentials": check_credentials,
+    "api": check_api_security,
 }
-_DEFAULT_ORDER = ["headers", "ssl", "exposure", "credentials"]
+_DEFAULT_ORDER = ["headers", "ssl", "exposure", "credentials", "api"]
 
 
 async def _warn_if_stale(client: httpx.AsyncClient, url: str, deploy_ts: float) -> None:
@@ -56,14 +59,19 @@ async def _warn_if_stale(client: httpx.AsyncClient, url: str, deploy_ts: float) 
 
 
 async def run_all(url: str, timeout: int = 60, checks: Optional[List[str]] = None,
+                  config: Optional[GateConfig] = None,
                   deploy_ts: Optional[float] = None) -> GateReport:
     """Roda os checks habilitados contra `url` e devolve o `GateReport` agregado.
 
-    `checks` filtra quais rodam (default: headers+ssl+exposure). Um check que estoure
-    inesperadamente vira um `Result` ERROR (nunca derruba o gate inteiro)."""
+    `checks` filtra quais rodam (default: headers+ssl+exposure+credentials+api). `config`
+    (GateConfig) alimenta allowlist de exposição, endpoints protegidos, thresholds — cada check
+    recebe `config`. Um check que estoure inesperadamente vira um `Result` ERROR (nunca derruba o
+    gate inteiro)."""
     start = time.monotonic()
     report = GateReport(url=url)
-    enabled = checks or _DEFAULT_ORDER
+    if config is None:
+        config = GateConfig(target=url)
+    enabled = checks if checks is not None else (config.checks or _DEFAULT_ORDER)
 
     try:
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True,
@@ -75,7 +83,7 @@ async def run_all(url: str, timeout: int = 60, checks: Optional[List[str]] = Non
                     continue
                 fn = _CHECKS[name]
                 try:
-                    report.results.extend(await fn(client, url))
+                    report.results.extend(await fn(client, url, config))
                 except Exception as exc:  # noqa: BLE001 - um check ruim não derruba o gate
                     logger.exception("[gate] check %s falhou", name)
                     report.results.append(Result(

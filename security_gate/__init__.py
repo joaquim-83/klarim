@@ -6,8 +6,11 @@ Fase 1 (KL-141): dogfooding no próprio CI/CD da Klarim. Módulo SEPARADO do `sc
 Prompt 1/4: engine + models + checks de exposição/headers/SSL."""
 from __future__ import annotations
 
+from .config import GateConfig, load_config
 from .engine import run_all
+from .formatters import format_json, format_terminal
 from .models import Config, GateReport, Result, Severity, Status
 
-__all__ = ["run_all", "GateReport", "Result", "Severity", "Status", "Config"]
+__all__ = ["run_all", "GateReport", "Result", "Severity", "Status", "Config",
+           "GateConfig", "load_config", "format_terminal", "format_json"]
 __version__ = "1.0"

@@ -1,2 +1,6 @@
-"""KL-141 — formatters do Security Gate (JSON/texto/SARIF para o CI). Implementação no
-Prompt 3 (não neste prompt). Placeholder para estabelecer o pacote."""
+"""KL-141 — formatters do Security Gate (terminal + JSON). SARIF/e-mail ficam p/ o Prompt 4."""
+from __future__ import annotations
+
+from .terminal import format_json, format_terminal
+
+__all__ = ["format_terminal", "format_json"]

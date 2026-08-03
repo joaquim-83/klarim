@@ -77,6 +77,20 @@ EXPOSURE_PATHS = [
 ]
 
 
+# KL-141 (Prompt 3) — extensões cujo recurso REAL nunca é HTML (source map, dump SQL, JSON/YAML de
+# config, .env, backup). Um 200 `text/html` nelas = fallback de SPA/app (que devolve o index.html
+# p/ qualquer path), NÃO o arquivo real → não é exposição. `.php`/`.axd` ficam DE FORA (phpinfo/
+# elmah reais SÃO HTML — suprimi-los seria falso NEGATIVO, pior que o falso positivo). Só o
+# Content-Type do HEAD é lido (sem body), fiel ao princípio HEAD-first.
+_NON_HTML_EXT = (".env", ".map", ".sql", ".json", ".yml", ".yaml", ".bak", ".old", ".config")
+
+
+def _is_spa_fallback_nonhtml(path: str, response: httpx.Response) -> bool:
+    if not path.lower().rstrip("/").endswith(_NON_HTML_EXT):
+        return False
+    return "text/html" in (response.headers.get("content-type") or "").lower()
+
+
 def _is_directory_listing(html: str) -> bool:
     """Heurística: distingue uma listagem de diretório REAL de um fallback de SPA (que
     devolve 200 + HTML da app para qualquer path). True só se o corpo tem marcadores de
@@ -88,14 +102,19 @@ def _is_directory_listing(html: str) -> bool:
     ))
 
 
-async def check_exposure(client: httpx.AsyncClient, base_url: str) -> List[Result]:
-    """Verifica todos os grupos de exposição. HEAD primeiro; GET só p/ directory-listing."""
+async def check_exposure(client: httpx.AsyncClient, base_url: str, config=None) -> List[Result]:
+    """Verifica todos os grupos de exposição. HEAD primeiro; GET só p/ directory-listing.
+    `config.exposure_allowlist` pula paths sabidamente falso-positivos (fallback de SPA que
+    devolve 200 — ex.: /docs, /adminer, /main.js.map na Klarim): o path não é nem testado."""
     base = base_url.rstrip("/")
+    allowlist = set(getattr(config, "exposure_allowlist", None) or [])
     results: List[Result] = []
 
     for group in EXPOSURE_PATHS:
         group_passed = True
         for path in group["paths"]:
+            if path in allowlist:
+                continue   # allowlisted → não testa (não vira FAIL nem gasta request)
             url = f"{base}{path}"
             try:
                 # HEAD primeiro: confere acessibilidade sem baixar o body (princípio KL-139).
@@ -107,6 +126,8 @@ async def check_exposure(client: httpx.AsyncClient, base_url: str) -> List[Resul
                         body = (await client.get(url)).text[:2000]
                         if not _is_directory_listing(body):
                             continue  # SPA fallback, não é listagem real
+                    elif _is_spa_fallback_nonhtml(path, r):
+                        continue  # recurso não-HTML devolvendo text/html = fallback de SPA/app
                     results.append(Result(
                         check=group["check"], category="exposure", path=path,
                         status=Status.FAIL, severity=group["severity"],
