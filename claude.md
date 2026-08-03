@@ -545,7 +545,7 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **2054 passed** (backend pytest; KL-141 P3 CLI/config/API +35) + **142 node --test** (frontend `test:unit`)
+- Testes: **2065 passed** (backend pytest; KL-141 completo — P4 CI/notificação +11) + **142 node --test** (frontend `test:unit`)
 - Páginas públicas: `/metodologia` (KL-100) · descadastro `/remover` (KL-102) · landing com social proof ao vivo (KL-103)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - **Níveis de conta (KL-99):** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado
@@ -1741,8 +1741,17 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   só p/ os HTML-capazes (painéis/UI/debug). **Dogfooding `python scripts/security_gate.py https://
   klarim.net`: score 100/100 🟢, 0 findings, ~16s.** **+35 testes** (`test_kl141_cli_config.py`); engine
   P1/P2 atualizados p/ `(client,url,config)` + 5 checks. Relatório: `claude/reports/KL-141_p3_cli_config_api.md`.
-  Prompt 4 (não neste): GitHub Actions + notificação e-mail/webhook (campos já no GateConfig). **KL-139**
-  (catálogo de checks) tem todos os checks cobertos — fecha junto com o KL-141 no Prompt 4.
+  **Prompt 4/4 ✅ (COMPLETO) — GitHub Actions + notificação.** Job **`security-gate`** no
+  `.github/workflows/deploy.yml` (`needs:[deploy]`, `if:success()`): roda o Gate contra `klarim.net` LIVE
+  **DEPOIS** do deploy → **NÃO bloqueia** (o site já está no ar); reprovar → job vermelho (exit 1/2 via
+  `pipefail`) + e-mail, operador decide rollback (o Gate nunca reverte). `--json | tee gate-report.json`
+  vira artifact; `pip install -r requirements.txt` (o Gate importa de `scanner/` → puxa dnspython/gcs/
+  cryptography). **`scripts/security_gate_notify.py`** (e-mail Resend + webhook, `if:failure()`; fail-safe
+  sem key → só avisa; nunca vaza o valor da credencial). Badge no README. ⚠️ **`RESEND_API_KEY` NÃO é
+  secret do repo** (o deploy usa só o `.env` da VM) → o e-mail só envia quando o dono adicionar o secret;
+  não bloqueia (o notify só roda em falha). **+11 testes** (`test_kl141_notify.py`). Relatório:
+  `claude/reports/KL-141_p4_github_actions.md`. **KL-141 COMPLETO** (engine+5 checks+CLI+config+formatters+
+  CI). **KL-139** (catálogo) coberto (exposição 1-3,5-12 + credenciais 4 + headers/ssl/api) — fecha junto.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

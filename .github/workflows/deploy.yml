@@ -164,3 +164,47 @@ jobs:
             --project "${{ secrets.GCP_PROJECT_ID }}" \
             --quiet \
             --command "sudo bash /opt/klarim/deploy/deploy.sh"
+
+  # KL-141 (Prompt 4): Security Gate — scanner de EXPOSIÇÃO/config PÓS-deploy contra o site LIVE.
+  # Roda DEPOIS do deploy (o site já está no ar) → NÃO bloqueia o deploy. Se reprovar (finding
+  # >= --fail-on), o JOB fica vermelho e um e-mail é enviado; o operador decide o rollback (o
+  # Gate nunca reverte automaticamente). Pré-deploy contra staging fica p/ card futuro.
+  security-gate:
+    name: Security Gate
+    needs: [deploy]
+    runs-on: ubuntu-latest
+    if: success()
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+      # O Gate importa de scanner/ (tls_analyzer/check_hsts) → puxa o scanner inteiro (dnspython,
+      # google-cloud-storage, cryptography). requirements.txt cobre; weasyprint (Python) instala
+      # sem as libs de sistema pois o Gate não o importa.
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run Security Gate (live site, post-deploy)
+        # UMA execução: --json salva o report e o exit code do CLI (1 = reprovou, 2 = erro) falha
+        # o step (pipefail) → job vermelho. tee mostra o JSON no log e grava o artifact.
+        run: |
+          python scripts/security_gate.py https://klarim.net \
+            --config security-gate.yml --fail-on critical --json | tee gate-report.json
+      - name: Upload report artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-gate-report
+          path: gate-report.json
+      - name: Notify on failure
+        # Só em falha (KL-141 regra 3). Sem RESEND_API_KEY (secret do repo), o script apenas
+        # avisa e não quebra — o job já está vermelho pelo step acima.
+        if: failure()
+        run: |
+          python scripts/security_gate_notify.py \
+            --report gate-report.json --channel email --recipients seguranca@klarim.net
+        env:
+          RESEND_API_KEY: ${{ secrets.RESEND_API_KEY }}

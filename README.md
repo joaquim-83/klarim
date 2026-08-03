@@ -1,5 +1,7 @@
 # Klarim
 
+[![Deploy & Security Gate](https://github.com/joaquim-83/klarim/actions/workflows/deploy.yml/badge.svg)](https://github.com/joaquim-83/klarim/actions/workflows/deploy.yml)
+
 **"O alarme que toca antes do ataque."**
 
 Scanner passivo de superfície de ataque para PMEs e desenvolvedores. O Klarim
