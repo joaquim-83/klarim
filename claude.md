@@ -545,7 +545,7 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
 - Contas: 8 (6 orgânicas) · Leads: 39
 - Score do próprio `klarim.net`: **100/100**
-- Testes: **1956 passed** (backend pytest; KL-138 hardening +8) + **142 node --test** (frontend `test:unit`)
+- Testes: **1997 passed** (backend pytest; KL-141 security gate +41) + **142 node --test** (frontend `test:unit`)
 - Páginas públicas: `/metodologia` (KL-100) · descadastro `/remover` (KL-102) · landing com social proof ao vivo (KL-103)
   · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
 - **Níveis de conta (KL-99):** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado
@@ -1692,6 +1692,25 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   UTM do KL-137). **+8 backend** (`test_kl138_hardening.py`) + testes de e-mail atualizados; regex do nginx
   validado por Python (bloqueia exploit, não pega `/a/`/`/site/`/`/setores`/`/scan`/`/blog`). **1956 pytest
   passed.** Relatório: `claude/reports/KL-138_hardening.md`; achados em `docs/SECURITY.md`.
+- **KL-141** — Security Gate: scanner de EXPOSIÇÃO/config pós-deploy (NÃO é DAST — não envia payload de
+  ataque; verifica o que ficou exposto após o deploy). Módulo **novo e SEPARADO** `security_gate/`
+  (portável, futuro pacote pip; NÃO dentro de `scanner/`). **Prompt 1/4 ✅** (de 4): engine + models +
+  checks de exposição/headers/SSL. `run_all(url, timeout, checks, deploy_ts) → GateReport`
+  (`engine.py`, só orquestra; **headers anti-cache em TODO request** + UA honesto `Klarim Security
+  Gate/1.0`; check que estoura vira ERROR isolado). `models.py`: `Result`/`GateReport` (score 100−
+  penalidades CRIT-20/HIGH-10/MED-5/LOW-2; `passed`=sem FAIL crítico → exit code do CI; counts) +
+  `Config` (semente p/ Prompt 3). **exposure.py (novo):** 11 grupos (KL-139 checks 1-3,5-12) — HEAD
+  primeiro (não baixa body — princípio KL-139), 200 no grupo → FAIL + `break`; `directory_listing` faz
+  GET limitado (2000 chars, não armazenado) p/ distinguir listagem real de fallback de SPA. **headers.py
+  + ssl.py REUSAM o scanner** (rule 2): ssl importa `scanner.tls_analyzer.get_tls_info`+`WEAK_PROTOCOLS`
+  (reuso real do handshake); headers importa o threshold `HSTS_MAX_AGE_RECOMMENDED` mas valida local (os
+  checks do scanner são coroutines acopladas ao próprio fetch — não há validador puro; o Gate usa 1
+  response). **+41 testes** (`test_kl141_gate_engine.py`); **1997 pytest passed**. ⚠️ **Falso positivo de
+  SPA:** rodando real contra `klarim.net` (score 65, passed=True, 7s) flagou `/adminer`/`/docs`/`/_profiler`
+  /`/main.js.map` — o Astro/Vite devolve 200+HTML para paths fora do blocklist do nginx (KL-138). É RUÍDO
+  (HIGH/MEDIUM, não bloqueia o `passed`, que só olha CRÍTICO); a correção adequada é o **allowlist do
+  config YAML no Prompt 3** (ou estender o 404 do nginx). Prompts 2-4 (não neste): credenciais, API
+  security+CLI+config, GitHub Actions. Relatório: `claude/reports/KL-141_p1_security_gate_engine.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.
