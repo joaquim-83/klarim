@@ -162,6 +162,8 @@ def _prep_worker(monkeypatch, sent_today, daily_limit="30", sent_month=100,
     w.sender_max_bounce_rate = 100.0
     w.bounce_min_sample = 20
     w.sender_bounce_min_sample = 100   # fix 24/07: amostra própria do circuit breaker
+    w.validate_mx = False              # KL-145: sem DNS nos testes (_verify_and_filter filtro 2)
+    w._redis = False
 
     class S:
         async def get_setting(self, k, d=None):

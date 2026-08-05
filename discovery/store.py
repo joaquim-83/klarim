@@ -5962,17 +5962,11 @@ class TargetStore:
         "AND (t.last_alert_at IS NULL OR t.last_alert_at < NOW() - INTERVAL '30 days') "
         # KL-94: não alerta site inacessível (em falha de gate) nem sem score — a vigília (KL-44 P2)
         # cobre uptime separadamente. Um site que voltou tem gate_fail_count zerado (reset_gate_failure).
-        "AND COALESCE(t.gate_fail_count, 0) = 0 AND t.last_scan_score IS NOT NULL "
-        # KL-130: exclui status TERMINAIS do pool — eles nunca serão enviáveis mas entupiam o fetch
-        # (ordenado por last_scan_at ASC), consumindo as vagas dos e-mails NOVOS (3.168 presos).
-        # `unknown`+`power` = o Power não confirmou a caixa (irrecuperável, KL-128 bloqueia sempre);
-        # block-statuses já deveriam estar 'descartado', mas o filtro é defesa-em-profundidade.
-        # ⚠️ NULL-safe (COALESCE): sem ele, `NULL = 'unknown'` vira NULL e o `AND NOT(...)` EXCLUI
-        # os não-verificados (status NULL) — exatamente os 3.168 que queremos incluir.
-        "AND NOT (COALESCE(t.email_verify_status, '') = 'unknown' "
-        "         AND COALESCE(t.email_verify_source, '') = 'power') "
-        "AND (t.email_verify_status IS NULL OR t.email_verify_status NOT IN "
-        "     ('disabled', 'invalid', 'disposable', 'spamtrap'))")
+        "AND COALESCE(t.gate_fail_count, 0) = 0 AND t.last_scan_score IS NOT NULL")
+    # KL-145: os filtros por `email_verify_status`/`email_verify_source` (KL-128/130) foram
+    # REMOVIDOS do WHERE — o Reoon saiu do fluxo de envio. A blocklist (`_verify_and_filter`
+    # filtro 3, alimentada pelos bounces via webhook) faz o trabalho que esses filtros faziam,
+    # mas via tabela dedicada (`email_blocklist`), não via status de verificação.
 
     async def get_eligible_targets_for_alert(self, limit: int = 50) -> List[Dict[str, Any]]:
         """Alvos escaneados com e-mail, sem alerta nos últimos 30d: com FALHAS

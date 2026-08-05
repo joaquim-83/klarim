@@ -227,41 +227,46 @@ def test_verify_email_domain_catch_all_cache(monkeypatch):
 
 
 # --------------------------------------------------------------------------- #
-# is_safe_to_send
+# is_safe_to_send (KL-145 — 3 filtros locais, sem status Reoon)
 # --------------------------------------------------------------------------- #
 
-# KL-137 — regra BINÁRIA: só safe/valid/role enviam; todo o resto (catch_all/unknown/inbox_full/
-# block-statuses/vazio) NÃO envia. O score é IGNORADO na decisão (só ordena).
-@pytest.mark.parametrize("status,score,expected", [
-    ("safe", 0, True),
-    ("valid", 0, True),
-    ("role", 0, True),
-    ("invalid", 90, False),
-    ("disabled", 90, False),
-    ("disposable", 90, False),
-    ("spamtrap", 90, False),
-    ("unknown", 100, False),
-    ("unknown", 0, False),
-    ("catch_all", 25, False),    # KL-137: catch_all nunca envia (score irrelevante)
-    ("catch_all", 100, False),
-    ("inbox_full", 51, False),   # KL-137: inbox_full nunca envia
-    ("inbox_full", 21, False),
-    ("", 100, False),
-])
-def test_is_safe_to_send(status, score, expected):
-    assert ev.is_safe_to_send(ev.VerifyResult(status, "x"), score) is expected
+class _BlockStore:
+    def __init__(self, blocked=None):
+        self._blocked = {(e or "").lower() for e in (blocked or [])}
+
+    async def is_email_blocked(self, email):
+        return (email or "").lower() in self._blocked
 
 
-def test_is_safe_to_send_ignores_score(monkeypatch):
-    # KL-137: o lead_score NÃO entra na decisão — safe sempre, catch_all nunca (qualquer score).
-    assert ev.is_safe_to_send(ev.VerifyResult("safe", "x"), 0) is True
-    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 999) is False
-    assert ev.is_safe_to_send(ev.VerifyResult("unknown", "x"), 999) is False
+def test_is_safe_to_send_valid(monkeypatch):
+    monkeypatch.setattr(ev, "_resolve_mx_sync", lambda d: "ok")
+    assert asyncio.run(ev.is_safe_to_send("contato@empresa.com.br", store=_BlockStore())) is True
 
 
-def test_sendable_statuses_constant():
-    # A regra binária vive na constante SENDABLE_STATUSES (sem gates/funções de env).
-    assert ev.SENDABLE_STATUSES == frozenset({"safe", "valid", "role"})
+def test_is_safe_to_send_bad_syntax():
+    assert asyncio.run(ev.is_safe_to_send("nao-eh-email", store=_BlockStore())) is False
+
+
+def test_is_safe_to_send_no_mx(monkeypatch):
+    monkeypatch.setattr(ev, "_resolve_mx_sync", lambda d: "no_mx")
+    assert asyncio.run(ev.is_safe_to_send("x@semmx.com", store=_BlockStore())) is False
+
+
+def test_is_safe_to_send_blocklisted(monkeypatch):
+    monkeypatch.setattr(ev, "_resolve_mx_sync", lambda d: "ok")
+    store = _BlockStore(blocked=["ruim@x.com"])
+    assert asyncio.run(ev.is_safe_to_send("ruim@x.com", store=store)) is False
+
+
+def test_is_safe_to_send_ignores_verify_status(monkeypatch):
+    # KL-145: o status Reoon (unknown/catch_all) NÃO decide — só sintaxe + MX + blocklist.
+    monkeypatch.setattr(ev, "_resolve_mx_sync", lambda d: "ok")
+    assert asyncio.run(ev.is_safe_to_send("qualquer@dominio.com.br", store=_BlockStore())) is True
+
+
+def test_sendable_statuses_removed():
+    # KL-145: a constante SENDABLE_STATUSES (regra binária por status do KL-137) foi removida.
+    assert not hasattr(ev, "SENDABLE_STATUSES")
     assert not hasattr(ev, "_unsafe_score_gate")
     assert not hasattr(ev, "_catch_all_gate")
 
@@ -380,93 +385,63 @@ def test_email_verification_stats_mapping():
 
 
 # --------------------------------------------------------------------------- #
-# Alert worker — _verify_and_filter (gate de deliverability pré-envio)
+# Alert worker — _verify_and_filter (KL-145: 3 filtros locais, sem Reoon)
 # --------------------------------------------------------------------------- #
 
 class _MiniStore:
-    def __init__(self):
-        self.blocked, self.discarded, self.verified = [], [], []
+    def __init__(self, blocked=None):
+        self._blocked = {(e or "").lower() for e in (blocked or [])}
 
-    async def block_email(self, email, reason="bounced"):
-        self.blocked.append((email, reason))
-
-    async def update_status(self, target_id, status):
-        self.discarded.append((target_id, status))
-
-    async def update_target_email_verification(self, tid, status, is_role_based,
-                                               verified=True, source=None):
-        self.verified.append((tid, status, source))
+    async def is_email_blocked(self, email):
+        return (email or "").lower() in self._blocked
 
 
-def _mk_worker(store):
+def _mk_worker(store, validate_mx=False):
     from discovery.alert_worker import AlertWorker
     w = AlertWorker()
     w.store = store
     w._redis = False  # sem redis nos testes
+    w.validate_mx = validate_mx
     return w
 
 
-def test_verify_and_filter_blocks_and_gates(monkeypatch):
-    # KL-137: regra BINÁRIA. safe→envia; invalid→blocklist+descarta; catch_all→bloqueia (score
-    # irrelevante — os DOIS catch_all bloqueiam mesmo com score alto).
-    monkeypatch.setenv("REOON_API_KEY", "test-key")
-
-    async def _fake_verify(email, mode="power", redis=None, api_key=None):
-        table = {
-            "safe@x.com": ev.VerifyResult("safe", "reoon_power", source="reoon"),
-            "bad@x.com": ev.VerifyResult("invalid", "reoon_power", source="reoon"),
-            "catch@x.com": ev.VerifyResult("catch_all", "reoon_power", source="reoon", catch_all=True),
-        }
-        return table[email]
-
-    async def _bal(api_key=None, client=None):
-        return 5000
-    monkeypatch.setattr(ev, "verify_email", _fake_verify)
-    monkeypatch.setattr(ev, "check_balance", _bal)
-    store = _MiniStore()
-    w = _mk_worker(store)
+def test_verify_and_filter_three_filters(monkeypatch):
+    # KL-145: sintaxe + MX + blocklist. Sem Reoon, sem status de verificação.
+    monkeypatch.setattr(ev, "_resolve_mx_sync",
+                        lambda d: "no_mx" if d == "semmx.com" else "ok")
+    store = _MiniStore(blocked=["bloq@x.com"])
+    w = _mk_worker(store, validate_mx=True)
     targets = [
-        {"id": 1, "contact_email": "safe@x.com", "_alert_score": 40},
-        {"id": 2, "contact_email": "bad@x.com", "_alert_score": 40},
-        {"id": 3, "contact_email": "catch@x.com", "_alert_score": 10},   # catch_all → bloqueia
-        {"id": 4, "contact_email": "catch@x.com", "_alert_score": 60},   # catch_all → bloqueia (score alto NÃO salva)
+        {"id": 1, "contact_email": "safe@x.com", "_alert_score": 40},           # ok
+        {"id": 2, "contact_email": "sem arroba", "_alert_score": 40},           # sintaxe
+        {"id": 3, "contact_email": "alguem@semmx.com", "_alert_score": 40},     # sem MX
+        {"id": 4, "contact_email": "bloq@x.com", "_alert_score": 60},           # blocklist
     ]
     kept, stats = asyncio.run(w._verify_and_filter(targets))
     assert {t["id"] for t in kept} == {1}
-    assert stats["sendable"] == 1 and stats["blocked"] == 3 and stats["verified"] == 4
-    assert ("bad@x.com", "power_verify_invalid") in store.blocked  # prefixo power_
-    assert (2, "descartado") in store.discarded
-    assert (1, "safe", "power") in store.verified  # grava source='power'
+    assert stats["blocked_syntax"] == 1 and stats["blocked_mx"] == 1
+    assert stats["blocked_blocklist"] == 1 and stats["not_blocklisted"] == 1
 
 
-def test_verify_and_filter_noop_without_key(monkeypatch):
-    # KL-137: sem REOON_API_KEY (modo degradado) — não-verificado passa (MX já validado); o já
-    # verificado segue a regra binária pelo status cacheado (unknown é bloqueado, não descartado).
-    monkeypatch.delenv("REOON_API_KEY", raising=False)
+def test_verify_and_filter_sends_unverified(monkeypatch):
+    # KL-145: e-mail sem verificação Reoon / status unknown → ENVIA (status não filtra).
     store = _MiniStore()
     w = _mk_worker(store)
-    targets = [{"id": 1, "contact_email": "a@x.com", "_alert_score": 40},              # não verificado → passa
-               {"id": 2, "contact_email": "b@x.com", "_alert_score": 40,               # verificado safe → passa
-                "email_verified": True, "email_verify_status": "safe"},
-               {"id": 3, "contact_email": "c@x.com", "_alert_score": 10,               # verificado unknown → bloqueia
-                "email_verified": True, "email_verify_status": "unknown"}]
+    targets = [{"id": 1, "contact_email": "a@x.com", "_alert_score": 40},
+               {"id": 2, "contact_email": "b@x.com", "_alert_score": 40,
+                "email_verified": False, "email_verify_status": "unknown"}]
     kept, stats = asyncio.run(w._verify_and_filter(targets))
-    assert {t["id"] for t in kept} == {1, 2}
-    assert stats["from_cache"] == 2 and stats["blocked"] == 1 and not store.blocked
+    assert {t["id"] for t in kept} == {1, 2} and stats["not_blocklisted"] == 2
 
 
-def test_verify_and_filter_fresh_skips_api(monkeypatch):
-    from datetime import datetime, timezone
-    monkeypatch.setenv("REOON_API_KEY", "test-key")
-
+def test_verify_and_filter_no_api_call(monkeypatch):
+    # O fluxo de envio NUNCA chama o Reoon (mesmo com key configurada).
     async def _boom(*a, **k):
-        raise AssertionError("não deveria chamar a API para alvo fresco")
+        raise AssertionError("KL-145: sem Reoon no fluxo de envio")
 
+    monkeypatch.setenv("REOON_API_KEY", "test-key")
     monkeypatch.setattr(ev, "verify_email", _boom)
     store = _MiniStore()
     w = _mk_worker(store)
-    targets = [{"id": 1, "contact_email": "a@x.com", "_alert_score": 40,
-                "email_verified": True, "email_verify_status": "safe",
-                "email_verified_at": datetime.now(timezone.utc)}]
-    kept, stats = asyncio.run(w._verify_and_filter(targets))
-    assert {t["id"] for t in kept} == {1} and stats["from_cache"] == 1
+    kept, _ = asyncio.run(w._verify_and_filter([{"id": 1, "contact_email": "a@x.com"}]))
+    assert {t["id"] for t in kept} == {1}

@@ -1,4 +1,10 @@
-"""KL-110 — verificação de deliverability de e-mail ANTES do envio.
+"""KL-110 — verificação de deliverability de e-mail (Camada 0 local + Camada 1 Reoon).
+
+⚠️ **KL-145 — o Reoon saiu do fluxo de ENVIO.** A decisão de envio agora é `is_safe_to_send`
+(3 filtros locais: sintaxe + MX + blocklist). A Camada 1 (Reoon Power) classificava ~97% dos
+servidores BR como `unknown` e travava o volume em 2-8/ciclo; segue neste módulo só como
+enriquecimento em background (usada pelos scripts de limpeza e pelo monitoramento de saldo do
+`/system/status`), NUNCA no `alert_worker`. A Camada 0 (sintaxe + MX) passou a ser O filtro.
 
 O bounce rate dos senders cold (6-8% hard) vinha de e-mails ruins entrando na fila de
 alerta sem validação. O circuit breaker (KL-108) é REATIVO — pausa o sender DEPOIS do
@@ -47,11 +53,11 @@ _TRANSIENT_STATUSES = frozenset({"catch_all", "inbox_full", "unknown", "role"})
 # Status que NUNCA devem receber e-mail (blocklist permanente).
 BLOCK_STATUSES = frozenset({"invalid", "disabled", "disposable", "spamtrap"})
 
-# KL-137 — status que PODEM receber e-mail. Regra binária: só estes enviam; todo o resto (catch_all,
-# unknown, inbox_full, block-statuses, vazio) NÃO envia. `safe`/`valid`/`role` têm 0% de bounce
-# comprovado via Power. Reverte os gates de score condicionais dos KL-122..KL-136 (complexidade que
-# piorou o bounce); o lead_score deixa de decidir envio e passa só a ORDENAR a fila.
-SENDABLE_STATUSES = frozenset({"safe", "valid", "role"})
+# KL-145 — a DECISÃO DE ENVIO deixou de depender do status Reoon. O Reoon classificava ~97% dos
+# servidores BR como `unknown` (inútil como filtro) e a regra binária por-status do KL-137 barrava
+# quase tudo → 2-8 envios/dia. Agora o envio é decidido por 3 filtros LOCAIS (sintaxe + MX +
+# blocklist — ver `is_safe_to_send` abaixo). O status de verificação (`SENDABLE_STATUSES` do KL-137)
+# NÃO decide mais envio; o Reoon segue no módulo só como enriquecimento em background (scripts).
 
 _CACHE_TTL_DEFINITIVE = 60 * 24 * 3600   # 60 dias
 _CACHE_TTL_TRANSIENT = 7 * 24 * 3600     # 7 dias
@@ -343,19 +349,54 @@ async def verify_email(email: str, mode: str = "power", skip_api: bool = False,
     return api_result
 
 
-def is_safe_to_send(result: VerifyResult, lead_score: int = 0) -> bool:
-    """KL-137 — decisão de envio em 2 regras. Sem gates, sem score, sem condicionais.
+# --------------------------------------------------------------------------- #
+# KL-145 — decisão de envio DESACOPLADA do Reoon: 3 filtros locais
+# --------------------------------------------------------------------------- #
 
-      • safe/valid/role → envia (0% de bounce comprovado via Power).
-      • Tudo o resto (catch_all/unknown/inbox_full/disabled/invalid/disposable/spamtrap/vazio) → NÃO.
+def _is_valid_syntax(email: str) -> bool:
+    """Filtro 1 — sintaxe válida (reusa a normalização RFC da Camada 0)."""
+    return _validate_syntax(email) is not None
 
-    `lead_score` é IGNORADO na decisão (fica na assinatura por compatibilidade) — serve apenas para
-    ORDENAR a fila (quem é enviado primeiro). Reverte os gates condicionais dos KL-122..KL-136: a
-    complexidade acumulada (gate por score, catch_all condicional, trust-downgrade) piorou o bounce.
-    `parse_reoon_response` já rebaixa 'safe' num servidor catch-all → 'catch_all' (KL-128), então
-    esses não entram em SENDABLE_STATUSES por acidente."""
-    status = result.status if isinstance(result, VerifyResult) else str(result)
-    return status in SENDABLE_STATUSES
+
+async def _email_has_mx(email: str, redis=None) -> bool:
+    """Filtro 2 — o domínio do e-mail tem registro MX? (cache Redis 24h/domínio, Camada 0).
+    Fail-open: DNS incerto ('unknown') conta como MX presente; só 'no_mx' definitivo rejeita."""
+    domain = _domain_of(_validate_syntax(email) or email)
+    if not domain:
+        return False
+    has, _ = await _has_mx(domain, redis)
+    return has
+
+
+async def _is_blocklisted(email: str, store) -> bool:
+    """Filtro 3 — e-mail na blocklist aprendente (cada bounce, via webhook, entra aqui).
+    Sem store → False (fail-open: falha de infra nunca bloqueia o envio)."""
+    if store is None:
+        return False
+    try:
+        return await store.is_email_blocked(email)
+    except Exception:  # noqa: BLE001 - erro de banco não deve bloquear envio
+        return False
+
+
+async def is_safe_to_send(email: str, redis=None, store=None) -> bool:
+    """KL-145 — 3 filtros LOCAIS, sem API externa, sem gates, sem score.
+
+      1. Sintaxe válida
+      2. Domínio tem MX
+      3. Não está na blocklist
+
+    Tudo que passa nos 3 → ENVIA. Substitui a regra binária por-status do KL-137 (que dependia da
+    verificação Reoon e travava o volume em 2-8/ciclo). O Reoon consumiu 10 cards e ~5.000 créditos
+    sem melhorar o bounce (97% dos servidores BR = `unknown`); a blocklist aprendente (alimentada
+    pelo webhook de bounce) faz o trabalho de aprender quem não recebe."""
+    if not _is_valid_syntax(email):
+        return False
+    if not await _email_has_mx(email, redis):
+        return False
+    if await _is_blocklisted(email, store):
+        return False
+    return True
 
 
 def _mask(email: str) -> str:

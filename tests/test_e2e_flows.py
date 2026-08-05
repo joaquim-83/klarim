@@ -264,18 +264,34 @@ def test_flow_b_quality_lead_is_verified_and_sendable():
     assert result["score"] > 40
     assert any(s["signal"] == "email_matches_domain" for s in result["signals"])
 
-    # 2) verificação (Reoon mock → safe)
-    verdict = ev.VerifyResult("safe", "reoon_power", source="reoon")
+    # 2) decisão de envio (KL-145): sintaxe + MX + blocklist → envia (status Reoon não decide)
+    import asyncio
 
-    # 3) decisão de envio: safe + score de qualidade → envia
-    assert ev.is_safe_to_send(verdict, result["score"]) is True
+    class _BlockStore:
+        async def is_email_blocked(self, e):
+            return False
+
+    _orig = ev._resolve_mx_sync
+    ev._resolve_mx_sync = lambda d: "ok"
+    try:
+        assert asyncio.run(ev.is_safe_to_send(email, store=_BlockStore())) is True
+    finally:
+        ev._resolve_mx_sync = _orig
 
 
 def test_flow_b_invalid_email_lead_is_not_sendable():
-    target = {"domain": "x.com.br", "last_scan_score": 60, "contact_email": "no@x.com.br"}
-    score = calculate_alert_score(target, target["contact_email"])["score"]
-    # e-mail inválido pela verificação → nunca envia, mesmo com bom score
-    assert ev.is_safe_to_send(ev.VerifyResult("invalid", "reoon_power"), score) is False
+    import asyncio
+    # e-mail de domínio sem MX → nunca envia, mesmo com bom score (KL-145 filtro 2)
+    class _BlockStore:
+        async def is_email_blocked(self, e):
+            return False
+
+    _orig = ev._resolve_mx_sync
+    ev._resolve_mx_sync = lambda d: "no_mx"
+    try:
+        assert asyncio.run(ev.is_safe_to_send("no@semmx.com.br", store=_BlockStore())) is False
+    finally:
+        ev._resolve_mx_sync = _orig
 
 
 # =========================================================================== #

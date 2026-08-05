@@ -211,14 +211,10 @@ class AlertWorker:
         self.sender_max_bounce_rate = float(os.environ.get("ALERT_SENDER_MAX_BOUNCE_RATE", "5.0"))
         self.sender_bounce_min_sample = int(os.environ.get(
             "ALERT_SENDER_BOUNCE_MIN_SAMPLE", str(cold_alert.DEFAULT_BOUNCE_MIN_SAMPLE)))
-        # KL-110 — verificação de deliverability (Reoon Power) ANTES do envio. Sem
-        # REOON_API_KEY o pipeline roda só a Camada 0 local (verify_email cai no local).
-        # `email_verify_max` limita quantos alvos verificar por ciclo (custo/tempo da API).
-        self.email_verify_enabled = os.environ.get("EMAIL_VERIFY_ENABLED", "true").lower() != "false"
-        # KL-129: 200/ciclo (era 120). Com a priorização dos NÃO-verificados no subset, mais vagas =
-        # mais e-mails novos verificados por ciclo (~9.600/dia em ciclos de 30 min).
-        self.email_verify_max = int(os.environ.get("EMAIL_VERIFY_MAX_PER_CYCLE", "200"))
-        self.email_verify_ttl_days = int(os.environ.get("EMAIL_VERIFY_TTL_DAYS", "60"))
+        # KL-145 — a verificação Reoon Power SAIU do fluxo de envio (travava o volume em 2-8/ciclo).
+        # A decisão de envio agora é local (sintaxe + MX + blocklist, ver `_verify_and_filter`). O
+        # `email_verifier` mantém a Reoon só p/ enriquecimento em background (scripts). `validate_mx`
+        # (ALERT_VALIDATE_MX) segue controlando o filtro de MX no envio.
         self.store = get_target_store()
         self._redis = None
         self._last_cycle_at = None
@@ -240,9 +236,6 @@ class AlertWorker:
             # KL-91 — limite diário por remetente (knob do warmup, editável no painel).
             self.sender_daily_limit = int(
                 await g("ALERT_SENDER_DAILY_LIMIT", self.sender_daily_limit))
-            # KL-129 — teto de verificações Reoon por ciclo (editável ao vivo no painel).
-            self.email_verify_max = int(
-                await g("EMAIL_VERIFY_MAX_PER_CYCLE", self.email_verify_max))
         except Exception as exc:  # noqa: BLE001
             print(f"[alert] reload settings falhou (mantém atual): {exc!r}", flush=True)
 
@@ -325,29 +318,6 @@ class AlertWorker:
                 self._redis = False
         return self._redis or None
 
-    async def _reoon_balance(self, api_key: str) -> Optional[int]:
-        """KL-136 (Fix 4) — saldo Reoon com cache Redis 1h (`reoon:balance`). None = não deu p/ ler
-        (fail-open: na dúvida NÃO trata como esgotado). Best-effort; nunca derruba o ciclo."""
-        r = await self._redis_client()
-        if r is not None:
-            try:
-                v = await r.get("reoon:balance")
-                if v is not None:
-                    return int(v)
-            except Exception:  # noqa: BLE001
-                pass
-        try:
-            bal = await email_verifier.check_balance(api_key)
-        except Exception as exc:  # noqa: BLE001 - saldo indisponível → None (não bloqueia)
-            print(f"[alert] saldo Reoon indisponível (segue): {exc!r}", flush=True)
-            return None
-        if bal is not None and r is not None:
-            try:
-                await r.set("reoon:balance", str(int(bal)), ex=3600)
-            except Exception:  # noqa: BLE001
-                pass
-        return bal
-
     async def _domain_bounced(self, domain: str, cache: dict) -> bool:
         """Domínio com bounce anterior? Cache em memória (por ciclo) + Redis (24h). Fail-open:
         qualquer erro → False (não penaliza por falha de infra)."""
@@ -411,146 +381,56 @@ class AlertWorker:
         return targets, avg
 
     async def _verify_and_filter(self, targets: list) -> tuple:
-        """KL-110 → KL-137 (simplificado) — verifica a deliverability (Reoon Power) e decide o
-        envio com a regra BINÁRIA do `is_safe_to_send`: **safe/valid/role → envia; todo o resto →
-        não**. Sem gates de score, sem trust-downgrade, sem aposentar `unknown` — a complexidade
-        acumulada (KL-122..KL-136) piorou o bounce; este card a REMOVE.
+        """KL-145 — filtra os alvos para envio com 3 filtros LOCAIS: sintaxe + MX + blocklist.
 
-        Fluxo: particiona em já-verificados-frescos (`from_cache`) vs não-verificados; verifica os
-        não-verificados via Power até o cap (excedente = `deferred`); aplica a regra binária a todos
-        (com status) → `sendable` (enviados) vs `blocked` (não). Mantém: fail-safe de saldo Reoon
-        (KL-136: saldo 0 → defere), blocklist dos block-statuses (invalid/disabled/disposable/
-        spamtrap) e o cache de verificação. Stats: eligible(fora)/verified/from_cache/sendable/
-        blocked/deferred/errors."""
-        stats = {"verified": 0, "from_cache": 0, "sendable": 0, "blocked": 0,
-                 "deferred": 0, "errors": 0}
-        api_key = os.environ.get("REOON_API_KEY")
+        **Sem Reoon.** A verificação Power (KL-110) saiu do fluxo de envio: classificava ~97% dos
+        servidores BR como `unknown` e o pipeline binário do KL-137 barrava quase tudo → 2-8/ciclo.
+        A blocklist aprendente (cada bounce, via webhook, entra nela) substitui os antigos filtros
+        por status de verificação; o Reoon segue no `email_verifier` só como enriquecimento em
+        background (scripts). Removidos: partição sendable/unverified, cap de verificação, chamada à
+        API no envio, gates de score, trust-downgrade e o `email_verified`/`email_verify_status` como
+        condição de envio.
 
-        def _status(t) -> str:
-            return (t.get("email_verify_status") or "").strip().lower()
-
-        def _log(t, status, decision):
-            logger.info("[alert] %s → status=%s source=%s score=%d → %s",
-                        email_verifier._mask((t.get("contact_email") or "")), status or "none",
-                        (t.get("email_verify_source") or "none"), int(t.get("_alert_score", 0)),
-                        decision)
-
-        if not api_key or not targets or not getattr(self, "email_verify_enabled", True):
-            # Modo degradado (sem REOON_API_KEY — dev/fallback): já-verificados seguem a regra
-            # binária pelo status cacheado; os não-verificados passam (o MX da Camada 0 já foi
-            # validado na extração; bloquear tudo aqui zeraria o dev/teste — em produção a key existe).
-            sendable = []
-            for t in targets:
-                st = _status(t)
-                if t.get("email_verified") and st:
-                    stats["from_cache"] += 1
-                    if email_verifier.is_safe_to_send(email_verifier.VerifyResult(st, "cache")):
-                        stats["sendable"] += 1
-                        sendable.append(t)
-                    else:
-                        stats["blocked"] += 1
-                else:
-                    sendable.append(t)
-            return sendable, stats
-
-        redis = await self._redis_client()
-        sem = asyncio.Semaphore(5)
-        ttl = timedelta(days=getattr(self, "email_verify_ttl_days", 60))
-        now = datetime.now(timezone.utc)
-
-        def _is_fresh(t) -> bool:
-            # Status vazio NÃO conta como "verificado fresco" → reverifica via Power.
-            va = t.get("email_verified_at")
-            if not t.get("email_verified") or not _status(t) or not isinstance(va, datetime):
-                return False
-            if va.tzinfo is None:
-                va = va.replace(tzinfo=timezone.utc)
-            return (now - va) < ttl
-
-        # Particiona: já-verificados-frescos (decididos pelo cache) vs não-verificados (à Power).
-        fresh, unverified = [], []
-        for t in targets:
-            (fresh if _is_fresh(t) else unverified).append(t)
-        stats["from_cache"] = len(fresh)
+        O MX (filtro 2) respeita `self.validate_mx` (ALERT_VALIDATE_MX) — em produção roda com cache
+        Redis 24h/domínio; em dev/testes fica desligado (o `_validate_batch` já cobre MX/blocklist).
+        Retorna (sendable, stats). Stats por-filtro:
+        eligible/valid_syntax/has_mx/not_blocklisted + blocked_syntax/blocked_mx/blocked_blocklist."""
+        stats = {"eligible": len(targets), "valid_syntax": 0, "has_mx": 0,
+                 "not_blocklisted": 0, "blocked_syntax": 0, "blocked_mx": 0,
+                 "blocked_blocklist": 0, "errors": 0}
+        redis = await self._redis_client() if self.validate_mx else None
 
         sendable = []
-        for t in fresh:
-            res = email_verifier.VerifyResult(_status(t) or "", "fresh_db", source="cache")
-            if email_verifier.is_safe_to_send(res):
-                stats["sendable"] += 1
-                sendable.append(t)
-            else:
-                stats["blocked"] += 1
-
-        # Fail-safe de saldo (KL-136): só consulta o saldo se há caixas NOVAS a verificar. Saldo
-        # esgotado (0/negativo) → cap=0: defere TODAS (não envia sem verificar). None = fail-open.
-        base_cap = max(0, getattr(self, "email_verify_max", 200))
-        reoon_exhausted, balance = False, None
-        if unverified and base_cap > 0:
-            balance = await self._reoon_balance(api_key)
-            reoon_exhausted = balance is not None and balance <= 0
-            if reoon_exhausted:
-                stats["reoon_exhausted"] = True   # exposto em /system/status (KL-136)
-        cap = 0 if reoon_exhausted else base_cap
-        subset = unverified[:cap]
-        stats["deferred"] = max(0, len(unverified) - len(subset))
-        if reoon_exhausted:
-            logger.warning("[alert] KL-136: saldo Reoon esgotado (%s) — %d não-verificados "
-                           "deferidos (fail-safe: não envia sem verificar)", balance, stats["deferred"])
-
-        async def _verify_one(t):
-            """Verifica UM alvo via Power → (t, outcome ∈ {sendable,blocked,deferred,error})."""
+        for t in targets:
             email = (t.get("contact_email") or "").strip().lower()
             if not email:
-                return t, "error"
-            async with sem:
-                try:
-                    res = await email_verifier.verify_email(
-                        email, mode="power", redis=redis, api_key=api_key)
-                except Exception as exc:  # noqa: BLE001 - infra → não envia (fail-safe binário)
-                    print(f"[alert] verify falhou (não envia) "
-                          f"{email_verifier._mask(email)}: {exc!r}", flush=True)
-                    return t, "error"
-            if res.source == "fallback":   # Reoon fora: não persiste → retry no próximo ciclo
-                _log(t, "unknown", "DEFERRED")
-                return t, "deferred"
-            try:  # persiste (source=power; nunca bloqueia o envio se falhar)
-                await self.store.update_target_email_verification(
-                    t["id"], res.status, res.is_role_based, source="power")
-            except Exception as exc:  # noqa: BLE001
-                print(f"[alert] gravar verify falhou (alvo {t.get('id')}): {exc!r}", flush=True)
-            t["email_verify_status"] = res.status
-            t["email_verify_source"] = "power"
-            # Blocklist definitiva (invalid/disabled/disposable/spamtrap).
-            if res.status in email_verifier.BLOCK_STATUSES:
-                try:
-                    await self.store.block_email(email, reason=f"power_verify_{res.status}")
-                    await self.store.update_status(t["id"], "descartado")
-                except Exception as exc:  # noqa: BLE001
-                    print(f"[alert] blocklist/discard falhou: {exc!r}", flush=True)
-                _log(t, res.status, "BLOCKED")
-                return t, "blocked"
-            sendable_now = email_verifier.is_safe_to_send(res)
-            _log(t, res.status, "SENT" if sendable_now else "BLOCKED")
-            return t, "sendable" if sendable_now else "blocked"
+                stats["errors"] += 1
+                continue
 
-        if subset:
-            for t, outcome in await asyncio.gather(*[_verify_one(t) for t in subset]):
-                if outcome == "error":
-                    stats["errors"] += 1
-                elif outcome == "deferred":
-                    stats["deferred"] += 1
-                elif outcome == "sendable":
-                    stats["verified"] += 1
-                    stats["sendable"] += 1
-                    sendable.append(t)
-                else:  # blocked
-                    stats["verified"] += 1
-                    stats["blocked"] += 1
+            # Filtro 1 — sintaxe válida.
+            if not email_verifier._is_valid_syntax(email):
+                stats["blocked_syntax"] += 1
+                continue
+            stats["valid_syntax"] += 1
 
-        logger.info("[alert] verify KL-137: from_cache=%d verified=%d → sendable=%d blocked=%d "
-                    "deferred=%d errors=%d", stats["from_cache"], stats["verified"],
-                    stats["sendable"], stats["blocked"], stats["deferred"], stats["errors"])
+            # Filtro 2 — domínio tem MX (fail-open; só em produção — validate_mx).
+            if self.validate_mx and not await email_verifier._email_has_mx(email, redis):
+                stats["blocked_mx"] += 1
+                continue
+            stats["has_mx"] += 1
+
+            # Filtro 3 — não está na blocklist aprendente (bounces via webhook).
+            if await email_verifier._is_blocklisted(email, self.store):
+                stats["blocked_blocklist"] += 1
+                continue
+            stats["not_blocklisted"] += 1
+
+            sendable.append(t)
+
+        logger.info(
+            "[alert] KL-145: %d eligible → %d syntax ok → %d MX ok → %d not blocklisted → %d sendable",
+            stats["eligible"], stats["valid_syntax"], stats["has_mx"],
+            stats["not_blocklisted"], len(sendable))
         return sendable, stats
 
     async def _send_cooldown(self) -> None:
@@ -677,9 +557,9 @@ class AlertWorker:
         # Melhores leads primeiro: dado o send_cap, envia os de MAIOR score (mais provável clique).
         targets.sort(key=lambda t: t.get("_alert_score", 0), reverse=True)
 
-        # KL-110 → KL-137 — verificação de deliverability (Reoon Power) com regra BINÁRIA:
-        # safe/valid/role envia, o resto não. Corta o bounce na RAIZ (o circuit breaker do KL-108
-        # só reage depois do bounce). Fail-safe de saldo (KL-136).
+        # KL-145 — filtro de envio LOCAL (sintaxe + MX + blocklist), sem Reoon. Substitui a
+        # verificação Power que travava o volume; a blocklist aprendente (webhook de bounce) é o
+        # mecanismo de aprendizado. O circuit breaker (KL-108) segue como defesa reativa.
         targets, verify_stats = await self._verify_and_filter(targets)
         stats["verification"] = verify_stats
 
@@ -770,8 +650,11 @@ class AlertWorker:
         print(f"[alert] ciclo: {stats['sent']} enviados "
               f"(variantes {stats['variants']}), {remaining} restantes | "
               f"avaliados={stats.get('fetched', 0)} inválidos={stats['invalid']} "
-              f"sendable={v.get('sendable', 0)} blocked={v.get('blocked', 0)} "
-              f"deferidos={v.get('deferred', 0)} adiados={stats['skipped']} erros={stats['errors']} | "
+              f"KL-145[sintaxe={v.get('valid_syntax', 0)} mx={v.get('has_mx', 0)} "
+              f"sem_blocklist={v.get('not_blocklisted', 0)} "
+              f"bloq_sintaxe={v.get('blocked_syntax', 0)} bloq_mx={v.get('blocked_mx', 0)} "
+              f"bloq_blocklist={v.get('blocked_blocklist', 0)}] "
+              f"adiados={stats['skipped']} erros={stats['errors']} | "
               f"mês {sent_month + stats['sent']}/{self.monthly_limit}", flush=True)
         return stats
 

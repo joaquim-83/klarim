@@ -147,11 +147,10 @@ R$49 (4900). **Nenhum dado de cartão/PIX é armazenado.**
 | `ALERT_SEND_INTERVAL_MIN` / `ALERT_SEND_INTERVAL_MAX` | **KL-91** — cooldown randômico entre envios individuais (default 30/60s; 0/0 em dev) |
 | `ALERT_SENDER_MAX_BOUNCE_RATE` | **KL-91 · KL-108 · KL-122** — circuit breaker: pausa o remetente cujo **HARD bounce rate** passa disto (default **5.0%** no código; **valor operacional atual = 10** no `.env` da VM, amostra ≥`ALERT_SENDER_BOUNCE_MIN_SAMPLE`). **KL-108:** opera sobre **hard-only** — soft bounces (transitórios) não contam. |
 | `ALERT_SENDER_BOUNCE_MIN_SAMPLE` | **KL-91** — amostra mínima antes de o circuit breaker julgar um remetente (default 100; evita pausar em warmup por poucos bounces) |
-| `REOON_API_KEY` | **KL-110** — chave da API de verificação de e-mail (emailverifier.reoon.com). **Só no `.env` da VM, nunca no git/log.** Sem ela, o alert worker NÃO faz verificação Power (o MX da Camada 0 já roda na extração); ao configurar, a verificação de inbox ativa no próximo ciclo |
-| `EMAIL_VERIFY_ENABLED` | **KL-110** — liga/desliga a verificação Power no alert worker (default `true`; só tem efeito com `REOON_API_KEY`) |
-| `EMAIL_VERIFY_MAX_PER_CYCLE` | **KL-110 → KL-129** — máx de alvos **NÃO-verificados** verificados via Power por ciclo (default **200**, era 120/60; editável ao vivo no painel). KL-129 prioriza os `email_verified=false` no subset; os já-verificados (sendable/barrados) NÃO consomem vaga. Com 200/ciclo e ciclos de 30 min ≈ 9.600/dia |
-| `EMAIL_VERIFY_TTL_DAYS` | **KL-110** — validade de uma verificação antes de re-verificar (default 60 dias) |
-| `REOON_MAX_CONCURRENCY` | **KL-110** — máx de chamadas simultâneas à Reoon (default 5; restrição da API) |
+| `REOON_API_KEY` | **KL-110 → KL-145** — chave da API de verificação de e-mail (emailverifier.reoon.com). **Só no `.env` da VM, nunca no git/log.** ⚠️ **KL-145: o Reoon NÃO é mais pré-requisito de envio** — a decisão de envio é local (`is_safe_to_send`: sintaxe + MX + blocklist), sem chamada à API. A key serve só ao **enriquecimento em background** (`scripts/cleanup_email_backlog.py` + saldo no `/system/status`). Pode ficar ausente sem afetar o envio |
+| `ALERT_VALIDATE_MX` | **KL-24 → KL-145** — liga/desliga o filtro de MX no envio (default `true`). No alert worker roda em `_validate_batch` **e** em `_verify_and_filter` (filtro 2 do KL-145, cache Redis 24h/domínio). `false` só em dev/testes |
+| `REOON_MAX_CONCURRENCY` | **KL-110** — máx de chamadas simultâneas à Reoon (default 5; restrição da API). Só afeta o enriquecimento em background (KL-145) |
+| ~~`EMAIL_VERIFY_ENABLED`~~ / ~~`EMAIL_VERIFY_MAX_PER_CYCLE`~~ / ~~`EMAIL_VERIFY_TTL_DAYS`~~ | **REMOVIDAS no KL-145** — a verificação Reoon saiu do fluxo de envio; essas vars não têm mais efeito no alert worker (ignoradas se presentes no `.env`) |
 | `ALERT_ROLE_PENALTY` | **KL-136** — penalidade de `lead_score` para e-mail de prefixo role-based (`contato@`/`vendas@`/`sac@`…) no `alert_scoring`. **Default -5** (era -15). **KL-137:** o score deixou de FILTRAR (só ORDENA a fila) — esta penalidade agora só afeta a ORDEM de envio, nunca barra um lead. Vale para os dois sinais de caixa de função (prefixo + status `role` da Reoon; nunca dobram). Lido do env a cada chamada. |
 | `PROFILE_VIEW_FROM_EMAIL` / `PROFILE_VIEW_FROM_NAME` | **KL-101** — remetente dedicado do aviso "perfil consultado" (default `notifica@perfil.klarim.net`). ⚠️ o subdomínio precisa estar **verificado no Resend** antes do deploy |
 | `PROFILE_VIEW_DAILY_LIMIT` | **KL-101** — teto diário de warmup do `perfil.klarim.net` (default 200; editável no painel) |
@@ -169,8 +168,14 @@ Os knobs de outreach ajustados na VM (podem divergir do default do código). **O
 | `ALERT_SENDER_DAILY_LIMIT` | **500** | 100 | Teto POR sender cold/dia (warmup 100→250→500→750). Editável no painel (`admin_settings` > env). |
 | `ALERT_SENDER_MAX_BOUNCE_RATE` | **10** | 5.0 | % de **hard** bounce (KL-108) que pausa um sender. Baixar p/ 5 quando as listas estiverem limpas. |
 | `ALERT_ROLE_PENALTY` | **-5** | -5 (KL-136) | Penalidade de lead scoring p/ prefixo role-based (`contato@`…). KL-137: o score só ORDENA (não filtra) — afeta só a ORDEM de envio. |
-| `EMAIL_VERIFY_MAX_PER_CYCLE` | **200** | 200 (KL-129) | Máx de NÃO-verificados verificados via Power por ciclo. Editável no painel. |
 | `PROFILE_VIEW_DAILY_LIMIT` | **500** | 200 | Teto diário de avisos "perfil consultado" (`perfil.klarim.net`, KL-101). Editável no painel. |
+
+> **KL-145 — Reoon FORA do fluxo de envio:** a decisão de envio é local (`is_safe_to_send`: sintaxe
+> + MX + blocklist), sem chamada à API Reoon. As vars `EMAIL_VERIFY_MAX_PER_CYCLE`/
+> `EMAIL_VERIFY_ENABLED`/`EMAIL_VERIFY_TTL_DAYS` foram **removidas** do worker (ignoradas se presentes).
+> O `REOON_API_KEY` segue útil só para o enriquecimento em background (cleanup + saldo no status) —
+> **não é mais pré-requisito de envio**. A blocklist (alimentada pelo webhook de bounce) é o mecanismo
+> de aprendizado; o circuit breaker hard-bounce (KL-108) segue como defesa reativa.
 
 > **KL-137 (simplificação radical) — REMOVIDAS do código e do `.env` da VM:**
 > `ALERT_UNSAFE_SCORE_GATE`, `ALERT_CATCH_ALL_SCORE_GATE`, `ALERT_TRUST_DOMAIN_DOWNGRADE` (e

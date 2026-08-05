@@ -1,122 +1,30 @@
-"""KL-130 — exclui status terminais do pool de elegíveis + aposenta unknown+power.
+"""KL-130 → KL-145 — limpeza retroativa de `unknown`+`power` (o Reoon saiu do fluxo de envio).
 
-120+ `unknown`+`power` circulavam no pool a cada ciclo (ordenado por `last_scan_at ASC`),
-entupindo o fetch e starvando 3.263 e-mails novos (0 verificações API, 0 envios). O fix:
-(1) filtro no `_ALERT_ELIGIBLE_WHERE`; (2) alvo verificado como unknown via Power → `sem_contato`
-(sai do pool); (3) script de limpeza retroativa. Offline (verify_email mockado; SQL validado na VM).
+O KL-130 excluía status terminais (`unknown`+`power`, block-statuses) do `_ALERT_ELIGIBLE_WHERE`
+porque o Reoon decidia o envio. **KL-145 removeu esses filtros do WHERE** — a decisão de envio é
+local (sintaxe + MX + blocklist) e a blocklist (via webhook de bounce) faz o trabalho. O método
+`retire_unknown_power_targets` FICA como limpeza retroativa (script), mas o WHERE não filtra mais
+por status de verificação. Offline (SQL validado na VM).
 """
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
 
-import pytest
-
-from notifier import email_verifier as ev
 from discovery.store import TargetStore
 
 
-class _MiniStore:
-    def __init__(self):
-        self.blocked, self.discarded, self.verified = [], [], []
+# --------------------- WHERE não filtra mais por verificação -------------- #
 
-    async def block_email(self, email, reason="bounced"):
-        self.blocked.append((email, reason))
-
-    async def update_status(self, target_id, status):
-        self.discarded.append((target_id, status))
-
-    async def update_target_email_verification(self, tid, status, is_role_based,
-                                               verified=True, source=None):
-        self.verified.append((tid, status, source))
-
-    async def trusted_recipient_domains(self, domains, hours=48):
-        return set()
-
-
-def _mk_worker(store, verify_max=200):
-    from discovery.alert_worker import AlertWorker
-    w = AlertWorker()
-    w.store = store
-    w._redis = False
-    w.email_verify_max = verify_max
-    return w
-
-
-def _new(tid, score=40):
-    return {"id": tid, "contact_email": f"n{tid}@hotmail.com", "_alert_score": score,
-            "email_verified": False, "email_verify_status": None}
-
-
-def _run(worker, targets):
-    return asyncio.run(worker._verify_and_filter(targets))
-
-
-@pytest.fixture(autouse=True)
-def _env(monkeypatch):
-    monkeypatch.setenv("REOON_API_KEY", "test-key")
-    monkeypatch.setenv("ALERT_TRUST_DOMAIN_DOWNGRADE", "false")
-    monkeypatch.delenv("ALERT_UNSAFE_SCORE_GATE", raising=False)
-
-    async def _bal(api_key=None, client=None):  # KL-136: offline — saldo ilegível (fail-open)
-        return None
-    monkeypatch.setattr(ev, "check_balance", _bal)
-
-
-# --------------------- WHERE exclui os terminais -------------------------- #
-
-def test_eligible_where_excludes_unknown_power_and_block_statuses():
+def test_eligible_where_has_no_reoon_filters():
     w = TargetStore._ALERT_ELIGIBLE_WHERE
-    # NULL-safe (COALESCE): sem isto, `NULL = 'unknown'` vira NULL e o AND NOT(...) excluiria os
-    # não-verificados (status NULL) — exatamente os 3.247 que queremos incluir.
-    assert "COALESCE(t.email_verify_status, '') = 'unknown'" in w
-    assert "COALESCE(t.email_verify_source, '') = 'power'" in w
-    assert "AND NOT (COALESCE(t.email_verify_status, '') = 'unknown'" in w
-    # block-statuses só excluídos quando NÃO-NULL (IS NULL preserva os não-verificados).
-    assert "t.email_verify_status IS NULL OR t.email_verify_status NOT IN" in w
-    for s in ("disabled", "invalid", "disposable", "spamtrap"):
-        assert f"'{s}'" in w
-
-
-# --------------------- worker: unknown via Power → bloqueado -------------- #
-# KL-137: o worker NÃO aposenta mais `unknown`+`power` em `sem_contato` (removida a lógica de
-# aposentar do KL-130). O SQL `_ALERT_ELIGIBLE_WHERE` (que EXCLUI unknown+power do fetch) fica —
-# então eles não voltam ao pool. `retire_unknown_power_targets` (limpeza retroativa) também fica.
-
-def test_new_unknown_power_blocked_not_retired(monkeypatch):
-    async def _fake(email, mode="power", redis=None, api_key=None):
-        return ev.VerifyResult("unknown", "reoon_power", source="reoon")
-
-    monkeypatch.setattr(ev, "verify_email", _fake)
-    store = _MiniStore()
-    kept, stats = _run(_mk_worker(store), [_new(1)])
-    assert kept == []                                  # unknown não envia (regra binária)
-    assert stats["verified"] == 1 and stats["blocked"] == 1
-    assert (1, "sem_contato") not in store.discarded   # KL-137: não aposenta mais em ciclo
-    assert store.blocked == []                         # unknown NÃO blocklist
-
-
-def test_new_safe_sends(monkeypatch):
-    async def _fake(email, mode="power", redis=None, api_key=None):
-        return ev.VerifyResult("safe", "reoon_power", source="reoon")
-
-    monkeypatch.setattr(ev, "verify_email", _fake)
-    store = _MiniStore()
-    kept, stats = _run(_mk_worker(store), [_new(1)])
-    assert {t["id"] for t in kept} == {1} and stats["verified"] == 1 and stats["sendable"] == 1
-    assert (1, "sem_contato") not in store.discarded
-
-
-def test_new_disabled_blocklisted(monkeypatch):
-    async def _fake(email, mode="power", redis=None, api_key=None):
-        return ev.VerifyResult("disabled", "reoon_power", source="reoon")
-
-    monkeypatch.setattr(ev, "verify_email", _fake)
-    store = _MiniStore()
-    kept, stats = _run(_mk_worker(store), [_new(1)])
-    assert kept == [] and stats["blocked"] == 1
-    assert ("n1@hotmail.com", "power_verify_disabled") in store.blocked
-    assert (1, "descartado") in store.discarded
+    # KL-145: os filtros por status/source de verificação SAÍRAM (o Reoon não decide envio).
+    assert "email_verify_status" not in w
+    assert "email_verify_source" not in w
+    # Mantém os filtros legítimos (não-Reoon).
+    assert "t.status = 'scanned'" in w
+    assert "t.contact_email IS NOT NULL" in w
+    assert "COALESCE(t.gate_fail_count, 0) = 0" in w
+    assert "t.last_scan_score IS NOT NULL" in w
 
 
 # --------------------- método de limpeza retroativa ----------------------- #

@@ -49,28 +49,37 @@ def test_breaker_reads_hard_not_combined():
 
 
 # --------------------------------------------------------------------------- #
-# Verificação → decisão de envio (KL-110)
+# Decisão de envio (KL-145 — 3 filtros locais, sem Reoon no fluxo)
 # --------------------------------------------------------------------------- #
 
-def test_send_decision_safe_high_score():
-    assert ev.is_safe_to_send(ev.VerifyResult("safe", "x"), 60) is True
+class _BlockStore:
+    def __init__(self, blocked=None):
+        self._blocked = {(e or "").lower() for e in (blocked or [])}
+
+    async def is_email_blocked(self, email):
+        return (email or "").lower() in self._blocked
 
 
-def test_send_decision_catch_all_never_sends():
-    # KL-137: regra binária — catch_all NUNCA envia, independentemente do score.
-    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 15) is False
-    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 60) is False
-    assert ev.is_safe_to_send(ev.VerifyResult("catch_all", "x"), 100) is False
+def test_send_decision_valid_sends(monkeypatch):
+    monkeypatch.setattr(ev, "_resolve_mx_sync", lambda d: "ok")
+    assert asyncio.run(ev.is_safe_to_send("contato@empresa.com.br", store=_BlockStore())) is True
 
 
-def test_send_decision_invalid_never_sends():
-    assert ev.is_safe_to_send(ev.VerifyResult("invalid", "x"), 99) is False
+def test_send_decision_no_mx_never_sends(monkeypatch):
+    monkeypatch.setattr(ev, "_resolve_mx_sync", lambda d: "no_mx")
+    assert asyncio.run(ev.is_safe_to_send("x@semmx.com", store=_BlockStore())) is False
 
 
-def test_send_decision_unknown_never_sends():
-    # KL-137: 'unknown' nunca envia (regra binária, score ignorado).
-    assert ev.is_safe_to_send(ev.VerifyResult("unknown", "reoon_power"), 15) is False
-    assert ev.is_safe_to_send(ev.VerifyResult("unknown", "reoon_power"), 100) is False
+def test_send_decision_blocklisted_never_sends(monkeypatch):
+    monkeypatch.setattr(ev, "_resolve_mx_sync", lambda d: "ok")
+    store = _BlockStore(blocked=["ruim@x.com"])
+    assert asyncio.run(ev.is_safe_to_send("ruim@x.com", store=store)) is False
+
+
+def test_send_decision_ignores_verify_status(monkeypatch):
+    # KL-145: status Reoon (unknown/catch_all) não importa — só sintaxe + MX + blocklist.
+    monkeypatch.setattr(ev, "_resolve_mx_sync", lambda d: "ok")
+    assert asyncio.run(ev.is_safe_to_send("qualquer@x.com.br", store=_BlockStore())) is True
 
 
 def test_verify_api_timeout_fails_open(monkeypatch):

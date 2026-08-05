@@ -6760,16 +6760,22 @@ async def api_system_status() -> dict:
             "monthly_usage_pct": f"{usage_pct}%",
             "backlog": backlog,
         },
-        # KL-136 (Fix 4) — saldo Reoon + estado da verificação de e-mail. `reoon_balance_warning`
-        # alerta o operador quando o saldo está baixo (<1000) OU ilegível (None) — sem saldo o
-        # alert worker DEFERE os não-verificados (fail-safe) em vez de enviar sem verificar.
+        # KL-145 — o Reoon saiu do fluxo de envio; a decisão é local (sintaxe + MX + blocklist).
+        # Aqui: (a) saldo Reoon do enriquecimento em background (`reoon_balance*`, KL-136); (b) o
+        # funil do último filtro de envio (`send_filter`: quantos passaram sintaxe/MX/blocklist).
         "email_verification": {
             "reoon_balance": reoon_balance,
             "reoon_balance_warning": (reoon_balance is None) or (reoon_balance < 1000),
             "unverified_count": unverified_count,
-            "verified_last_cycle": _last_verif.get("verified", 0),
-            "deferred_last_cycle": _last_verif.get("deferred", 0),
-            "reoon_exhausted": bool(_last_verif.get("reoon_exhausted", False)),
+            "send_filter": {
+                "eligible": _last_verif.get("eligible", 0),
+                "valid_syntax": _last_verif.get("valid_syntax", 0),
+                "has_mx": _last_verif.get("has_mx", 0),
+                "not_blocklisted": _last_verif.get("not_blocklisted", 0),
+                "blocked_syntax": _last_verif.get("blocked_syntax", 0),
+                "blocked_mx": _last_verif.get("blocked_mx", 0),
+                "blocked_blocklist": _last_verif.get("blocked_blocklist", 0),
+            },
         },
         # KL-77 (Fase 2): saúde do arquivamento de responses brutos no GCS.
         "gcs_archive": await _gcs_archive_stats_safe(redis),
