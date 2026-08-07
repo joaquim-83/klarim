@@ -343,6 +343,9 @@ enforcement **no servidor**. O endpoint de scan, a CLI e o frontend são os Prom
 | POST | `/gate/register` | público | Cria conta `developer` + API key (1×) + 1º projeto + trial Pro 14d |
 | POST | `/account/gate/regenerate-key` | JWT | Revoga as keys ativas e emite uma nova (1×) |
 | GET | `/account/gate/keys` | JWT | Lista keys (prefixo/estado/uso — nunca o valor) |
+| **POST** | **`/gate/scan`** | **API key** | **Roda a engine no SERVIDOR contra a URL (domínio verificado). Retorna score/passed/results/`checks_run`/`checks_blocked`. `passed` respeita `fail_on`. Persiste em `gate_runs`. Enforcement de scans/dia (429)** |
+| **GET** | **`/gate/runs`** | **API key** | **Runs da conta (sumário; filtro `project_id`, `limit`)** |
+| **GET** | **`/gate/runs/{id}`** | **API key** | **Detalhe do run (com `results`); 404 se não é da conta** |
 | GET · POST | `/gate/projects` | API key | Lista projetos (+ plano + checks permitidos) · cria projeto (respeita o limite de domínios) |
 | POST | `/gate/projects/{id}/verify/start` | API key | Gera o desafio (meta_tag/dns_txt/html_file) |
 | POST | `/gate/projects/{id}/verify/check` | API key | Confere o desafio → `verified` (rate limit 10/h/IP) |
@@ -354,7 +357,7 @@ enforcement **no servidor**. O endpoint de scan, a CLI e o frontend são os Prom
 
 ---
 
-## Tools MCP (54) — `mcp_server/tools/`
+## Tools MCP (80) — `mcp_server/tools/`
 
 Wrapper fino sobre a API/store; auth própria (OAuth 2.1/PKCE + `MCP_API_KEY`). Todas
 passam por `_guard` (nunca derrubam a sessão).
@@ -387,3 +390,6 @@ passam por `_guard` (nunca derrubam a sessão).
 - **tech.py** (KL-75) — `get_tech_adoption` (adoção de uma tech, opc. por setor),
   `get_site_tech_stack` (stack completo por domínio), `get_site_status_history`
   (histórico ativo/parked/abandonado/fora_do_ar por site)
+- **gate.py** (KL-151 P2, visão admin) — `list_gate_projects` (todos/por conta), `get_gate_project`,
+  `create_gate_project` (extrai o domínio da URL), `list_gate_runs` (por projeto/conta),
+  `get_gate_run` (score/findings/checks/metadados)

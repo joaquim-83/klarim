@@ -4675,6 +4675,70 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    # Sumário (sem o `results` JSONB, que é pesado) p/ listagem; detalhe traz tudo.
+    _GATE_RUN_SUMMARY = ("id", "project_id", "account_id", "url", "score", "passed", "fail_on",
+                         "duration_ms", "checks_run", "checks_blocked", "metadata", "created_at")
+    _GATE_RUN_FULL = _GATE_RUN_SUMMARY + ("results",)
+
+    async def list_gate_runs(self, account_id: Optional[int] = None, project_id: Optional[int] = None,
+                             limit: int = 20) -> List[Dict[str, Any]]:
+        """Runs (sumário, sem `results`). `account_id`/`project_id` opcionais (None = todos, p/ o
+        MCP admin). Mais recente 1º."""
+        lim = min(max(int(limit or 20), 1), 200)
+
+        def _fn(cur):
+            where, params = [], []
+            if account_id is not None:
+                where.append("account_id = %s"); params.append(int(account_id))
+            if project_id is not None:
+                where.append("project_id = %s"); params.append(int(project_id))
+            wc = ("WHERE " + " AND ".join(where)) if where else ""
+            cur.execute(f"SELECT {', '.join(self._GATE_RUN_SUMMARY)} FROM gate_runs {wc} "
+                        f"ORDER BY created_at DESC LIMIT %s", [*params, lim])
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_gate_run(self, run_id: int, account_id: Optional[int] = None
+                           ) -> Optional[Dict[str, Any]]:
+        """Detalhe de UM run (com `results`). `account_id` dado → ownership check (404 se não é da
+        conta); None → visão admin (qualquer run)."""
+        def _fn(cur):
+            if account_id is not None:
+                cur.execute(f"SELECT {', '.join(self._GATE_RUN_FULL)} FROM gate_runs "
+                            "WHERE id = %s AND account_id = %s", (int(run_id), int(account_id)))
+            else:
+                cur.execute(f"SELECT {', '.join(self._GATE_RUN_FULL)} FROM gate_runs WHERE id = %s",
+                            (int(run_id),))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def admin_list_gate_projects(self, account_id: Optional[int] = None, limit: int = 100
+                                       ) -> List[Dict[str, Any]]:
+        """Projetos de TODAS as contas (visão MCP admin) ou de uma conta (`account_id`)."""
+        lim = min(max(int(limit or 100), 1), 500)
+
+        def _fn(cur):
+            wc = "WHERE account_id = %s" if account_id is not None else ""
+            params = [int(account_id)] if account_id is not None else []
+            cur.execute(f"SELECT {', '.join(self._GATE_PROJECT_COLS)} FROM gate_projects {wc} "
+                        f"ORDER BY created_at DESC LIMIT %s", [*params, lim])
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_gate_project_by_id(self, project_id: int) -> Optional[Dict[str, Any]]:
+        """Projeto por id, SEM ownership check (visão MCP admin)."""
+        def _fn(cur):
+            cur.execute(f"SELECT {', '.join(self._GATE_PROJECT_COLS)} FROM gate_projects WHERE id = %s",
+                        (int(project_id),))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
     # --- convites dono→dev --- #
 
     _GATE_INVITE_COLS = ("id", "domain", "owner_account_id", "dev_email", "token", "status",

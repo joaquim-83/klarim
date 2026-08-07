@@ -20,24 +20,20 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from api import auth_users
 from discovery.store import get_target_store
+from security_gate.config import GateConfig
+from security_gate.engine import _DEFAULT_ORDER as _ENGINE_ORDER, run_all
+from security_gate.models import SEVERITY_RANK, Severity, Status
 
 router = APIRouter()
 
-# Lista canônica dos checks do Gate (para o enforcement `["all"]`). Vem da engine; fallback estático.
-try:
-    from security_gate.engine import _DEFAULT_ORDER as _ENGINE_ORDER
-    ALL_CHECK_NAMES: List[str] = list(_ENGINE_ORDER)
-except Exception:  # noqa: BLE001 - a engine sempre existe; fallback defensivo
-    ALL_CHECK_NAMES = ["headers", "ssl", "exposure", "credentials", "api", "cors", "cookies",
-                       "https_redirect", "open_redirect", "error_disclosure", "jwt",
-                       "form_security", "dns", "dependencies", "tls_ciphers", "subdomain",
-                       "infrastructure", "rate_limit"]
+# Lista canônica dos checks do Gate (para o enforcement `["all"]`).
+ALL_CHECK_NAMES: List[str] = list(_ENGINE_ORDER)
 
 _TRIAL_DAYS = 14
 _KEY_PREFIX = "KLM_"
@@ -125,15 +121,41 @@ def get_allowed_checks(plan: Optional[dict]) -> List[str]:
     return list(allowed)
 
 
+def _scan_redis():
+    """Cliente Redis do app (`api.main._cache.redis`) ou None se indisponível."""
+    try:
+        import api.main as _m
+        return _m._cache.redis if _m._cache is not None else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 async def enforce_scan_limit(account_id: int, plan: dict) -> None:
-    """429 se a conta já atingiu o teto de scans/dia do plano (`-1` = ilimitado). Usado no
-    endpoint de scan (Prompt 2); implementado + testado aqui."""
+    """429 se a conta já atingiu o teto de scans/dia do plano (`-1` = ilimitado). Contador ATÔMICO
+    no Redis por dia-calendário UTC (`gate_scans:{account}:{YYYY-MM-DD}`, TTL 24h) — INCRementa a
+    cada chamada (consome 1 crédito) e bloqueia acima do teto. **Fallback** para a contagem no banco
+    (`count_gate_runs_today`) se o Redis estiver fora — nunca desliga o limite por falha de infra."""
     spd = int((plan or {}).get("scans_per_day") or 0)
     if spd == -1:
         return
+    msg = f"Limite de {spd} scans/dia atingido. Faça upgrade do plano para mais scans."
+    redis = _scan_redis()
+    if redis is not None:
+        try:
+            rkey = f"gate_scans:{int(account_id)}:{_now().date().isoformat()}"
+            n = await redis.incr(rkey)
+            if n == 1:
+                await redis.expire(rkey, 86400)
+            if n > spd:
+                raise HTTPException(status_code=429, detail=msg)
+            return
+        except HTTPException:
+            raise
+        except Exception:  # noqa: BLE001 - Redis instável → cai na contagem do banco
+            pass
     today = await get_target_store().count_gate_runs_today(account_id)
     if today >= spd:
-        raise HTTPException(status_code=429, detail=f"Limite de {spd} scans/dia atingido.")
+        raise HTTPException(status_code=429, detail=msg)
 
 
 async def enforce_domain_limit(account_id: int, plan: dict) -> None:
@@ -169,6 +191,24 @@ def _invite_status(invite: dict) -> str:
     if exp and exp < _now():
         return "expired"
     return st
+
+
+def _serialize_result(r) -> dict:
+    """`security_gate.models.Result` → dict JSON-serializável (o valor bruto nunca sai da engine)."""
+    return {"check": r.check, "category": r.category, "path": r.path,
+            "status": r.status.value, "severity": r.severity.value,
+            "detail": r.detail, "http_status": r.http_status}
+
+
+def _passed_for(report, fail_on: str) -> bool:
+    """`passed` RESPEITANDO o `fail_on` do dev (a engine só olha CRÍTICO). True se não há FAIL de
+    severidade ≥ o threshold. `fail_on` inválido → 'critical'."""
+    try:
+        threshold = SEVERITY_RANK[Severity((fail_on or "critical").strip().lower())]
+    except (ValueError, KeyError):
+        threshold = SEVERITY_RANK[Severity.CRITICAL]
+    return not any(r.status == Status.FAIL and SEVERITY_RANK.get(r.severity, 0) >= threshold
+                   for r in report.results)
 
 
 # --------------------------------------------------------------------------- #
@@ -458,4 +498,83 @@ async def gate_create_project(body: GateProjectBody, request: Request) -> dict:
         ctx["account_id"], name=(body.name or domain), url=body.url.strip(), domain=domain)
     if project is None:
         raise HTTPException(status_code=409, detail="Você já tem um projeto para este domínio.")
-    return {"project": project}
+    return {"project": project,
+            "next_step": "Verifique o domínio via /api/gate/projects/{id}/verify/start"}
+
+
+# --------------------------------------------------------------------------- #
+# 6. Scan (API key) — a engine roda no SERVIDOR; o client só envia URL + key
+# --------------------------------------------------------------------------- #
+
+class GateScanBody(BaseModel):
+    url: str
+    fail_on: Optional[str] = None
+    timeout: Optional[int] = None
+    metadata: Optional[dict] = None
+
+
+@router.post("/gate/scan")
+async def gate_scan(body: GateScanBody, request: Request) -> dict:
+    """Roda a engine do Gate contra `url` no SERVIDOR e devolve o resultado (síncrono, <60s). Só
+    escaneia domínio REGISTRADO como projeto e VERIFICADO (exceto planos com `scan_third_party`).
+    Os checks rodados são os do plano — os bloqueados voltam em `checks_blocked` (CTA de upgrade)."""
+    ctx = await authenticate_api_key(request)
+    plan = ctx["plan"] or {}
+    domain = _extract_domain(body.url)
+    if not domain:
+        raise HTTPException(status_code=400, detail="URL inválida.")
+    store = get_target_store()
+    project = await store.get_gate_project_by_domain(ctx["account_id"], domain)
+    if not project:
+        raise HTTPException(status_code=403,
+                            detail="Domínio não registrado como projeto. Crie-o em /api/gate/projects.")
+    if not project.get("verified") and not plan.get("scan_third_party"):
+        raise HTTPException(status_code=403,
+                            detail="Domínio não verificado. Verifique em "
+                                   "/api/gate/projects/{id}/verify/start.")
+    # Consome 1 crédito de scan/dia (atômico) ANTES de rodar — invalidez de domínio já barrou acima.
+    await enforce_scan_limit(ctx["account_id"], plan)
+
+    allowed = get_allowed_checks(plan)
+    blocked = [c for c in ALL_CHECK_NAMES if c not in allowed]
+    scan_url = body.url.strip()
+    if "://" not in scan_url:
+        scan_url = "https://" + scan_url
+    fail_on = (body.fail_on or "critical").strip().lower()
+    timeout = max(5, min(int(body.timeout or 60), 180))
+
+    config = GateConfig(target=scan_url, fail_on=fail_on, checks=allowed, timeout=timeout)
+    report = await run_all(url=scan_url, timeout=timeout, checks=allowed, config=config)
+    results = [_serialize_result(r) for r in report.results]
+    passed = _passed_for(report, fail_on)
+
+    run_id = await store.create_gate_run(
+        project_id=project["id"], account_id=ctx["account_id"], url=scan_url,
+        score=report.score, passed=passed, fail_on=fail_on, duration_ms=report.duration_ms,
+        results=results, checks_run=allowed, checks_blocked=blocked, metadata=(body.metadata or {}))
+
+    return {"run_id": run_id, "url": scan_url, "score": report.score, "passed": passed,
+            "duration_ms": report.duration_ms, "critical": report.critical_count,
+            "high": report.high_count, "medium": report.medium_count, "results": results,
+            "checks_run": allowed, "checks_blocked": blocked, "plan": plan.get("name"),
+            "dashboard_url": f"https://klarim.net/dashboard/gate/runs/{run_id}"}
+
+
+@router.get("/gate/runs")
+async def gate_list_runs(request: Request, project_id: Optional[int] = Query(default=None),
+                         limit: int = Query(default=20, ge=1, le=200)) -> dict:
+    """Runs da conta (sumário, sem `results`). Filtro opcional por `project_id`."""
+    ctx = await authenticate_api_key(request)
+    runs = await get_target_store().list_gate_runs(
+        account_id=ctx["account_id"], project_id=project_id, limit=limit)
+    return {"runs": runs}
+
+
+@router.get("/gate/runs/{run_id}")
+async def gate_get_run(run_id: int, request: Request) -> dict:
+    """Detalhe de UM run da conta (com `results`). 404 se não é da conta."""
+    ctx = await authenticate_api_key(request)
+    run = await get_target_store().get_gate_run(run_id, account_id=ctx["account_id"])
+    if not run:
+        raise HTTPException(status_code=404, detail="Run não encontrado.")
+    return {"run": run}

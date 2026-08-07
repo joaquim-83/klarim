@@ -1874,6 +1874,24 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   REST de scan, CLI, frontend, admin de planos (Prompts 2-4). **+31 testes** (`test_kl151_gate_product.py`).
   **2132 pytest passed.** Docs: `docs/API.md` (endpoints do Gate) + `docs/SECURITY.md` §11 (API key hash +
   convite). Relatório: `claude/reports/KL-151_p1_gate_backend.md`.
+  **Prompt 2/4 ✅** — API REST de scan + CLI publicável + MCP tools. **Princípio:** o scan roda no SERVIDOR
+  (a engine do Gate); o client só envia URL + API key. **`api/gate.py`:** `POST /gate/scan` (autentica por
+  API key → valida que o domínio é um projeto REGISTRADO + VERIFICADO [exceto planos `scan_third_party`] →
+  `enforce_scan_limit` → roda `run_all` com os checks do plano → persiste em `gate_runs` → devolve score/
+  passed/results/`checks_run`/`checks_blocked`/`dashboard_url`). `passed` respeita o `fail_on` do dev
+  (`_passed_for`, não só o "crítico" da engine). `GET /gate/runs` (sumário, sem `results`) + `GET
+  /gate/runs/{id}` (detalhe com `results`, ownership check). **`enforce_scan_limit` virou contador ATÔMICO no
+  Redis** (`gate_scans:{acct}:{YYYY-MM-DD}`, INCR+TTL 24h) com **fallback** para `count_gate_runs_today`
+  (banco) se o Redis cair. **CLI** `scripts/klarim_gate_cli.py` (standalone, só depende de `httpx`): `scan`
+  (exit 0 passou · 1 reprovou · 2 erro; `--fail-on`/`--json`/`--quiet`/`--metadata`; key via `--api-key` ou
+  env `KLARIM_API_KEY`), `projects`, `runs`. **5 MCP tools** (`mcp_server/tools/gate.py`, visão admin):
+  `list_gate_projects`/`get_gate_project`/`create_gate_project`/`list_gate_runs`/`get_gate_run` (**MCP → 80
+  tools**; reconectar o MCP pós-deploy). Store: `list_gate_runs`/`get_gate_run` (account_id opcional →
+  admin), `admin_list_gate_projects`/`get_gate_project_by_id`. **Nginx:** o `location /api/` já proxia
+  `/api/gate/*` com `proxy_read_timeout 180s` (> os 120s pedidos) — nenhuma location nova (evita o footgun
+  de re-declarar headers). **NÃO neste prompt:** frontend (Prompt 3). **+19 testes** (`test_kl151_p2_scan_cli.py`),
+  store P2 validada contra Postgres 16 real. **2151 pytest passed.** Relatório:
+  `claude/reports/KL-151_p2_scan_cli.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.
