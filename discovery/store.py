@@ -989,6 +989,31 @@ CREATE TABLE IF NOT EXISTS gate_invites (
 CREATE INDEX IF NOT EXISTS idx_gate_invites_token ON gate_invites(token);
 CREATE INDEX IF NOT EXISTS idx_gate_invites_owner ON gate_invites(owner_account_id);
 CREATE INDEX IF NOT EXISTS idx_gate_invites_dev_email ON gate_invites(dev_email);
+
+-- KL-151 P4 — audit log (compliance Enterprise): CADA ação relevante do Gate. NUNCA guarda o
+-- VALOR da API key (só o prefixo, no `detail`). IP/UA para rastreabilidade.
+CREATE TABLE IF NOT EXISTS gate_audit_log (
+    id SERIAL PRIMARY KEY,
+    account_id INTEGER NOT NULL,
+    key_id INTEGER,                            -- qual API key foi usada (NULL = sessão JWT/admin)
+    action VARCHAR(50) NOT NULL,               -- scan|key_regenerated|project_created|invite_sent|…
+    target_domain VARCHAR(200),
+    detail JSONB DEFAULT '{}'::jsonb,
+    ip_address VARCHAR(45),                     -- IPv4/IPv6
+    user_agent VARCHAR(500),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_gate_audit_account ON gate_audit_log(account_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_gate_audit_action ON gate_audit_log(action, created_at DESC);
+
+-- KL-151 P4 — grace period da rotação de key: a key antiga autentica por +1h após a regeneração
+-- (CI/CD em andamento não quebra). `grace_expires_at` NULL = revogação imediata (sem grace).
+ALTER TABLE gate_api_keys ADD COLUMN IF NOT EXISTS grace_expires_at TIMESTAMPTZ;
+
+-- KL-151 P4 — Enterprise: CNPJ + contrato + notas na conta.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS company_cnpj VARCHAR(18);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS company_contract_url VARCHAR(500);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS enterprise_notes TEXT;
 """
 
 
@@ -4537,6 +4562,7 @@ class TargetStore:
         def _fn(cur):
             cur.execute(
                 "SELECT u.id, u.email, u.account_type, u.gate_plan_id, u.gate_trial_ends_at, "
+                "  u.company_cnpj, "  # KL-151 P4 — Enterprise
                 "  gp.slug AS plan_slug, gp.name AS plan_name, "
                 "  (SELECT COUNT(*) FROM gate_projects p WHERE p.account_id = u.id) AS project_count, "
                 "  (SELECT COUNT(*) FROM gate_runs r WHERE r.account_id = u.id "
@@ -4547,6 +4573,59 @@ class TargetStore:
                 "WHERE u.account_type IN ('developer', 'both') "
                 "ORDER BY u.created_at DESC LIMIT %s", (lim,))
             return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- KL-151 P4: audit log + Enterprise (CNPJ/contrato) --- #
+
+    _GATE_AUDIT_COLS = ("id", "account_id", "key_id", "action", "target_domain", "detail",
+                        "ip_address", "user_agent", "created_at")
+
+    async def insert_gate_audit(self, account_id: int, action: str, key_id: Optional[int] = None,
+                                target_domain: Optional[str] = None, detail: Optional[dict] = None,
+                                ip_address: Optional[str] = None,
+                                user_agent: Optional[str] = None) -> None:
+        """Registra uma ação no audit log. NUNCA recebe/guarda o VALOR de uma API key (só o prefixo,
+        no `detail`). Best-effort no chamador (fire-and-forget) — o audit não deve derrubar a ação."""
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO gate_audit_log (account_id, key_id, action, target_domain, detail, "
+                "  ip_address, user_agent) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (int(account_id), key_id, (action or "")[:50], (target_domain or None),
+                 json.dumps(detail or {}), (ip_address or None), (user_agent or "")[:500] or None))
+
+        await asyncio.to_thread(self._run, _fn)
+
+    async def list_gate_audit(self, account_id: Optional[int] = None, action: Optional[str] = None,
+                              limit: int = 50) -> List[Dict[str, Any]]:
+        """Audit log. `account_id` dado → só daquela conta (dev vê o próprio); None → todas (admin).
+        Filtro opcional por `action`. Mais recente 1º."""
+        lim = min(max(int(limit or 50), 1), 500)
+
+        def _fn(cur):
+            where, params = [], []
+            if account_id is not None:
+                where.append("account_id = %s"); params.append(int(account_id))
+            if action:
+                where.append("action = %s"); params.append(action)
+            wc = ("WHERE " + " AND ".join(where)) if where else ""
+            cur.execute(f"SELECT {', '.join(self._GATE_AUDIT_COLS)} FROM gate_audit_log {wc} "
+                        f"ORDER BY created_at DESC LIMIT %s", [*params, lim])
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def set_enterprise_fields(self, account_id: int, cnpj: Optional[str] = None,
+                                    contract_url: Optional[str] = None,
+                                    notes: Optional[str] = None) -> bool:
+        """Grava CNPJ/contrato/notas da conta Enterprise (COALESCE — não apaga com NULL)."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE users SET company_cnpj = COALESCE(%s, company_cnpj), "
+                "  company_contract_url = COALESCE(%s, company_contract_url), "
+                "  enterprise_notes = COALESCE(%s, enterprise_notes) WHERE id = %s",
+                ((cnpj or None), (contract_url or None), (notes or None), int(account_id)))
+            return cur.rowcount > 0
 
         return await asyncio.to_thread(self._run, _fn)
 
@@ -4603,7 +4682,8 @@ class TargetStore:
         def _fn(cur):
             cur.execute(
                 "SELECT id, account_id, key_prefix, name, is_active, created_at, "
-                "  last_used_at, revoked_at FROM gate_api_keys WHERE key_hash = %s", (key_hash,))
+                "  last_used_at, revoked_at, grace_expires_at "  # KL-151 P4: grace da rotação
+                "FROM gate_api_keys WHERE key_hash = %s", (key_hash,))
             rows = self._rows_to_dicts(cur)
             return rows[0] if rows else None
 
@@ -4614,12 +4694,27 @@ class TargetStore:
             "UPDATE gate_api_keys SET last_used_at = NOW() WHERE id = %s", (key_id,)))
 
     async def revoke_gate_api_keys(self, account_id: int) -> int:
-        """Revoga TODAS as keys ativas da conta (usado no regenerate). Retorna quantas."""
+        """Revoga TODAS as keys ativas da conta IMEDIATAMENTE (sem grace). Retorna quantas."""
         def _fn(cur):
             cur.execute(
-                "UPDATE gate_api_keys SET is_active = FALSE, revoked_at = NOW() "
-                "WHERE account_id = %s AND is_active = TRUE", (account_id,))
+                "UPDATE gate_api_keys SET is_active = FALSE, revoked_at = NOW(), "
+                "  grace_expires_at = NULL WHERE account_id = %s AND is_active = TRUE", (account_id,))
             return cur.rowcount
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def revoke_gate_api_keys_with_grace(self, account_id: int, grace_minutes: int = 60
+                                              ) -> List[str]:
+        """KL-151 P4 — revoga as keys ativas com GRACE PERIOD: `is_active=FALSE` + `revoked_at=NOW()`
+        + `grace_expires_at = NOW()+grace` (a key ainda autentica até lá — CI em andamento não
+        quebra). Retorna os prefixos revogados (para o audit)."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE gate_api_keys SET is_active = FALSE, revoked_at = NOW(), "
+                "  grace_expires_at = NOW() + (%s * INTERVAL '1 minute') "
+                "WHERE account_id = %s AND is_active = TRUE RETURNING key_prefix",
+                (int(grace_minutes), account_id))
+            return [r[0] for r in cur.fetchall()]
 
         return await asyncio.to_thread(self._run, _fn)
 

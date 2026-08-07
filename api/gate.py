@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import hashlib
 import secrets
+import time
 from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Tuple
 from urllib.parse import urlparse
@@ -37,11 +38,43 @@ ALL_CHECK_NAMES: List[str] = list(_ENGINE_ORDER)
 
 _TRIAL_DAYS = 14
 _KEY_PREFIX = "KLM_"
+_KEY_GRACE_MIN = 60   # KL-151 P4 — a key antiga vale +1h após a regeneração (CI em andamento)
+_RPM_BY_SLUG = {"free": 10, "pro": 30, "team": 60, "enterprise": 120}   # req/min por key
 
 # Buckets de fallback in-memory do rate limit (reusa `api.main._redis_allow`).
 _gate_register_hits: dict = {}
 _gate_invite_hits: dict = {}
 _gate_verify_hits: dict = {}
+
+
+# --------------------------------------------------------------------------- #
+# Audit log (KL-151 P4) — compliance Enterprise. NUNCA guarda o VALOR da key.
+# --------------------------------------------------------------------------- #
+
+def _client_meta(request: Optional[Request]) -> Tuple[Optional[str], Optional[str]]:
+    if request is None:
+        return None, None
+    try:
+        ip = (request.headers.get("cf-connecting-ip")
+              or (request.client.host if request.client else None))
+    except Exception:  # noqa: BLE001
+        ip = None
+    ua = (request.headers.get("user-agent") or "")[:500] or None
+    return ip, ua
+
+
+async def log_gate_audit(account_id: int, action: str, request: Optional[Request] = None,
+                         key_id: Optional[int] = None, domain: Optional[str] = None,
+                         detail: Optional[dict] = None) -> None:
+    """Registra uma ação no `gate_audit_log`. Fail-safe (nunca derruba a ação). O `detail` NUNCA
+    contém o valor de uma API key — só o prefixo."""
+    ip, ua = _client_meta(request)
+    try:
+        await get_target_store().insert_gate_audit(
+            account_id=account_id, action=action, key_id=key_id, target_domain=domain,
+            detail=detail or {}, ip_address=ip, user_agent=ua)
+    except Exception as exc:  # noqa: BLE001 - audit best-effort
+        print(f"[gate] audit falhou ({action}): {exc!r}", flush=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -64,17 +97,43 @@ def _hash_key(full_key: str) -> str:
 
 async def authenticate_api_key(request: Request) -> dict:
     """Valida o header `X-API-Key`. Retorna `{account_id, key_id, plan}`. 401 se ausente/inválida/
-    revogada. Atualiza `last_used_at`."""
+    revogada (fora do grace). Atualiza `last_used_at` e aplica o rate limit por MINUTO por key."""
     key = (request.headers.get("X-API-Key") or "").strip()
     if not key or not key.startswith(_KEY_PREFIX):
         raise HTTPException(status_code=401, detail="API key inválida.")
     store = get_target_store()
     record = await store.get_gate_api_key_by_hash(_hash_key(key))
-    if not record or not record.get("is_active"):
+    if not record:
         raise HTTPException(status_code=401, detail="API key inválida ou revogada.")
+    if not record.get("is_active"):
+        # KL-151 P4: aceita uma key revogada DENTRO do grace period (rotação sem quebrar CI).
+        ge = _to_utc(record.get("grace_expires_at"))
+        if not ge or ge < _now():
+            raise HTTPException(status_code=401, detail="API key inválida ou revogada.")
     await store.touch_gate_api_key(record["id"])
     plan = await get_effective_gate_plan(record["account_id"])
+    await _enforce_rpm(record["id"], plan)
     return {"account_id": record["account_id"], "key_id": record["id"], "plan": plan}
+
+
+async def _enforce_rpm(key_id: int, plan: Optional[dict]) -> None:
+    """Rate limit por MINUTO por key (Redis: `gate_rpm:{key}:{minuto}`). Fail-open sem Redis."""
+    redis = _scan_redis()
+    if redis is None:
+        return
+    max_rpm = _RPM_BY_SLUG.get((plan or {}).get("slug"), 10)
+    try:
+        rkey = f"gate_rpm:{int(key_id)}:{int(time.time()) // 60}"
+        n = await redis.incr(rkey)
+        if n == 1:
+            await redis.expire(rkey, 60)
+        if n > max_rpm:
+            raise HTTPException(status_code=429,
+                                detail=f"Rate limit: {max_rpm} requisições/minuto. Aguarde.")
+    except HTTPException:
+        raise
+    except Exception:  # noqa: BLE001 - Redis instável → não bloqueia
+        pass
 
 
 async def _resolve_gate_account(request: Request) -> dict:
@@ -210,6 +269,19 @@ def _serialize_result(r) -> dict:
             "detail": r.detail, "http_status": r.http_status}
 
 
+def _redact_third_party(results: List[dict]) -> None:
+    """KL-151 P4 — scan de terceiro (Enterprise `scan_third_party`): NÃO vaza path/valor de
+    credencial nem caminho de recurso exposto; só a CATEGORIA + severidade do risco. Mutação
+    in-place dos dicts já serializados (não afeta score/counts, que vêm do report cru)."""
+    for r in results:
+        if r.get("category") == "credentials":
+            r["detail"] = "Credential finding (redigido — scan de terceiro)"
+            r["path"] = "[redacted]"
+        elif r.get("category") == "exposure" and r.get("status") == "fail":
+            r["detail"] = f"Recurso exposto detectado ({r.get('severity')})"
+            r["path"] = "[redacted]"
+
+
 def _passed_for(report, fail_on: str) -> bool:
     """`passed` RESPEITANDO o `fail_on` do dev (a engine só olha CRÍTICO). True se não há FAIL de
     severidade ≥ o threshold. `fail_on` inválido → 'critical'."""
@@ -279,6 +351,11 @@ async def gate_register(body: GateRegisterBody, request: Request) -> JSONRespons
     project = await store.create_gate_project(
         account_id, name=(body.company or domain), url=body.project_url.strip(), domain=domain)
 
+    await log_gate_audit(account_id, "key_created", request, detail={"key_prefix": prefix})
+    if project:
+        await log_gate_audit(account_id, "project_created", request, domain=domain,
+                             detail={"project_id": project["id"], "domain": domain})
+
     resp = JSONResponse({"account_id": account_id, "api_key": full_key,
                          "project_id": (project or {}).get("id")})
     _m._set_session_cookie(resp, auth_users.create_user_token(user))
@@ -291,13 +368,17 @@ async def gate_register(body: GateRegisterBody, request: Request) -> JSONRespons
 
 @router.post("/account/gate/regenerate-key")
 async def gate_regenerate_key(request: Request) -> dict:
-    """Revoga TODAS as keys ativas da conta e emite uma nova (exibida UMA VEZ)."""
+    """Revoga as keys ativas COM grace period de 1h (a antiga vale até lá — o CI em andamento não
+    quebra) e emite uma nova (exibida UMA VEZ)."""
     user = await auth_users.require_user(request)
     store = get_target_store()
-    await store.revoke_gate_api_keys(user["id"])
+    old_prefixes = await store.revoke_gate_api_keys_with_grace(user["id"], grace_minutes=_KEY_GRACE_MIN)
     full_key, prefix, key_hash = generate_api_key()
     await store.create_gate_api_key(user["id"], prefix, key_hash, name="default")
-    return {"api_key": full_key, "prefix": prefix}
+    await log_gate_audit(user["id"], "key_regenerated", request,
+                         detail={"old_prefix": old_prefixes[0] if old_prefixes else None,
+                                 "new_prefix": prefix})
+    return {"api_key": full_key, "prefix": prefix, "grace_period_minutes": _KEY_GRACE_MIN}
 
 
 @router.get("/account/gate/keys")
@@ -356,6 +437,9 @@ async def gate_verify_check(project_id: int, request: Request) -> dict:
     if not ok_ctrl:
         return {"status": "not_found"}
     await store.mark_gate_project_verified(project_id, challenge["method"])
+    await log_gate_audit(ctx["account_id"], "project_verified", request, key_id=ctx.get("key_id"),
+                         domain=project["domain"],
+                         detail={"project_id": project_id, "method": challenge["method"]})
     return {"status": "verified", "verified": True}
 
 
@@ -394,6 +478,8 @@ async def gate_invite(body: GateInviteBody, request: Request) -> dict:
     accept_url = f"https://klarim.net/gate/invite/{token}"
     owner_name = (user.get("name") or user.get("full_name") or "").strip()
     _m._spawn(_send_gate_invite_email(dev_email, owner_name, domain, accept_url))
+    await log_gate_audit(user["id"], "invite_sent", request, domain=domain,
+                         detail={"domain": domain, "dev_email": dev_email})
     return {"invite_id": invite["id"], "status": "sent"}
 
 
@@ -449,12 +535,16 @@ async def gate_invite_accept(token: str, request: Request) -> dict:
     # O dev vira 'developer' (ou 'both' se também é dono de site).
     cur_type = (await store.get_account_gate_fields(user["id"]) or {}).get("account_type") or "owner"
     await store.set_account_type(user["id"], "both" if cur_type in ("owner", "both") else "developer")
+    await log_gate_audit(user["id"], "invite_accepted", request, domain=domain,
+                         detail={"domain": domain, "invite_id": invite["id"]})
     return {"status": "accepted", "domain": domain, "project_id": (project or {}).get("id")}
 
 
 @router.delete("/account/gate/invite/{invite_id}")
 async def gate_invite_revoke(invite_id: int, request: Request) -> dict:
-    """O dono revoga o convite e REMOVE o projeto correspondente do dev (perde o acesso ao scan)."""
+    """O dono revoga o convite e REMOVE o projeto correspondente do dev (perde o acesso ao scan) +
+    avisa o dev por e-mail (transacional). Audit: `invite_revoked`."""
+    import api.main as _m
     user = await auth_users.require_user(request)
     store = get_target_store()
     revoked = await store.revoke_gate_invite(invite_id, user["id"])
@@ -463,7 +553,22 @@ async def gate_invite_revoke(invite_id: int, request: Request) -> dict:
     dev = await store.get_user_by_email(revoked["dev_email"])
     if dev:
         await store.delete_gate_project_by_domain(dev["id"], revoked["domain"])
+    _m._spawn(_send_gate_revoked_email(revoked["dev_email"], revoked["domain"]))
+    await log_gate_audit(user["id"], "invite_revoked", request, domain=revoked["domain"],
+                         detail={"domain": revoked["domain"], "dev_email": revoked["dev_email"]})
     return {"status": "revoked"}
+
+
+async def _send_gate_revoked_email(dev_email: str, domain: str) -> None:
+    """Fire-and-forget: avisa o dev que o acesso ao domínio foi revogado. Silencioso se e-mail off."""
+    import api.main as _m
+    try:
+        mailer = _m._mailer()
+        if mailer is None:
+            return
+        await mailer.send_gate_access_revoked(dev_email, domain)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[gate] falha ao avisar revogação p/ {dev_email}: {exc!r}", flush=True)
 
 
 @router.get("/account/gate/invites")
@@ -508,6 +613,8 @@ async def gate_create_project(body: GateProjectBody, request: Request) -> dict:
         ctx["account_id"], name=(body.name or domain), url=body.url.strip(), domain=domain)
     if project is None:
         raise HTTPException(status_code=409, detail="Você já tem um projeto para este domínio.")
+    await log_gate_audit(ctx["account_id"], "project_created", request, key_id=ctx.get("key_id"),
+                         domain=domain, detail={"project_id": project["id"], "domain": domain})
     return {"project": project,
             "next_step": "Verifique o domínio via /api/gate/projects/{id}/verify/start"}
 
@@ -542,8 +649,16 @@ async def gate_scan(body: GateScanBody, request: Request) -> dict:
         raise HTTPException(status_code=403,
                             detail="Domínio não verificado. Verifique em "
                                    "/api/gate/projects/{id}/verify/start.")
+    third_party = (not project.get("verified")) and bool(plan.get("scan_third_party"))
     # Consome 1 crédito de scan/dia (atômico) ANTES de rodar — invalidez de domínio já barrou acima.
-    await enforce_scan_limit(ctx["account_id"], plan)
+    try:
+        await enforce_scan_limit(ctx["account_id"], plan)
+    except HTTPException as exc:
+        if exc.status_code == 429:
+            await log_gate_audit(ctx["account_id"], "scan_blocked", request, key_id=ctx.get("key_id"),
+                                 domain=domain, detail={"reason": "daily_limit",
+                                                        "limit": plan.get("scans_per_day")})
+        raise
 
     allowed = get_allowed_checks(plan)
     blocked = [c for c in ALL_CHECK_NAMES if c not in allowed]
@@ -556,12 +671,20 @@ async def gate_scan(body: GateScanBody, request: Request) -> dict:
     config = GateConfig(target=scan_url, fail_on=fail_on, checks=allowed, timeout=timeout)
     report = await run_all(url=scan_url, timeout=timeout, checks=allowed, config=config)
     results = [_serialize_result(r) for r in report.results]
+    if third_party:
+        _redact_third_party(results)   # KL-151 P4: scan de terceiro não vaza path/credencial
     passed = _passed_for(report, fail_on)
 
     run_id = await store.create_gate_run(
         project_id=project["id"], account_id=ctx["account_id"], url=scan_url,
         score=report.score, passed=passed, fail_on=fail_on, duration_ms=report.duration_ms,
         results=results, checks_run=allowed, checks_blocked=blocked, metadata=(body.metadata or {}))
+
+    # Audit obrigatório (compliance Enterprise): SEMPRE com target_domain.
+    await log_gate_audit(ctx["account_id"], "scan", request, key_id=ctx.get("key_id"), domain=domain,
+                         detail={"url": scan_url, "score": report.score, "passed": passed,
+                                 "duration_ms": report.duration_ms, "plan": plan.get("name"),
+                                 "third_party": third_party})
 
     return {"run_id": run_id, "url": scan_url, "score": report.score, "passed": passed,
             "duration_ms": report.duration_ms, "critical": report.critical_count,
@@ -700,11 +823,60 @@ class AssignPlanBody(BaseModel):
 @router.post("/admin/gate/accounts/{account_id}/plan")
 async def admin_gate_assign_plan(account_id: int, body: AssignPlanBody, request: Request) -> dict:
     """Atribui um plano a uma conta dev (efeito imediato — sem trial). Zera o trial (o plano
-    atribuído passa a valer diretamente)."""
+    atribuído passa a valer diretamente). Audit: `plan_changed`."""
     store = get_target_store()
     plan = await store.get_gate_plan(body.plan_id)
     if not plan:
         raise HTTPException(status_code=404, detail="Plano não encontrado.")
+    old = await get_effective_gate_plan(account_id)
     await store.set_account_gate_plan(account_id, body.plan_id, trial_started_at=None,
                                       trial_ends_at=None)
+    await log_gate_audit(account_id, "plan_changed", request,
+                         detail={"old_plan": (old or {}).get("slug"), "new_plan": plan["slug"],
+                                 "by_admin": True})
     return {"status": "assigned", "account_id": account_id, "plan": plan["slug"]}
+
+
+class EnterpriseBody(BaseModel):
+    cnpj: Optional[str] = None
+    contract_url: Optional[str] = None
+    notes: Optional[str] = None
+
+
+@router.post("/admin/gate/accounts/{account_id}/enterprise")
+async def admin_gate_enterprise(account_id: int, body: EnterpriseBody, request: Request) -> dict:
+    """Grava CNPJ/contrato/notas de uma conta Enterprise (JWT admin). Audit: `enterprise_updated`."""
+    await get_target_store().set_enterprise_fields(
+        account_id, cnpj=body.cnpj, contract_url=body.contract_url, notes=body.notes)
+    await log_gate_audit(account_id, "enterprise_updated", request,
+                         detail={"cnpj_set": bool(body.cnpj), "contract_set": bool(body.contract_url)})
+    return {"status": "saved", "account_id": account_id}
+
+
+# --------------------------------------------------------------------------- #
+# 9. Audit log — leitura (admin: todas as contas · dev: a própria) — KL-151 P4
+# --------------------------------------------------------------------------- #
+
+def _audit_ser(row: dict) -> dict:
+    out = dict(row)
+    out["created_at"] = _iso(out.get("created_at"))
+    return out
+
+
+@router.get("/admin/gate/audit")
+async def admin_gate_audit(request: Request, account_id: Optional[int] = Query(default=None),
+                           action: Optional[str] = Query(default=None),
+                           limit: int = Query(default=50, ge=1, le=500)) -> dict:
+    """Audit log de QUALQUER conta (JWT admin). Filtros opcionais por `account_id`/`action`."""
+    rows = await get_target_store().list_gate_audit(account_id=account_id, action=action, limit=limit)
+    return {"audit": [_audit_ser(r) for r in rows]}
+
+
+@router.get("/account/gate/audit")
+async def account_gate_audit(request: Request, action: Optional[str] = Query(default=None),
+                             limit: int = Query(default=20, ge=1, le=200)) -> dict:
+    """Audit log da PRÓPRIA conta (JWT/API key). Ownership enforcado (nunca vê o de outros)."""
+    ctx = await _resolve_gate_account(request)
+    rows = await get_target_store().list_gate_audit(account_id=ctx["account_id"], action=action,
+                                                    limit=limit)
+    return {"audit": [_audit_ser(r) for r in rows]}

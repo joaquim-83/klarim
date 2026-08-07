@@ -74,6 +74,10 @@ class FakeStore:
     async def count_gate_runs_today(self, account_id):
         return sum(1 for r in self.runs if r["account_id"] == account_id)
 
+    async def insert_gate_audit(self, **kw):
+        self.audits = getattr(self, "audits", [])
+        self.audits.append(kw)
+
     async def create_gate_run(self, project_id, account_id, url, score, passed, fail_on,
                               duration_ms, results, checks_run, checks_blocked, metadata=None):
         r = {"id": self.rid, "project_id": project_id, "account_id": account_id, "url": url,

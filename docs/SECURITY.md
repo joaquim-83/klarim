@@ -429,4 +429,15 @@ zero forja de token, nenhum payload de injeção) são invioláveis.
 - **Convite dono→dev:** só um dono **nível 3** que possui o domínio VERIFICADO (`user_owns_verified_domain`)
   pode convidar; token `secrets.token_urlsafe(32)`, TTL 7 dias, status efetivo resolvido por relógio.
   O aceite exige o dev LOGADO cujo e-mail == o convidado (anti-hijack). Revogar remove o projeto do dev
-  (perde o acesso ao scan). Rate limit 10/h/IP no convite e na verificação.
+  (perde o acesso ao scan) **+ avisa o dev por e-mail** (KL-151 P4). Rate limit 10/h/IP no convite e na verificação.
+- **Rotação de key com grace period (P4):** a regeneração revoga a antiga com `grace_expires_at=NOW()+1h`
+  — a key antiga ainda autentica por 1h (CI em andamento não quebra); depois disso → 401. `authenticate_api_key`
+  aceita uma key revogada só DENTRO do grace.
+- **Rate limit por MINUTO por key (P4):** `gate_rpm:{key}:{min}` no Redis — free 10 · pro 30 · team 60 ·
+  enterprise 120 req/min (além do teto de scans/dia). Fail-open sem Redis.
+- **Enterprise — scan de terceiro redigido (P4):** um plano com `scan_third_party` pode escanear domínio
+  NÃO verificado, mas o resultado **redige** `path` e o detalhe de **credenciais/exposição** (`_redact_third_party`)
+  — só a categoria + severidade do risco vaza (nunca o caminho/segredo do terceiro).
+- **Audit log (P4, `gate_audit_log`):** CADA ação do Gate (scan/key/project/invite/plan/enterprise) é
+  registrada com IP/UA. **NUNCA guarda o valor da API key — só o prefixo.** `target_domain` obrigatório em
+  todo scan (compliance Enterprise). Leitura admin (todas as contas) e dev (só a própria, ownership).

@@ -352,8 +352,15 @@ enforcement **no servidor**. O endpoint de scan, a CLI e o frontend são os Prom
 | POST | `/account/gate/invite` | JWT (dono nível 3 + posse do domínio) | Convida um dev por e-mail (token, TTL 7d) |
 | GET | `/gate/invite/{token}` | público | Info do convite (domínio/status/dev tem conta) |
 | POST | `/gate/invite/{token}/accept` | JWT (o dev convidado) | Aceita → projeto `verified` (method=invite) |
-| DELETE | `/account/gate/invite/{id}` | JWT (dono) | Revoga + REMOVE o projeto do dev |
+| DELETE | `/account/gate/invite/{id}` | JWT (dono) | Revoga + REMOVE o projeto do dev + e-mail ao dev (P4) |
 | GET | `/account/gate/invites` | JWT | Convites emitidos pelo dono |
+| GET | `/gate/plans` | público | Planos ativos (a landing renderiza ao vivo) |
+| GET | `/account/gate/key-info` | JWT | Metadados da key ativa (prefixo/datas — nunca o valor) |
+| **GET** | **`/admin/gate/audit`** | **JWT admin** | **Audit log de todas as contas (filtros `account_id`/`action`) (P4)** |
+| **GET** | **`/account/gate/audit`** | **API key/JWT** | **Audit log da própria conta (ownership) (P4)** |
+| GET · PUT · POST | `/admin/gate/plans[/{id}]` | JWT admin | Admin de planos (P3) |
+| GET · POST | `/admin/gate/accounts[/{id}/plan]` | JWT admin | Contas dev + atribuir plano (P3) |
+| **POST** | **`/admin/gate/accounts/{id}/enterprise`** | **JWT admin** | **CNPJ/contrato/notas Enterprise (P4)** |
 
 ---
 

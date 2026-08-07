@@ -1908,9 +1908,34 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   histórico de runs+detalhe com findings, `checks_blocked` com CTA de upgrade, snippet de integração).
   **Admin** `web/src/pages/painel/gate-plans.astro` + `admin/GatePlansPage.jsx` (lista/edita/cria planos com
   seletor de checks + `["all"]`, tabela de contas dev + atribuição manual de plano; item no `AdminShell`);
-  métodos `gate*` no `adminApi.js`. **NÃO neste prompt:** segurança avançada/audit log/Enterprise CNPJ
-  (Prompt 4). **+16 testes** (`test_kl151_p3_portal_admin.py`); Astro build ✓, `test:unit` 154 ✓, store P3
-  validada contra Postgres 16. **2167 pytest passed.** Relatório: `claude/reports/KL-151_p3_frontend.md`.
+  métodos `gate*` no `adminApi.js`. **+16 testes** (`test_kl151_p3_portal_admin.py`); Astro build ✓,
+  `test:unit` 154 ✓, store P3 validada contra Postgres 16. **2167 pytest passed.** Relatório:
+  `claude/reports/KL-151_p3_frontend.md`. **Fix visual da landing** (pós-P3): a landing usava a escala
+  `slate` sem contar que o KL-87 a INVERTE no light → `text-slate-900` virava branco (invisível) e
+  `bg-slate-50` virava caixa fora de tom. Corrigido p/ o padrão do `/planos` (headings `text-white`,
+  texto `text-slate-300/400`, cards `border-slate-800 bg-slate-900/60`); removidos o badge do hero e a
+  nota abaixo dos planos. Verificado ao vivo (claro/escuro) via browser.
+  **Prompt 4/4 ✅ (FECHA o KL-151)** — segurança avançada + Enterprise + testes de integração. **Schema
+  (`gate_audit_log` + `gate_api_keys.grace_expires_at` + `users.company_cnpj/contract_url/enterprise_notes`).**
+  **(1) Audit log** (`api/gate.py::log_gate_audit`, fail-safe): registra CADA ação (scan/scan_blocked/
+  key_created/key_regenerated/project_created/project_verified/invite_sent/invite_accepted/invite_revoked/
+  plan_changed/enterprise_updated) com IP/UA — **NUNCA o valor da key, só o prefixo**. Leitura: `GET
+  /admin/gate/audit` (todas as contas + filtros account_id/action) · `GET /account/gate/audit` (a PRÓPRIA
+  conta, dual-auth). **(2) Rotação com grace period** — `regenerate-key` revoga a antiga com
+  `grace_expires_at=NOW()+1h` (`revoke_gate_api_keys_with_grace`); `authenticate_api_key` aceita uma key
+  revogada DENTRO do grace (CI em andamento não quebra) e devolve `grace_period_minutes`. **(3) Rate limit
+  por MINUTO por key** (`_enforce_rpm`, Redis `gate_rpm:{key}:{min}`): free 10 · pro 30 · team 60 ·
+  enterprise 120 rpm (fail-open sem Redis). **(4) Enterprise** — `company_cnpj/contract_url/enterprise_notes`
+  (`POST /admin/gate/accounts/{id}/enterprise`); scan de TERCEIRO (plano `scan_third_party`, domínio
+  não-verificado) **redige path/credencial** (`_redact_third_party` — só categoria+severidade do risco);
+  audit obrigatório com `target_domain` em todo scan (compliance). **(5) Revogação** já removia o projeto
+  do dev; agora **avisa por e-mail** (`send_gate_access_revoked`, transacional) + audit `invite_revoked`.
+  **Testes:** novo `test_kl151_integration.py` (+14: grace ok/expirado/revogado, RPM 11º→429, redação de
+  terceiro, terceiro sem Enterprise→403, CNPJ no admin, audit scan/scan_blocked/admin-filtros/dev-own-only,
+  trial efetivo); P1/P2 ajustados (grace + `insert_gate_audit`). Store P4 validada contra **Postgres 16
+  real**. **2181 pytest passed.** Docs: `docs/API.md` (audit) + `docs/SECURITY.md` (rotação/grace/enterprise/
+  redação/audit). **KL-151 COMPLETO** (P1 backend · P2 API+CLI+MCP · P3 frontend · P4 segurança/Enterprise).
+  Relatório: `claude/reports/KL-151_p4_security_enterprise.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

@@ -1171,6 +1171,19 @@ class KlarimMailer:
             "subject": f"Convite para monitorar {domain} no Klarim Security Gate", "text": text,
         }, email_type="gate_invite", domain=domain, source="account", skip_blocklist=True)
 
+    async def send_gate_access_revoked(self, to_email: str, domain: str) -> Dict[str, Any]:
+        """KL-151 P4 — avisa o dev que o acesso ao Security Gate de um domínio foi revogado pelo
+        dono. Transacional (`klarim@klarim.net`), texto puro, registrado (`gate_access_revoked`)."""
+        text = (
+            f"Olá,\n\n"
+            f"Seu acesso ao Klarim Security Gate para {domain} foi revogado pelo proprietário "
+            f"do site.\n\nScans futuros para este domínio serão bloqueados.\n\n— Klarim"
+        )
+        return await self._send({
+            "from": self.from_address, "to": [to_email],
+            "subject": f"Acesso ao Security Gate de {domain} revogado", "text": text,
+        }, email_type="gate_access_revoked", domain=domain, source="account", skip_blocklist=True)
+
     async def send_profile_view(self, to_email: str, domain: str, score: int,
                                 semaphore: str, cta_url: str,
                                 unsubscribe_link: Optional[str] = None,

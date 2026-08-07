@@ -151,6 +151,19 @@ class FakeStore:
                 n += 1
         return n
 
+    async def revoke_gate_api_keys_with_grace(self, account_id, grace_minutes=60):
+        out = []
+        for k in self.keys:
+            if k["account_id"] == account_id and k["is_active"]:
+                k["is_active"] = False
+                k["revoked_at"] = datetime.now(timezone.utc)
+                k["grace_expires_at"] = datetime.now(timezone.utc) + timedelta(minutes=grace_minutes)
+                out.append(k["key_prefix"])
+        return out
+
+    async def insert_gate_audit(self, **kw):
+        return None
+
     async def list_gate_api_keys(self, account_id):
         return [dict(k) for k in self.keys if k["account_id"] == account_id]
 
@@ -407,16 +420,21 @@ def test_api_key_last_used_updated(client, store):
     assert store.keys[0]["last_used_at"] is not None
 
 
-def test_regenerate_key_revokes_old(client, store):
+def test_regenerate_key_revokes_old_with_grace(client, store):
+    # KL-151 P4: a regeneração dá grace period de 1h — a key antiga AINDA autentica (CI não quebra).
     dev = _dev(store)
+    dev["gate_plan_id"] = 1
     old = _make_key(store, dev["id"])
     r = client.post("/account/gate/regenerate-key", cookies=_auth_cookie(dev))
-    assert r.status_code == 200
+    assert r.status_code == 200 and r.json()["grace_period_minutes"] == 60
     new = r.json()["api_key"]
     assert new != old
-    # old revogada, nova ativa
+    # old marcada revogada (is_active False) mas com grace futuro; nova ativa.
     assert store.keys[0]["is_active"] is False and store.keys[1]["is_active"] is True
-    assert client.get("/gate/projects", headers={"X-API-Key": old}).status_code == 401
+    assert store.keys[0]["grace_expires_at"] > datetime.now(timezone.utc)
+    # dentro do grace, a old ainda autentica; a nova também.
+    assert client.get("/gate/projects", headers={"X-API-Key": old}).status_code == 200
+    assert client.get("/gate/projects", headers={"X-API-Key": new}).status_code == 200
 
 
 # =========================================================================== #
