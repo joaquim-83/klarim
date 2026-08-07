@@ -77,6 +77,8 @@ export default function GateLandingCTA() {
       const { ok, data } = await getJSON('/api/account/gate/activate', { method: 'POST' })
       if (!ok) throw new Error(data.detail || 'Não foi possível ativar. Tente novamente.')
       if (data.api_key) {
+        // guarda p/ o wizard de onboarding do dashboard pré-preencher o secret (KL-152 P1)
+        try { sessionStorage.setItem('klarim_gate_new_key', data.api_key) } catch { /* */ }
         setModal({ apiKey: data.api_key, plan: data.plan })   // key nova → mostra 1x
       } else {
         window.location.href = data.dashboard_url || '/dashboard/gate'   // já tinha key

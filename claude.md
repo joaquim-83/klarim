@@ -1951,6 +1951,24 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   erro genérico. **Sem SQL novo** (reusa `set_account_type`/`set_account_gate_plan`/`create_gate_api_key`/
   `get_account_gate_fields`); key só como hash SHA-256. **+13 testes** (`test_kl151_activate.py`); suíte
   KL-151 93 passed, `test:unit` 154. Relatório: `claude/reports/fix_ativacao_gate_conta_existente.md`.
+- **KL-152 (Prompt 1/3)** — Fix visual do dashboard Gate + onboarding wizard ✅. **(A) Fix visual do
+  `/dashboard/gate`:** a raiz do contraste fraco era o `GatePortal.jsx` escrito com classes *light-first*
+  (`text-slate-900`/`bg-white`/`bg-slate-50`) que o KL-87 **inverte** no tema claro → texto quase branco
+  sobre card claro. Reescrito com os **tokens canônicos** de `dashboard-v2/shared.js` (título `text-white`,
+  subtítulo `text-slate-300`, cards `card`) — mesmo padrão do Dashboard v2 (**não** inventou design).
+  Snippet Python raw → **abas** `GateIntegrationTabs.jsx` (GitHub/GitLab/Bitbucket/curl, CSP-safe, URL do
+  projeto pré-preenchida + Copiar via `GateCodeBlock.jsx`); inputs "Novo projeto" com **label**+placeholder
+  (`text-base` 16px, `h-12`); **badge de plano** (`PlanBadge`) com barra `9/18` + CTA "Upgrade → Team (18
+  checks)". **(B) Wizard `GateOnboarding.jsx` (5 steps):** aparece quando `gate_runs` vazio, dismissível
+  ("Pular"), reaparece até o 1º scan, some após completar (`localStorage['klarim_gate_onboarded']`). Step 1
+  escolhe CI/CD → 2 add secret (instrução por plataforma + **API key real** do `sessionStorage
+  ['klarim_gate_new_key']` gravada na ativação/regenerar; senão prefixo mascarado + "Gerar nova key") → 3
+  cola o YAML pré-preenchido → 4 deploy + **polling `runs?limit=1` 10s** → 5 pronto. **Lógica pura**
+  `web/src/lib/gate/snippets.js` (`buildSnippet`/`secretSteps`/`planProgress`, `TOTAL_CHECKS=18`; a key
+  NUNCA é embutida no YAML — só o secret `${{ secrets.KLARIM_KEY }}`/`$KLARIM_KEY`). **Sem backend/nginx
+  novo** (reusa `key-info`/`projects`/`runs`/`regenerate-key`). **+8 `node --test`** (`snippets.test.js`) →
+  `test:unit` 162; `npm run build` OK. Prompts 2-3 pendentes (webhook, convite, editor `security-gate.yml`).
+  Relatório: `claude/reports/KL-152_p1_fix_visual_onboarding.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.
