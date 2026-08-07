@@ -314,20 +314,20 @@ def test_lead_scoring_unknown_no_penalty():
     assert not any(s["signal"] == "email_unknown" for s in out["signals"])
 
 
-def test_lead_scoring_role_status_no_double_penalty():
-    # KL-136: prefixo 'contato' já penaliza -5; o status 'role' NÃO deve dobrar.
+def test_lead_scoring_email_type_no_double_with_role_status():
+    # KL-146: prefixo genérico 'contato' + status 'role' da Reoon → UM só sinal de tipo (não dobra).
     t = {"domain": "x.com", "last_scan_score": 60, "email_verify_status": "role"}
     out = calculate_alert_score(t, "contato@x.com")
-    role_signals = [s for s in out["signals"] if "role" in s["signal"]]
-    assert len(role_signals) == 1 and role_signals[0]["signal"] == "role_based_prefix"
-    assert role_signals[0]["points"] == -5   # KL-136: penalidade reduzida
+    type_signals = [s for s in out["signals"] if s["signal"].startswith("email_type")]
+    assert len(type_signals) == 1 and type_signals[0]["signal"] == "email_type_generic_high_bounce"
+    assert type_signals[0]["points"] == -10   # KL-146: contato high-bounce
 
 
-def test_lead_scoring_role_status_penalizes_when_prefix_absent():
-    # KL-136: o status 'role' da Reoon (prefixo fora da lista) penaliza com a MESMA penalidade -5.
+def test_lead_scoring_role_status_downgrades_personal_looking():
+    # KL-146: prefixo que parece pessoal ('joao') + status 'role' da Reoon → rebaixado a 0 (não +15).
     t = {"domain": "x.com", "last_scan_score": 60, "email_verify_status": "role"}
-    out = calculate_alert_score(t, "joao@x.com")  # prefixo não é role
-    assert any(s["signal"] == "email_role_account" and s["points"] == -5 for s in out["signals"])
+    out = calculate_alert_score(t, "joao@x.com")  # prefixo não-genérico, mas Reoon confirmou role
+    assert any(s["signal"] == "email_type_role_verified" and s["points"] == 0 for s in out["signals"])
 
 
 # --------------------------------------------------------------------------- #

@@ -435,12 +435,34 @@ def test_apply_scoring_stores_and_does_not_filter(monkeypatch):
     # KL-137: o scoring grava o `alert_quality_score` e NÃO filtra (todo alvo é mantido).
     import discovery.alert_worker as aw
     monkeypatch.setattr(aw, "calculate_alert_score", lambda t, e, b: {
-        "score": 5, "signals": [{"signal": "role_based_prefix", "points": -5}]})
+        "score": 5, "signals": [{"signal": "email_type_generic_high_bounce", "points": -10}]})
     store = FakeStore()
     w = _worker(store)
     targets, avg = asyncio.run(
         w._apply_alert_scoring([_target(1, email="contato@x.com.br")]))
     assert len(targets) == 1 and targets[0]["_alert_score"] == 5 and avg == 5
+
+
+def test_run_cycle_personal_before_generic_real_scoring():
+    # KL-146: com o scoring REAL, e-mail pessoal é enviado ANTES do genérico (fila ordena por tipo),
+    # e TODOS são enviados (volume inalterado — KL-145: envio = sintaxe+MX+blocklist, não filtra).
+    def _t(tid, email):
+        return {"id": tid, "url": f"https://s{tid}.com.br", "domain": f"s{tid}.com.br",
+                "contact_email": email, "last_scan_id": 100 + tid, "last_scan_score": 70,
+                "scan_semaphore": "amarelo", "scan_fail_count": 2,
+                "scan_checks": {"results": [{"status": "FAIL", "severity": "ALTA"}]}}
+    # mesmo domínio/score p/ cada alvo → só o TIPO de e-mail difere.
+    store = FakeStore(eligible=[
+        _t(1, "contato@s1.com.br"),     # high-bounce → 30+10+20-10 = 50
+        _t(2, "joana@s2.com.br"),       # pessoal    → 30+10+20+15 = 75
+        _t(3, "comercial@s3.com.br"),   # neutro     → 30+10+20+0  = 60
+    ])
+    w = _worker(store)
+    fm = FakeMailer()
+    w._mailer = lambda: fm  # noqa: E731
+    stats = asyncio.run(w.run_cycle())
+    assert stats["sent"] == 3                              # volume inalterado (todos enviados)
+    assert [e["target_id"] for e in fm.sent] == [2, 3, 1]  # pessoal(75) → neutro(60) → contato(50)
 
 
 def test_run_cycle_isolates_bad_email():

@@ -10,11 +10,37 @@ import pytest
 
 from discovery.alert_scoring import (
     calculate_alert_score, FREE_EMAIL_DOMAINS, ROLE_BASED_PREFIXES, HIGH_CLICK_SECTORS,
+    _email_type_factor,
 )
 
 
 def _sig(result):
     return {s["signal"] for s in result["signals"]}
+
+
+# =========================================================================== #
+# 0. KL-146 — fator de tipo de e-mail (pessoal vs genérico)
+# =========================================================================== #
+
+@pytest.mark.parametrize("email,expected", [
+    ("joao@dominio.com.br", 15),          # pessoal
+    ("maria.silva@dominio.com.br", 15),   # pessoal (nome composto)
+    ("contato@dominio.com.br", -10),      # genérico high-bounce (66% dos bounces)
+    ("atendimento@dominio.com.br", -5),   # genérico medium-bounce
+    ("sac@dominio.com.br", -5),           # genérico medium-bounce
+    ("comercial@dominio.com.br", 0),      # genérico neutro
+    ("vendas@dominio.com.br", 0),         # genérico neutro
+    ("info@dominio.com.br", 0),           # genérico neutro
+    ("noreply@dominio.com.br", 0),        # genérico (union c/ ROLE_BASED_PREFIXES) — nunca +15
+    ("financeiro@dominio.com.br", 0),     # idem
+    ("CONTATO@Dominio.com", -10),         # case-insensitive
+    ("", 0),                              # vazio
+    (None, 0),                            # None
+    ("semarroba", 0),                     # sem @
+    ("@dominio.com", 0),                  # sem prefixo
+])
+def test_email_type_factor(email, expected):
+    assert _email_type_factor(email) == expected
 
 
 # =========================================================================== #
@@ -24,8 +50,8 @@ def _sig(result):
 def test_email_matches_domain_plus_30():
     r = calculate_alert_score({"domain": "hotel.com.br", "last_scan_score": None}, "joao@hotel.com.br")
     assert "email_matches_domain" in _sig(r)
-    # own domain: +30 (match) +10 (corporate) = 40
-    assert r["score"] == 40
+    # own domain: +30 (match) +10 (corporate) +15 (pessoal, KL-146) = 55
+    assert r["score"] == 55 and "email_type_personal" in _sig(r)
 
 
 def test_subdomain_match():
@@ -35,74 +61,87 @@ def test_subdomain_match():
 
 def test_free_third_party_no_penalty():
     # 2026-07-20: e-mail genérico que não casa NÃO penaliza mais (MISMATCH_FREE_PENALTY=0) — muitas
-    # PMEs BR usam gmail como e-mail comercial; o -20 barrava leads legítimos.
+    # PMEs BR usam gmail como e-mail comercial. KL-146: `zezinho@` é pessoal → +15 (só ordena).
     r = calculate_alert_score({"domain": "hotel.com.br", "last_scan_score": None}, "zezinho@gmail.com")
-    assert r["score"] == 0 and "email_mismatch_free" not in _sig(r)
+    assert r["score"] == 15 and "email_mismatch_free" not in _sig(r)
     assert "corporate_email" not in _sig(r)    # gmail é free → não corporativo
+    assert "email_type_personal" in _sig(r)    # KL-146: pessoal +15
 
 
-def test_role_based_minus_5():
-    # KL-136: penalidade de prefixo role-based reduzida de -15 → -5 (contato@ é o e-mail PADRÃO
-    # de PME no BR, não sinal de baixa qualidade). +30 (domain) +10 (corp) -5 (role) = 35.
+def test_generic_high_bounce_minus_10():
+    # KL-146: `contato@` (66% dos bounces, 8,7%) → -10 (era -5 role KL-136). +30 (domain) +10 (corp)
+    # -10 (contato high-bounce) = 30. SUBSTITUI a penalidade role-based (não acumula).
     r = calculate_alert_score({"domain": "x.com.br", "last_scan_score": None}, "contato@x.com.br")
-    assert r["score"] == 35 and "role_based_prefix" in _sig(r)
+    assert r["score"] == 30 and "email_type_generic_high_bounce" in _sig(r)
+    assert "role_based_prefix" not in _sig(r)   # KL-146: sinal antigo removido
 
 
-def test_role_penalty_reads_env_var(monkeypatch):
-    # ALERT_ROLE_PENALTY editável: com -15 (antigo) o contato@ na action_zone falha (15 < 20).
-    monkeypatch.setenv("ALERT_ROLE_PENALTY", "-15")
-    r = calculate_alert_score({"domain": "x.com.br", "last_scan_score": 70}, "contato@x.com.br")
-    assert r["score"] == 45   # 30+10+20-15 (action_zone com prefixo role)
-    # default (-5) → contato@ na action_zone passa (55 > 20).
-    monkeypatch.delenv("ALERT_ROLE_PENALTY", raising=False)
-    r2 = calculate_alert_score({"domain": "x.com.br", "last_scan_score": 70}, "contato@x.com.br")
-    assert r2["score"] == 55   # 30+10+20-5
-
-
-def test_role_based_prefix_action_zone_passes_threshold():
-    # KL-136 (cenário do card): contato@ genérico (não casa domínio) na action_zone com -5 → 25 (>20).
+def test_generic_high_bounce_action_zone_still_sent():
+    # KL-146 (cenário do card): contato@ genérico (não casa domínio) na action_zone → 20. Continua
+    # ENVIADO (KL-145: envio = sintaxe+MX+blocklist; o score só ORDENA, não filtra).
     r = calculate_alert_score({"domain": "hotel.com.br", "last_scan_score": 70}, "contato@x.com.br")
-    # +10 (corp) +20 (action_zone) -5 (role) = 25 → passa o threshold (20)
-    assert r["score"] == 25 and "role_based_prefix" in _sig(r)
+    # +10 (corp) +20 (action_zone) -10 (contato high-bounce) = 20
+    assert r["score"] == 20 and "email_type_generic_high_bounce" in _sig(r)
+
+
+def test_generic_neutral_zero():
+    # KL-146: genérico neutro (`comercial@`) → 0 (nem bônus de pessoal, nem penalidade).
+    r = calculate_alert_score({"domain": "x.com.br", "last_scan_score": 70}, "comercial@x.com.br")
+    assert r["score"] == 60 and "email_type_generic" in _sig(r)   # 30+10+20+0
+
+
+def test_generic_medium_bounce_minus_5():
+    # KL-146: `atendimento@`/`sac@` (6-7% bounce) → -5.
+    r = calculate_alert_score({"domain": "x.com.br", "last_scan_score": 70}, "sac@x.com.br")
+    assert r["score"] == 55 and "email_type_generic_medium_bounce" in _sig(r)   # 30+10+20-5
+
+
+def test_personal_ranks_above_generic_action_zone():
+    # KL-146 (efeito na fila): pessoal na action_zone > genérico na action_zone (mesmo domínio/score).
+    t = {"domain": "empresa.com.br", "last_scan_score": 70}
+    pessoal = calculate_alert_score(t, "joao@empresa.com.br")["score"]        # 30+10+20+15 = 75
+    neutro = calculate_alert_score(t, "comercial@empresa.com.br")["score"]    # 30+10+20+0  = 60
+    contato = calculate_alert_score(t, "contato@empresa.com.br")["score"]     # 30+10+20-10 = 50
+    assert pessoal > neutro > contato and (pessoal, neutro, contato) == (75, 60, 50)
 
 
 def test_score_action_zone_plus_20():
     r = calculate_alert_score({"domain": "x.com.br", "last_scan_score": 70}, "a@x.com.br")
-    assert "score_action_zone" in _sig(r) and r["score"] == 60   # 30+10+20
+    assert "score_action_zone" in _sig(r) and r["score"] == 75   # 30+10+20+15 (pessoal)
 
 
 def test_score_40_49_plus_10():
     r = calculate_alert_score({"domain": "x.com.br", "last_scan_score": 45}, "a@x.com.br")
-    assert "score_high_urgency" in _sig(r) and r["score"] == 50   # 30+10+10
+    assert "score_high_urgency" in _sig(r) and r["score"] == 65   # 30+10+10+15
 
 
 def test_score_over_85_plus_5():
     r = calculate_alert_score({"domain": "x.com.br", "last_scan_score": 95}, "a@x.com.br")
-    assert "score_low_urgency" in _sig(r) and r["score"] == 45    # 30+10+5
+    assert "score_low_urgency" in _sig(r) and r["score"] == 60    # 30+10+5+15
 
 
 def test_low_score_minus_10():
     r = calculate_alert_score({"domain": "x.com.br", "last_scan_score": 30}, "a@x.com.br")
-    # 30+10-10 (abandoned, score<40) = 30
-    assert "abandoned_or_low_score" in _sig(r) and r["score"] == 30
+    # 30+10-10 (abandoned, score<40) +15 (pessoal) = 45
+    assert "abandoned_or_low_score" in _sig(r) and r["score"] == 45
 
 
 def test_descartado_minus_10():
     r = calculate_alert_score({"domain": "x.com.br", "last_scan_score": 70, "status": "descartado"}, "a@x.com.br")
-    # 30+10+20-10 (descartado) = 50
-    assert "abandoned_or_low_score" in _sig(r) and r["score"] == 50
+    # 30+10+20-10 (descartado) +15 (pessoal) = 65
+    assert "abandoned_or_low_score" in _sig(r) and r["score"] == 65
 
 
 def test_bounce_domain_minus_40():
     r = calculate_alert_score({"domain": "y.com.br", "last_scan_score": None}, "a@othercorp.com", domain_bounced=True)
-    # +10 (corp) -40 (bounce) = -30
-    assert "bounce_domain" in _sig(r) and r["score"] == -30
+    # +10 (corp) -40 (bounce) +15 (pessoal) = -15
+    assert "bounce_domain" in _sig(r) and r["score"] == -15
 
 
-def test_combination_60():
-    # e-mail corporativo no domínio com score 70 = 60 (exemplo do card)
+def test_combination_75():
+    # e-mail corporativo pessoal no domínio com score 70: 30+10+20+15 (pessoal, KL-146) = 75.
     r = calculate_alert_score({"domain": "empresa.com.br", "last_scan_score": 70}, "diretor2@empresa.com.br")
-    assert r["score"] == 60
+    assert r["score"] == 75
 
 
 def test_edge_no_at():
@@ -112,13 +151,14 @@ def test_edge_no_at():
 
 def test_edge_empty_domain_target():
     r = calculate_alert_score({"domain": "", "last_scan_score": None}, "a@gmail.com")
-    assert r["score"] == 0   # free sem penalidade (2026-07-20); domínio vazio não casa
+    # domínio vazio não casa; gmail free (sem corp). KL-146: `a@` pessoal → +15.
+    assert r["score"] == 15
 
 
 def test_edge_score_none_no_band():
     r = calculate_alert_score({"domain": "x.com.br", "last_scan_score": None}, "a@x.com.br")
     assert not any(s.startswith("score_") for s in _sig(r))
-    assert r["score"] == 40    # 30+10, sem banda de score
+    assert r["score"] == 55    # 30+10+15 (pessoal), sem banda de score
 
 
 def test_high_click_sector_empty_by_default():
@@ -175,7 +215,7 @@ def test_worker_scores_all_no_filter(monkeypatch):
     ]
     kept, avg = _run(w._apply_alert_scoring(targets))
     assert {t["id"] for t in kept} == {1, 2}   # nenhum filtrado
-    assert avg == 30   # (60 + 0) / 2
+    assert avg == 45   # KL-146: (75 + 15) / 2 — pessoais ganham +15
 
 
 def test_worker_writes_score_for_all(monkeypatch):
@@ -186,16 +226,16 @@ def test_worker_writes_score_for_all(monkeypatch):
         {"id": 2, "domain": "hotel.com.br", "last_scan_score": None, "contact_email": "x@gmail.com"},
     ]
     _run(w._apply_alert_scoring(targets))
-    assert store.scores == {1: 60, 2: 0}   # grava o score de TODOS (gmail sem score = 0)
+    assert store.scores == {1: 75, 2: 15}   # KL-146: pessoais +15 (dono@ 75, x@gmail 15)
 
 
 def test_worker_bounce_penalizes_score(monkeypatch):
     store = FakeStore(bounce_domains={"empresa.com.br"})
     w = _worker(monkeypatch, store)
-    # e-mail corporativo de outro domínio (não-match) que bounçou → +10 -40 = -30 (só afeta a ORDEM).
+    # e-mail corporativo pessoal de outro domínio (não-match) que bounçou → +10 -40 +15 = -15.
     targets = [{"id": 5, "domain": "site.com.br", "last_scan_score": None, "contact_email": "a@empresa.com.br"}]
     kept, _ = _run(w._apply_alert_scoring(targets))
-    assert [t["id"] for t in kept] == [5] and store.scores[5] == -30   # KL-137: mantido
+    assert [t["id"] for t in kept] == [5] and store.scores[5] == -15   # KL-137: mantido (só ordena)
 
 
 # --- Fix 2026-07-20: bounce por-domínio NÃO penaliza provedores genéricos ---------------------- #
@@ -224,12 +264,13 @@ def test_calc_score_bounce_applies_for_corporate_domain():
 
 def test_worker_gmail_good_lead_scored(monkeypatch):
     # E2E dos fixes (2026-07-20): gmail (mismatch) score 70 + gmail COM bounce no banco →
-    # (1) bounce não penaliza (provedor genérico) e (2) mismatch_free=0 → 0 + 20 (zona de ação) = 20.
+    # (1) bounce não penaliza (provedor genérico) e (2) mismatch_free=0. KL-146: +15 (pessoal).
     store = FakeStore(bounce_domains={"gmail.com"})
     w = _worker(monkeypatch, store)
     targets = [{"id": 9, "domain": "hotel.com.br", "last_scan_score": 70, "contact_email": "x@gmail.com"}]
     kept, _ = _run(w._apply_alert_scoring(targets))
-    assert store.scores[9] == 20 and [t["id"] for t in kept] == [9]   # KL-137: mantido (score só ordena)
+    # KL-146: x@gmail é pessoal → 0 (mismatch/free) +20 (action) +15 (pessoal) = 35.
+    assert store.scores[9] == 35 and [t["id"] for t in kept] == [9]   # KL-137: mantido (score só ordena)
 
 
 def test_worker_scoring_failsafe_keeps_target(monkeypatch):

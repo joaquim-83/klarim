@@ -9,7 +9,6 @@ o breakdown no detalhe admin. Lead scoring **nunca** impede scan; só a decisão
 
 from __future__ import annotations
 
-import os
 from typing import Any, Dict, Optional
 
 # Provedores de e-mail gratuitos (um e-mail nesses domínios ≠ dono verificável do site).
@@ -42,22 +41,51 @@ ROLE_BASED_PREFIXES = {
 # KL-83 funnel-by-sector tiver >100 alertas/setor e click_rate > 15%.
 HIGH_CLICK_SECTORS: set = set()
 
-# KL-136 — penalidade de prefixo role-based. No Brasil, `contato@`/`vendas@`/`sac@` são o
-# e-mail PADRÃO de PME, NÃO indicador de baixa qualidade. O -15 (KL-85) barrava a maioria dos
-# leads action-zone: `contato@` = +10 (corp) +20 (action) -15 = 15 < threshold 20 → rejeitado.
-# Com -5: +10 +20 -5 = 25 > 20 → PASSA. Editável por env `ALERT_ROLE_PENALTY` (ajuste sem deploy;
-# lido a cada chamada, como o gate de deliverability). Vale para os DOIS sinais de caixa de função
-# (`role_based_prefix` por prefixo + `email_role_account` da verificação Reoon) — mesmo semântica,
-# nunca DOBRAM (o segundo só entra se o prefixo não penalizou).
-ROLE_BASED_PENALTY_DEFAULT = -5
+# KL-146 — fator de TIPO de e-mail (pessoal vs genérico), para ORDENAR a fila de alerta. Dados de
+# produção: `contato@` gera 66% dos bounces (8,7% de taxa) vs. e-mails pessoais (3,6%). A solução
+# NÃO é filtrar (a regra de envio do KL-145 = sintaxe+MX+blocklist é INALTERADA) — é REORDENAR:
+# pessoais primeiro, genéricos depois. A blocklist aprende com os bounces dos genéricos antes de
+# enviar muitos. Este fator SUBSTITUI a penalidade role-based do KL-136 (`ALERT_ROLE_PENALTY`, -5) —
+# não acumula com ela: o próprio fator já dá ≤0 aos genéricos e +15 aos pessoais.
+GENERIC_HIGH_BOUNCE = {"contato"}                     # 8,7% bounce → -10
+GENERIC_MEDIUM_BOUNCE = {"atendimento", "sac"}        # 6-7% bounce → -5
+# Genéricos sem sinal de bounce elevado → 0 (nem bônus de pessoal, nem penalidade). Lista do card
+# KL-146; a UNIÃO com ROLE_BASED_PREFIXES garante que um genérico NÃO listado (ex.: `noreply`,
+# `financeiro`, `rh`) também caia em 0 — nunca seja tratado como pessoal (+15).
+GENERIC_NEUTRAL = {
+    "comercial", "vendas", "suporte", "info", "faleconosco", "falecom",
+    "email", "adm", "admin", "cadastro", "contact", "hello", "oi",
+}
 
 
-def _role_penalty() -> int:
-    """Penalidade de caixa de função, lida do env a cada chamada (fail-safe p/ valor inválido)."""
-    try:
-        return int(os.environ.get("ALERT_ROLE_PENALTY", ROLE_BASED_PENALTY_DEFAULT))
-    except (TypeError, ValueError):
-        return ROLE_BASED_PENALTY_DEFAULT
+def _email_type_factor(email: Optional[str]) -> int:
+    """Fator de priorização por tipo de e-mail (só ORDENA a fila, KL-146 — NUNCA bloqueia envio):
+    pessoal (+15) > genérico neutro (0) > genérico medium-bounce (-5) > genérico high-bounce (-10).
+
+    Um prefixo genérico não listado nos 3 conjuntos cai na UNIÃO com `ROLE_BASED_PREFIXES` → 0
+    (neutro), NUNCA +15 — senão `noreply@`/`naoresponda@` seriam priorizados como se fossem
+    pessoas. Substitui a penalidade role-based do KL-136 (não acumula)."""
+    if not email or "@" not in email:
+        return 0
+    prefix = email.split("@")[0].lower().strip()
+    if not prefix:
+        return 0                                       # "@dominio.com" → sem prefixo
+    if prefix in GENERIC_HIGH_BOUNCE:
+        return -10
+    if prefix in GENERIC_MEDIUM_BOUNCE:
+        return -5
+    if prefix in GENERIC_NEUTRAL or prefix in ROLE_BASED_PREFIXES:
+        return 0
+    return 15                                          # não é genérico conhecido → provável pessoal
+
+
+# Nome do sinal no breakdown, por valor do fator (transparência no detalhe admin).
+_EMAIL_TYPE_SIGNAL = {
+    15: "email_type_personal",
+    0: "email_type_generic",
+    -5: "email_type_generic_medium_bounce",
+    -10: "email_type_generic_high_bounce",
+}
 
 
 def _norm_domain(d: Optional[str]) -> str:
@@ -122,17 +150,18 @@ def calculate_alert_score(target: Dict[str, Any], contact_email: Optional[str],
     # --- negativos ---
     if MISMATCH_FREE_PENALTY and valid_email and not matches and edomain in FREE_EMAIL_DOMAINS:
         add(MISMATCH_FREE_PENALTY, "email_mismatch_free")   # e-mail genérico de terceiro (hoje 0)
-    role_pts = _role_penalty()  # KL-136: -5 por padrão (era -15), editável por env
-    role_penalized = valid_email and local in ROLE_BASED_PREFIXES
-    if role_penalized:
-        add(role_pts, "role_based_prefix")
-    # KL-137 — as penalidades de deliverability (catch_all -10, unknown -5) SAÍRAM: a deliverability
-    # é decidida binariamente pelo `is_safe_to_send` (catch_all/unknown nunca enviam), não pelo
-    # score. O score só ORDENA. Mantém-se só o 'role' da Reoon (caixa de função) para ordenação —
-    # mesma penalidade do prefixo, sem DOBRAR se o prefixo já penalizou.
-    verify_status = (target.get("email_verify_status") or "").strip().lower()
-    if verify_status == "role" and not role_penalized:
-        add(role_pts, "email_role_account")
+    # KL-146 — fator de TIPO de e-mail (pessoal vs genérico). SUBSTITUI a penalidade role-based do
+    # KL-136 (não acumula): o próprio fator já dá +15 aos pessoais, 0 aos genéricos neutros, -5/-10
+    # aos genéricos com bounce elevado. Só ORDENA a fila (KL-145: envio = sintaxe+MX+blocklist, não
+    # muda). O 'role' da Reoon (caixa de função confirmada) rebaixa um prefixo que PARECIA pessoal —
+    # não premiar como pessoa (evita dobrar/contradizer o sinal do prefixo).
+    if valid_email:
+        type_pts = _email_type_factor(contact_email)
+        verify_status = (target.get("email_verify_status") or "").strip().lower()
+        if type_pts == 15 and verify_status == "role":
+            add(0, "email_type_role_verified")          # Reoon: caixa de função disfarçada de pessoal
+        else:
+            add(type_pts, _EMAIL_TYPE_SIGNAL[type_pts])
     if target.get("status") == "descartado" or (sc is not None and sc < 40):
         add(-10, "abandoned_or_low_score")
     # Bounce por DOMÍNIO só penaliza domínio próprio/corporativo. Num provedor genérico
