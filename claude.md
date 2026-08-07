@@ -1827,6 +1827,28 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   **+20 testes** (`test_kl147_spa_fingerprint.py`); engine tests do KL-141 atualizados p/ a nova assinatura
   `(client,url,config,spa_fingerprint)` dos checks spa-aware. **2063 pytest passed.** Relatório:
   `claude/reports/KL-147_spa_fingerprint.md`.
+- **KL-149** — Security Gate: **+13 módulos de check** (14 checks lógicos) para o Gate virar ferramenta
+  séria de CI/CD ✅. Todos passivos (GET/HEAD/DNS/handshake TLS; **sem payload de ataque** — mantém o "não
+  é DAST"). Novos em `security_gate/checks/`: **cors** (reflexão de Origin, CRITICAL), **cookies**
+  (HttpOnly/Secure/SameSite nos de sessão), **redirect** (open redirect via `?redirect=`, sonda benigna),
+  **rate_limit** (mini-burst de 10 GETs → 429; roda por ÚLTIMO p/ não poluir os demais), **error_disclosure**
+  (stack trace em 404/5xx — 404 aleatório + triggers malformados BENIGNOS, **sem SQLi/XSS**, mais conservador
+  que o snippet do card), **https_redirect** (HTTP→HTTPS), **jwt_analysis** (`alg:none`/sem `exp`/PII — só
+  DECODIFICA, **nunca forja**), **form_security** (`<form action>` externo), **dns_security** (DNSSEC+CAA),
+  **dependencies** (libs JS com CVE, base LOCAL), **tls_ciphers** (RC4/DES/NULL — força TLS ≤1.2 + confere o
+  cipher NEGOCIADO, anti falso-positivo do TLS 1.3), **subdomain** (takeover por fingerprint de CNAME),
+  **infrastructure_urls** (Cloud Run/Heroku/Lambda/ngrok/localhost/IP privado/k8s no HTML+JS — nunca alerta o
+  próprio domínio). Engine (`_CHECKS`+`_DEFAULT_ORDER`, 5→**18**), `GateConfig.checks` default, `security-gate.yml`,
+  formatter (categorias) e CLI `--checks` atualizados; `_extract_js_urls`/`_origin`/`_host` movidos p/
+  `security_gate/utils.py` (compartilhados por credentials + infrastructure). Blocking (DNS/socket) via
+  `asyncio.to_thread` com helpers mockáveis. **Validação real (obrigatória):** klarim.net **90/100 🟢**
+  (Critical 0; só rate_limit HIGH — honesto) · sistema.igoove.com.br **55/100 🟡** — a **infra detecta o Cloud
+  Run `ig-backend-…southamerica-east1.run.app` + `127.0.0.1` no JS** (o achado real do card; exigiu regex
+  multi-label `[a-z0-9.-]+` p/ o formato novo do Cloud Run) · Traka Cloud Run **43/100 🔴** (headers/DNSSEC/
+  CAA/rate-limit ausentes). **Nenhum FAIL crítico falso → o job `security-gate` da CI (`--fail-on critical`)
+  segue verde.** **+38 testes** (`test_kl149_new_checks.py`, 1 PASS+1 FAIL/check); engine tests do KL-141
+  ajustados p/ 18 checks. **2101 pytest passed.** Docs: `docs/SECURITY.md` §10 (tabela dos 18 checks).
+  Relatório: `claude/reports/KL-149_novos_checks.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

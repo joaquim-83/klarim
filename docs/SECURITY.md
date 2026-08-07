@@ -380,3 +380,36 @@ Na dúvida, trate o alvo como site de terceiro que só autorizou olhar o que é 
 - [ ] Se mexe no Nginx: `nginx -t` ok? Security headers preservados em cada `location`?
 - [ ] Se muda scoring/check: **flush `scan:*` no Redis** após deploy?
 - [ ] Corpo HTML de terceiro nunca no DOM (só `<iframe sandbox>`)?
+
+## 10. Security Gate — scanner de exposição pós-deploy (KL-141 · KL-147 · KL-149)
+
+Módulo `security_gate/` (SEPARADO do `scanner/` público; roda no CI pós-deploy contra `klarim.net`
+via `scripts/security_gate.py`). **NÃO é DAST** — só GET/HEAD/DNS/handshake TLS; **não envia payload
+de ataque** (sem SQLi/XSS). Alvos **autorizados** apenas (a própria Klarim no CI). Score 0-100; o CI
+reprova (job vermelho + e-mail) só em **FAIL CRÍTICO** (`--fail-on critical`).
+
+**18 categorias de check:**
+| Categoria | Verifica | Sev. máx |
+|---|---|---|
+| headers | HSTS/CSP/X-Frame/nosniff/Referrer/Permissions-Policy, versão no Server | HIGH |
+| ssl | validade do cert, protocolo (TLS ≥1.2) | CRITICAL |
+| exposure | `.env`/`.git`/wp-config/painéis/docs/debug/backup/source-map/dir-listing/.htaccess (KL-147: guard de SPA fallback por fingerprint ETag/CL) | CRITICAL |
+| credentials | ~50 patterns de segredo + entropia no HTML/JS (nunca guarda o VALOR) | CRITICAL |
+| api | raiz da API não lista endpoints; endpoints protegidos exigem 401/403 | CRITICAL |
+| **cors** (KL-149) | reflexão de Origin arbitrário / wildcard + credentials | CRITICAL |
+| **cookies** | HttpOnly/Secure/SameSite nos cookies de SESSÃO (ignora analytics/consent) | CRITICAL |
+| **https_redirect** | HTTP → HTTPS (301/302) | CRITICAL |
+| **open_redirect** | `?redirect=/?next=…` p/ domínio externo (sonda benigna, não navega) | HIGH |
+| **rate_limit** | mini-burst de 10 GETs → algum 429? (endpoints configuráveis; roda por ÚLTIMO) | HIGH |
+| **error_disclosure** | stack trace/caminho interno em 404/5xx (triggers benignos, **sem injeção**) | HIGH |
+| **jwt** | `alg:none` / sem `exp` / PII no payload (só DECODIFICA — **nunca forja**) | CRITICAL |
+| **form_security** | `<form action>` para domínio externo | CRITICAL |
+| **dns** | DNSSEC + CAA | MEDIUM |
+| **dependencies** | libs JS com CVE conhecida (base local, sem API externa) | HIGH |
+| **tls_ciphers** | ciphers fracos RC4/DES/3DES/NULL/EXPORT (força TLS ≤1.2 + confere cipher negociado — anti falso-positivo do TLS 1.3) | CRITICAL |
+| **subdomain** | subdomain takeover (CNAME p/ PaaS desativado, por fingerprint) | CRITICAL |
+| **infrastructure** | URLs de backend/PaaS (Cloud Run/Heroku/Lambda…), túnel de dev (ngrok), localhost, IP privado, k8s interno hardcoded no HTML/JS — **nunca alerta o próprio domínio** | CRITICAL |
+
+Config por YAML (`security-gate.yml`): allowlist de exposição, endpoints protegidos, endpoints do
+rate limit, ligar/desligar cada check. Passividade e limites (teto de 10 requests no rate limit,
+zero forja de token, nenhum payload de injeção) são invioláveis.

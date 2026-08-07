@@ -16,10 +16,23 @@ from typing import List, Optional
 import httpx
 
 from .checks.api_security import check_api_security
+from .checks.cookies import check_cookies
+from .checks.cors import check_cors
 from .checks.credentials import check_credentials
+from .checks.dependencies import check_dependencies
+from .checks.dns_security import check_dns_security
+from .checks.error_disclosure import check_error_disclosure
 from .checks.exposure import check_exposure
+from .checks.form_security import check_form_security
 from .checks.headers import check_headers
+from .checks.https_redirect import check_https_redirect
+from .checks.infrastructure_urls import check_infrastructure_urls
+from .checks.jwt_analysis import check_jwt
+from .checks.rate_limit import check_rate_limit
+from .checks.redirect import check_open_redirect
 from .checks.ssl import check_ssl
+from .checks.subdomain import check_subdomain_takeover
+from .checks.tls_ciphers import check_tls_ciphers
 from .config import GateConfig
 from .models import GateReport, Result, Severity, Status
 
@@ -40,8 +53,27 @@ _CHECKS = {
     "exposure": check_exposure,
     "credentials": check_credentials,
     "api": check_api_security,
+    # KL-149 — 13 checks novos.
+    "cors": check_cors,
+    "cookies": check_cookies,
+    "https_redirect": check_https_redirect,
+    "open_redirect": check_open_redirect,
+    "error_disclosure": check_error_disclosure,
+    "jwt": check_jwt,
+    "form_security": check_form_security,
+    "dns": check_dns_security,
+    "dependencies": check_dependencies,
+    "tls_ciphers": check_tls_ciphers,
+    "subdomain": check_subdomain_takeover,
+    "infrastructure": check_infrastructure_urls,
+    # rate_limit é o ÚLTIMO: dispara um mini-burst de 10 requests; rodando por último, seu efeito
+    # (possível 429 no IP do gate) não contamina os demais checks.
+    "rate_limit": check_rate_limit,
 }
-_DEFAULT_ORDER = ["headers", "ssl", "exposure", "credentials", "api"]
+_DEFAULT_ORDER = ["headers", "ssl", "exposure", "credentials", "api",
+                  "cors", "cookies", "https_redirect", "open_redirect", "error_disclosure",
+                  "jwt", "form_security", "dns", "dependencies", "tls_ciphers", "subdomain",
+                  "infrastructure", "rate_limit"]
 # Checks que comparam paths contra o fingerprint de SPA fallback (KL-147). headers/ssl/credentials
 # NÃO têm paths para comparar → não recebem o fingerprint.
 _SPA_AWARE = frozenset({"exposure", "api"})

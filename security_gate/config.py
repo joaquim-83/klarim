@@ -15,8 +15,12 @@ class GateConfig:
     target: str = ""
     fail_on: str = "critical"
     timeout: int = 60
-    checks: List[str] = field(
-        default_factory=lambda: ["headers", "ssl", "exposure", "credentials", "api"])
+    # KL-149 — default inclui os 18 checks (5 do KL-141 + 13 novos). Ordem de execução é do engine.
+    checks: List[str] = field(default_factory=lambda: [
+        "headers", "ssl", "exposure", "credentials", "api",
+        "cors", "cookies", "https_redirect", "open_redirect", "error_disclosure", "jwt",
+        "form_security", "dns", "dependencies", "tls_ciphers", "subdomain", "infrastructure",
+        "rate_limit"])
 
     # Headers
     hsts_min_age: int = 31_536_000
@@ -31,6 +35,9 @@ class GateConfig:
     # API security
     api_root_path: str = "/api/"
     protected_endpoints: List[str] = field(default_factory=list)
+
+    # KL-149 — endpoints testados pelo check de rate limit (mini-burst de 10 requests cada).
+    rate_limit_endpoints: List[str] = field(default_factory=lambda: ["/", "/api/"])
 
     # Credentials
     credential_extra_patterns: List[dict] = field(default_factory=list)
@@ -76,6 +83,10 @@ def _apply_yaml(config: GateConfig, data: dict) -> None:
         cred_cfg = checks_data.get("credentials") or {}
         if isinstance(cred_cfg, dict):
             config.credential_extra_patterns = list(cred_cfg.get("extra_patterns", []) or [])
+
+        rl_cfg = checks_data.get("rate_limit") or {}   # KL-149
+        if isinstance(rl_cfg, dict) and rl_cfg.get("endpoints"):
+            config.rate_limit_endpoints = list(rl_cfg.get("endpoints") or [])
 
     notif = data.get("notifications") or {}
     if isinstance(notif, dict):

@@ -21,6 +21,7 @@ from typing import Dict, List, Tuple
 import httpx
 
 from ..models import Result, Severity, Status
+from ..utils import _extract_js_urls, _origin  # KL-149: movidos p/ utils (compartilhados)
 
 # --------------------------------------------------------------------------- #
 # Patterns de credenciais (lista exaustiva, por categoria)
@@ -189,36 +190,9 @@ def _scan_text(text: str, source: str, source_type: str) -> List[Result]:
 
 
 # --------------------------------------------------------------------------- #
-# Extração de URLs (JS mesma-origem + links internos)
+# Extração de links internos (o `_extract_js_urls`/`_origin`/`_host` foram p/ ..utils no KL-149)
 # --------------------------------------------------------------------------- #
-_SCRIPT_SRC_RE = re.compile(r'<script[^>]+src=["\']([^"\']+)["\']', re.IGNORECASE)
 _ANCHOR_RE = re.compile(r'<a[^>]+href=["\']([^"\'#]+)["\']', re.IGNORECASE)
-
-
-def _origin(base_url: str) -> str:
-    return "/".join(base_url.split("/")[:3])   # https://host
-
-
-def _host(base_url: str) -> str:
-    parts = base_url.split("/")
-    return parts[2] if len(parts) > 2 else ""
-
-
-def _extract_js_urls(html: str, base_url: str) -> List[str]:
-    """URLs de TODOS os `<script src>` da MESMA origem (CDN de terceiros é ignorado)."""
-    host, origin = _host(base_url), _origin(base_url)
-    urls: List[str] = []
-    for m in _SCRIPT_SRC_RE.finditer(html):
-        src = m.group(1)
-        if src.startswith("//"):
-            src = "https:" + src
-        elif src.startswith("/"):
-            src = origin + src
-        elif not src.startswith("http"):
-            src = origin + "/" + src
-        if host and host in src.split("/")[2] and src not in urls:
-            urls.append(src)
-    return urls
 
 
 def _extract_internal_links(html: str, base_url: str) -> List[str]:

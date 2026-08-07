@@ -6,7 +6,41 @@ path) de um arquivo/endpoint REALMENTE exposto. O engine captura o fingerprint n
 controle" (HEAD num path que não existe, KL-147) e o passa aos checks."""
 from __future__ import annotations
 
+import re
+from typing import List
+
 import httpx
+
+# --------------------------------------------------------------------------- #
+# Extração de URLs de <script src> mesma-origem (compartilhado por credentials + infrastructure)
+# --------------------------------------------------------------------------- #
+_SCRIPT_SRC_RE = re.compile(r'<script[^>]+src=["\']([^"\']+)["\']', re.IGNORECASE)
+
+
+def _origin(base_url: str) -> str:
+    return "/".join(base_url.split("/")[:3])   # https://host
+
+
+def _host(base_url: str) -> str:
+    parts = base_url.split("/")
+    return parts[2] if len(parts) > 2 else ""
+
+
+def _extract_js_urls(html: str, base_url: str) -> List[str]:
+    """URLs de TODOS os `<script src>` da MESMA origem (CDN de terceiros é ignorado)."""
+    host, origin = _host(base_url), _origin(base_url)
+    urls: List[str] = []
+    for m in _SCRIPT_SRC_RE.finditer(html):
+        src = m.group(1)
+        if src.startswith("//"):
+            src = "https:" + src
+        elif src.startswith("/"):
+            src = origin + src
+        elif not src.startswith("http"):
+            src = origin + "/" + src
+        if host and host in src.split("/")[2] and src not in urls:
+            urls.append(src)
+    return urls
 
 
 def matches_spa_fingerprint(response: httpx.Response, fingerprint: dict | None) -> bool:

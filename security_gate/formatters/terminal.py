@@ -11,6 +11,20 @@ _CATEGORY_LABELS = [
     ("exposure", "Exposure"),
     ("credentials", "Credentials"),
     ("api", "API Security"),
+    # KL-149
+    ("cors", "CORS"),
+    ("cookies", "Cookies"),
+    ("https", "HTTPS Redirect"),
+    ("redirect", "Open Redirect"),
+    ("error_disclosure", "Error Disclosure"),
+    ("jwt", "JWT"),
+    ("forms", "Forms"),
+    ("dns", "DNS (DNSSEC/CAA)"),
+    ("dependencies", "Dependencies (CVE)"),
+    ("tls", "TLS Ciphers"),
+    ("subdomain", "Subdomain Takeover"),
+    ("infrastructure", "Infrastructure URLs"),
+    ("rate_limit", "Rate Limiting"),
 ]
 _ICON = {Status.PASS: "✅", Status.FAIL: "❌", Status.ERROR: "⚠️", Status.SKIP: "⏭️"}
 

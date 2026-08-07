@@ -82,7 +82,8 @@ def test_run_all_returns_report(monkeypatch):
         monkeypatch.setitem(sge._CHECKS, k, _fake)
     monkeypatch.setattr(sge, "_detect_spa_fallback", _no_spa)
     rep = _run(sge.run_all("https://x.test"))
-    assert isinstance(rep, GateReport) and len(rep.results) == 5   # headers+ssl+exposure+credentials+api
+    # KL-149: 18 checks no default (5 do KL-141 + 13 novos).
+    assert isinstance(rep, GateReport) and len(rep.results) == len(sge._DEFAULT_ORDER) == 18
     assert rep.duration_ms >= 0
 
 
@@ -105,13 +106,14 @@ def test_run_all_check_error_isolated(monkeypatch):
         raise RuntimeError("kaboom")
     async def _ok(client, url, config=None, spa_fingerprint=None):
         return [_mk("ok", Status.PASS, Severity.LOW)]
-    monkeypatch.setitem(sge._CHECKS, "headers", _boom)
-    for k in ("ssl", "exposure", "credentials", "api"):
+    for k in list(sge._CHECKS):
         monkeypatch.setitem(sge._CHECKS, k, _ok)
+    monkeypatch.setitem(sge._CHECKS, "headers", _boom)   # só headers estoura
     monkeypatch.setattr(sge, "_detect_spa_fallback", _no_spa)
     rep = _run(sge.run_all("https://x.test"))
     assert any(r.status == Status.ERROR and "headers" in r.check for r in rep.results)
-    assert sum(1 for r in rep.results if r.status == Status.PASS) == 4   # ssl+exposure+credentials+api seguiram
+    # os outros 17 checks seguiram (isolamento do erro).
+    assert sum(1 for r in rep.results if r.status == Status.PASS) == len(sge._DEFAULT_ORDER) - 1 == 17
 
 
 def test_engine_respects_timeout(monkeypatch):

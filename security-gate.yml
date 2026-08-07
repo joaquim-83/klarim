@@ -36,6 +36,26 @@ checks:
       - /api/system/
       - /mcp/
 
+  # KL-149 — 13 checks novos. Todos passivos (GET/HEAD/DNS; rate_limit = mini-burst de 10).
+  # Habilitados por default; ponha `enabled: false` p/ desligar um. Ver security_gate/checks/.
+  cors: {enabled: true}                 # reflexão de Origin arbitrário (CRITICAL)
+  cookies: {enabled: true}              # HttpOnly/Secure/SameSite nos cookies de sessão
+  https_redirect: {enabled: true}       # HTTP → HTTPS (CRITICAL)
+  open_redirect: {enabled: true}        # redirect p/ domínio externo via ?redirect=/?next=…
+  error_disclosure: {enabled: true}     # stack trace / caminho interno em página de erro
+  jwt: {enabled: true}                  # alg=none / sem exp / PII no payload (NUNCA forja token)
+  form_security: {enabled: true}        # <form action> p/ domínio externo (CRITICAL)
+  dns: {enabled: true}                  # DNSSEC + CAA
+  dependencies: {enabled: true}         # libs JS com CVE conhecida (base local, sem API externa)
+  tls_ciphers: {enabled: true}          # cipher suites fracas (RC4/DES/3DES/NULL) (CRITICAL)
+  subdomain: {enabled: true}            # subdomain takeover (CNAME p/ PaaS desativado)
+  infrastructure: {enabled: true}       # URLs de backend/PaaS/localhost/IP privado hardcoded no JS
+  rate_limit:
+    enabled: true
+    endpoints:                          # onde o mini-burst de 10 requests procura o 429
+      - /
+      - /api/
+
 notifications:                    # usadas no Prompt 4 (e-mail/webhook)
   email:
     enabled: true
