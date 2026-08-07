@@ -7,11 +7,12 @@ body); GET só p/ distinguir directory-listing real de fallback de SPA (limitado
 Um path exposto no grupo já reprova o grupo (`break` — não testa o resto)."""
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 import httpx
 
 from ..models import Result, Severity, Status
+from ..utils import matches_spa_fingerprint
 
 # Cada grupo = um check do KL-139 (paths + severidade + template de detalhe).
 EXPOSURE_PATHS = [
@@ -102,10 +103,16 @@ def _is_directory_listing(html: str) -> bool:
     ))
 
 
-async def check_exposure(client: httpx.AsyncClient, base_url: str, config=None) -> List[Result]:
+async def check_exposure(client: httpx.AsyncClient, base_url: str, config=None,
+                         spa_fingerprint: Optional[dict] = None) -> List[Result]:
     """Verifica todos os grupos de exposição. HEAD primeiro; GET só p/ directory-listing.
-    `config.exposure_allowlist` pula paths sabidamente falso-positivos (fallback de SPA que
-    devolve 200 — ex.: /docs, /adminer, /main.js.map na Klarim): o path não é nem testado."""
+
+    3 guards contra falso positivo de SPA (app que devolve 200+index.html p/ qualquer path):
+      1. `config.exposure_allowlist` — pula paths conhecidos (não testa nem gasta request).
+      2. **`spa_fingerprint` (KL-147)** — se o 200 casa o fingerprint do probe de controle
+         (mesmo ETag/CT+CL do index.html), é fallback → PASS. Cobre paths SEM extensão
+         (`/admin`, `/swagger`) que o guard 3 não pega.
+      3. `_is_spa_fallback_nonhtml` (KL-141 P3) — recurso de extensão não-HTML servindo text/html."""
     base = base_url.rstrip("/")
     allowlist = set(getattr(config, "exposure_allowlist", None) or [])
     results: List[Result] = []
@@ -120,6 +127,9 @@ async def check_exposure(client: httpx.AsyncClient, base_url: str, config=None) 
                 # HEAD primeiro: confere acessibilidade sem baixar o body (princípio KL-139).
                 r = await client.head(url)
                 if r.status_code == 200:
+                    # Guard KL-147: mesmo fingerprint do probe → fallback de SPA (não exposição).
+                    if matches_spa_fingerprint(r, spa_fingerprint):
+                        continue
                     if group["check"] == "directory_listing":
                         # Pode ser um fallback de SPA (200 p/ tudo). Um GET limitado
                         # distingue: só é FAIL se o corpo tiver marcadores de listagem.

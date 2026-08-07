@@ -191,15 +191,25 @@ standalone) + **React** (islands) + **Tailwind v4** (CSS-first, sem config) +
   (disparo manual) usa o mesmo formato** (1º remetente). Os builders antigos com link
   (`build_alert_text`, alert-access HMAC do KL-82 S3) **ficam no código** mas o ciclo
   automático NÃO os usa (revertível).
-- ⚠️ **REGRA DE ENVIO ATUAL (KL-137, 02/08 — simplificação radical):** `is_safe_to_send` é
-  **BINÁRIA** — só `safe`/`valid`/`role` enviam; **todo o resto** (catch_all/unknown/inbox_full/
-  block-statuses) **NÃO envia**, independentemente do score. **O lead_score NÃO decide envio — só
-  ORDENA a fila.** Foram **REMOVIDOS**: gates de score (`_unsafe_score_gate`/`_catch_all_gate` +
-  `ALERT_UNSAFE_SCORE_GATE`/`ALERT_CATCH_ALL_SCORE_GATE`), trust-downgrade
-  (`trusted_recipient_domains`/`ALERT_TRUST_DOMAIN_DOWNGRADE`), o filtro por threshold
-  (`skipped_low_quality`/`ALERT_SCORE_THRESHOLD`) e o "aposentar unknown" em ciclo. Toda a descrição
-  de gates/trust/catch_all-condicional dos KL-122..KL-136 ABAIXO é **histórica** — a regra viva é esta.
-  Stats do ciclo de verificação: `verified/from_cache/sendable/blocked/deferred/errors` (ver KL-137).
+- ⚠️ **REGRA DE ENVIO ATUAL (KL-145 — Reoon FORA do fluxo de envio):** `is_safe_to_send(email,
+  redis, store)` é **3 filtros LOCAIS**: (1) sintaxe válida, (2) domínio tem MX, (3) não está na
+  blocklist. **Tudo que passa nos 3 → ENVIA** — o status de verificação Reoon (`unknown`/`catch_all`/
+  `safe`/…) e o `email_verified`/`email_verify_status` **NÃO decidem mais** o envio. O Reoon
+  classificava ~97% dos servidores BR como `unknown` e a regra binária por-status do KL-137 travava
+  o volume em 2-8/ciclo; a **blocklist aprendente** (cada bounce, via webhook Resend, entra na
+  `email_blocklist`) faz o trabalho de aprender quem não recebe. **O lead_score NÃO decide envio — só
+  ORDENA a fila.** `_verify_and_filter` (alert worker) aplica os 3 filtros; stats do ciclo:
+  `eligible/valid_syntax/has_mx/not_blocklisted/blocked_syntax/blocked_mx/blocked_blocklist/errors`.
+  Removidos do fluxo de envio: partição sendable/unverified, cap de verificação, chamada à API Reoon,
+  `_reoon_balance`, `EMAIL_VERIFY_MAX_PER_CYCLE`/`EMAIL_VERIFY_ENABLED`, e os filtros de
+  `email_verify_status`/`email_verify_source` do `_ALERT_ELIGIBLE_WHERE` (KL-128/130). O MX (filtro 2)
+  respeita `ALERT_VALIDATE_MX` (cache Redis 24h/domínio em prod; off em dev/testes). **O Reoon
+  (`verify_reoon`/`verify_local`/cache) FICA no `email_verifier`** só como enriquecimento em
+  background (scripts + saldo no `/system/status`) — NUNCA no alert worker. Toda a regra binária por-
+  status (KL-137) e os gates/trust dos KL-122..KL-136 ABAIXO são **históricos** — a regra viva é esta.
+- **(HISTÓRICO — KL-137, superado pelo KL-145) Regra binária por status:** `is_safe_to_send` era
+  **BINÁRIA** (só `safe`/`valid`/`role` enviavam; catch_all/unknown/inbox_full/block-statuses não).
+  Dependia da verificação Reoon Power e travava o volume; o KL-145 a substituiu pelos 3 filtros locais.
 - **Verificação de deliverability PRÉ-envio (KL-110 — `notifier/email_verifier.py`):** o circuit
   breaker (KL-108) é REATIVO (pausa DEPOIS do bounce); a verificação é PREVENTIVA — checa se a caixa
   existe ANTES de enviar. **Camada 0 (local, custo zero):** sintaxe (email-validator, fallback regex),
@@ -823,8 +833,11 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `discovery/alert_scoring.py::calculate_alert_score(target, email, domain_bounced)` — função
   **pura** (testável) → `{score, signals}`. Sinais: +30 e-mail no domínio · +10 corporativo ·
   +20/+10/+5 por faixa de score (50-85/40-49/>85) · +15 setor de alto clique (vazio por ora) ·
+  **fator de TIPO de e-mail (KL-146):** pessoal +15 · genérico neutro 0 · medium-bounce (`atendimento`/
+  `sac`) -5 · high-bounce (`contato`) -10 (`_email_type_factor`, SUBSTITUI a penalidade role-based -5
+  do KL-136 — ver KL-146) ·
   `MISMATCH_FREE_PENALTY` free de terceiro (**0 desde 2026-07-20**, era -20 — PMEs BR usam gmail como
-  e-mail comercial; o -20 barrava leads legítimos) · -15 prefixo role-based · -10 descartado/score<40
+  e-mail comercial; o -20 barrava leads legítimos) · -10 descartado/score<40
   · -40 domínio com bounce **só p/ domínio próprio/corporativo** (2026-07-20: provedores genéricos
   gmail/outlook/… NÃO são penalizados por bounce — um bounce em joao@gmail.com não diz nada sobre
   maria@gmail.com; `_domain_bounced` curto-circuita free). Coluna `targets.alert_quality_score`
@@ -1670,6 +1683,49 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   **1948 pytest passed.** **Pós-deploy:** apagar `ALERT_UNSAFE_SCORE_GATE`/`ALERT_CATCH_ALL_SCORE_GATE`/
   `ALERT_TRUST_DOMAIN_DOWNGRADE` do `.env` da VM (ignoradas, mas confundem). Relatório:
   `claude/reports/KL-137_simplificacao_pipeline.md`.
+- **KL-145** — Desacoplar o Reoon do envio: 3 filtros (sintaxe + MX + blocklist) ✅. O Reoon consumiu
+  10 cards e ~5.000 créditos e entregava 2-8 envios/dia (bounce 4,4%) — classificava ~97% dos servidores
+  BR como `unknown` (inútil como filtro) e a regra binária por-status do KL-137 barrava quase tudo. **A
+  decisão de envio voltou a ser LOCAL e barata:** `notifier/email_verifier.py::is_safe_to_send(email,
+  redis, store)` = **3 filtros** — (1) `_is_valid_syntax` (Camada 0, email-validator/regex), (2)
+  `_email_has_mx` (Camada 0, DNS MX com cache Redis 24h/domínio, **fail-open**: só `no_mx` definitivo
+  rejeita), (3) `_is_blocklisted` (`store.is_email_blocked`, a blocklist alimentada pelo webhook de
+  bounce). Tudo que passa nos 3 → ENVIA; o **status Reoon e `email_verified` NÃO decidem mais**.
+  `discovery/alert_worker.py::_verify_and_filter` reescrito (removidos: partição sendable/unverified,
+  cap de verificação, chamada à API no envio, `_reoon_balance`, `email_verify_max`/`email_verify_enabled`/
+  `email_verify_ttl_days`, gates de score, trust-downgrade e o `email_verified`/`email_verify_status`
+  como condição). Novo stats do ciclo: `eligible/valid_syntax/has_mx/not_blocklisted/blocked_syntax/
+  blocked_mx/blocked_blocklist/errors` (log `[alert] KL-145: N eligible → N syntax → N MX → N not
+  blocklisted → N sendable`). O MX (filtro 2) respeita `ALERT_VALIDATE_MX` (off em dev/testes; o
+  `_validate_batch` já cobre MX/blocklist com self-heal). **`_ALERT_ELIGIBLE_WHERE`** (store) perdeu os
+  filtros de `email_verify_status`/`email_verify_source` (KL-128/130) — a blocklist (tabela dedicada) faz
+  o trabalho. **`/system/status.email_verification`** agora expõe o funil `send_filter` + o saldo Reoon do
+  enriquecimento em background. **MANTIDOS:** Reoon no `email_verifier` (verify_reoon/verify_local/cache,
+  usados por `scripts/cleanup_email_backlog.py` + saldo no status — enriquecimento em background, NUNCA no
+  envio), circuit breaker hard-bounce (KL-108), blocklist + webhook de bounce, lead scoring (só ORDENA,
+  KL-137), link no e-mail (KL-137/138), List-Unsubscribe (KL-102), rotação de senders (KL-91),
+  `retire_unknown_power_targets` (limpeza retroativa via script). **Testes:** novo
+  `test_kl145_three_filters.py`; `test_kl110`/`kl130`/`email_pipeline`/`kl136`/`e2e_flows`/`alert_worker`
+  atualizados p/ os 3 filtros; `test_kl127`/`test_kl129` (subset-priority Reoon) removidos. **2028 pytest
+  passed.** Relatório: `claude/reports/KL-145_desacopla_reoon.md`.
+- **KL-146** — Priorizar e-mails pessoais sobre genéricos no lead scoring ✅. Dados de produção:
+  `contato@` gera 66% dos bounces (8,7% de taxa) vs. e-mails pessoais (3,6%). A solução NÃO é filtrar
+  (a regra de envio do KL-145 = sintaxe+MX+blocklist é **inalterada**) — é **REORDENAR**: pessoais
+  primeiro, genéricos depois (a blocklist aprende com os bounces dos genéricos antes de enviar muitos).
+  **1 arquivo:** `discovery/alert_scoring.py`. Novo **`_email_type_factor(email)`**: pessoal **+15** ·
+  genérico neutro **0** (`comercial`/`vendas`/`suporte`/`info`/… + a UNIÃO com `ROLE_BASED_PREFIXES`,
+  p/ `noreply`/`financeiro` nunca virarem +15) · medium-bounce (`atendimento`/`sac`) **-5** · high-bounce
+  (`contato`) **-10**. **SUBSTITUI** a penalidade role-based do KL-136 (`_role_penalty`/`ALERT_ROLE_PENALTY`,
+  **removidos** — não acumula). Integrado em `calculate_alert_score` (sinais `email_type_personal`/
+  `email_type_generic`/`email_type_generic_medium_bounce`/`email_type_generic_high_bounce`); um prefixo
+  que PARECE pessoal mas a Reoon confirmou `role` é rebaixado a 0 (`email_type_role_verified`, não premia
+  como pessoa). Efeito na fila (mesmo domínio/score, action_zone): `joao@` 45 > `comercial@` 30 > `contato@`
+  20 — o `_apply_alert_scoring` grava o score e o `run_cycle` ordena por score DESC. **Nada é bloqueado por
+  tipo** (`is_safe_to_send` inalterada; volume total idêntico, só a ORDEM muda). **Testes:** novo
+  `test_email_type_factor` (parametrizado) + `test_personal_ranks_above_generic_action_zone` +
+  `test_run_cycle_personal_before_generic_real_scoring`; `test_kl85`/`kl110`/`kl136` atualizados (todo
+  e-mail pessoal ganha +15). **2043 pytest passed.** Docs: `docs/DEPLOY.md` (`ALERT_ROLE_PENALTY`
+  superada). Relatório: `claude/reports/KL-146_priorizar_pessoais.md`.
 - **KL-138** — Hardening: remover exposição de endpoints + bloquear paths de exploit + redirect curto
   nos e-mails ✅ (varredura 02/08; bots já sondam `.env`). **Fix 1 (Alta):** `GET /` (que o nginx serve
   como `/api/`) devolvia sem auth o **mapa completo** da API (endpoints de pagamento/e-mail/webhook +
@@ -1752,6 +1808,25 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   não bloqueia (o notify só roda em falha). **+11 testes** (`test_kl141_notify.py`). Relatório:
   `claude/reports/KL-141_p4_github_actions.md`. **KL-141 COMPLETO** (engine+5 checks+CLI+config+formatters+
   CI). **KL-139** (catálogo) coberto (exposição 1-3,5-12 + credenciais 4 + headers/ssl/api) — fecha junto.
+- **KL-147** — Security Gate: detecção de SPA fallback por fingerprint (ETag / Content-Type+Content-Length) ✅.
+  O Gate gerava falsos positivos massivos em SPAs que devolvem **200+index.html para QUALQUER path**
+  (`sistema.igoove.com.br`: 0/100 com 14 findings, todos falsos exceto HSTS). O `_is_spa_fallback_nonhtml`
+  (KL-141 P3) só pegava extensões não-HTML listadas — não cobria paths **sem extensão** (`/admin`,
+  `/swagger`) nem extensões novas. **Solução — probe de controle:** ANTES dos checks, o engine
+  (`security_gate/engine.py::_detect_spa_fallback`) faz **1 HEAD** num path aleatório que certamente não
+  existe (`/_klarim_gate_probe_{uuid}`); se responde 200, captura o **fingerprint** (ETag + Content-Type +
+  Content-Length) do index.html. Os checks `exposure` e `api` (spa-aware; headers/ssl/credentials não —
+  sem paths a comparar) recebem o fingerprint e, para cada 200, `security_gate/utils.py::
+  matches_spa_fingerprint` compara: **mesmo ETag** (ou mesmo CT+CL sem ETag) → fallback → PASS; diferente →
+  exposição real → FAIL. **1 request extra por scan** (só se algum check spa-aware roda). Guard-chain do
+  exposure: allowlist (KL-141 P3) → **fingerprint (KL-147)** → Content-Type nonhtml (KL-141 P3). O
+  `api_security` marca o 200-que-casa-fallback como PASS ("fallback de SPA (não é endpoint real)").
+  **Validação real (obrigatória):** klarim.net **100/100 🟢** (nginx 404 → sem fingerprint, inalterado) ·
+  sistema.igoove.com.br **90/100 🟢** (era 0/100; agora só HSTS ausente — 14 falsos positivos eliminados) ·
+  Traka Cloud Run **63/100 🟡** (404 → sem fingerprint, inalterado; findings são headers ausentes reais).
+  **+20 testes** (`test_kl147_spa_fingerprint.py`); engine tests do KL-141 atualizados p/ a nova assinatura
+  `(client,url,config,spa_fingerprint)` dos checks spa-aware. **2063 pytest passed.** Relatório:
+  `claude/reports/KL-147_spa_fingerprint.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

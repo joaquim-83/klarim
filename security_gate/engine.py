@@ -10,6 +10,7 @@ from __future__ import annotations
 import email.utils
 import logging
 import time
+import uuid
 from typing import List, Optional
 
 import httpx
@@ -41,6 +42,31 @@ _CHECKS = {
     "api": check_api_security,
 }
 _DEFAULT_ORDER = ["headers", "ssl", "exposure", "credentials", "api"]
+# Checks que comparam paths contra o fingerprint de SPA fallback (KL-147). headers/ssl/credentials
+# NÃO têm paths para comparar → não recebem o fingerprint.
+_SPA_AWARE = frozenset({"exposure", "api"})
+
+
+async def _detect_spa_fallback(client: httpx.AsyncClient, base_url: str) -> Optional[dict]:
+    """Probe de controle (KL-147): HEAD num path que CERTAMENTE não existe. Se responde 200, o
+    alvo é um SPA/app com **fallback** (devolve o `index.html` para qualquer path) — captura o
+    fingerprint (ETag + Content-Type + Content-Length) p/ os checks de exposição/API distinguirem
+    o fallback de uma exposição real. **1 request extra por scan**; best-effort (qualquer erro →
+    None e os checks rodam normalmente)."""
+    probe = f"{base_url.rstrip('/')}/_klarim_gate_probe_{uuid.uuid4().hex[:8]}"
+    try:
+        r = await client.head(probe, follow_redirects=True)
+        if r.status_code == 200:
+            fp = {"etag": r.headers.get("etag"),
+                  "content_type": (r.headers.get("content-type") or "").split(";")[0].strip(),
+                  "content_length": r.headers.get("content-length")}
+            logger.info("[gate] SPA fallback detectado (etag=%s, content_type=%s, cl=%s) — paths "
+                        "com este fingerprint serão tratados como fallback, não exposição.",
+                        fp["etag"], fp["content_type"], fp["content_length"])
+            return fp
+    except Exception:  # noqa: BLE001 - probe best-effort; erro nunca derruba o gate
+        pass
+    return None
 
 
 async def _warn_if_stale(client: httpx.AsyncClient, url: str, deploy_ts: float) -> None:
@@ -78,12 +104,19 @@ async def run_all(url: str, timeout: int = 60, checks: Optional[List[str]] = Non
                                      verify=True, headers=ANTI_CACHE_HEADERS) as client:
             if deploy_ts is not None:
                 await _warn_if_stale(client, url, deploy_ts)
+            # KL-147: só faz o probe se algum check spa-aware vai rodar (evita o request extra à toa).
+            spa_fingerprint = None
+            if _SPA_AWARE.intersection(enabled):
+                spa_fingerprint = await _detect_spa_fallback(client, url)
             for name in _DEFAULT_ORDER:
                 if name not in enabled:
                     continue
                 fn = _CHECKS[name]
                 try:
-                    report.results.extend(await fn(client, url, config))
+                    if name in _SPA_AWARE:
+                        report.results.extend(await fn(client, url, config, spa_fingerprint))
+                    else:
+                        report.results.extend(await fn(client, url, config))
                 except Exception as exc:  # noqa: BLE001 - um check ruim não derruba o gate
                     logger.exception("[gate] check %s falhou", name)
                     report.results.append(Result(

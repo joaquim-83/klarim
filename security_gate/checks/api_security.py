@@ -4,12 +4,13 @@ endpoints protegidos exigem autenticação (401/403), nunca respondem 200 sem au
 NÃO é DAST: só um GET sem credenciais em cada endpoint, observando o status — nenhum payload."""
 from __future__ import annotations
 
-from typing import List
+from typing import List, Optional
 
 import httpx
 
 from ..config import GateConfig
 from ..models import Result, Severity, Status
+from ..utils import matches_spa_fingerprint
 
 # Marcadores que denunciam uma raiz de API "vazando" o mapa de endpoints.
 _LEAK_MARKERS = ("endpoints", '"endpoints"', "routes", "/api/admin", "/webhooks",
@@ -17,8 +18,10 @@ _LEAK_MARKERS = ("endpoints", '"endpoints"', "routes", "/api/admin", "/webhooks"
 
 
 async def check_api_security(client: httpx.AsyncClient, base_url: str,
-                             config: GateConfig = None) -> List[Result]:
-    """Raiz da API limpa + endpoints protegidos exigindo auth."""
+                             config: GateConfig = None,
+                             spa_fingerprint: Optional[dict] = None) -> List[Result]:
+    """Raiz da API limpa + endpoints protegidos exigindo auth. `spa_fingerprint` (KL-147): um 200
+    que casa o fallback de SPA NÃO é um endpoint real → PASS (não FAIL de "sem auth")."""
     config = config or GateConfig(target=base_url)
     base = base_url.rstrip("/")
     results: List[Result] = []
@@ -55,6 +58,14 @@ async def check_api_security(client: httpx.AsyncClient, base_url: str,
         except httpx.HTTPError:
             continue
         if r.status_code == 200:
+            # KL-147: 200 que casa o fallback de SPA não é endpoint real → PASS.
+            if matches_spa_fingerprint(r, spa_fingerprint):
+                results.append(Result(
+                    check="api_protected", category="api", path=endpoint,
+                    status=Status.PASS, severity=Severity.CRITICAL,
+                    detail=f"Endpoint {endpoint}: fallback de SPA (não é endpoint real)",
+                    http_status=200))
+                continue
             results.append(Result(
                 check="api_unprotected", category="api", path=endpoint,
                 status=Status.FAIL, severity=Severity.CRITICAL,

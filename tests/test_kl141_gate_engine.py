@@ -71,11 +71,16 @@ def test_counts():
 # Engine
 # =========================================================================== #
 
+async def _no_spa(client, url):
+    return None   # KL-147: sem probe real de rede nos testes de engine com client real
+
+
 def test_run_all_returns_report(monkeypatch):
-    async def _fake(client, url, config=None):
+    async def _fake(client, url, config=None, spa_fingerprint=None):
         return [_mk("h", Status.PASS, Severity.HIGH)]
     for k in list(sge._CHECKS):
         monkeypatch.setitem(sge._CHECKS, k, _fake)
+    monkeypatch.setattr(sge, "_detect_spa_fallback", _no_spa)
     rep = _run(sge.run_all("https://x.test"))
     assert isinstance(rep, GateReport) and len(rep.results) == 5   # headers+ssl+exposure+credentials+api
     assert rep.duration_ms >= 0
@@ -85,24 +90,25 @@ def test_run_all_filters_checks(monkeypatch):
     ran = []
 
     def _maker(name):
-        async def _fn(client, url, config=None):
+        async def _fn(client, url, config=None, spa_fingerprint=None):
             ran.append(name)
             return []
         return _fn
     for k in list(sge._CHECKS):
         monkeypatch.setitem(sge._CHECKS, k, _maker(k))
     _run(sge.run_all("https://x.test", checks=["headers"]))
-    assert ran == ["headers"]   # só o filtrado rodou
+    assert ran == ["headers"]   # só o filtrado rodou (headers não é spa-aware → sem probe)
 
 
 def test_run_all_check_error_isolated(monkeypatch):
-    async def _boom(client, url, config=None):
+    async def _boom(client, url, config=None, spa_fingerprint=None):
         raise RuntimeError("kaboom")
-    async def _ok(client, url, config=None):
+    async def _ok(client, url, config=None, spa_fingerprint=None):
         return [_mk("ok", Status.PASS, Severity.LOW)]
     monkeypatch.setitem(sge._CHECKS, "headers", _boom)
     for k in ("ssl", "exposure", "credentials", "api"):
         monkeypatch.setitem(sge._CHECKS, k, _ok)
+    monkeypatch.setattr(sge, "_detect_spa_fallback", _no_spa)
     rep = _run(sge.run_all("https://x.test"))
     assert any(r.status == Status.ERROR and "headers" in r.check for r in rep.results)
     assert sum(1 for r in rep.results if r.status == Status.PASS) == 4   # ssl+exposure+credentials+api seguiram
@@ -119,10 +125,11 @@ def test_engine_respects_timeout(monkeypatch):
         async def __aexit__(self, *a):
             return False
     monkeypatch.setattr(sge.httpx, "AsyncClient", _FakeClient)
-    async def _noop(client, url, config=None):
+    async def _noop(client, url, config=None, spa_fingerprint=None):
         return []
     for k in list(sge._CHECKS):
         monkeypatch.setitem(sge._CHECKS, k, _noop)
+    # _FakeClient não tem .head → _detect_spa_fallback captura o erro e devolve None (graceful).
     _run(sge.run_all("https://x.test", timeout=17))
     assert captured["timeout"] == 17
     assert captured["headers"]["User-Agent"] == "Klarim Security Gate/1.0"   # UA honesto
