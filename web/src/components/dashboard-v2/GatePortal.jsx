@@ -3,6 +3,7 @@ import { card, brandBtn, outlineBtn } from './shared.js'
 import { planProgress, DEFAULT_URL } from '../../lib/gate/snippets.js'
 import GateIntegrationTabs from './GateIntegrationTabs.jsx'
 import GateOnboarding from './GateOnboarding.jsx'
+import GateVendors from './GateVendors.jsx'
 
 // KL-151 P3 / KL-152 P1 — portal do dev do Security Gate. Consome /api/gate/* e /api/account/gate/*
 // com o cookie de sessão (HttpOnly, same-origin). KL-152: visual alinhado ao dashboard (tokens
@@ -276,6 +277,9 @@ export default function GatePortal() {
       {selected
         ? <Runs project={selected} onBack={() => setSelected(null)} />
         : <Projects onSelect={setSelected} />}
+
+      {/* Fornecedores — só aparece para contas Enterprise (self-hide via 403). */}
+      <GateVendors />
 
       <Section title="⚙️ Integração no CI/CD">
         <p className="mb-3 text-sm text-slate-300">

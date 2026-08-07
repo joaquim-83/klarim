@@ -348,6 +348,12 @@ enforcement **no servidor**. O endpoint de scan, a CLI e o frontend são os Prom
 | **POST** | **`/gate/scan`** | **API key** | **Roda a engine no SERVIDOR contra a URL (domínio verificado). Retorna score/passed/results/`checks_run`/`checks_blocked`. `passed` respeita `fail_on`. Persiste em `gate_runs`. Enforcement de scans/dia (429)** |
 | **GET** | **`/gate/runs`** | **API key** | **Runs da conta (sumário; filtro `project_id`, `limit`)** |
 | **GET** | **`/gate/runs/{id}`** | **API key** | **Detalhe do run (com `results`); 404 se não é da conta** |
+| **GET** | **`/gate/runs/{id}/pdf`** | **API key** | **Exporta o run como PDF (WeasyPrint) — KL-152 P3** |
+| **POST** | **`/gate/vendors`** | **API key + Enterprise** | **Cria fornecedor + roda o 1º scan (terceiro REDIGIDO). 403 sem Enterprise — KL-152 P3** |
+| **GET · GET/{id} · PUT/{id} · DELETE/{id}** | **`/gate/vendors[...]`** | **API key + Enterprise** | **Lista/detalhe(+histórico)/edita/remove fornecedor** |
+| **POST** | **`/gate/vendors/{id}/scan`** | **API key + Enterprise** | **Re-escaneia o fornecedor (atualiza score/status)** |
+| **POST** | **`/gate/vendors/report`** | **API key + Enterprise** | **PDF comparativo dos fornecedores (`vendor_ids`,`title`) → link temporário (1h)** |
+| **GET** | **`/gate/vendors/report/{report_id}`** | **API key + Enterprise** | **Baixa o PDF comparativo (base64 no Redis, TTL 1h)** |
 | GET · POST | `/gate/projects` | API key | Lista projetos (+ plano + checks permitidos) · cria projeto (respeita o limite de domínios) |
 | POST | `/gate/projects/{id}/verify/start` | API key | Gera o desafio (meta_tag/dns_txt/html_file) |
 | POST | `/gate/projects/{id}/verify/check` | API key | Confere o desafio → `verified` (rate limit 10/h/IP) |

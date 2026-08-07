@@ -1184,6 +1184,49 @@ class KlarimMailer:
             "subject": f"Acesso ao Security Gate de {domain} revogado", "text": text,
         }, email_type="gate_access_revoked", domain=domain, source="account", skip_blocklist=True)
 
+    async def send_vendor_assessment(self, to_email: str, enterprise_name: str, vendor_url: str,
+                                     vendor_domain: str, score: int) -> Dict[str, Any]:
+        """KL-152 P3 — opt-in: avisa o dono de um site que uma empresa avaliou a segurança dele
+        (funil B2B invertido). Transacional (`klarim@klarim.net`), texto puro, sem PII do avaliador
+        além do nome. NÃO é reclamação — é preventivo."""
+        empresa = (enterprise_name or "Uma empresa").strip()
+        text = (
+            f"Olá,\n\n"
+            f"{empresa} avaliou a segurança do seu site {vendor_url} usando o Klarim "
+            f"Security Gate.\n\n"
+            f"Resultado: Score {int(score)}/100\n\n"
+            f"Isso NÃO é uma reclamação — é uma avaliação preventiva de segurança. Seu site foi "
+            f"verificado de forma passiva (sem testes intrusivos).\n\n"
+            f"Veja o relatório e melhore seu score:\n"
+            f"https://klarim.net/site/{vendor_domain}\n\n"
+            f"Klarim — segurança web para empresas brasileiras"
+        )
+        return await self._send({
+            "from": self.from_address, "to": [to_email],
+            "subject": f"Avaliação de segurança: {vendor_domain} — Score {int(score)}/100",
+            "text": text,
+        }, email_type="vendor_assessment", domain=vendor_domain, source="account", skip_blocklist=True)
+
+    async def send_vendor_score_drop(self, to_email: str, vendor_name: str, vendor_domain: str,
+                                     score: int, threshold: int, previous) -> Dict[str, Any]:
+        """KL-152 P3 — alerta ao Enterprise: o score de um fornecedor monitorado caiu abaixo do
+        threshold. Transacional (`klarim@klarim.net`), texto puro."""
+        prev = f"{int(previous)}/100" if previous is not None else "—"
+        text = (
+            f"Alerta de monitoramento — Klarim Security Gate\n\n"
+            f"O score do fornecedor {vendor_name} ({vendor_domain}) caiu para {int(score)}/100.\n\n"
+            f"Threshold de aprovação: {int(threshold)}\n"
+            f"Score anterior: {prev}\n"
+            f"Score atual: {int(score)}/100\n\n"
+            f"Ação recomendada: solicitar a correção dos findings ao fornecedor.\n\n"
+            f"Detalhes no seu dashboard: https://klarim.net/dashboard/gate\n\n— Klarim"
+        )
+        return await self._send({
+            "from": self.from_address, "to": [to_email],
+            "subject": f"⚠️ Fornecedor {vendor_domain}: score caiu para {int(score)}/100",
+            "text": text,
+        }, email_type="vendor_score_drop", domain=vendor_domain, source="account", skip_blocklist=True)
+
     async def send_profile_view(self, to_email: str, domain: str, score: int,
                                 semaphore: str, cta_url: str,
                                 unsubscribe_link: Optional[str] = None,

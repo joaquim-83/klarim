@@ -1014,6 +1014,52 @@ ALTER TABLE gate_api_keys ADD COLUMN IF NOT EXISTS grace_expires_at TIMESTAMPTZ;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS company_cnpj VARCHAR(18);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS company_contract_url VARCHAR(500);
 ALTER TABLE users ADD COLUMN IF NOT EXISTS enterprise_notes TEXT;
+
+-- KL-152 P3 — Enterprise: avaliação de fornecedores (due diligence). Um vendor é um site de
+-- TERCEIRO (não verificado) que a conta Enterprise avalia; o resultado é sempre REDIGIDO
+-- (sem paths/credenciais — KL-151 P4). Status derivado do score + nº de críticos vs thresholds.
+CREATE TABLE IF NOT EXISTS gate_vendors (
+    id SERIAL PRIMARY KEY,
+    account_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name VARCHAR(200) NOT NULL,
+    url VARCHAR(500) NOT NULL,
+    domain VARCHAR(200) NOT NULL,
+    status VARCHAR(20) DEFAULT 'pending',       -- pending|approved|attention|rejected
+    approval_threshold INTEGER DEFAULT 80,      -- score mínimo p/ aprovar
+    critical_threshold INTEGER DEFAULT 0,       -- máx. de críticos p/ aprovar
+    last_scan_id INTEGER,
+    last_scan_score INTEGER,
+    last_scan_at TIMESTAMPTZ,
+    notify_vendor BOOLEAN DEFAULT FALSE,        -- opt-in: notificar o fornecedor
+    monitor_enabled BOOLEAN DEFAULT FALSE,      -- monitoramento periódico
+    monitor_interval_days INTEGER DEFAULT 30,
+    next_monitor_at TIMESTAMPTZ,
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_gate_vendors_account ON gate_vendors(account_id);
+CREATE INDEX IF NOT EXISTS idx_gate_vendors_monitor
+    ON gate_vendors(next_monitor_at) WHERE monitor_enabled = TRUE;
+
+-- Histórico de scans de fornecedor (results já REDIGIDOS; summary = contagens amigáveis).
+CREATE TABLE IF NOT EXISTS gate_vendor_scans (
+    id SERIAL PRIMARY KEY,
+    vendor_id INTEGER NOT NULL REFERENCES gate_vendors(id) ON DELETE CASCADE,
+    account_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    score INTEGER,
+    passed BOOLEAN,
+    critical INTEGER DEFAULT 0,
+    high INTEGER DEFAULT 0,
+    medium INTEGER DEFAULT 0,
+    status VARCHAR(20),
+    duration_ms INTEGER,
+    results JSONB,                              -- redigido (sem paths/credenciais)
+    summary JSONB DEFAULT '{}'::jsonb,          -- {exposed_files, credentials, unauth_endpoints, ...}
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_gate_vendor_scans_vendor
+    ON gate_vendor_scans(vendor_id, created_at DESC);
 """
 
 
@@ -4626,6 +4672,154 @@ class TargetStore:
                 "  enterprise_notes = COALESCE(%s, enterprise_notes) WHERE id = %s",
                 ((cnpj or None), (contract_url or None), (notes or None), int(account_id)))
             return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_enterprise_profile(self, account_id: int) -> Optional[Dict[str, Any]]:
+        """Nome/e-mail/CNPJ da conta (para o cabeçalho do relatório e o alerta ao Enterprise)."""
+        def _fn(cur):
+            cur.execute("SELECT id, email, name, company_cnpj FROM users WHERE id = %s",
+                        (int(account_id),))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_contact_email_for_domain(self, domain: str) -> Optional[str]:
+        """E-mail de contato de um domínio JÁ na base (uso interno p/ notificar o fornecedor —
+        NUNCA exposto na API). None se o domínio não está na base ou não tem contato."""
+        def _fn(cur):
+            cur.execute("SELECT contact_email FROM targets WHERE domain = %s "
+                        "AND contact_email IS NOT NULL LIMIT 1", ((domain or "").lower().strip(),))
+            row = cur.fetchone()
+            return row[0] if row else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- KL-152 P3 — fornecedores (Enterprise) --- #
+
+    _VENDOR_COLS = ("id", "account_id", "name", "url", "domain", "status", "approval_threshold",
+                    "critical_threshold", "last_scan_id", "last_scan_score", "last_scan_at",
+                    "notify_vendor", "monitor_enabled", "monitor_interval_days", "next_monitor_at",
+                    "notes", "created_at", "updated_at")
+
+    async def create_gate_vendor(self, account_id: int, name: str, url: str, domain: str,
+                                 approval_threshold: int = 80, critical_threshold: int = 0,
+                                 notify_vendor: bool = False, monitor_enabled: bool = False,
+                                 monitor_interval_days: int = 30, next_monitor_at=None
+                                 ) -> Dict[str, Any]:
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO gate_vendors (account_id, name, url, domain, approval_threshold, "
+                "  critical_threshold, notify_vendor, monitor_enabled, monitor_interval_days, "
+                "  next_monitor_at) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "RETURNING " + ", ".join(self._VENDOR_COLS),
+                (int(account_id), name[:200], url[:500], (domain or "").lower().strip()[:200],
+                 int(approval_threshold), int(critical_threshold), bool(notify_vendor),
+                 bool(monitor_enabled), int(monitor_interval_days), next_monitor_at))
+            return self._rows_to_dicts(cur)[0]
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def list_gate_vendors(self, account_id: int) -> List[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute("SELECT " + ", ".join(self._VENDOR_COLS) + " FROM gate_vendors "
+                        "WHERE account_id = %s ORDER BY created_at DESC", (int(account_id),))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_gate_vendor(self, vendor_id: int, account_id: int) -> Optional[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute("SELECT " + ", ".join(self._VENDOR_COLS) + " FROM gate_vendors "
+                        "WHERE id = %s AND account_id = %s", (int(vendor_id), int(account_id)))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    _VENDOR_EDITABLE = {"name", "url", "domain", "approval_threshold", "critical_threshold",
+                        "notify_vendor", "monitor_enabled", "monitor_interval_days",
+                        "next_monitor_at", "notes"}
+
+    async def update_gate_vendor(self, vendor_id: int, account_id: int, **fields
+                                 ) -> Optional[Dict[str, Any]]:
+        sets, params = [], []
+        for k, v in fields.items():
+            if k in self._VENDOR_EDITABLE and v is not None:
+                sets.append(f"{k} = %s")
+                params.append(v)
+        if not sets:
+            return await self.get_gate_vendor(vendor_id, account_id)
+        sets.append("updated_at = NOW()")
+
+        def _fn(cur):
+            cur.execute("UPDATE gate_vendors SET " + ", ".join(sets) +
+                        " WHERE id = %s AND account_id = %s RETURNING " + ", ".join(self._VENDOR_COLS),
+                        (*params, int(vendor_id), int(account_id)))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def delete_gate_vendor(self, vendor_id: int, account_id: int) -> bool:
+        def _fn(cur):
+            cur.execute("DELETE FROM gate_vendors WHERE id = %s AND account_id = %s",
+                        (int(vendor_id), int(account_id)))
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def create_gate_vendor_scan(self, vendor_id: int, account_id: int, score, passed,
+                                      critical: int, high: int, medium: int, status: str,
+                                      duration_ms, results, summary) -> int:
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO gate_vendor_scans (vendor_id, account_id, score, passed, critical, "
+                "  high, medium, status, duration_ms, results, summary) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                (int(vendor_id), int(account_id), score, passed, int(critical), int(high),
+                 int(medium), status, duration_ms, json.dumps(results or []),
+                 json.dumps(summary or {})))
+            return int(cur.fetchone()[0])
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def list_gate_vendor_scans(self, vendor_id: int, account_id: int, limit: int = 20
+                                     ) -> List[Dict[str, Any]]:
+        lim = min(max(int(limit or 20), 1), 100)
+
+        def _fn(cur):
+            cur.execute(
+                "SELECT id, score, passed, critical, high, medium, status, duration_ms, results, "
+                "  summary, created_at FROM gate_vendor_scans WHERE vendor_id = %s AND account_id = %s "
+                "ORDER BY created_at DESC LIMIT %s", (int(vendor_id), int(account_id), lim))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def apply_gate_vendor_scan(self, vendor_id: int, account_id: int, scan_id: int,
+                                     score, status: str, next_monitor_at=None) -> bool:
+        """Atualiza o vendor com o resultado do último scan (last_scan_* + status + próximo monitor)."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE gate_vendors SET last_scan_id = %s, last_scan_score = %s, "
+                "  last_scan_at = NOW(), status = %s, "
+                "  next_monitor_at = COALESCE(%s, next_monitor_at), updated_at = NOW() "
+                "WHERE id = %s AND account_id = %s",
+                (int(scan_id), score, status, next_monitor_at, int(vendor_id), int(account_id)))
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_vendors_due_for_monitoring(self, now, limit: int = 100) -> List[Dict[str, Any]]:
+        """Vendors com monitoramento ligado e `next_monitor_at` no passado (ou nulo)."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT " + ", ".join(self._VENDOR_COLS) + " FROM gate_vendors "
+                "WHERE monitor_enabled = TRUE AND (next_monitor_at IS NULL OR next_monitor_at <= %s) "
+                "ORDER BY next_monitor_at ASC NULLS FIRST LIMIT %s", (now, int(limit)))
+            return self._rows_to_dicts(cur)
 
         return await asyncio.to_thread(self._run, _fn)
 

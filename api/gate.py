@@ -14,6 +14,7 @@ domínio só escaneia se verificado (ou convite do dono).
 """
 from __future__ import annotations
 
+import base64
 import hashlib
 import secrets
 import time
@@ -22,7 +23,7 @@ from typing import List, Optional, Tuple
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from api import auth_users
@@ -30,6 +31,7 @@ from discovery.store import get_target_store
 from security_gate.config import GateConfig
 from security_gate.engine import _DEFAULT_ORDER as _ENGINE_ORDER, run_all
 from security_gate.models import SEVERITY_RANK, Severity, Status
+from security_gate import vendor as _vendor
 
 router = APIRouter()
 
@@ -45,6 +47,10 @@ _RPM_BY_SLUG = {"free": 10, "pro": 30, "team": 60, "enterprise": 120}   # req/mi
 _gate_register_hits: dict = {}
 _gate_invite_hits: dict = {}
 _gate_verify_hits: dict = {}
+
+# KL-152 P3 — fallback in-memory dos PDFs de relatório quando o Redis está fora (dev/testes).
+_VENDOR_REPORTS: dict = {}
+_VENDOR_REPORT_MAX = 50
 
 
 # --------------------------------------------------------------------------- #
@@ -810,6 +816,303 @@ async def gate_get_run(run_id: int, request: Request) -> dict:
     if not run:
         raise HTTPException(status_code=404, detail="Run não encontrado.")
     return {"run": run}
+
+
+# --------------------------------------------------------------------------- #
+# 6b. Fornecedores (Enterprise) — due diligence, comparativo, PDF, monitoramento (KL-152 P3)
+# --------------------------------------------------------------------------- #
+
+def _require_enterprise(plan: Optional[dict]) -> None:
+    """403 se o plano não tem `scan_third_party` (capacidade Enterprise). Todos os endpoints de
+    fornecedor exigem isto."""
+    if not (plan or {}).get("scan_third_party"):
+        raise HTTPException(status_code=403,
+                            detail="Avaliação de fornecedores disponível apenas no plano Enterprise.")
+
+
+class VendorBody(BaseModel):
+    name: str
+    url: str
+    approval_threshold: Optional[int] = None
+    critical_threshold: Optional[int] = None
+    notify_vendor: Optional[bool] = None
+    monitor_enabled: Optional[bool] = None
+    monitor_interval_days: Optional[int] = None
+    notes: Optional[str] = None
+
+
+class VendorUpdateBody(BaseModel):
+    name: Optional[str] = None
+    approval_threshold: Optional[int] = None
+    critical_threshold: Optional[int] = None
+    notify_vendor: Optional[bool] = None
+    monitor_enabled: Optional[bool] = None
+    monitor_interval_days: Optional[int] = None
+    notes: Optional[str] = None
+
+
+class VendorReportBody(BaseModel):
+    vendor_ids: List[int]
+    title: Optional[str] = None
+
+
+async def run_vendor_scan(account_id: int, vendor: dict, request: Optional[Request] = None) -> dict:
+    """Escaneia o site do fornecedor (engine no servidor), REDIGE o resultado (terceiro), calcula o
+    status vs thresholds, persiste o scan + atualiza o vendor e (opt-in) notifica o fornecedor.
+    Reusado pelo endpoint e pelo worker de monitoramento."""
+    store = get_target_store()
+    plan = await get_effective_gate_plan(account_id) or {}
+    allowed = get_allowed_checks(plan)
+    scan_url = (vendor.get("url") or "").strip()
+    if "://" not in scan_url:
+        scan_url = "https://" + scan_url
+    config = GateConfig(target=scan_url, fail_on="critical", checks=allowed, timeout=60)
+    report = await run_all(url=scan_url, timeout=60, checks=allowed, config=config)
+    payload = _vendor.build_vendor_scan_payload(
+        report, int(vendor.get("approval_threshold") or 80), int(vendor.get("critical_threshold") or 0))
+    scan_id = await store.create_gate_vendor_scan(
+        vendor["id"], account_id, payload["score"], payload["passed"], payload["critical"],
+        payload["high"], payload["medium"], payload["status"], payload["duration_ms"],
+        payload["results"], payload["summary"])
+    next_at = None
+    if vendor.get("monitor_enabled"):
+        next_at = _now() + timedelta(days=int(vendor.get("monitor_interval_days") or 30))
+    await store.apply_gate_vendor_scan(vendor["id"], account_id, scan_id, payload["score"],
+                                       payload["status"], next_at)
+    await log_gate_audit(account_id, "vendor_scan", request, domain=vendor.get("domain"),
+                         detail={"vendor_id": vendor["id"], "score": payload["score"],
+                                 "status": payload["status"], "third_party": True})
+    if vendor.get("notify_vendor"):
+        import api.main as _m
+        _m._spawn(_notify_vendor(account_id, vendor, payload["score"], scan_id))
+    return {**payload, "vendor_id": vendor["id"], "scan_id": scan_id}
+
+
+async def _notify_vendor(account_id: int, vendor: dict, score, scan_id: int) -> None:
+    """Fire-and-forget: e-mail opt-in ao dono do site avaliado. Dedup 1/scan (Redis). Silencioso se
+    o domínio não tem contato na base ou o e-mail está desligado."""
+    import api.main as _m
+    try:
+        redis = _scan_redis()
+        if redis is not None:  # dedup: 1 notificação por scan
+            try:
+                ok = await redis.set(f"gate:vendor_notify:{vendor['id']}:{scan_id}", "1",
+                                     ex=86400, nx=True)
+                if not ok:
+                    return
+            except Exception:  # noqa: BLE001 - Redis instável → segue (best-effort)
+                pass
+        store = get_target_store()
+        to_email = await store.get_contact_email_for_domain(vendor.get("domain") or "")
+        if not to_email:
+            print(f"[gate] vendor notify: sem contato p/ {vendor.get('domain')}", flush=True)
+            return
+        prof = await store.get_enterprise_profile(account_id) or {}
+        mailer = _m._mailer()
+        if mailer is None:
+            return
+        await mailer.send_vendor_assessment(to_email, prof.get("name") or "Uma empresa",
+                                            vendor.get("url"), vendor.get("domain"), int(score or 0))
+    except Exception as exc:  # noqa: BLE001 - nunca derruba o scan
+        print(f"[gate] vendor notify falhou: {exc!r}", flush=True)
+
+
+@router.post("/gate/vendors")
+async def gate_create_vendor(body: VendorBody, request: Request) -> dict:
+    """Cria um fornecedor + roda o 1º scan (Enterprise). Retorna vendor + resultado do scan."""
+    ctx = await _resolve_gate_account(request)
+    _require_enterprise(ctx["plan"])
+    domain = _extract_domain(body.url)
+    if not domain:
+        raise HTTPException(status_code=400, detail="URL inválida.")
+    monitor = bool(body.monitor_enabled)
+    interval = int(body.monitor_interval_days or 30)
+    vendor = await get_target_store().create_gate_vendor(
+        ctx["account_id"], name=body.name, url=body.url.strip(), domain=domain,
+        approval_threshold=int(body.approval_threshold if body.approval_threshold is not None else 80),
+        critical_threshold=int(body.critical_threshold if body.critical_threshold is not None else 0),
+        notify_vendor=bool(body.notify_vendor), monitor_enabled=monitor,
+        monitor_interval_days=interval,
+        next_monitor_at=(_now() + timedelta(days=interval)) if monitor else None)
+    await log_gate_audit(ctx["account_id"], "vendor_created", request, key_id=ctx.get("key_id"),
+                         domain=domain, detail={"vendor_id": vendor["id"]})
+    scan = await run_vendor_scan(ctx["account_id"], vendor, request)
+    return {"vendor_id": vendor["id"], "vendor": {**vendor, "status": scan["status"],
+            "last_scan_score": scan["score"]}, "scan": scan}
+
+
+@router.get("/gate/vendors")
+async def gate_list_vendors(request: Request) -> dict:
+    """Lista os fornecedores da conta (Enterprise) com o último score/status."""
+    ctx = await _resolve_gate_account(request)
+    _require_enterprise(ctx["plan"])
+    vendors = await get_target_store().list_gate_vendors(ctx["account_id"])
+    return {"vendors": vendors}
+
+
+@router.get("/gate/vendors/{vendor_id}")
+async def gate_get_vendor(vendor_id: int, request: Request) -> dict:
+    """Detalhe do fornecedor + histórico de scans (results já redigidos)."""
+    ctx = await _resolve_gate_account(request)
+    _require_enterprise(ctx["plan"])
+    store = get_target_store()
+    vendor = await store.get_gate_vendor(vendor_id, ctx["account_id"])
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Fornecedor não encontrado.")
+    scans = await store.list_gate_vendor_scans(vendor_id, ctx["account_id"], limit=20)
+    return {"vendor": vendor, "scans": scans}
+
+
+@router.put("/gate/vendors/{vendor_id}")
+async def gate_update_vendor(vendor_id: int, body: VendorUpdateBody, request: Request) -> dict:
+    """Edita thresholds/notify/monitor/notas do fornecedor."""
+    ctx = await _resolve_gate_account(request)
+    _require_enterprise(ctx["plan"])
+    fields = {k: v for k, v in body.model_dump().items() if v is not None}
+    vendor = await get_target_store().update_gate_vendor(vendor_id, ctx["account_id"], **fields)
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Fornecedor não encontrado.")
+    return {"vendor": vendor}
+
+
+@router.delete("/gate/vendors/{vendor_id}")
+async def gate_delete_vendor(vendor_id: int, request: Request) -> dict:
+    """Remove o fornecedor (e o histórico via CASCADE)."""
+    ctx = await _resolve_gate_account(request)
+    _require_enterprise(ctx["plan"])
+    ok = await get_target_store().delete_gate_vendor(vendor_id, ctx["account_id"])
+    if not ok:
+        raise HTTPException(status_code=404, detail="Fornecedor não encontrado.")
+    await log_gate_audit(ctx["account_id"], "vendor_deleted", request, detail={"vendor_id": vendor_id})
+    return {"status": "deleted"}
+
+
+@router.post("/gate/vendors/{vendor_id}/scan")
+async def gate_scan_vendor(vendor_id: int, request: Request) -> dict:
+    """Re-escaneia o fornecedor agora (atualiza last_scan_* e status)."""
+    ctx = await _resolve_gate_account(request)
+    _require_enterprise(ctx["plan"])
+    vendor = await get_target_store().get_gate_vendor(vendor_id, ctx["account_id"])
+    if not vendor:
+        raise HTTPException(status_code=404, detail="Fornecedor não encontrado.")
+    scan = await run_vendor_scan(ctx["account_id"], vendor, request)
+    return {"scan": scan}
+
+
+async def _store_report_pdf(account_id: int, pdf: bytes) -> str:
+    """Guarda o PDF por 1h (Redis; fallback in-memory) e devolve o report_id. Armazena em BASE64 —
+    o cliente Redis do app usa `decode_responses=True`, então bytes crus de PDF não fariam round-trip."""
+    report_id = secrets.token_urlsafe(16)
+    key = f"gate:vreport:{account_id}:{report_id}"
+    b64 = base64.b64encode(pdf).decode("ascii")
+    redis = _scan_redis()
+    stored = False
+    if redis is not None:
+        try:
+            await redis.set(key, b64, ex=3600)
+            stored = True
+        except Exception:  # noqa: BLE001
+            stored = False
+    if not stored:
+        if len(_VENDOR_REPORTS) >= _VENDOR_REPORT_MAX:
+            _VENDOR_REPORTS.pop(next(iter(_VENDOR_REPORTS)))
+        _VENDOR_REPORTS[key] = b64
+    return report_id
+
+
+@router.post("/gate/vendors/report")
+async def gate_vendor_report(body: VendorReportBody, request: Request) -> dict:
+    """Gera o PDF comparativo dos fornecedores escolhidos. Retorna um link temporário (1h)."""
+    from reporter.gate_report import build_vendor_context, generate_vendor_report_pdf
+    ctx = await _resolve_gate_account(request)
+    _require_enterprise(ctx["plan"])
+    store = get_target_store()
+    ids = list(dict.fromkeys(body.vendor_ids or []))[:50]
+    if not ids:
+        raise HTTPException(status_code=422, detail="Informe ao menos um fornecedor.")
+    vendors_data = []
+    for vid in ids:
+        v = await store.get_gate_vendor(vid, ctx["account_id"])
+        if not v:
+            continue
+        scans = await store.list_gate_vendor_scans(vid, ctx["account_id"], limit=1)
+        last = scans[0] if scans else {}
+        vendors_data.append({
+            "name": v.get("name"), "domain": v.get("domain"), "score": v.get("last_scan_score"),
+            "status": v.get("status"), "critical": last.get("critical", 0),
+            "high": last.get("high", 0), "medium": last.get("medium", 0),
+            "summary": last.get("summary"), "categories": _vendor.vendor_categories(last.get("results") or []),
+        })
+    if not vendors_data:
+        raise HTTPException(status_code=404, detail="Nenhum fornecedor válido.")
+    prof = await store.get_enterprise_profile(ctx["account_id"]) or {}
+    context = build_vendor_context(
+        vendors_data, title=(body.title or "Avaliação de Fornecedores"),
+        enterprise_name=prof.get("name"), cnpj=prof.get("company_cnpj"),
+        generated_at=_now().strftime("%d/%m/%Y %H:%M UTC"))
+    pdf = await generate_vendor_report_pdf(context)
+    report_id = await _store_report_pdf(ctx["account_id"], pdf)
+    await log_gate_audit(ctx["account_id"], "vendor_report", request,
+                         detail={"vendor_ids": ids, "report_id": report_id})
+    return {"report_id": report_id,
+            "download_url": f"https://klarim.net/api/gate/vendors/report/{report_id}"}
+
+
+def _pdf_response(pdf: bytes, filename: str) -> Response:
+    return Response(content=pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f'inline; filename="{filename}"'})
+
+
+@router.get("/gate/vendors/report/{report_id}")
+async def gate_get_vendor_report(report_id: str, request: Request) -> Response:
+    """Baixa um relatório comparativo gerado (link temporário de 1h)."""
+    ctx = await _resolve_gate_account(request)
+    _require_enterprise(ctx["plan"])
+    key = f"gate:vreport:{ctx['account_id']}:{report_id}"
+    b64 = None
+    redis = _scan_redis()
+    if redis is not None:
+        try:
+            b64 = await redis.get(key)
+        except Exception:  # noqa: BLE001
+            b64 = None
+    if b64 is None:
+        b64 = _VENDOR_REPORTS.get(key)
+    if b64 is None:
+        raise HTTPException(status_code=404, detail="Relatório expirado ou inexistente.")
+    try:
+        pdf = base64.b64decode(b64)
+    except Exception:  # noqa: BLE001
+        raise HTTPException(status_code=404, detail="Relatório inválido.")
+    return _pdf_response(pdf, "klarim-fornecedores.pdf")
+
+
+@router.get("/gate/runs/{run_id}/pdf")
+async def gate_run_pdf(run_id: int, request: Request) -> Response:
+    """Exporta um run (projeto próprio) como PDF compartilhável."""
+    from reporter.gate_report import build_vendor_context, generate_vendor_report_pdf
+    ctx = await _resolve_gate_account(request)
+    store = get_target_store()
+    run = await store.get_gate_run(run_id, account_id=ctx["account_id"])
+    if not run:
+        raise HTTPException(status_code=404, detail="Run não encontrado.")
+    results = run.get("results") or []
+    crit = sum(1 for r in results if r.get("status") == "fail" and r.get("severity") == "critical")
+    high = sum(1 for r in results if r.get("status") == "fail" and r.get("severity") == "high")
+    med = sum(1 for r in results if r.get("status") == "fail" and r.get("severity") == "medium")
+    domain = _extract_domain(run.get("url") or "")
+    vendor_data = [{
+        "name": domain, "domain": domain, "score": run.get("score"),
+        "status": "approved" if run.get("passed") else "rejected",
+        "critical": crit, "high": high, "medium": med,
+        "summary": _vendor.vendor_summary(results), "categories": _vendor.vendor_categories(results),
+    }]
+    prof = await store.get_enterprise_profile(ctx["account_id"]) or {}
+    context = build_vendor_context(
+        vendor_data, title=f"Relatório de scan — {domain}", enterprise_name=prof.get("name"),
+        cnpj=prof.get("company_cnpj"), generated_at=_now().strftime("%d/%m/%Y %H:%M UTC"))
+    pdf = await generate_vendor_report_pdf(context)
+    return _pdf_response(pdf, f"klarim-{domain}.pdf")
 
 
 # --------------------------------------------------------------------------- #

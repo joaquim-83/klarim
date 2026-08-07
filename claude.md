@@ -1986,6 +1986,30 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   node + +2 pytest** (`test_kl152_docs_sitemap.py`) → `test:unit` 166; build OK. **Validado no browser**
   (dev): 7 páginas 200, sidebar/ativo/nav interna, tabelas/código não escapado, copiar, SEO, tema claro,
   zero erro. Prompt 3 pendente (Enterprise workflow). Relatório: `claude/reports/KL-152_p2_docs_integracao.md`.
+- **KL-152 (Prompt 3/3)** — Enterprise workflow: due diligence de fornecedores + PDF + monitoramento ✅
+  (**fecha o KL-152**). **Schema:** `gate_vendors` (name/url/domain, status pending|approved|attention|
+  rejected, approval/critical_threshold, last_scan_*, notify_vendor, monitor_enabled/interval/next_at) +
+  `gate_vendor_scans` (histórico, `results` REDIGIDOS + `summary` de contagens). **Pura**
+  `security_gate/vendor.py`: `calculate_vendor_status` (crít>máx→reprovado · score≥thr→aprovado ·
+  ≥thr-20→atenção · senão reprovado), `build_vendor_scan_payload` (serializa + **redige**
+  credenciais/exposição/api + `vendor_summary` contagens + `vendor_categories`). **Endpoints (api/gate.py,
+  todos `_require_enterprise` `scan_third_party`→403):** `POST/GET/GET{id}/PUT{id}/DELETE{id} /gate/vendors`,
+  `POST /gate/vendors/{id}/scan`, `POST /gate/vendors/report` (PDF comparativo→link 1h), `GET /gate/vendors/
+  report/{id}`, `GET /gate/runs/{id}/pdf`. Núcleo `run_vendor_scan` (engine no servidor→redige→status→
+  persiste→reprograma next_monitor→audit `vendor_scan`→notifica opt-in). **Redação:** o Enterprise vê
+  score/categorias/checks/**contagens** ("2 arquivos expostos"), NUNCA paths/credenciais/endpoints do
+  terceiro. **Notificação opt-in** (`_notify_vendor`): `contact_email` do domínio (interno, nunca exposto),
+  transacional `klarim@klarim.net` (`send_vendor_assessment`), **dedup 1/scan** (Redis NX). **Monitoramento**
+  `discovery/vendor_monitor_worker.py` (`VendorMonitorWorker` no `_run_all`, 1x/dia): re-scan dos vencidos +
+  alerta ao Enterprise se `score<threshold` (`send_vendor_score_drop`); deps injetáveis→testável. **PDF**
+  `reporter/gate_report.py` (WeasyPrint): `build_vendor_report_html` puro (CNPJ + resumo + tabela
+  comparativa + recomendação + detalhe + **disclaimer**); guardado **base64** no Redis TTL 1h (cliente
+  `decode_responses=True` → bytes crus não round-trip) + fallback in-memory. **Frontend**
+  `GateVendors.jsx` no `GatePortal` — **self-hide** p/ não-Enterprise (403); tabela+modal+detalhe redigido+
+  botão PDF. **+20 pytest** (`test_kl152_vendors.py`) → **2216 passed**; `test:unit` 166; build OK.
+  **Validado no browser** (conta Enterprise): seção só p/ Enterprise, scan real klarim.net→70🟡 Atenção,
+  detalhe com contagens (não paths), PDF válido (200/application/pdf, %PDF), zero erro. **KL-152 COMPLETO**
+  (P1 visual+onboarding · P2 docs · P3 Enterprise). Relatório: `claude/reports/KL-152_p3_enterprise_workflow.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.
