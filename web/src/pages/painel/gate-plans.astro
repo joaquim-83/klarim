@@ -1,0 +1,9 @@
+---
+export const prerender = false;
+import AdminLayout from '../../layouts/AdminLayout.astro';
+import GatePlansPage from '../../components/admin/GatePlansPage.jsx';
+---
+
+<AdminLayout>
+  <GatePlansPage client:only="react" />
+</AdminLayout>

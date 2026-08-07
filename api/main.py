@@ -2896,6 +2896,7 @@ _SITEMAP_STATIC: list = [
     ("/", "weekly", "1.0"), ("/scan", "weekly", "0.6"), ("/sobre", "monthly", "0.5"),
     ("/metodologia", "monthly", "0.5"), ("/ranking", "daily", "0.8"),
     ("/setores", "daily", "0.8"), ("/melhores", "daily", "0.7"), ("/estatisticas", "daily", "0.6"),
+    ("/security-gate", "weekly", "0.7"),   # KL-151 P3 — landing do produto Security Gate
 ]
 
 

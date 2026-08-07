@@ -1892,6 +1892,25 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   de re-declarar headers). **NÃO neste prompt:** frontend (Prompt 3). **+19 testes** (`test_kl151_p2_scan_cli.py`),
   store P2 validada contra Postgres 16 real. **2151 pytest passed.** Relatório:
   `claude/reports/KL-151_p2_scan_cli.md`.
+  **Prompt 3/4 ✅** — frontend: landing `/security-gate` + portal do dev + admin de planos. **Backend novo
+  (`api/gate.py`):** `GET /gate/plans` (PÚBLICO — a landing renderiza a tabela ao vivo, então uma edição no
+  admin reflete SEM deploy), `GET /account/gate/key-info` (metadados da key, nunca o valor), **dual-auth**
+  `_resolve_gate_account` (os endpoints do portal aceitam **API key OU o cookie JWT** do dashboard),
+  **admin de planos** `GET/PUT/POST /admin/gate/plans` + `GET /admin/gate/accounts` + `POST
+  /admin/gate/accounts/{id}/plan` (JWT admin via prefixo `/admin`). Store: `create_gate_plan`/
+  `update_gate_plan` (edição sem deploy — reflete no próximo scan via plano efetivo) + `list_gate_dev_accounts`
+  (uso: plano/scans-hoje/projetos/prefixo-da-key). **Landing** `web/src/pages/security-gate.astro` (SSR, busca
+  `/gate/plans`, Base+Header+Footer, hero + 18 categorias + como-funciona + snippets CI/CD em `<details>`
+  [CSP-safe, sem JS] + tabela de planos ao vivo + badge klarim.net + **Schema.org SoftwareApplication** + OG);
+  link **"Security Gate"** no `Header.astro`; `/security-gate` no **sitemap** (`_SITEMAP_STATIC`) e nas
+  **allowlists do nginx** (http + https). **Portal do dev** `web/src/pages/dashboard/gate.astro` +
+  `dashboard-v2/GatePortal.jsx` (island `client:load`, cookie-auth: API key masc.+regenerar, projetos+novo,
+  histórico de runs+detalhe com findings, `checks_blocked` com CTA de upgrade, snippet de integração).
+  **Admin** `web/src/pages/painel/gate-plans.astro` + `admin/GatePlansPage.jsx` (lista/edita/cria planos com
+  seletor de checks + `["all"]`, tabela de contas dev + atribuição manual de plano; item no `AdminShell`);
+  métodos `gate*` no `adminApi.js`. **NÃO neste prompt:** segurança avançada/audit log/Enterprise CNPJ
+  (Prompt 4). **+16 testes** (`test_kl151_p3_portal_admin.py`); Astro build ✓, `test:unit` 154 ✓, store P3
+  validada contra Postgres 16. **2167 pytest passed.** Relatório: `claude/reports/KL-151_p3_frontend.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

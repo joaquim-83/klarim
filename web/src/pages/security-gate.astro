@@ -1,0 +1,198 @@
+---
+export const prerender = false; // SSR: busca os planos ao vivo (edição no admin reflete sem deploy)
+
+// KL-151 P3 — landing do produto Security Gate: scan de segurança pós-deploy para o CI/CD do dev.
+import Base from '../layouts/Base.astro';
+import Header from '../components/Header.astro';
+import Footer from '../components/Footer.astro';
+import { PAGE_CONTAINER } from '../lib/layout.js';
+
+const API = process.env.KLARIM_API_URL || 'http://api:8000';
+
+// Fallback estático (espelha o seed) — a landing renderiza mesmo com o backend fora.
+let plans = [
+  { slug: 'free', name: 'Free', price_brl: 0, scans_per_day: 5, max_domains: 1, history_days: 7, checks_count: 4 },
+  { slug: 'pro', name: 'Pro', price_brl: 4900, scans_per_day: 50, max_domains: 10, history_days: 90, checks_count: 9 },
+  { slug: 'team', name: 'Team', price_brl: 14900, scans_per_day: 200, max_domains: 50, history_days: 365, checks_count: 18 },
+  { slug: 'enterprise', name: 'Enterprise', price_brl: 0, scans_per_day: -1, max_domains: -1, history_days: -1, checks_count: 18, scan_third_party: true },
+];
+try {
+  const res = await fetch(`${API}/gate/plans`, { signal: AbortSignal.timeout(6000) });
+  if (res.ok) {
+    const got = (await res.json()).plans;
+    if (Array.isArray(got) && got.length) plans = got;
+  }
+} catch { /* backend fora → usa o fallback */ }
+
+const order = { free: 0, pro: 1, team: 2, enterprise: 3 };
+plans = [...plans].sort((a, b) => (order[a.slug] ?? 9) - (order[b.slug] ?? 9));
+
+const priceLabel = (p) =>
+  p.slug === 'enterprise' ? 'Sob consulta' : p.price_brl > 0 ? `R$${Math.round(p.price_brl / 100)}/mês` : 'R$0';
+const numOrInf = (n) => (n === -1 ? '∞' : String(n));
+const historyLabel = (d) => (d === -1 ? 'Ilimitado' : `${d} dias`);
+const checksLabel = (p) =>
+  p.slug === 'enterprise' ? 'Todos + terceiros' : p.checks_count >= 18 ? 'Todos (18)' : `${p.checks_count} checks`;
+const ctaFor = (p) => (p.slug === 'free' ? { href: '/cadastrar?type=developer', label: 'Começar grátis →' }
+  : p.slug === 'enterprise' ? { href: '/contato', label: 'Falar com vendas' }
+  : { href: '/cadastrar?type=developer', label: 'Assinar →' });
+
+const CATEGORIES = [
+  ['🔒', 'Headers de segurança', 'HSTS, CSP, X-Frame, nosniff… (7 checks)'],
+  ['🔑', 'Credenciais expostas', '~50 patterns (Stripe, AWS, OpenAI, JWT…)'],
+  ['📡', 'Arquivos de configuração', '.env, .git, wp-config, backups, source maps'],
+  ['🌐', 'CORS misconfiguration', 'Origin arbitrário / wildcard + credentials'],
+  ['🍪', 'Cookie security', 'HttpOnly / Secure / SameSite'],
+  ['🔓', 'SSL/TLS + cipher suites', 'Validade, protocolo, RC4/DES/NULL'],
+  ['🛡️', 'API sem auth', 'Endpoints protegidos expostos + open redirect'],
+  ['🔍', 'JWT analysis', 'alg:none, sem exp, PII no payload'],
+  ['📦', 'Dependências com CVE', 'jQuery/lodash/moment… versões vulneráveis'],
+  ['🏗️', 'URLs de infraestrutura', 'Cloud Run/Heroku/ngrok/localhost no JS'],
+  ['🔁', 'Open redirect + rate limit', 'Redirect externo, 429 ausente'],
+  ['🌍', 'DNS (DNSSEC/CAA) + subdomain', 'Spoofing, takeover de subdomínio'],
+];
+
+const SOFTWARE_JSONLD = {
+  '@context': 'https://schema.org',
+  '@type': 'SoftwareApplication',
+  name: 'Klarim Security Gate',
+  applicationCategory: 'DeveloperApplication',
+  operatingSystem: 'Linux, macOS, Windows',
+  description: '86 checks de segurança em 30 segundos, integrado ao CI/CD. GitHub Actions, GitLab CI ou Bitbucket.',
+  offers: { '@type': 'Offer', price: '0', priceCurrency: 'BRL' },
+};
+
+const ghSnippet = `- name: Security Gate
+  run: |
+    pip install httpx
+    python -c "
+    import httpx, sys
+    r = httpx.post('https://klarim.net/api/gate/scan',
+        headers={'X-API-Key': '\${{ secrets.KLARIM_API_KEY }}'},
+        json={'url': 'https://meuapp.com.br', 'fail_on': 'critical'}, timeout=120)
+    d = r.json()
+    print('Score:', d['score'], '| passed:', d['passed'])
+    sys.exit(0 if d['passed'] else 1)
+    "`;
+const glSnippet = `security_gate:
+  script:
+    - pip install httpx
+    - python klarim_gate_cli.py scan $SITE_URL --api-key $KLARIM_API_KEY --fail-on critical`;
+const curlSnippet = `curl -s https://klarim.net/api/gate/scan \\
+  -H "X-API-Key: KLM_xxxx" -H "Content-Type: application/json" \\
+  -d '{"url":"https://meuapp.com.br","fail_on":"critical"}' | jq .`;
+---
+
+<Base
+  title="Security Gate — Scan de segurança pós-deploy para CI/CD"
+  fullTitleOverride="Security Gate — Scan de segurança pós-deploy para CI/CD | Klarim"
+  description="86 checks de segurança em 30 segundos. Integre no GitHub Actions, GitLab CI ou Bitbucket. Grátis para começar."
+  path="/security-gate"
+  jsonLd={SOFTWARE_JSONLD}
+>
+  <Header />
+  <main class={`${PAGE_CONTAINER} pt-28 pb-20 sm:pt-32`}>
+    <!-- Hero -->
+    <section class="text-center">
+      <h1 class="text-4xl font-extrabold tracking-tight text-slate-900 sm:text-6xl">
+        Seu deploy está seguro?
+      </h1>
+      <p class="mx-auto mt-5 max-w-2xl text-lg text-slate-600 sm:text-xl">
+        <strong class="text-slate-900">86 checks de segurança em 30 segundos.</strong><br />
+        1 linha no seu CI/CD.
+      </p>
+      <div class="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
+        <a href="/cadastrar?type=developer"
+          class="inline-flex min-h-[48px] w-full items-center justify-center rounded-lg bg-brand-500 px-6 text-base font-semibold text-[var(--accent-text)] transition-colors hover:bg-brand-400 active:scale-95 sm:w-auto">
+          Começar grátis →
+        </a>
+        <a href="#como-funciona"
+          class="inline-flex min-h-[48px] w-full items-center justify-center rounded-lg border border-slate-300 px-6 text-base font-medium text-slate-700 transition-colors hover:bg-slate-100 sm:w-auto">
+          Ver documentação
+        </a>
+      </div>
+      <!-- Badge real -->
+      <div class="mx-auto mt-8 inline-flex items-center gap-2 rounded-full border border-green-500/40 bg-green-500/10 px-4 py-2 text-sm text-green-600">
+        ✅ <strong>klarim.net</strong> — Score 90/100 · verificado a cada deploy
+      </div>
+    </section>
+
+    <!-- O que verificamos -->
+    <section class="mt-20">
+      <h2 class="text-center text-2xl font-bold text-slate-900 sm:text-3xl">O que verificamos</h2>
+      <p class="mt-2 text-center text-slate-600">18 categorias · scan 100% passivo (não envia payload de ataque)</p>
+      <div class="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {CATEGORIES.map(([icon, title, desc]) => (
+          <div class="rounded-xl border border-slate-200 bg-slate-50 p-5">
+            <div class="text-2xl" aria-hidden="true">{icon}</div>
+            <h3 class="mt-2 font-semibold text-slate-900">{title}</h3>
+            <p class="mt-1 text-sm text-slate-600">{desc}</p>
+          </div>
+        ))}
+      </div>
+    </section>
+
+    <!-- Como funciona -->
+    <section id="como-funciona" class="mt-20">
+      <h2 class="text-center text-2xl font-bold text-slate-900 sm:text-3xl">Como funciona</h2>
+      <div class="mt-8 grid grid-cols-1 gap-6 sm:grid-cols-3">
+        <div class="rounded-xl border border-slate-200 p-6">
+          <div class="text-sm font-bold text-brand-500">1. Registre</div>
+          <p class="mt-2 text-slate-700">Crie a conta e verifique o domínio (meta tag, DNS TXT ou arquivo).</p>
+        </div>
+        <div class="rounded-xl border border-slate-200 p-6">
+          <div class="text-sm font-bold text-brand-500">2. Configure</div>
+          <p class="mt-2 text-slate-700">Guarde a <code class="rounded bg-slate-100 px-1">KLARIM_API_KEY</code> como secret no CI/CD.</p>
+        </div>
+        <div class="rounded-xl border border-slate-200 p-6">
+          <div class="text-sm font-bold text-brand-500">3. Rode</div>
+          <p class="mt-2 text-slate-700">A cada deploy, 1 chamada roda os checks no servidor e reprova o job se algo grave ficou exposto.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- Exemplos de CI/CD (details, sem JS → CSP-safe) -->
+    <section class="mt-20">
+      <h2 class="text-center text-2xl font-bold text-slate-900 sm:text-3xl">Integre no seu pipeline</h2>
+      <div class="mx-auto mt-6 max-w-3xl space-y-3">
+        <details open class="rounded-xl border border-slate-200 bg-slate-900 text-slate-100">
+          <summary class="cursor-pointer px-5 py-3 font-semibold text-white">GitHub Actions</summary>
+          <pre class="overflow-x-auto px-5 pb-5 text-sm"><code>{ghSnippet}</code></pre>
+        </details>
+        <details class="rounded-xl border border-slate-200 bg-slate-900 text-slate-100">
+          <summary class="cursor-pointer px-5 py-3 font-semibold text-white">GitLab CI</summary>
+          <pre class="overflow-x-auto px-5 pb-5 text-sm"><code>{glSnippet}</code></pre>
+        </details>
+        <details class="rounded-xl border border-slate-200 bg-slate-900 text-slate-100">
+          <summary class="cursor-pointer px-5 py-3 font-semibold text-white">curl (qualquer CI)</summary>
+          <pre class="overflow-x-auto px-5 pb-5 text-sm"><code>{curlSnippet}</code></pre>
+        </details>
+      </div>
+    </section>
+
+    <!-- Planos -->
+    <section id="planos" class="mt-20">
+      <h2 class="text-center text-2xl font-bold text-slate-900 sm:text-3xl">Planos</h2>
+      <div class="mt-8 grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
+        {plans.map((p) => (
+          <div class={`flex flex-col rounded-2xl border p-6 ${p.slug === 'pro' ? 'border-brand-500 ring-1 ring-brand-500' : 'border-slate-200'}`}>
+            <h3 class="text-lg font-bold text-slate-900">{p.name}</h3>
+            <div class="mt-2 text-2xl font-extrabold text-slate-900">{priceLabel(p)}</div>
+            <ul class="mt-4 flex-1 space-y-2 text-sm text-slate-600">
+              <li>✓ {numOrInf(p.scans_per_day)} scans/dia</li>
+              <li>✓ {numOrInf(p.max_domains)} domínio(s)</li>
+              <li>✓ {checksLabel(p)}</li>
+              <li>✓ Histórico: {historyLabel(p.history_days)}</li>
+            </ul>
+            <a href={ctaFor(p).href}
+              class={`mt-6 inline-flex min-h-[44px] items-center justify-center rounded-lg px-4 text-sm font-semibold transition-colors ${p.slug === 'pro' ? 'bg-brand-500 text-[var(--accent-text)] hover:bg-brand-400' : 'border border-slate-300 text-slate-800 hover:bg-slate-100'}`}>
+              {ctaFor(p).label}
+            </a>
+          </div>
+        ))}
+      </div>
+      <p class="mt-4 text-center text-xs text-slate-500">Os planos são configuráveis — os valores acima vêm da API ao vivo.</p>
+    </section>
+  </main>
+  <Footer />
+</Base>

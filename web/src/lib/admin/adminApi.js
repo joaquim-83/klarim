@@ -280,4 +280,11 @@ export const admin = {
   approveSector: (slug, body) => post(`/admin/sectors/${slug}/approve`, body || {}),
   mergeSector: (slug, mergeInto) => post(`/admin/sectors/${slug}/merge`, { merge_into: mergeInto }),
   rejectSector: (slug) => post(`/admin/sectors/${slug}/reject`),
+
+  // --- KL-151 P3: Security Gate — planos + contas dev ---------------------- //
+  gatePlans: () => get('/admin/gate/plans'),
+  gateCreatePlan: (body) => post('/admin/gate/plans', body),
+  gateUpdatePlan: (id, body) => put(`/admin/gate/plans/${id}`, body),
+  gateAccounts: () => get('/admin/gate/accounts'),
+  gateAssignPlan: (accountId, planId) => post(`/admin/gate/accounts/${accountId}/plan`, { plan_id: planId }),
 }

@@ -4479,6 +4479,77 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    # KL-151 P3 — admin de planos (edição sem deploy; reflete no próximo scan via plano efetivo).
+    _GATE_PLAN_EDITABLE = ("name", "price_brl", "scans_per_day", "max_domains", "history_days",
+                           "checks_allowed", "scan_third_party", "notifications", "trial_days",
+                           "active")
+    _GATE_PLAN_JSON = ("checks_allowed", "notifications")
+
+    async def create_gate_plan(self, name: str, slug: str, **fields) -> Optional[Dict[str, Any]]:
+        """Cria um plano (slug único → None se já existe). `checks_allowed`/`notifications` = listas."""
+        checks = fields.get("checks_allowed") or ["headers"]
+        notif = fields.get("notifications") or ["email"]
+
+        def _fn(cur):
+            try:
+                cur.execute(
+                    "INSERT INTO gate_plans (name, slug, price_brl, scans_per_day, max_domains, "
+                    "  history_days, checks_allowed, scan_third_party, notifications, trial_days, active) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                    "RETURNING " + ", ".join(self._GATE_PLAN_COLS),
+                    (name, (slug or "").strip().lower(), int(fields.get("price_brl", 0) or 0),
+                     int(fields.get("scans_per_day", 5)), int(fields.get("max_domains", 1)),
+                     int(fields.get("history_days", 7)), json.dumps(checks),
+                     bool(fields.get("scan_third_party", False)), json.dumps(notif),
+                     int(fields.get("trial_days", 0)), bool(fields.get("active", True))))
+            except Exception:  # noqa: BLE001 - slug duplicado (UNIQUE)
+                return None
+            return self._rows_to_dicts(cur)[0]
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def update_gate_plan(self, plan_id: int, **fields) -> Optional[Dict[str, Any]]:
+        """Atualiza os campos editáveis de um plano (slug é imutável). Campos omitidos ficam. JSONB
+        (`checks_allowed`/`notifications`) serializados. Retorna a linha atualizada ou None."""
+        sets, params = [], []
+        for k in self._GATE_PLAN_EDITABLE:
+            if k in fields and fields[k] is not None:
+                v = json.dumps(fields[k]) if k in self._GATE_PLAN_JSON else fields[k]
+                sets.append(f"{k} = %s")
+                params.append(v)
+        if not sets:
+            return await self.get_gate_plan(plan_id)
+        params.append(int(plan_id))
+
+        def _fn(cur):
+            cur.execute(f"UPDATE gate_plans SET {', '.join(sets)} WHERE id = %s "
+                        f"RETURNING {', '.join(self._GATE_PLAN_COLS)}", params)
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def list_gate_dev_accounts(self, limit: int = 200) -> List[Dict[str, Any]]:
+        """Contas dev (account_type developer|both) + uso: plano associado, scans hoje, projetos,
+        prefixo da key ativa, fim do trial. Para o admin do Gate."""
+        lim = min(max(int(limit or 200), 1), 1000)
+
+        def _fn(cur):
+            cur.execute(
+                "SELECT u.id, u.email, u.account_type, u.gate_plan_id, u.gate_trial_ends_at, "
+                "  gp.slug AS plan_slug, gp.name AS plan_name, "
+                "  (SELECT COUNT(*) FROM gate_projects p WHERE p.account_id = u.id) AS project_count, "
+                "  (SELECT COUNT(*) FROM gate_runs r WHERE r.account_id = u.id "
+                "     AND r.created_at >= date_trunc('day', NOW() AT TIME ZONE 'UTC')) AS scans_today, "
+                "  (SELECT key_prefix FROM gate_api_keys k WHERE k.account_id = u.id "
+                "     AND k.is_active ORDER BY k.created_at DESC LIMIT 1) AS key_prefix "
+                "FROM users u LEFT JOIN gate_plans gp ON gp.id = u.gate_plan_id "
+                "WHERE u.account_type IN ('developer', 'both') "
+                "ORDER BY u.created_at DESC LIMIT %s", (lim,))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
     # --- conta dev: account_type + associação ao plano do Gate --- #
 
     async def set_account_type(self, account_id: int, account_type: str) -> bool:

@@ -77,6 +77,16 @@ async def authenticate_api_key(request: Request) -> dict:
     return {"account_id": record["account_id"], "key_id": record["id"], "plan": plan}
 
 
+async def _resolve_gate_account(request: Request) -> dict:
+    """Auth do PORTAL/CLI: aceita API key (header `X-API-Key`) OU a sessão de usuário (JWT cookie
+    do dashboard). Retorna `{account_id, key_id, plan}`. 401 se nenhum dos dois."""
+    if (request.headers.get("X-API-Key") or "").strip():
+        return await authenticate_api_key(request)
+    user = await auth_users.require_user(request)   # 401 se sem sessão
+    plan = await get_effective_gate_plan(user["id"])
+    return {"account_id": user["id"], "key_id": None, "plan": plan}
+
+
 # --------------------------------------------------------------------------- #
 # Planos: plano efetivo (trial > plano), checks permitidos, enforcement
 # --------------------------------------------------------------------------- #
@@ -311,7 +321,7 @@ async def gate_verify_start(project_id: int, body: GateVerifyStartBody, request:
     """Gera o desafio (meta_tag|dns_txt|html_file) e devolve as instruções. Reusa o mecanismo do
     KL-99 (`_verify_instructions`); o token vive no `config` do projeto (TTL 7 dias)."""
     import api.main as _m
-    ctx = await authenticate_api_key(request)
+    ctx = await _resolve_gate_account(request)
     store = get_target_store()
     project = await store.get_gate_project(project_id, ctx["account_id"])
     if not project:
@@ -329,7 +339,7 @@ async def gate_verify_start(project_id: int, body: GateVerifyStartBody, request:
 async def gate_verify_check(project_id: int, request: Request) -> dict:
     """Confere o desafio no site. Se comprovado: `verified=true`. Rate limit 10/h/IP."""
     import api.main as _m
-    ctx = await authenticate_api_key(request)
+    ctx = await _resolve_gate_account(request)
     ok, retry = await _m._redis_allow("gate_verify", _m._client_ip(request), 10, 3600,
                                       _gate_verify_hits)
     if not ok:
@@ -473,7 +483,7 @@ async def gate_list_invites(request: Request) -> dict:
 @router.get("/gate/projects")
 async def gate_list_projects(request: Request) -> dict:
     """Projetos da conta (API key). Inclui o plano efetivo + os checks permitidos."""
-    ctx = await authenticate_api_key(request)
+    ctx = await _resolve_gate_account(request)
     projects = await get_target_store().list_gate_projects(ctx["account_id"])
     plan = ctx["plan"] or {}
     return {"projects": projects, "plan": {"slug": plan.get("slug"), "name": plan.get("name")},
@@ -488,7 +498,7 @@ class GateProjectBody(BaseModel):
 @router.post("/gate/projects")
 async def gate_create_project(body: GateProjectBody, request: Request) -> dict:
     """Cria um projeto (respeitando o limite de domínios do plano). Nasce NÃO verificado."""
-    ctx = await authenticate_api_key(request)
+    ctx = await _resolve_gate_account(request)
     await enforce_domain_limit(ctx["account_id"], ctx["plan"] or {})
     domain = _extract_domain(body.url)
     if not domain:
@@ -518,7 +528,7 @@ async def gate_scan(body: GateScanBody, request: Request) -> dict:
     """Roda a engine do Gate contra `url` no SERVIDOR e devolve o resultado (síncrono, <60s). Só
     escaneia domínio REGISTRADO como projeto e VERIFICADO (exceto planos com `scan_third_party`).
     Os checks rodados são os do plano — os bloqueados voltam em `checks_blocked` (CTA de upgrade)."""
-    ctx = await authenticate_api_key(request)
+    ctx = await _resolve_gate_account(request)
     plan = ctx["plan"] or {}
     domain = _extract_domain(body.url)
     if not domain:
@@ -564,7 +574,7 @@ async def gate_scan(body: GateScanBody, request: Request) -> dict:
 async def gate_list_runs(request: Request, project_id: Optional[int] = Query(default=None),
                          limit: int = Query(default=20, ge=1, le=200)) -> dict:
     """Runs da conta (sumário, sem `results`). Filtro opcional por `project_id`."""
-    ctx = await authenticate_api_key(request)
+    ctx = await _resolve_gate_account(request)
     runs = await get_target_store().list_gate_runs(
         account_id=ctx["account_id"], project_id=project_id, limit=limit)
     return {"runs": runs}
@@ -573,8 +583,128 @@ async def gate_list_runs(request: Request, project_id: Optional[int] = Query(def
 @router.get("/gate/runs/{run_id}")
 async def gate_get_run(run_id: int, request: Request) -> dict:
     """Detalhe de UM run da conta (com `results`). 404 se não é da conta."""
-    ctx = await authenticate_api_key(request)
+    ctx = await _resolve_gate_account(request)
     run = await get_target_store().get_gate_run(run_id, account_id=ctx["account_id"])
     if not run:
         raise HTTPException(status_code=404, detail="Run não encontrado.")
     return {"run": run}
+
+
+# --------------------------------------------------------------------------- #
+# 7. Planos públicos (landing) + info da key (portal) — KL-151 P3
+# --------------------------------------------------------------------------- #
+
+def _public_plan(p: dict) -> dict:
+    """Campos do plano seguros p/ a landing (sem ids internos irrelevantes)."""
+    return {"slug": p.get("slug"), "name": p.get("name"), "price_brl": p.get("price_brl"),
+            "scans_per_day": p.get("scans_per_day"), "max_domains": p.get("max_domains"),
+            "history_days": p.get("history_days"), "scan_third_party": p.get("scan_third_party"),
+            "checks_allowed": get_allowed_checks(p),
+            "checks_count": len(get_allowed_checks(p)),
+            "notifications": p.get("notifications")}
+
+
+@router.get("/gate/plans")
+async def gate_public_plans() -> dict:
+    """Planos ATIVOS (público, sem auth) — a landing renderiza a tabela a partir daqui, então uma
+    edição no admin reflete SEM deploy."""
+    plans = await get_target_store().list_gate_plans(active_only=True)
+    return {"plans": [_public_plan(p) for p in plans]}
+
+
+def _mask_key_prefix(prefix: str) -> str:
+    """`KLM_ab...` mascarado para exibição (o valor completo nunca é recuperável)."""
+    p = prefix or ""
+    return f"{p}…" if p else "—"
+
+
+@router.get("/account/gate/key-info")
+async def gate_key_info(request: Request) -> dict:
+    """Metadados da API key ativa da conta (prefixo/criação/último uso) — NUNCA o valor."""
+    user = await auth_users.require_user(request)
+    keys = await get_target_store().list_gate_api_keys(user["id"])
+    active = next((k for k in keys if k.get("is_active")), None)
+    if not active:
+        return {"has_key": False}
+    return {"has_key": True, "prefix": active.get("key_prefix"),
+            "masked": _mask_key_prefix(active.get("key_prefix")),
+            "name": active.get("name"),
+            "created_at": _iso(active.get("created_at")),
+            "last_used_at": _iso(active.get("last_used_at"))}
+
+
+def _iso(v):
+    return v.isoformat() if hasattr(v, "isoformat") else v
+
+
+# --------------------------------------------------------------------------- #
+# 8. Admin de planos (JWT admin via prefixo /admin) — KL-151 P3
+# --------------------------------------------------------------------------- #
+
+class GatePlanBody(BaseModel):
+    name: Optional[str] = None
+    slug: Optional[str] = None
+    price_brl: Optional[int] = None
+    scans_per_day: Optional[int] = None
+    max_domains: Optional[int] = None
+    history_days: Optional[int] = None
+    trial_days: Optional[int] = None
+    checks_allowed: Optional[list] = None
+    scan_third_party: Optional[bool] = None
+    notifications: Optional[list] = None
+    active: Optional[bool] = None
+
+
+@router.get("/admin/gate/plans")
+async def admin_gate_plans(request: Request) -> dict:
+    """Todos os planos (inclusive inativos), com a lista de checks disponíveis para o editor."""
+    plans = await get_target_store().list_gate_plans(active_only=False)
+    return {"plans": plans, "all_checks": list(ALL_CHECK_NAMES)}
+
+
+@router.post("/admin/gate/plans")
+async def admin_gate_create_plan(body: GatePlanBody, request: Request) -> dict:
+    """Cria um plano (slug único)."""
+    if not (body.name and body.slug):
+        raise HTTPException(status_code=422, detail="Nome e slug são obrigatórios.")
+    fields = {k: v for k, v in body.model_dump().items() if v is not None and k not in ("name", "slug")}
+    plan = await get_target_store().create_gate_plan(body.name, body.slug, **fields)
+    if plan is None:
+        raise HTTPException(status_code=409, detail="Já existe um plano com este slug.")
+    return {"plan": plan}
+
+
+@router.put("/admin/gate/plans/{plan_id}")
+async def admin_gate_update_plan(plan_id: int, body: GatePlanBody, request: Request) -> dict:
+    """Edita um plano (o slug é imutável). Reflete no próximo scan (plano efetivo lido a cada auth)."""
+    fields = {k: v for k, v in body.model_dump().items() if v is not None and k != "slug"}
+    plan = await get_target_store().update_gate_plan(plan_id, **fields)
+    if plan is None:
+        raise HTTPException(status_code=404, detail="Plano não encontrado.")
+    return {"plan": plan}
+
+
+@router.get("/admin/gate/accounts")
+async def admin_gate_accounts(request: Request) -> dict:
+    """Contas dev + uso (plano, scans hoje, projetos, prefixo da key, fim do trial)."""
+    accounts = await get_target_store().list_gate_dev_accounts()
+    for a in accounts:
+        a["gate_trial_ends_at"] = _iso(a.get("gate_trial_ends_at"))
+    return {"accounts": accounts}
+
+
+class AssignPlanBody(BaseModel):
+    plan_id: int
+
+
+@router.post("/admin/gate/accounts/{account_id}/plan")
+async def admin_gate_assign_plan(account_id: int, body: AssignPlanBody, request: Request) -> dict:
+    """Atribui um plano a uma conta dev (efeito imediato — sem trial). Zera o trial (o plano
+    atribuído passa a valer diretamente)."""
+    store = get_target_store()
+    plan = await store.get_gate_plan(body.plan_id)
+    if not plan:
+        raise HTTPException(status_code=404, detail="Plano não encontrado.")
+    await store.set_account_gate_plan(account_id, body.plan_id, trial_started_at=None,
+                                      trial_ends_at=None)
+    return {"status": "assigned", "account_id": account_id, "plan": plan["slug"]}

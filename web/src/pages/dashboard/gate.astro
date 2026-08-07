@@ -1,0 +1,17 @@
+---
+export const prerender = false; // SSR + protegido pelo middleware (JWT no cookie)
+
+// KL-151 P3 — portal do dev do Security Gate (dentro do dashboard). O middleware já validou o JWT.
+import Base from '../../layouts/Base.astro';
+import Header from '../../components/Header.astro';
+import Footer from '../../components/Footer.astro';
+import GatePortal from '../../components/dashboard-v2/GatePortal.jsx';
+---
+
+<Base title="Security Gate" description="Seu portal do Security Gate — API key, projetos e runs." path="/dashboard/gate" noindex={true}>
+  <Header />
+  <main class="mx-auto max-w-3xl md:max-w-5xl px-5 lg:px-8 pt-28 pb-20 sm:pt-32">
+    <GatePortal client:load />
+  </main>
+  <Footer />
+</Base>

@@ -177,7 +177,7 @@ server {
     # rankings por setor (KL-42), a arquitetura de conteúdo (KL-74: /setores, /setor/{slug},
     # /melhores, /estatisticas) e o **blog** (KL-133: /blog, /blog/{slug}). Cacheáveis (sem
     # form) — cache curto. (O sitemap e o /blog/rss.xml saíram p/ o FastAPI.)
-    location ~ ^/(site|score|ranking|setores|setor|melhores|estatisticas|metodologia|blog)(/|$) {
+    location ~ ^/(site|score|ranking|setores|setor|melhores|estatisticas|metodologia|blog|security-gate)(/|$) {
         resolver 127.0.0.11 valid=10s ipv6=off;
         set $klarim_astro astro:4321;
         proxy_pass http://$klarim_astro;

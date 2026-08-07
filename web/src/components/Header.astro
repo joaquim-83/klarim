@@ -31,6 +31,7 @@ import Logo from './Logo.astro';
       <!-- Estado deslogado (padrão) -->
       <div data-auth="out" class="flex items-center gap-1">
         <a href="/blog" class="hidden min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white sm:inline-flex">Blog</a>
+        <a href="/security-gate" class="hidden min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white sm:inline-flex">Security Gate</a>
         <a href="/planos" class="inline-flex min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Planos</a>
         <a href="/entrar" class="inline-flex min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Entrar</a>
         <a href="/cadastrar" class="inline-flex min-h-[44px] items-center rounded-lg bg-brand-500 px-3.5 py-2 text-sm font-semibold text-[var(--accent-text)] transition-colors hover:bg-brand-400 active:scale-95">Cadastrar</a>
@@ -39,6 +40,7 @@ import Logo from './Logo.astro';
       <!-- Estado logado (revelado pelo /header.js): Blog + Planos + menu do usuário (avatar). -->
       <div data-auth="in" class="relative hidden items-center gap-1">
         <a href="/blog" class="hidden min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white sm:inline-flex">Blog</a>
+        <a href="/security-gate" class="hidden min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white sm:inline-flex">Security Gate</a>
         <a href="/planos" class="inline-flex min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Planos</a>
         <button type="button" id="user-menu-btn" aria-label="Menu do usuário"
           class="inline-flex h-10 w-10 items-center justify-center rounded-full bg-brand-500 text-sm font-bold text-[var(--accent-text)] transition-transform hover:scale-105">

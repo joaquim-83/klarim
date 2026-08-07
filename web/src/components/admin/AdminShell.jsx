@@ -73,6 +73,8 @@ const NAV = [
   // KL-133 (complemento): página de gestão do blog no painel (lista/publicar/editar). A edição de
   // markdown é textarea; o conteúdo também pode vir das MCP tools.
   { to: '/painel/blog', label: 'Blog', icon: 'blog', key: 'blog' },
+  // KL-151 P3 — admin de planos do Security Gate (produto para devs).
+  { to: '/painel/gate-plans', label: 'Gate Plans', icon: 'config', key: 'gate-plans' },
 ]
 
 export default function AdminShell({ active, children }) {
