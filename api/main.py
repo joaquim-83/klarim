@@ -9097,6 +9097,9 @@ app.include_router(_admin_analytics.router)
 from api import admin_sectors as _admin_sectors  # noqa: E402  (KL-84 — taxonomia aberta)
 app.include_router(_admin_sectors.router)
 
+from api import gate as _gate  # noqa: E402  (KL-151 — Security Gate como produto)
+app.include_router(_gate.router)
+
 try:
     from mcp_server.server import mcp_app
     from mcp_server.auth import MCPAuthMiddleware

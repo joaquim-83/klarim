@@ -330,6 +330,30 @@ Svix), `POST /email/webhook` (Hostinger, token próprio fail-closed).
 
 ---
 
+## Security Gate — produto para devs (KL-151, `api/gate.py`)
+
+Duas famílias de auth: **API key** (header `X-API-Key: KLM_…`) para o dev/CLI em `/gate/*`; **JWT de
+usuário** (cookie) para o dashboard em `/account/gate/*`. A key vive só como **SHA-256** (nunca em
+claro) e é exibida **UMA VEZ** (no registro/regeneração). Domínio só escaneia se **verificado** (desafio
+de domínio OU convite do dono). Planos (Free/Pro/Team/Enterprise) limitam scans/dia, domínios e checks —
+enforcement **no servidor**. O endpoint de scan, a CLI e o frontend são os Prompts 2-4.
+
+| Método | Path | Auth | Descrição |
+|---|---|---|---|
+| POST | `/gate/register` | público | Cria conta `developer` + API key (1×) + 1º projeto + trial Pro 14d |
+| POST | `/account/gate/regenerate-key` | JWT | Revoga as keys ativas e emite uma nova (1×) |
+| GET | `/account/gate/keys` | JWT | Lista keys (prefixo/estado/uso — nunca o valor) |
+| GET · POST | `/gate/projects` | API key | Lista projetos (+ plano + checks permitidos) · cria projeto (respeita o limite de domínios) |
+| POST | `/gate/projects/{id}/verify/start` | API key | Gera o desafio (meta_tag/dns_txt/html_file) |
+| POST | `/gate/projects/{id}/verify/check` | API key | Confere o desafio → `verified` (rate limit 10/h/IP) |
+| POST | `/account/gate/invite` | JWT (dono nível 3 + posse do domínio) | Convida um dev por e-mail (token, TTL 7d) |
+| GET | `/gate/invite/{token}` | público | Info do convite (domínio/status/dev tem conta) |
+| POST | `/gate/invite/{token}/accept` | JWT (o dev convidado) | Aceita → projeto `verified` (method=invite) |
+| DELETE | `/account/gate/invite/{id}` | JWT (dono) | Revoga + REMOVE o projeto do dev |
+| GET | `/account/gate/invites` | JWT | Convites emitidos pelo dono |
+
+---
+
 ## Tools MCP (54) — `mcp_server/tools/`
 
 Wrapper fino sobre a API/store; auth própria (OAuth 2.1/PKCE + `MCP_API_KEY`). Todas

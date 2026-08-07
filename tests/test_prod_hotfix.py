@@ -63,6 +63,7 @@ def test_ensure_schema_retries_transient_then_succeeds(monkeypatch):
 
     monkeypatch.setattr(store, "_run", fake_run)
     monkeypatch.setattr(store, "seed_sectors", _noseed)
+    monkeypatch.setattr(store, "seed_gate_plans", _noseed)   # KL-151: seed extra no ensure_schema
     monkeypatch.setattr(asyncio, "sleep", _instant)          # sem backoff real
     _run(store.ensure_schema())
     assert calls["n"] == 3

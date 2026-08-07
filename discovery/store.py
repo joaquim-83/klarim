@@ -83,7 +83,9 @@ CREATE INDEX IF NOT EXISTS idx_targets_last_scan_score ON targets(last_scan_scor
     WHERE last_scan_score IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_targets_last_scan_at ON targets(last_scan_at)
     WHERE last_scan_at IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_targets_owner_verified ON targets(id) WHERE owner_verified = TRUE;
+-- (KL-151) o índice parcial de `owner_verified` foi MOVIDO para depois do `ALTER TABLE targets
+-- ADD COLUMN owner_verified` (KL-99) — senão um banco FRESCO falha (o índice referenciava a
+-- coluna antes de ela existir). Idempotente; DBs existentes não se afetam.
 
 -- KL-84 — taxonomia ABERTA de setores. Os 48 setores fixos (KL-54) entram como 'official' via
 -- seed; a IA pode propor novos ('proposed') que o admin aprova/merge/rejeita. Só official/approved
@@ -456,6 +458,8 @@ ALTER TABLE ownership_verifications ADD COLUMN IF NOT EXISTS token VARCHAR(64);
 ALTER TABLE ownership_verifications ADD COLUMN IF NOT EXISTS domain VARCHAR(253);
 -- Marca no alvo que a propriedade foi comprovada por controle de domínio (dono nível 3).
 ALTER TABLE targets ADD COLUMN IF NOT EXISTS owner_verified BOOLEAN DEFAULT FALSE;
+-- KL-104 P2 — índice parcial (movido do topo p/ DEPOIS do ADD COLUMN owner_verified; ver KL-151).
+CREATE INDEX IF NOT EXISTS idx_targets_owner_verified ON targets(id) WHERE owner_verified = TRUE;
 
 -- KL-82 Slice 3 — sessão temporária do alerta (Fluxo 2). Quando o destinatário clica no
 -- link HMAC do alerta, ganha acesso COMPLETO ao resultado daquele site (24h) sem conta.
@@ -883,6 +887,108 @@ CREATE INDEX IF NOT EXISTS idx_blog_posts_status ON blog_posts(status);
 CREATE INDEX IF NOT EXISTS idx_blog_posts_slug ON blog_posts(slug);
 CREATE INDEX IF NOT EXISTS idx_blog_posts_published ON blog_posts(published_at DESC)
     WHERE status = 'published';
+
+-- ========================================================================= --
+-- KL-151 — Security Gate como PRODUTO para devs externos (Prompt 1/4: backend core).
+-- A conta é ÚNICA: dono e dev são o mesmo `users`, distinguidos por `account_type`. Um dono
+-- que passa a usar o Gate vira 'both'. As colunas dev + a associação ao plano do Gate ficam
+-- em `users`; API keys, planos, projetos, runs e convites em tabelas próprias `gate_*`.
+-- ========================================================================= --
+ALTER TABLE users ADD COLUMN IF NOT EXISTS account_type VARCHAR(20) DEFAULT 'owner';  -- owner|developer|both
+ALTER TABLE users ADD COLUMN IF NOT EXISTS full_name VARCHAR(200);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS company_name_dev VARCHAR(200);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(30);
+
+-- Planos do Gate (seed dos 4 iniciais em `seed_gate_plans`, idempotente). `-1` = ilimitado.
+CREATE TABLE IF NOT EXISTS gate_plans (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(50) NOT NULL,
+    slug VARCHAR(20) UNIQUE NOT NULL,
+    price_brl INTEGER DEFAULT 0,               -- centavos (4900 = R$49)
+    scans_per_day INTEGER DEFAULT 5,
+    max_domains INTEGER DEFAULT 1,
+    history_days INTEGER DEFAULT 7,
+    checks_allowed JSONB NOT NULL,             -- ["headers",...] ou ["all"]
+    scan_third_party BOOLEAN DEFAULT FALSE,
+    notifications JSONB DEFAULT '["email"]'::jsonb,
+    trial_days INTEGER DEFAULT 0,
+    active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Associação conta ↔ plano do Gate + trial. Conta dev nova = Free + trial Pro de 14 dias.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS gate_plan_id INTEGER REFERENCES gate_plans(id);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS gate_trial_started_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS gate_trial_ends_at TIMESTAMPTZ;
+
+-- API keys — NUNCA em claro: só o SHA-256 (`key_hash`) e um prefixo (`KLM_xxxx`) p/ identificar.
+CREATE TABLE IF NOT EXISTS gate_api_keys (
+    id SERIAL PRIMARY KEY,
+    account_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    key_prefix VARCHAR(8) NOT NULL,            -- "KLM_" + 4 chars
+    key_hash VARCHAR(128) NOT NULL,            -- SHA-256 do key completo
+    name VARCHAR(100) DEFAULT 'default',
+    is_active BOOLEAN DEFAULT TRUE,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    last_used_at TIMESTAMPTZ,
+    revoked_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_gate_api_keys_hash ON gate_api_keys(key_hash);
+CREATE INDEX IF NOT EXISTS idx_gate_api_keys_prefix ON gate_api_keys(key_prefix);
+CREATE INDEX IF NOT EXISTS idx_gate_api_keys_account ON gate_api_keys(account_id);
+
+-- Projetos (domínios que o dev escaneia). Só escaneia se `verified` (challenge de domínio OU
+-- convite do dono). O challenge de verificação transita em `config` (verify_token/method/expires).
+CREATE TABLE IF NOT EXISTS gate_projects (
+    id SERIAL PRIMARY KEY,
+    account_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name VARCHAR(200) NOT NULL,
+    url VARCHAR(500) NOT NULL,
+    domain VARCHAR(200) NOT NULL,              -- extraído da URL
+    verified BOOLEAN DEFAULT FALSE,
+    verified_at TIMESTAMPTZ,
+    verification_method VARCHAR(20),           -- meta_tag|dns_txt|html_file|invite
+    config JSONB DEFAULT '{}'::jsonb,          -- fail_on, checks override, challenge de verificação
+    invited_by INTEGER,                        -- account_id do dono (NULL se auto-verificado)
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_gate_projects_account ON gate_projects(account_id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_gate_projects_account_domain ON gate_projects(account_id, domain);
+
+-- Histórico de runs (o endpoint de scan é o Prompt 2; a tabela + a contagem/dia já entram aqui).
+CREATE TABLE IF NOT EXISTS gate_runs (
+    id SERIAL PRIMARY KEY,
+    project_id INTEGER NOT NULL REFERENCES gate_projects(id) ON DELETE CASCADE,
+    account_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    url VARCHAR(500) NOT NULL,
+    score INTEGER,
+    passed BOOLEAN,
+    fail_on VARCHAR(20) DEFAULT 'critical',
+    duration_ms INTEGER,
+    results JSONB,
+    checks_run JSONB,
+    checks_blocked JSONB,
+    metadata JSONB DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_gate_runs_project ON gate_runs(project_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_gate_runs_account ON gate_runs(account_id, created_at DESC);
+
+-- Convite dono→dev: o dono verificado de um domínio dá acesso a um dev por e-mail (token no link).
+CREATE TABLE IF NOT EXISTS gate_invites (
+    id SERIAL PRIMARY KEY,
+    domain VARCHAR(200) NOT NULL,
+    owner_account_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    dev_email VARCHAR(200) NOT NULL,
+    token VARCHAR(64) NOT NULL UNIQUE,
+    status VARCHAR(20) DEFAULT 'pending',      -- pending|accepted|expired|revoked
+    accepted_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ NOT NULL,           -- created_at + 7 dias
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_gate_invites_token ON gate_invites(token);
+CREATE INDEX IF NOT EXISTS idx_gate_invites_owner ON gate_invites(owner_account_id);
+CREATE INDEX IF NOT EXISTS idx_gate_invites_dev_email ON gate_invites(dev_email);
 """
 
 
@@ -999,6 +1105,11 @@ class TargetStore:
             await self.seed_sectors()
         except Exception as exc:  # noqa: BLE001
             print(f"[schema] seed_sectors falhou (seguindo): {exc!r}", flush=True)
+        # KL-151 — seed dos 4 planos do Security Gate (idempotente). Fail-open.
+        try:
+            await self.seed_gate_plans()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[schema] seed_gate_plans falhou (seguindo): {exc!r}", flush=True)
 
     async def ping(self) -> bool:
         """SELECT 1 — health check do PostgreSQL (KL-16)."""
@@ -4301,6 +4412,391 @@ class TargetStore:
                         [*params, per_page, offset])
             return {"posts": self._rows_to_dicts(cur), "total": total,
                     "page": page, "per_page": per_page}
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- KL-151: Security Gate como produto (planos, API keys, projetos, runs, convites) --- #
+
+    # (name, slug, price_brl, scans_per_day, max_domains, history_days, checks_allowed,
+    #  scan_third_party, notifications, trial_days)
+    _GATE_SEED_PLANS = [
+        ("Free", "free", 0, 5, 1, 7,
+         ["headers", "ssl", "exposure", "https_redirect"], False, ["email"], 0),
+        ("Pro", "pro", 4900, 50, 10, 90,
+         ["headers", "ssl", "exposure", "https_redirect", "credentials", "cors", "cookies",
+          "api", "infrastructure"], False, ["email", "webhook"], 0),
+        ("Team", "team", 14900, 200, 50, 365,
+         ["all"], False, ["email", "webhook", "slack"], 0),
+        ("Enterprise", "enterprise", 0, -1, -1, -1,
+         ["all"], True, ["email", "webhook", "slack"], 0),
+    ]
+    _GATE_PLAN_COLS = ("id", "name", "slug", "price_brl", "scans_per_day", "max_domains",
+                       "history_days", "checks_allowed", "scan_third_party", "notifications",
+                       "trial_days", "active")
+
+    async def seed_gate_plans(self) -> None:
+        """Semeia os 4 planos do Gate (idempotente por slug). `ON CONFLICT DO NOTHING` — nunca
+        sobrescreve edições feitas depois (o admin de planos é o Prompt 4)."""
+        def _fn(cur):
+            for (name, slug, price, spd, maxd, hist, checks, third, notif, trial) in self._GATE_SEED_PLANS:
+                cur.execute(
+                    "INSERT INTO gate_plans (name, slug, price_brl, scans_per_day, max_domains, "
+                    "  history_days, checks_allowed, scan_third_party, notifications, trial_days) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                    "ON CONFLICT (slug) DO NOTHING",
+                    (name, slug, price, spd, maxd, hist, json.dumps(checks), third,
+                     json.dumps(notif), trial))
+
+        await asyncio.to_thread(self._run, _fn)
+
+    async def list_gate_plans(self, active_only: bool = True) -> List[Dict[str, Any]]:
+        def _fn(cur):
+            where = "WHERE active = TRUE" if active_only else ""
+            cur.execute(f"SELECT {', '.join(self._GATE_PLAN_COLS)} FROM gate_plans {where} "
+                        "ORDER BY price_brl ASC, id ASC")
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_gate_plan(self, plan_id: Optional[int]) -> Optional[Dict[str, Any]]:
+        if not plan_id:
+            return None
+
+        def _fn(cur):
+            cur.execute(f"SELECT {', '.join(self._GATE_PLAN_COLS)} FROM gate_plans WHERE id = %s",
+                        (int(plan_id),))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_gate_plan_by_slug(self, slug: str) -> Optional[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute(f"SELECT {', '.join(self._GATE_PLAN_COLS)} FROM gate_plans WHERE slug = %s",
+                        ((slug or "").strip().lower(),))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- conta dev: account_type + associação ao plano do Gate --- #
+
+    async def set_account_type(self, account_id: int, account_type: str) -> bool:
+        """owner|developer|both. Um dono existente que passa a usar o Gate vira 'both'."""
+        at = account_type if account_type in ("owner", "developer", "both") else "developer"
+
+        def _fn(cur):
+            cur.execute("UPDATE users SET account_type = %s WHERE id = %s", (at, account_id))
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def set_account_gate_plan(self, account_id: int, plan_id: int,
+                                    trial_started_at=None, trial_ends_at=None) -> bool:
+        """Associa a conta ao plano do Gate + (opcional) inicia o trial."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE users SET gate_plan_id = %s, gate_trial_started_at = %s, "
+                "  gate_trial_ends_at = %s WHERE id = %s",
+                (plan_id, trial_started_at, trial_ends_at, account_id))
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_account_gate_fields(self, account_id: int) -> Optional[Dict[str, Any]]:
+        """Campos do Gate na conta (para o cálculo do plano efetivo). None se a conta não existe."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT id, email, account_type, gate_plan_id, gate_trial_started_at, "
+                "  gate_trial_ends_at FROM users WHERE id = %s", (int(account_id),))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- API keys (nunca em claro: só o hash SHA-256) --- #
+
+    async def create_gate_api_key(self, account_id: int, key_prefix: str, key_hash: str,
+                                  name: str = "default") -> Dict[str, Any]:
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO gate_api_keys (account_id, key_prefix, key_hash, name) "
+                "VALUES (%s, %s, %s, %s) RETURNING id, account_id, key_prefix, name, "
+                "  is_active, created_at",
+                (account_id, key_prefix, key_hash, (name or "default")[:100]))
+            return self._rows_to_dicts(cur)[0]
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_gate_api_key_by_hash(self, key_hash: str) -> Optional[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute(
+                "SELECT id, account_id, key_prefix, name, is_active, created_at, "
+                "  last_used_at, revoked_at FROM gate_api_keys WHERE key_hash = %s", (key_hash,))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def touch_gate_api_key(self, key_id: int) -> None:
+        await asyncio.to_thread(self._run, lambda cur: cur.execute(
+            "UPDATE gate_api_keys SET last_used_at = NOW() WHERE id = %s", (key_id,)))
+
+    async def revoke_gate_api_keys(self, account_id: int) -> int:
+        """Revoga TODAS as keys ativas da conta (usado no regenerate). Retorna quantas."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE gate_api_keys SET is_active = FALSE, revoked_at = NOW() "
+                "WHERE account_id = %s AND is_active = TRUE", (account_id,))
+            return cur.rowcount
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def list_gate_api_keys(self, account_id: int) -> List[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute(
+                "SELECT id, key_prefix, name, is_active, created_at, last_used_at, revoked_at "
+                "FROM gate_api_keys WHERE account_id = %s ORDER BY created_at DESC", (account_id,))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- projetos --- #
+
+    _GATE_PROJECT_COLS = ("id", "account_id", "name", "url", "domain", "verified", "verified_at",
+                          "verification_method", "config", "invited_by", "created_at")
+
+    async def create_gate_project(self, account_id: int, name: str, url: str, domain: str,
+                                  verified: bool = False, verification_method: Optional[str] = None,
+                                  invited_by: Optional[int] = None) -> Optional[Dict[str, Any]]:
+        """Cria um projeto (domínio a escanear). UNIQUE (account_id, domain) → None se já existe."""
+        def _fn(cur):
+            try:
+                cur.execute(
+                    "INSERT INTO gate_projects (account_id, name, url, domain, verified, "
+                    "  verified_at, verification_method, invited_by) "
+                    "VALUES (%s, %s, %s, %s, %s, " + ("NOW()" if verified else "NULL") + ", %s, %s) "
+                    "RETURNING " + ", ".join(self._GATE_PROJECT_COLS),
+                    (account_id, name[:200], url[:500], (domain or "").lower().strip()[:200],
+                     verified, verification_method, invited_by))
+            except Exception:  # noqa: BLE001 - viola a UNIQUE (account_id, domain)
+                return None
+            return self._rows_to_dicts(cur)[0]
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def list_gate_projects(self, account_id: int) -> List[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute(f"SELECT {', '.join(self._GATE_PROJECT_COLS)} FROM gate_projects "
+                        "WHERE account_id = %s ORDER BY created_at DESC", (account_id,))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_gate_project(self, project_id: int, account_id: int) -> Optional[Dict[str, Any]]:
+        """Projeto COM ownership check (account_id). None se não existe ou não é da conta."""
+        def _fn(cur):
+            cur.execute(f"SELECT {', '.join(self._GATE_PROJECT_COLS)} FROM gate_projects "
+                        "WHERE id = %s AND account_id = %s", (int(project_id), int(account_id)))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def count_gate_projects(self, account_id: int) -> int:
+        def _fn(cur):
+            cur.execute("SELECT COUNT(*) FROM gate_projects WHERE account_id = %s", (account_id,))
+            return int(cur.fetchone()[0])
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def start_gate_project_verification(self, project_id: int, account_id: int,
+                                              method: str, token: str) -> bool:
+        """Grava o desafio de verificação no `config` do projeto (TTL 7 dias). Ownership check."""
+        challenge = {"verify_method": method, "verify_token": token}
+
+        def _fn(cur):
+            cur.execute(
+                "UPDATE gate_projects SET config = config "
+                "  || %s::jsonb "
+                "  || jsonb_build_object('verify_expires_at', (NOW() + INTERVAL '7 days')::text) "
+                "WHERE id = %s AND account_id = %s",
+                (json.dumps(challenge), int(project_id), int(account_id)))
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def mark_gate_project_verified(self, project_id: int, method: str,
+                                         invited_by: Optional[int] = None) -> bool:
+        """Marca o projeto verificado e limpa o desafio do `config`."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE gate_projects SET verified = TRUE, verified_at = NOW(), "
+                "  verification_method = %s, invited_by = COALESCE(%s, invited_by), "
+                "  config = (config - 'verify_method' - 'verify_token' - 'verify_expires_at') "
+                "WHERE id = %s", (method, invited_by, int(project_id)))
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def delete_gate_project_by_domain(self, account_id: int, domain: str) -> int:
+        """Remove o projeto de um dev por (account_id, domain) — usado na revogação de convite."""
+        def _fn(cur):
+            cur.execute("DELETE FROM gate_projects WHERE account_id = %s AND domain = %s",
+                        (int(account_id), (domain or "").lower().strip()))
+            return cur.rowcount
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- runs (contagem/dia p/ enforcement; o endpoint de scan é o Prompt 2) --- #
+
+    async def count_gate_runs_today(self, account_id: int) -> int:
+        def _fn(cur):
+            cur.execute(
+                "SELECT COUNT(*) FROM gate_runs WHERE account_id = %s "
+                "  AND created_at >= date_trunc('day', NOW() AT TIME ZONE 'UTC')", (account_id,))
+            return int(cur.fetchone()[0])
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def create_gate_run(self, project_id: int, account_id: int, url: str,
+                              score: Optional[int], passed: Optional[bool], fail_on: str,
+                              duration_ms: Optional[int], results, checks_run, checks_blocked,
+                              metadata=None) -> int:
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO gate_runs (project_id, account_id, url, score, passed, fail_on, "
+                "  duration_ms, results, checks_run, checks_blocked, metadata) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id",
+                (project_id, account_id, url[:500], score, passed, fail_on, duration_ms,
+                 json.dumps(results or []), json.dumps(checks_run or []),
+                 json.dumps(checks_blocked or []), json.dumps(metadata or {})))
+            return int(cur.fetchone()[0])
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- convites dono→dev --- #
+
+    _GATE_INVITE_COLS = ("id", "domain", "owner_account_id", "dev_email", "token", "status",
+                         "accepted_at", "expires_at", "created_at")
+
+    async def create_gate_invite(self, domain: str, owner_account_id: int, dev_email: str,
+                                 token: str, expires_days: int = 7) -> Dict[str, Any]:
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO gate_invites (domain, owner_account_id, dev_email, token, expires_at) "
+                "VALUES (%s, %s, %s, %s, NOW() + (%s * INTERVAL '1 day')) "
+                "RETURNING " + ", ".join(self._GATE_INVITE_COLS),
+                ((domain or "").lower().strip(), owner_account_id,
+                 (dev_email or "").lower().strip(), token, int(expires_days)))
+            return self._rows_to_dicts(cur)[0]
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_gate_invite_by_token(self, token: str) -> Optional[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute(f"SELECT {', '.join(self._GATE_INVITE_COLS)} FROM gate_invites "
+                        "WHERE token = %s", (token,))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_gate_invite(self, invite_id: int, owner_account_id: int) -> Optional[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute(f"SELECT {', '.join(self._GATE_INVITE_COLS)} FROM gate_invites "
+                        "WHERE id = %s AND owner_account_id = %s",
+                        (int(invite_id), int(owner_account_id)))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def mark_gate_invite_accepted(self, invite_id: int) -> bool:
+        def _fn(cur):
+            cur.execute(
+                "UPDATE gate_invites SET status = 'accepted', accepted_at = NOW() "
+                "WHERE id = %s AND status = 'pending'", (int(invite_id),))
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def revoke_gate_invite(self, invite_id: int, owner_account_id: int) -> Optional[Dict[str, Any]]:
+        """Marca o convite como revogado (ownership check). Retorna a linha (domain/dev_email) p/
+        o chamador remover o projeto do dev; None se não é do dono."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE gate_invites SET status = 'revoked' "
+                "WHERE id = %s AND owner_account_id = %s AND status IN ('pending', 'accepted') "
+                "RETURNING domain, dev_email", (int(invite_id), int(owner_account_id)))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def list_gate_invites(self, owner_account_id: int) -> List[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute(f"SELECT {', '.join(self._GATE_INVITE_COLS)} FROM gate_invites "
+                        "WHERE owner_account_id = %s ORDER BY created_at DESC",
+                        (int(owner_account_id),))
+            return self._rows_to_dicts(cur)
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- helpers extras do Gate --- #
+
+    async def set_account_dev_profile(self, account_id: int, full_name: Optional[str] = None,
+                                      company_name_dev: Optional[str] = None,
+                                      phone: Optional[str] = None) -> bool:
+        """Grava os campos de perfil dev (COALESCE — não apaga com NULL)."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE users SET full_name = COALESCE(%s, full_name), "
+                "  company_name_dev = COALESCE(%s, company_name_dev), phone = COALESCE(%s, phone) "
+                "WHERE id = %s",
+                ((full_name or None), (company_name_dev or None), (phone or None), int(account_id)))
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_gate_verification_challenge(self, project_id: int, account_id: int
+                                              ) -> Optional[Dict[str, Any]]:
+        """Desafio de verificação PENDENTE e não expirado do projeto (do `config`). None se
+        não há challenge, expirou, ou o projeto não é da conta. Expiry resolvido no SQL."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT config->>'verify_method' AS method, config->>'verify_token' AS token "
+                "FROM gate_projects WHERE id = %s AND account_id = %s "
+                "  AND config ? 'verify_token' "
+                "  AND (config->>'verify_expires_at')::timestamptz > NOW()",
+                (int(project_id), int(account_id)))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows and rows[0].get("token") else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_gate_project_by_domain(self, account_id: int, domain: str
+                                         ) -> Optional[Dict[str, Any]]:
+        def _fn(cur):
+            cur.execute(f"SELECT {', '.join(self._GATE_PROJECT_COLS)} FROM gate_projects "
+                        "WHERE account_id = %s AND domain = %s",
+                        (int(account_id), (domain or "").lower().strip()))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def user_owns_verified_domain(self, user_id: int, domain: str) -> bool:
+        """True se o usuário é dono VERIFICADO (is_owner + verified_at) de um target com este
+        domínio — pré-requisito p/ convidar um dev (KL-151). Não confia só no account_level=3
+        (global): o dono precisa possuir ESTE domínio."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT 1 FROM user_sites us JOIN targets t ON t.id = us.target_id "
+                "WHERE us.user_id = %s AND us.is_owner = TRUE AND us.verified_at IS NOT NULL "
+                "  AND t.domain = %s LIMIT 1",
+                (int(user_id), (domain or "").lower().strip()))
+            return cur.fetchone() is not None
 
         return await asyncio.to_thread(self._run, _fn)
 

@@ -1154,6 +1154,23 @@ class KlarimMailer:
         }, email_type="technician_invite", target_id=target_id, domain=domain,
             source="account", skip_blocklist=True)
 
+    async def send_gate_invite(self, to_email: str, owner_name: str, domain: str,
+                               accept_url: str) -> Dict[str, Any]:
+        """KL-151 — convite dono→dev para usar o Security Gate num domínio. Transacional
+        (`klarim@klarim.net`), plain text, registrado (`gate_invite`, skip_blocklist)."""
+        who = (owner_name or "").strip() or "O dono do site"
+        text = (
+            f"{who} convidou você para monitorar a segurança de {domain} com o Klarim Security Gate.\n\n"
+            f"O Security Gate roda no seu pipeline de CI/CD e verifica, a cada deploy, o que ficou "
+            f"exposto (headers, SSL, credenciais, painéis, URLs de infraestrutura e mais).\n\n"
+            f"Aceite o convite (o acesso a {domain} já vem verificado):\n{accept_url}\n\n"
+            f"O convite expira em 7 dias. Se você não esperava este e-mail, ignore-o.\n\n— Klarim"
+        )
+        return await self._send({
+            "from": self.from_address, "to": [to_email],
+            "subject": f"Convite para monitorar {domain} no Klarim Security Gate", "text": text,
+        }, email_type="gate_invite", domain=domain, source="account", skip_blocklist=True)
+
     async def send_profile_view(self, to_email: str, domain: str, score: int,
                                 semaphore: str, cta_url: str,
                                 unsubscribe_link: Optional[str] = None,

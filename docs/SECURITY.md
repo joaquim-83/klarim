@@ -413,3 +413,20 @@ reprova (job vermelho + e-mail) só em **FAIL CRÍTICO** (`--fail-on critical`).
 Config por YAML (`security-gate.yml`): allowlist de exposição, endpoints protegidos, endpoints do
 rate limit, ligar/desligar cada check. Passividade e limites (teto de 10 requests no rate limit,
 zero forja de token, nenhum payload de injeção) são invioláveis.
+
+## 11. Security Gate — produto para devs (KL-151)
+
+- **API key NUNCA em claro.** No banco vive só o **SHA-256** (`gate_api_keys.key_hash`) + um prefixo
+  `KLM_xxxx` (para identificar sem expor). A key completa (`KLM_` + 32 hex = 36 chars) é gerada com
+  `secrets.token_hex` e **exibida UMA VEZ** — no registro (`/gate/register`) ou na regeneração
+  (`/account/gate/regenerate-key`, que revoga TODAS as ativas antes). Auth = hash da key recebida no
+  header `X-API-Key` comparado ao banco; key inativa/revogada → 401.
+- **Checks e limites são enforcados no SERVIDOR** (`api/gate.py`), nunca no client: `get_allowed_checks`
+  (o plano decide quais checks rodam), `enforce_scan_limit` (429), `enforce_domain_limit` (403). Um
+  cliente que peça um check fora do plano é ignorado pelo servidor.
+- **Domínio só escaneia se verificado.** Verificação por controle de domínio (reusa o KL-99:
+  meta_tag/dns_txt/html_file; o corpo do site nunca volta ao usuário) OU por **convite do dono**.
+- **Convite dono→dev:** só um dono **nível 3** que possui o domínio VERIFICADO (`user_owns_verified_domain`)
+  pode convidar; token `secrets.token_urlsafe(32)`, TTL 7 dias, status efetivo resolvido por relógio.
+  O aceite exige o dev LOGADO cujo e-mail == o convidado (anti-hijack). Revogar remove o projeto do dev
+  (perde o acesso ao scan). Rate limit 10/h/IP no convite e na verificação.

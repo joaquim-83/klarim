@@ -1849,6 +1849,31 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   segue verde.** **+38 testes** (`test_kl149_new_checks.py`, 1 PASS+1 FAIL/check); engine tests do KL-141
   ajustados p/ 18 checks. **2101 pytest passed.** Docs: `docs/SECURITY.md` §10 (tabela dos 18 checks).
   Relatório: `claude/reports/KL-149_novos_checks.md`.
+- **KL-151 (Prompt 1/4)** — Security Gate como PRODUTO para devs externos: **backend core** ✅. O dev
+  instala CLI, autentica por API key e roda no pipeline dele — sem clonar o repo. A conta é ÚNICA:
+  dono e dev são o mesmo `users`, distinguidos por `account_type` (owner|developer|both; um dono que usa
+  o Gate vira 'both'). **Schema (5 tabelas + 7 colunas em `users`):** `gate_plans` (Free/Pro/Team/Enterprise,
+  seed idempotente em `seed_gate_plans`; `-1`=ilimitado), `gate_api_keys` (**nunca em claro** — só o
+  SHA-256 + prefixo `KLM_xxxx`), `gate_projects` (domínio a escanear; só escaneia se `verified`), `gate_runs`
+  (histórico + contagem/dia p/ enforcement), `gate_invites` (dono→dev, token, TTL 7d). **`api/gate.py`**
+  (router): `POST /gate/register` (cria dev + API key exibida **1×** + projeto + trial Pro 14d, plano base
+  Free), `POST /account/gate/regenerate-key`, `POST /gate/projects/{id}/verify/{start,check}` (reusa o
+  desafio de domínio do KL-99 — meta_tag/dns_txt/html_file — via API key; challenge no `config` JSONB, TTL
+  7d), convite `POST /account/gate/invite` (dono nível 3 + posse VERIFICADA deste domínio) / `GET
+  /gate/invite/{token}` / `POST /gate/invite/{token}/accept` (dev logado; cria projeto `verified` method=
+  `invite`) / `DELETE /account/gate/invite/{id}` (revoga + REMOVE o projeto do dev). **Auth:** `/gate/*` =
+  API key (`X-API-Key`, `authenticate_api_key`); `/account/gate/*` = JWT de usuário. **Plano efetivo:** trial
+  Pro ativo > plano associado > Free (`get_effective_gate_plan`). **Enforcement no SERVIDOR:**
+  `enforce_scan_limit` (429 no teto de scans/dia), `enforce_domain_limit` (403 no teto de domínios),
+  `get_allowed_checks` (Free=4 checks · Pro=9 · Team/Enterprise=`["all"]`=18). ⚠️ **Fix incidental de
+  fresh-DB:** o índice `idx_targets_owner_verified` (KL-104 P2) referenciava a coluna `owner_verified`
+  ANTES do `ALTER ... ADD` (KL-99) → um banco FRESCO falhava no `ensure_schema` (o dev stack não subia do
+  zero). Movido p/ depois do ADD (idempotente; DBs existentes intactos). **Validação:** schema aplicado num
+  Postgres 16 fresco (5 tabelas + seed dos 4 planos + 7 colunas) + todas as store methods exercitadas contra
+  ele (API key, challenge JSONB, ciclo de convite, plano efetivo trial/expirado). **NÃO neste prompt:** API
+  REST de scan, CLI, frontend, admin de planos (Prompts 2-4). **+31 testes** (`test_kl151_gate_product.py`).
+  **2132 pytest passed.** Docs: `docs/API.md` (endpoints do Gate) + `docs/SECURITY.md` §11 (API key hash +
+  convite). Relatório: `claude/reports/KL-151_p1_gate_backend.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.
