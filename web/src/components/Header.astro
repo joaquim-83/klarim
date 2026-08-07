@@ -31,8 +31,18 @@ import Logo from './Logo.astro';
       <!-- Estado deslogado (padrão) -->
       <div data-auth="out" class="flex items-center gap-1">
         <a href="/blog" class="hidden min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white sm:inline-flex">Blog</a>
-        <a href="/security-gate" class="hidden min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white sm:inline-flex">Security Gate</a>
-        <a href="/docs/gate/github-actions" class="hidden min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white lg:inline-flex">Docs</a>
+        <!-- Dropdown "Desenvolvedor" (agrupa o Security Gate; a doc é interna a ele). CSP-safe:
+             <details>/<summary>, sem JS inline. Segue o breakpoint do Blog (sm+). -->
+        <details class="group relative hidden sm:block">
+          <summary class="inline-flex min-h-[44px] cursor-pointer list-none items-center gap-1 rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white marker:content-none [&::-webkit-details-marker]:hidden">
+            Desenvolvedor
+            <span class="text-[10px] transition-transform group-open:rotate-180" aria-hidden="true">▼</span>
+          </summary>
+          <div class="absolute right-0 top-full z-40 mt-1 w-52 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 py-1 shadow-2xl">
+            <a href="/security-gate" class="flex min-h-[44px] items-center gap-2 px-4 text-sm text-slate-200 transition-colors hover:bg-slate-800 hover:text-white">🔒 Security Gate</a>
+            <a href="/docs/gate/github-actions" class="flex min-h-[44px] items-center gap-2 px-4 text-sm text-slate-400 transition-colors hover:bg-slate-800 hover:text-white">📖 Documentação</a>
+          </div>
+        </details>
         <a href="/planos" class="inline-flex min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Planos</a>
         <a href="/entrar" class="inline-flex min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Entrar</a>
         <a href="/cadastrar" class="inline-flex min-h-[44px] items-center rounded-lg bg-brand-500 px-3.5 py-2 text-sm font-semibold text-[var(--accent-text)] transition-colors hover:bg-brand-400 active:scale-95">Cadastrar</a>
@@ -41,8 +51,18 @@ import Logo from './Logo.astro';
       <!-- Estado logado (revelado pelo /header.js): Blog + Planos + menu do usuário (avatar). -->
       <div data-auth="in" class="relative hidden items-center gap-1">
         <a href="/blog" class="hidden min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white sm:inline-flex">Blog</a>
-        <a href="/security-gate" class="hidden min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white sm:inline-flex">Security Gate</a>
-        <a href="/docs/gate/github-actions" class="hidden min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white lg:inline-flex">Docs</a>
+        <!-- Dropdown "Desenvolvedor" (agrupa o Security Gate; a doc é interna a ele). CSP-safe:
+             <details>/<summary>, sem JS inline. Segue o breakpoint do Blog (sm+). -->
+        <details class="group relative hidden sm:block">
+          <summary class="inline-flex min-h-[44px] cursor-pointer list-none items-center gap-1 rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white marker:content-none [&::-webkit-details-marker]:hidden">
+            Desenvolvedor
+            <span class="text-[10px] transition-transform group-open:rotate-180" aria-hidden="true">▼</span>
+          </summary>
+          <div class="absolute right-0 top-full z-40 mt-1 w-52 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 py-1 shadow-2xl">
+            <a href="/security-gate" class="flex min-h-[44px] items-center gap-2 px-4 text-sm text-slate-200 transition-colors hover:bg-slate-800 hover:text-white">🔒 Security Gate</a>
+            <a href="/docs/gate/github-actions" class="flex min-h-[44px] items-center gap-2 px-4 text-sm text-slate-400 transition-colors hover:bg-slate-800 hover:text-white">📖 Documentação</a>
+          </div>
+        </details>
         <a href="/planos" class="inline-flex min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Planos</a>
         <button type="button" id="user-menu-btn" aria-label="Menu do usuário"
           class="inline-flex h-10 w-10 items-center justify-center rounded-full bg-brand-500 text-sm font-bold text-[var(--accent-text)] transition-transform hover:scale-105">

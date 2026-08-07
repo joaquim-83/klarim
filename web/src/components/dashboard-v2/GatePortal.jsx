@@ -281,7 +281,8 @@ export default function GatePortal() {
       {/* Fornecedores — só aparece para contas Enterprise (self-hide via 403). */}
       <GateVendors />
 
-      <Section title="⚙️ Integração no CI/CD">
+      <Section title="⚙️ Integração no CI/CD"
+        right={<a href="/docs/gate/github-actions" className="text-sm font-medium text-brand-400 hover:underline">Ver documentação →</a>}>
         <p className="mb-3 text-sm text-slate-300">
           Guarde a API key como o secret <code className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-100">KLARIM_KEY</code> e
           adicione ao seu pipeline (a URL do projeto já vem preenchida):
