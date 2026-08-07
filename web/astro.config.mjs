@@ -13,6 +13,9 @@ export default defineConfig({
   output: 'server',
   adapter: node({ mode: 'standalone' }),
   integrations: [react()], // React islands para as próximas fases (dashboard/scan)
+  // KL-152 P2 — docs em .md sem Shiki (blocos de código simples, estilizados por .docs-prose;
+  // evita <span style> por token e casa com o visual do wizard). Nenhum outro .md existe.
+  markdown: { syntaxHighlight: false },
   server: { port: 4321, host: true },
   vite: {
     plugins: [tailwindcss()], // Tailwind v4 (CSS-first, via plugin Vite — igual ao frontend/)

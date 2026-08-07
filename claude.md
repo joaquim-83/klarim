@@ -1969,6 +1969,23 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   novo** (reusa `key-info`/`projects`/`runs`/`regenerate-key`). **+8 `node --test`** (`snippets.test.js`) →
   `test:unit` 162; `npm run build` OK. Prompts 2-3 pendentes (webhook, convite, editor `security-gate.yml`).
   Relatório: `claude/reports/KL-152_p1_fix_visual_onboarding.md`.
+- **KL-152 (Prompt 2/3)** — Docs de integração do Security Gate por CI/CD ✅. **7 páginas PÚBLICAS**
+  (sem login) em `/docs/gate/{github-actions,gitlab-ci,bitbucket,jenkins,manual,api,troubleshooting}` —
+  Astro **`.md`** (markdown renderizado, não HTML hardcoded) com frontmatter `layout`/`title`/
+  `description`/`slug`. **`DocsLayout.astro`** = Base+Header+**sidebar**+`<slot>`+Footer (sidebar sticky
+  no desktop, rolagem horizontal no mobile, item ativo `aria-current`; SEO + JSON-LD **TechArticle** por
+  página). Sidebar/slugs de **`web/src/lib/gate/docsNav.js`** (PURO, fonte única; +4 `node --test`).
+  Sem Shiki (`astro.config.mjs markdown.syntaxHighlight:false` — blocos simples estilizados por
+  `.docs-prose` em global.css, dark constante como o wizard; nenhum outro `.md` existe). Botão "Copiar"
+  via **`web/public/docs-copy.js`** externo (CSP `script-src 'self'`, progressive enhancement). Snippets
+  referenciam o SECRET do CI (`${{ secrets.KLARIM_KEY }}`/`$KLARIM_KEY`); `manual` usa `KLM_sua_key_aqui`.
+  Integração: **"Docs"** no Header (2 estados) + "Documentação" no Footer + "Ver documentação" da landing
+  → `/docs/gate/github-actions`; as 7 URLs no `_SITEMAP_STATIC` (KL-131); **`docs`** na allowlist de
+  conteúdo + **`docs-copy\.js`** na de JS, nos DOIS nginx (`http.conf` + `https.conf.template`, `nginx -t`
+  ✓). Contato do troubleshooting = `contato@klarim.net` (o `seguranca@` foi descontinuado). **+4
+  node + +2 pytest** (`test_kl152_docs_sitemap.py`) → `test:unit` 166; build OK. **Validado no browser**
+  (dev): 7 páginas 200, sidebar/ativo/nav interna, tabelas/código não escapado, copiar, SEO, tema claro,
+  zero erro. Prompt 3 pendente (Enterprise workflow). Relatório: `claude/reports/KL-152_p2_docs_integracao.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

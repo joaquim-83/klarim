@@ -2897,6 +2897,14 @@ _SITEMAP_STATIC: list = [
     ("/metodologia", "monthly", "0.5"), ("/ranking", "daily", "0.8"),
     ("/setores", "daily", "0.8"), ("/melhores", "daily", "0.7"), ("/estatisticas", "daily", "0.6"),
     ("/security-gate", "weekly", "0.7"),   # KL-151 P3 — landing do produto Security Gate
+    # KL-152 P2 — docs de integração do Security Gate por CI/CD (públicas).
+    ("/docs/gate/github-actions", "monthly", "0.6"),
+    ("/docs/gate/gitlab-ci", "monthly", "0.6"),
+    ("/docs/gate/bitbucket", "monthly", "0.6"),
+    ("/docs/gate/jenkins", "monthly", "0.6"),
+    ("/docs/gate/manual", "monthly", "0.6"),
+    ("/docs/gate/api", "monthly", "0.6"),
+    ("/docs/gate/troubleshooting", "monthly", "0.5"),
 ]
 
 

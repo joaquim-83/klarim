@@ -1,0 +1,65 @@
+---
+export const prerender = false; // público, SSR (SEO por página vem do frontmatter do .md)
+
+// KL-152 P2 — layout compartilhado das docs do Security Gate. Usado como `layout:` das páginas
+// .md em src/pages/docs/gate/. O frontmatter do .md chega em Astro.props.frontmatter
+// (title/description/slug); a sidebar vem de web/src/lib/gate/docsNav.js (fonte única).
+import Base from './Base.astro';
+import Header from '../components/Header.astro';
+import Footer from '../components/Footer.astro';
+import { DOCS_NAV, docHref } from '../lib/gate/docsNav.js';
+
+const fm = Astro.props.frontmatter ?? Astro.props;
+const title = fm.title ?? 'Documentação';
+const description = fm.description ?? 'Documentação do Klarim Security Gate.';
+const slug = fm.slug ?? '';
+
+const TECH_ARTICLE = {
+  '@context': 'https://schema.org',
+  '@type': 'TechArticle',
+  headline: title,
+  description,
+  url: `https://klarim.net/docs/gate/${slug}`,
+  author: { '@type': 'Organization', name: 'Klarim' },
+  publisher: { '@type': 'Organization', name: 'Klarim' },
+  inLanguage: 'pt-BR',
+};
+
+const linkBase =
+  'flex min-h-[40px] items-center whitespace-nowrap rounded-lg px-3 py-1.5 text-sm transition-colors';
+const linkActive = 'bg-brand-500/15 font-semibold text-brand-400';
+const linkIdle = 'text-slate-300 hover:bg-slate-800 hover:text-white';
+---
+
+<Base title={`${title} — Klarim Docs`} description={description} path={`/docs/gate/${slug}`} jsonLd={TECH_ARTICLE}>
+  <Header />
+  <div class="mx-auto flex max-w-7xl flex-col gap-8 px-4 pb-20 pt-24 sm:px-6 lg:flex-row lg:gap-10 lg:px-8 lg:pt-28">
+    <!-- Sidebar: coluna à esquerda no desktop (sticky), rolagem horizontal no mobile -->
+    <aside class="lg:w-56 lg:shrink-0">
+      <p class="mb-2 hidden text-xs font-bold uppercase tracking-wide text-slate-500 lg:block">Documentação</p>
+      <nav aria-label="Navegação das docs"
+        class="flex gap-2 overflow-x-auto pb-2 lg:sticky lg:top-24 lg:flex-col lg:gap-1 lg:overflow-visible lg:pb-0">
+        {DOCS_NAV.map((group, gi) => (
+          <div class={`flex gap-2 lg:flex-col lg:gap-1 ${gi > 0 ? 'lg:mt-3 lg:border-t lg:border-slate-800 lg:pt-3' : ''}`}>
+            <span class="hidden text-[11px] font-semibold uppercase tracking-wide text-slate-500 lg:block">{group.label}</span>
+            {group.items.map((it) => (
+              <a href={docHref(it.slug)}
+                aria-current={it.slug === slug ? 'page' : undefined}
+                class={`${linkBase} ${it.slug === slug ? linkActive : linkIdle}`}>
+                {it.label}
+              </a>
+            ))}
+          </div>
+        ))}
+      </nav>
+    </aside>
+
+    <!-- Conteúdo (markdown renderizado) -->
+    <main class="docs-prose min-w-0 flex-1">
+      <slot />
+    </main>
+  </div>
+  <Footer />
+  <!-- ?v= = cache-busting (padrão do projeto). Bump ao alterar o docs-copy.js. -->
+  <script src="/docs-copy.js?v=1" is:inline></script>
+</Base>

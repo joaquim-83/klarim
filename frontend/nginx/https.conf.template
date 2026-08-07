@@ -129,7 +129,7 @@ server {
         include /etc/nginx/klarim_security_headers.conf;
         add_header Cache-Control "no-store" always;
     }
-    location ~ ^/(termos|privacidade|cookies|sobre|contato|scan|cadastrar|entrar|confirmar|confirmado|recuperar-senha|dashboard|laudo|planos|favicon\.svg|robots\.txt|track\.js|theme\.js|header\.js|planos-auth\.js|landing-stats\.js|cookie-consent\.js)(/|$) {
+    location ~ ^/(termos|privacidade|cookies|sobre|contato|scan|cadastrar|entrar|confirmar|confirmado|recuperar-senha|dashboard|laudo|planos|favicon\.svg|robots\.txt|track\.js|theme\.js|header\.js|planos-auth\.js|landing-stats\.js|cookie-consent\.js|docs-copy\.js)(/|$) {
         resolver 127.0.0.11 valid=10s ipv6=off;
         set $klarim_astro astro:4321;
         proxy_pass http://$klarim_astro;
@@ -177,7 +177,7 @@ server {
     # rankings por setor (KL-42), a arquitetura de conteúdo (KL-74: /setores, /setor/{slug},
     # /melhores, /estatisticas) e o **blog** (KL-133: /blog, /blog/{slug}). Cacheáveis (sem
     # form) — cache curto. (O sitemap e o /blog/rss.xml saíram p/ o FastAPI.)
-    location ~ ^/(site|score|ranking|setores|setor|melhores|estatisticas|metodologia|blog|security-gate)(/|$) {
+    location ~ ^/(site|score|ranking|setores|setor|melhores|estatisticas|metodologia|blog|security-gate|docs)(/|$) {
         resolver 127.0.0.11 valid=10s ipv6=off;
         set $klarim_astro astro:4321;
         proxy_pass http://$klarim_astro;

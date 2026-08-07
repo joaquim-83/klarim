@@ -125,6 +125,98 @@ body {
   font-weight: 600;
 }
 
+/* KL-152 P2 — tipografia das docs do Security Gate (markdown renderizado pelo Astro).
+   Estende o padrão .prose-klarim com h1, código, tabelas e citações. Theme-aware (KL-87). */
+.docs-prose {
+  color: var(--color-slate-300);
+  line-height: 1.7;
+}
+.docs-prose h1 {
+  color: var(--color-white);
+  font-size: 1.875rem;
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  margin-bottom: 1rem;
+}
+.docs-prose h2 {
+  color: var(--color-white);
+  font-size: 1.35rem;
+  font-weight: 700;
+  margin-top: 2.5rem;
+  margin-bottom: 0.75rem;
+  padding-top: 1rem;
+  border-top: 1px solid var(--color-slate-800);
+}
+.docs-prose h3 {
+  color: var(--color-slate-100);
+  font-weight: 600;
+  font-size: 1.05rem;
+  margin-top: 1.5rem;
+  margin-bottom: 0.5rem;
+}
+.docs-prose p { margin: 0.85rem 0; }
+.docs-prose ul { margin: 0.85rem 0; padding-left: 1.25rem; list-style: disc; }
+.docs-prose ol { margin: 0.85rem 0; padding-left: 1.4rem; list-style: decimal; }
+.docs-prose li { margin: 0.4rem 0; }
+.docs-prose a { color: #34d399; text-decoration: underline; text-underline-offset: 2px; }
+.docs-prose strong { color: var(--color-slate-100); font-weight: 600; }
+/* código inline */
+.docs-prose :not(pre) > code {
+  background: var(--color-slate-800);
+  color: var(--color-slate-100);
+  padding: 0.1rem 0.35rem;
+  border-radius: 0.3rem;
+  font-size: 0.85em;
+}
+/* bloco de código (dark constante, como o wizard) */
+.docs-prose pre {
+  background: #0b1120;
+  border: 1px solid var(--color-slate-800);
+  border-radius: 0.75rem;
+  padding: 1rem 1.1rem;
+  overflow-x: auto;
+  margin: 1rem 0;
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+.docs-prose pre code { color: #e2e8f0; background: none; padding: 0; }
+.docs-prose table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.1rem 0;
+  font-size: 0.9rem;
+  display: block;
+  overflow-x: auto;
+}
+.docs-prose th, .docs-prose td {
+  border: 1px solid var(--color-slate-800);
+  padding: 0.5rem 0.7rem;
+  text-align: left;
+}
+.docs-prose th { background: var(--color-slate-800); color: var(--color-white); font-weight: 600; }
+.docs-prose blockquote {
+  border-left: 3px solid var(--color-brand-500, #ff6b35);
+  padding-left: 0.9rem;
+  color: var(--color-slate-400);
+  margin: 1rem 0;
+}
+/* wrapper + botão Copiar injetados pelo /docs-copy.js */
+.docs-pre-wrap { position: relative; }
+.docs-copy-btn {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  background: var(--color-slate-800);
+  color: var(--color-slate-200);
+  border: 1px solid var(--color-slate-700);
+  border-radius: 0.375rem;
+  padding: 0.15rem 0.55rem;
+  font-size: 0.72rem;
+  cursor: pointer;
+  opacity: 0.85;
+}
+.docs-copy-btn:hover { opacity: 1; background: var(--color-slate-700); }
+
 /* Spinner do painel admin (KL-51) — portado de frontend/src/index.css. */
 @keyframes klarim-spin {
   to {
