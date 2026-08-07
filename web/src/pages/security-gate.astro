@@ -5,6 +5,7 @@ export const prerender = false; // SSR: busca os planos ao vivo (edição no adm
 import Base from '../layouts/Base.astro';
 import Header from '../components/Header.astro';
 import Footer from '../components/Footer.astro';
+import GateLandingCTA from '../components/security-gate/GateLandingCTA.jsx';
 import { PAGE_CONTAINER } from '../lib/layout.js';
 
 const API = process.env.KLARIM_API_URL || 'http://api:8000';
@@ -102,10 +103,7 @@ const curlSnippet = `curl -s https://klarim.net/api/gate/scan \\
         1 linha no seu CI/CD.
       </p>
       <div class="mt-8 flex flex-col items-center justify-center gap-3 sm:flex-row">
-        <a href="/cadastrar?type=developer"
-          class="inline-flex min-h-[48px] w-full items-center justify-center rounded-lg bg-brand-500 px-6 text-base font-semibold text-[var(--accent-text)] transition-colors hover:bg-brand-400 active:scale-95 sm:w-auto">
-          Começar grátis →
-        </a>
+        <GateLandingCTA client:load />
         <a href="#como-funciona"
           class="inline-flex min-h-[48px] w-full items-center justify-center rounded-lg border border-slate-700 px-6 text-base font-medium text-slate-200 transition-colors hover:bg-slate-800 sm:w-auto">
           Ver documentação

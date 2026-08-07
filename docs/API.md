@@ -340,7 +340,9 @@ enforcement **no servidor**. O endpoint de scan, a CLI e o frontend são os Prom
 
 | Método | Path | Auth | Descrição |
 |---|---|---|---|
-| POST | `/gate/register` | público | Cria conta `developer` + API key (1×) + 1º projeto + trial Pro 14d |
+| POST | `/gate/register` | público | Cria conta `developer` + API key (1×) + 1º projeto + trial Pro 14d. E-mail já com conta → **409 estruturado** (`account_exists`+`login_url`; `activate_after_login=true` se o Gate ainda não está ativo) |
+| **POST** | **`/account/gate/activate`** | **JWT (nível ≥1)** | **Ativa o Gate numa conta EXISTENTE (owner→both) + API key (1×, se não houver) + trial Pro 14d. Idempotente (`already_active`)** |
+| **GET** | **`/account/gate/status`** | **JWT (401 se sem sessão)** | **Estado p/ a landing decidir o CTA: `{logged_in, gate_active, plan, has_key, key_prefix, dashboard_url}`** |
 | POST | `/account/gate/regenerate-key` | JWT | Revoga as keys ativas e emite uma nova (1×) |
 | GET | `/account/gate/keys` | JWT | Lista keys (prefixo/estado/uso — nunca o valor) |
 | **POST** | **`/gate/scan`** | **API key** | **Roda a engine no SERVIDOR contra a URL (domínio verificado). Retorna score/passed/results/`checks_run`/`checks_blocked`. `passed` respeita `fail_on`. Persiste em `gate_runs`. Enforcement de scans/dia (429)** |

@@ -305,6 +305,20 @@ class GateRegisterBody(BaseModel):
     project_url: str
 
 
+async def _account_exists_response(store, account_id: Optional[int]) -> JSONResponse:
+    """409 estruturado quando o e-mail já tem conta na Klarim (a landing/registro mostra a
+    mensagem certa + link de login em vez de um erro genérico). Se o Gate JÁ está ativo, orienta
+    a só logar; senão, a logar e ativar no dashboard (`activate_after_login`)."""
+    fields = (await store.get_account_gate_fields(account_id) or {}) if account_id else {}
+    if _gate_active(fields.get("account_type")):
+        return JSONResponse(status_code=409, content={
+            "error": "account_exists", "login_url": "/entrar",
+            "message": "Esta conta já tem o Security Gate ativo. Faça login para acessar."})
+    return JSONResponse(status_code=409, content={
+        "error": "account_exists", "login_url": "/entrar", "activate_after_login": True,
+        "message": "Você já tem conta na Klarim. Faça login e ative o Security Gate no dashboard."})
+
+
 @router.post("/gate/register")
 async def gate_register(body: GateRegisterBody, request: Request) -> JSONResponse:
     """Cria uma conta `developer` (senha), gera a API key (exibida UMA VEZ), cria o 1º projeto e
@@ -327,13 +341,15 @@ async def gate_register(body: GateRegisterBody, request: Request) -> JSONRespons
         raise HTTPException(status_code=400, detail="URL do projeto inválida.")
 
     store = get_target_store()
-    if await store.get_user_by_email(email):
-        raise HTTPException(status_code=409, detail="Já existe uma conta com este e-mail.")
+    existing = await store.get_user_by_email(email)
+    if existing:
+        return await _account_exists_response(store, existing["id"])
     pw_hash = auth_users.hash_password(body.password)
     user = await store.create_user(email, pw_hash, name=(body.full_name or None),
                                     email_confirmed=False, source="signup")
-    if user is None:
-        raise HTTPException(status_code=409, detail="Já existe uma conta com este e-mail.")
+    if user is None:   # corrida: outra request criou a conta neste meio-tempo
+        again = await store.get_user_by_email(email)
+        return await _account_exists_response(store, again["id"] if again else None)
     account_id = user["id"]
 
     await store.set_account_type(account_id, "developer")
@@ -387,6 +403,89 @@ async def gate_list_keys(request: Request) -> dict:
     user = await auth_users.require_user(request)
     keys = await get_target_store().list_gate_api_keys(user["id"])
     return {"keys": keys}
+
+
+# --------------------------------------------------------------------------- #
+# 2b. Ativação do Gate numa conta EXISTENTE (owner/técnico logado) — sem novo registro
+# --------------------------------------------------------------------------- #
+
+def _gate_active(account_type: Optional[str]) -> bool:
+    """Uma conta tem o Gate ativo quando é `developer` ou `both`."""
+    return (account_type or "owner") in ("developer", "both")
+
+
+@router.get("/account/gate/status")
+async def gate_status(request: Request) -> dict:
+    """Estado do Gate para a conta LOGADA — a landing `/security-gate` usa para escolher o CTA
+    (ativar × abrir dashboard). 401 se não há sessão (a landing trata como "não logado")."""
+    user = await auth_users.require_user(request)
+    store = get_target_store()
+    fields = await store.get_account_gate_fields(user["id"]) or {}
+    account_type = fields.get("account_type") or "owner"
+    active = _gate_active(account_type)
+    plan = await get_effective_gate_plan(user["id"]) if active else None
+    keys = await store.list_gate_api_keys(user["id"])
+    active_key = next((k for k in keys if k.get("is_active")), None)
+    return {"logged_in": True, "gate_active": active, "account_type": account_type,
+            "plan": (plan or {}).get("name"), "has_key": bool(active_key),
+            "key_prefix": (active_key or {}).get("key_prefix"),
+            "dashboard_url": "/dashboard/gate"}
+
+
+@router.post("/account/gate/activate")
+async def gate_activate(request: Request) -> dict:
+    """Ativa o Security Gate numa conta EXISTENTE (owner ou técnico já logado) — sem passar pelo
+    registro. Idempotente: se já está ativo, devolve o estado atual (não regera a key). Caso
+    contrário: promove o `account_type` (owner→both, senão developer), gera a API key (exibida
+    UMA VEZ, só se ainda não houver uma ativa) e concede o trial Pro de 14 dias (plano base Free)
+    caso a conta ainda não tenha plano/trial. Nível ≥ 1."""
+    import api.main as _m
+    user = await auth_users.require_user(request)
+    _m._require_level(user, 1)
+    store = get_target_store()
+    fields = await store.get_account_gate_fields(user["id"]) or {}
+    account_type = fields.get("account_type") or "owner"
+
+    # Já ativo → estado atual (não regera key nem reinicia trial).
+    if _gate_active(account_type):
+        keys = await store.list_gate_api_keys(user["id"])
+        active = next((k for k in keys if k.get("is_active")), None)
+        plan = await get_effective_gate_plan(user["id"]) or {}
+        return {"status": "already_active", "plan": plan.get("name"),
+                "key_prefix": (active or {}).get("key_prefix"), "has_key": bool(active),
+                "dashboard_url": "/dashboard/gate"}
+
+    # 1. Promove o tipo da conta.
+    new_type = "both" if account_type == "owner" else "developer"
+    await store.set_account_type(user["id"], new_type)
+
+    # 2. API key — só se ainda não há uma ativa (exibida UMA VEZ).
+    keys = await store.list_gate_api_keys(user["id"])
+    active_key = next((k for k in keys if k.get("is_active")), None)
+    api_key_display = None
+    key_prefix = (active_key or {}).get("key_prefix")
+    if not active_key:
+        full_key, prefix, key_hash = generate_api_key()
+        await store.create_gate_api_key(user["id"], prefix, key_hash, name="default")
+        api_key_display, key_prefix = full_key, prefix
+        await log_gate_audit(user["id"], "key_created", request, detail={"key_prefix": prefix})
+
+    # 3. Plano Free + trial Pro 14d — só se a conta ainda não tem plano/trial.
+    trial_ends = _to_utc(fields.get("gate_trial_ends_at"))
+    if not fields.get("gate_plan_id") and not trial_ends:
+        free = await store.get_gate_plan_by_slug("free")
+        now = _now()
+        trial_ends = now + timedelta(days=_TRIAL_DAYS)
+        await store.set_account_gate_plan(user["id"], (free or {}).get("id"), now, trial_ends)
+
+    # 4. Audit.
+    await log_gate_audit(user["id"], "gate_activated", request,
+                         detail={"previous_type": account_type, "new_type": new_type})
+
+    plan = await get_effective_gate_plan(user["id"]) or {}
+    return {"status": "activated", "api_key": api_key_display, "plan": plan.get("name"),
+            "key_prefix": key_prefix, "has_key": True, "trial_ends_at": _iso(trial_ends),
+            "dashboard_url": "/dashboard/gate"}
 
 
 # --------------------------------------------------------------------------- #

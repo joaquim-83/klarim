@@ -1936,6 +1936,21 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   real**. **2181 pytest passed.** Docs: `docs/API.md` (audit) + `docs/SECURITY.md` (rotação/grace/enterprise/
   redação/audit). **KL-151 COMPLETO** (P1 backend · P2 API+CLI+MCP · P3 frontend · P4 segurança/Enterprise).
   Relatório: `claude/reports/KL-151_p4_security_enterprise.md`.
+- **Fix — ativação do Gate p/ conta EXISTENTE (user logado)** ✅. O CTA "Começar grátis" da landing
+  `/security-gate` sempre abria o registro (pedia e-mail) mesmo logado; um owner/técnico com conta não
+  tinha caminho para ativar o Gate. **`POST /account/gate/activate`** (JWT sessão, nível ≥1, `api/gate.py`):
+  idempotente (`developer`/`both` → `already_active`); senão promove `account_type` (**owner→both**), gera a
+  API key (exibida **UMA VEZ**, só se não houver ativa) e concede **trial Pro 14d** (base Free) se ainda sem
+  plano; audit `gate_activated`. **`GET /account/gate/status`** (401 se sem sessão) → `{logged_in, gate_active,
+  plan, has_key, key_prefix, dashboard_url}` p/ a landing decidir o CTA. **CTA dinâmico:** island novo
+  `web/src/components/security-gate/GateLandingCTA.jsx` (`client:load`) no hero — não logado → "Começar grátis"
+  (link `/cadastrar?type=developer`) · logado+inativo → "Ativar Security Gate" (POST activate → modal da key
+  1x → `/dashboard/gate`) · logado+ativo → "Abrir dashboard". SSR/cache-safe (1º paint = link, re-decide no
+  cliente). **`POST /gate/register`** com e-mail existente → **409 estruturado** (`_account_exists_response`:
+  `error=account_exists`+`login_url`; `activate_after_login=true` se o Gate ainda não está ativo) em vez de
+  erro genérico. **Sem SQL novo** (reusa `set_account_type`/`set_account_gate_plan`/`create_gate_api_key`/
+  `get_account_gate_fields`); key só como hash SHA-256. **+13 testes** (`test_kl151_activate.py`); suíte
+  KL-151 93 passed, `test:unit` 154. Relatório: `claude/reports/fix_ativacao_gate_conta_existente.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.
