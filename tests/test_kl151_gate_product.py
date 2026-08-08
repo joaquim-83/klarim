@@ -352,10 +352,10 @@ def test_register_creates_dev_key_project(client, store):
     body = r.json()
     assert body["api_key"].startswith("KLM_") and len(body["api_key"]) == 36
     assert body["account_id"] and body["project_id"]
-    # conta é developer, plano Free + trial Pro
+    # conta é developer, plano Free SEM trial (KL-158: Pro exige pagamento)
     u = store.by_id[body["account_id"]]
     assert u["account_type"] == "developer" and u["gate_plan_id"] == 1
-    assert u["gate_trial_ends_at"] > datetime.now(timezone.utc)
+    assert u["gate_trial_ends_at"] is None
     # a key vive só como HASH (nunca raw)
     assert all(k["key_hash"] and k["key_hash"] != body["api_key"] for k in store.keys)
     assert g._hash_key(body["api_key"]) == store.keys[0]["key_hash"]

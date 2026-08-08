@@ -56,7 +56,7 @@ def _kyc_complete(cpf, address, phone, email_confirmed) -> bool:
 # Lista canônica dos checks do Gate (para o enforcement `["all"]`).
 ALL_CHECK_NAMES: List[str] = list(_ENGINE_ORDER)
 
-_TRIAL_DAYS = 14
+# KL-158 — removido o `_TRIAL_DAYS` (trial Pro automático): todo dev começa no Free; Pro exige pagamento.
 _KEY_PREFIX = "KLM_"
 _KEY_GRACE_MIN = 60   # KL-151 P4 — a key antiga vale +1h após a regeneração (CI em andamento)
 _RPM_BY_SLUG = {"free": 10, "pro": 30, "team": 60, "enterprise": 120}   # req/min por key
@@ -447,13 +447,12 @@ async def _resolve_scan_project(store, account_id: int, plan: dict, acct: dict,
 
 
 async def provision_gate_developer(store, account_id: int) -> str:
-    """KL-153 — promove a conta a `developer`, concede Free + trial Pro 14d e cria a API key.
-    Devolve a key COMPLETA (exibida UMA VEZ). Usado pelo signup `source=security-gate`."""
+    """KL-153/KL-158 — promove a conta a `developer`, concede o plano **Free (SEM trial)** e cria a
+    API key. Devolve a key COMPLETA (exibida UMA VEZ). Usado pelo signup `source=security-gate`.
+    KL-158: removido o trial Pro automático — Pro exige pagamento; todo dev começa no Free."""
     await store.set_account_type(account_id, "developer")
     free = await store.get_gate_plan_by_slug("free")
-    now = _now()
-    await store.set_account_gate_plan(account_id, (free or {}).get("id"), now,
-                                      now + timedelta(days=_TRIAL_DAYS))
+    await store.set_account_gate_plan(account_id, (free or {}).get("id"), None, None)   # Free, sem trial
     full_key, prefix, key_hash = generate_api_key()
     await store.create_gate_api_key(account_id, prefix, key_hash, name="default")
     await log_gate_audit(account_id, "key_created", detail={"key_prefix": prefix})
@@ -530,11 +529,9 @@ async def gate_register(body: GateRegisterBody, request: Request) -> JSONRespons
     await store.set_account_type(account_id, "developer")
     await store.set_account_dev_profile(account_id, full_name=body.full_name,
                                         company_name_dev=body.company)
-    # Plano Free + trial Pro 14 dias.
+    # KL-158: plano Free SEM trial (Pro exige pagamento).
     free = await store.get_gate_plan_by_slug("free")
-    now = _now()
-    await store.set_account_gate_plan(account_id, (free or {}).get("id"), now,
-                                      now + timedelta(days=_TRIAL_DAYS))
+    await store.set_account_gate_plan(account_id, (free or {}).get("id"), None, None)
     # API key (exibida UMA VEZ).
     full_key, prefix, key_hash = generate_api_key()
     await store.create_gate_api_key(account_id, prefix, key_hash, name="default")
@@ -759,13 +756,12 @@ async def gate_activate(request: Request) -> dict:
         api_key_display, key_prefix = full_key, prefix
         await log_gate_audit(user["id"], "key_created", request, detail={"key_prefix": prefix})
 
-    # 3. Plano Free + trial Pro 14d — só se a conta ainda não tem plano/trial.
+    # 3. KL-158: plano Free SEM trial — só p/ conta nova (sem plano/trial). Pro exige pagamento.
+    # Contas com trial LEGADO (KL-151/153) NÃO são alteradas retroativamente (o if as pula).
     trial_ends = _to_utc(fields.get("gate_trial_ends_at"))
     if not fields.get("gate_plan_id") and not trial_ends:
         free = await store.get_gate_plan_by_slug("free")
-        now = _now()
-        trial_ends = now + timedelta(days=_TRIAL_DAYS)
-        await store.set_account_gate_plan(user["id"], (free or {}).get("id"), now, trial_ends)
+        await store.set_account_gate_plan(user["id"], (free or {}).get("id"), None, None)
 
     # 4. Audit.
     await log_gate_audit(user["id"], "gate_activated", request,

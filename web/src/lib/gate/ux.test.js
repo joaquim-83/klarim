@@ -5,6 +5,7 @@ import {
   normalizeUrl, maskCPF, isValidCPF, categorySummary, showChecksDetail, groupChecksByCategory,
   kycBannerVisible, showGateBridge, wizardNext, shouldShowWizard, formatCountdown, rateLimitMessage,
   usageText, upgradeTarget, ctaState, ctaLabel, signupBody, planName, planDetails, canUpgrade,
+  canSubmitKyc,
 } from './ux.js'
 
 const VALID_CPF = '529.982.247-25'
@@ -138,6 +139,14 @@ test('canUpgrade: false no plano máximo', () => {
   assert.equal(canUpgrade('pro'), true)
   assert.equal(canUpgrade('team'), false)
   assert.equal(canUpgrade('enterprise'), false)
+})
+
+// --- KL-158: submit do KYC (banner clicável) --- //
+test('canSubmitKyc: CPF válido + endereço ≥10 + telefone', () => {
+  assert.equal(canSubmitKyc('529.982.247-25', 'Rua Exemplo 123 Centro', '11999'), true)
+  assert.equal(canSubmitKyc('111.111.111-11', 'Rua Exemplo 123 Centro', '11999'), false)  // CPF inválido
+  assert.equal(canSubmitKyc('529.982.247-25', 'curto', '11999'), false)                    // endereço < 10
+  assert.equal(canSubmitKyc('529.982.247-25', 'Rua Exemplo 123 Centro', ''), false)        // sem telefone
 })
 
 // --- CTA da landing --- //

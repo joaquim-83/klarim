@@ -167,6 +167,12 @@ export function canUpgrade(slug) {
   return upgradeTarget(slug) !== null;
 }
 
+// KL-158 — o botão "Confirmar" do KYC habilita com CPF válido + endereço (≥10) + telefone (a
+// validação final é no backend, que também exige e-mail confirmado — KL-156).
+export function canSubmitKyc(cpf, address, phone) {
+  return isValidCPF(cpf) && (address || '').trim().length >= 10 && !!(phone || '').trim();
+}
+
 // ---- Estado do CTA da landing / menu ---- //
 // status = GET /api/account/gate/status (ou {ok:false} se não logado).
 export function ctaState({ ok, gate_active } = {}) {

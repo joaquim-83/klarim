@@ -544,6 +544,10 @@ def test_activate_owner_becomes_developer(client, store):
     r = client.post("/account/gate/activate", cookies=_cookie(store.users[20]))
     assert r.status_code == 200 and r.json()["status"] == "activated"
     assert r.json()["api_key"] and store.users[20]["account_type"] == "both"
+    # KL-158: começa no Free, SEM trial Pro.
+    assert store.users[20]["gate_plan_id"] == 1 and store.users[20]["gate_trial_ends_at"] is None
+    assert r.json()["trial_ends_at"] is None
+    assert (_run(g.get_effective_gate_plan(20)) or {}).get("slug") == "free"
 
 
 def test_activate_developer_idempotent(client, store):
@@ -583,6 +587,10 @@ def test_provision_gate_developer(store):
     assert api_key.startswith("KLM_")
     assert store.users[30]["account_type"] == "developer"
     assert any(k["account_id"] == 30 for k in store.keys)
+    # KL-158: plano Free SEM trial (Pro exige pagamento) — o registro source=security-gate usa isto.
+    assert store.users[30]["gate_plan_id"] == 1 and store.users[30]["gate_trial_ends_at"] is None
+    eff = _run(g.get_effective_gate_plan(30)) or {}
+    assert eff.get("slug") == "free" and int(eff.get("scans_per_day")) == 5   # limites Free valem
 
 
 # =========================================================================== #

@@ -2134,6 +2134,20 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   deslogado → "Criar conta" + form; zero erro no console. **+1 backend (`/account/gate/status` sem sessão →
   401) + +1 node (`loggedInRedirect`) → 2287 pytest · 192 node pass.** **NÃO** alterou scan/engine/rate limit.
   Relatório: `claude/reports/KL-157_report.md`.
+- **KL-158** — plano Free como default (sem trial Pro automático) + banner KYC clicável ✅. **Fix 1:** o
+  `provision_gate_developer`, o `/gate/register` e o `/account/gate/activate` setavam `set_account_gate_plan(...,
+  now, now+14d)` → o `get_effective_gate_plan` devolvia **Pro** enquanto o trial durava → todo dev nascia Pro
+  sem pagar. Agora os 3 pontos setam **Free SEM trial** (`set_account_gate_plan(..., None, None)`); `_TRIAL_DAYS`
+  removido. Novo dev: 5 scans/h · cooldown 30min/domínio · 5min entre domínios (KL-155) — Pro exige pagamento.
+  **Contas com trial LEGADO não são alteradas retroativamente** (expiram naturalmente). Rate limiting inalterado.
+  **Fix 2:** o banner de KYC no resultado do scan era **texto puro sem ação**. Novo **`KycBanner.jsx`** (reutil.):
+  botão "Completar cadastro →" → modal (CPF mascarado/validado + endereço + telefone → `POST /api/account/kyc`);
+  usado no `GatePortal::ScanResultCard`. Após o KYC, `loadFullResult` busca o run persistido (`GET /gate/runs/{id}`,
+  **não re-escaneia**) → mostra os checks detalhados, o banner some, o status re-carrega (Nível → Completo). O
+  wizard step 3→4 já era acionável (não tocado). Helper puro `canSubmitKyc` (`ux.js`). **Validado no BROWSER**
+  (dev): conta dev nova → **plano "Free"** (5 scans/h, não Pro); scan → banner clicável → modal → KYC completo
+  (CPF 529.982.247-25) → `access_level=complete`, banner some, detalhes aparecem; zero erro no console. **+1 node
+  (`canSubmitKyc`) → 2287 pytest · 193 node pass · build OK.** Relatório: `claude/reports/KL-158_report.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

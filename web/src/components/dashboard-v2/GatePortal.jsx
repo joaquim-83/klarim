@@ -3,11 +3,12 @@ import { card } from './shared.js'
 import { planProgress, DEFAULT_URL } from '../../lib/gate/snippets.js'
 import {
   normalizeUrl, categorySummary, kycBannerVisible, usageText, rateLimitMessage,
-  formatCountdown, shouldShowWizard, planDetails, canUpgrade,
+  formatCountdown, shouldShowWizard, planDetails, canUpgrade, groupChecksByCategory,
 } from '../../lib/gate/ux.js'
 import GateIntegrationTabs from './GateIntegrationTabs.jsx'
 import GateOnboarding from './GateOnboarding.jsx'
 import GateVendors from './GateVendors.jsx'
+import KycBanner from './KycBanner.jsx'
 
 // KL-153 P2 — portal do dev redesenhado (resolve a Quebra 10). Status bar (score/plano/uso +
 // upgrade INLINE), "Novo scan" avulso, resultado filtrado por KYC, integração, histórico. Ativa o
@@ -207,9 +208,20 @@ function NewScan({ onScanned }) {
       </div>
       {err && <p className="mt-2 text-sm text-red-400">{err}</p>}
       {rl && <RateLimitNote note={rl} />}
-      {res && <ScanResultCard res={res} />}
+      {res && <ScanResultCard res={res} onKycDone={loadFullResult} />}
     </div>
   )
+
+  // KL-158: após o KYC, busca o run persistido (results completos) e mostra o detalhe — NÃO
+  // re-escaneia (o rate limit por domínio barraria).
+  async function loadFullResult() {
+    if (!res?.run_id) return
+    try {
+      const r = await api(`/api/gate/runs/${res.run_id}`)
+      setRes((prev) => ({ ...prev, access_level: 'complete', results: r.run?.results || [] }))
+    } catch { /* mantém o resumo */ }
+    onScanned?.()   // KL-158: re-busca o status (Nível de acesso → Completo) e o último run
+  }
 }
 
 function RateLimitNote({ note }) {
@@ -229,8 +241,9 @@ function RateLimitNote({ note }) {
   )
 }
 
-function ScanResultCard({ res }) {
+function ScanResultCard({ res, onKycDone }) {
   const cats = categorySummary(res)
+  const groups = (res.results || []).length ? groupChecksByCategory(res.results) : null
   return (
     <div className="mt-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
       <div className="flex items-center gap-3">
@@ -244,10 +257,24 @@ function ScanResultCard({ res }) {
             <span className={c.status === 'pass' ? 'text-green-400' : 'text-red-400'}>{c.checks_passed}/{c.checks_total}</span></li>
         ))}
       </ul>
-      {kycBannerVisible(res.access_level) && (
-        <div className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-2.5 text-sm text-amber-200">
-          🔒 {res.kyc_message || 'Complete seu cadastro para ver os detalhes de cada verificação.'}
+      {/* KL-158: com KYC → detalhes completos por categoria (do run persistido). */}
+      {groups && (
+        <div className="mt-3 space-y-2">
+          {groups.map((g) => (
+            <details key={g.name} className="rounded-lg border border-slate-800 bg-slate-900/40">
+              <summary className="cursor-pointer list-none px-3 py-2 text-sm font-semibold capitalize text-slate-100">{g.name.replace(/_/g, ' ')} ({g.checks.length})</summary>
+              <ul className="space-y-1 px-3 pb-3 text-sm text-slate-200">
+                {g.checks.map((c, i) => (
+                  <li key={i} className="border-t border-slate-800 pt-1"><span>{ICON[c.status] || '•'}</span> <span className="text-slate-400">[{c.severity}]</span> <strong>{c.check}</strong>: {c.detail}</li>
+                ))}
+              </ul>
+            </details>
+          ))}
         </div>
+      )}
+      {/* KL-158: banner CLICÁVEL (abre o modal de KYC) — antes era texto puro sem ação. */}
+      {kycBannerVisible(res.access_level) && (
+        <KycBanner message={res.kyc_message} onCompleted={onKycDone} />
       )}
     </div>
   )

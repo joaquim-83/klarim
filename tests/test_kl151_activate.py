@@ -144,8 +144,8 @@ def test_owner_activates_gate(client, store):
     assert d["status"] == "activated"
     assert store.users[20]["account_type"] == "both"           # owner → both
     assert d["api_key"] and d["api_key"].startswith("KLM_")     # key exibida UMA VEZ
-    assert d["plan"] == "Pro"                                   # trial Pro efetivo
-    assert d["trial_ends_at"]
+    assert d["plan"] == "Free"                                  # KL-158: começa no Free (sem trial)
+    assert d["trial_ends_at"] is None
 
 
 def test_activation_key_stored_as_hash_only(client, store):
@@ -157,11 +157,13 @@ def test_activation_key_stored_as_hash_only(client, store):
     assert stored["key_prefix"] == full[:8]
 
 
-def test_activation_grants_pro_trial(client, store):
+def test_activation_grants_free_no_trial(client, store):
+    # KL-158: a ativação começa no Free SEM trial Pro (Pro exige pagamento).
     client.post("/account/gate/activate", headers=_auth(20, store))
     plan = _run(g.get_effective_gate_plan(20))
-    assert plan["slug"] == "pro"
-    assert _run(store.get_account_gate_fields(20))["gate_plan_id"] == 1   # base Free
+    assert plan["slug"] == "free"
+    fields = _run(store.get_account_gate_fields(20))
+    assert fields["gate_plan_id"] == 1 and fields["gate_trial_ends_at"] is None
 
 
 def test_developer_already_active(client, store):
