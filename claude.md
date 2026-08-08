@@ -2010,6 +2010,31 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   **Validado no browser** (conta Enterprise): seção só p/ Enterprise, scan real klarim.net→70🟡 Atenção,
   detalhe com contagens (não paths), PDF válido (200/application/pdf, %PDF), zero erro. **KL-152 COMPLETO**
   (P1 visual+onboarding · P2 docs · P3 Enterprise). Relatório: `claude/reports/KL-152_p3_enterprise_workflow.md`.
+- **KL-154** — Security Gate importa os checks de superfície SPF/DKIM/DMARC do scanner ✅. O Gate já reusava
+  o scanner parcialmente (`headers.py`→`HSTS_MAX_AGE_RECOMMENDED`, `ssl.py`→`get_tls_info`/`WEAK_PROTOCOLS`);
+  faltavam os 3 checks de e-mail (essenciais pós-deploy — o dev precisa saber se o domínio está protegido
+  contra spoofing). **Regra do card (comentário 08/08):** NÃO criar `engine/` unificado, NÃO mover/alterar o
+  scanner, NÃO tocar o scan público — o Gate **importa** do scanner (via ÚNICA). **`security_gate/checks/
+  scanner_adapter.py`** (`adapt_check_result`): traduz o `CheckResult` do scanner (PASS/FAIL/INCONCLUSO;
+  severidade PT-BR CRITICA/ALTA/MEDIA/BAIXA) para o `Result` do Gate (PASS/FAIL/ERROR; CRITICAL/HIGH/MEDIUM/
+  LOW/INFO) — por VALOR de string (desacoplado dos enums), INCONCLUSO→ERROR, `getattr` defensivo (interface
+  do scanner muda → degrada, não quebra). **`security_gate/checks/email_security.py`** (`check_email_security`):
+  roda os checks 21/22/23 do scanner (mesmo código do scan público) com **imports LAZY dentro do `try`** — se
+  o scanner sumir/mudar ou o DNS faltar, cada check vira um `Result` ERROR isolado (nunca derruba o gate); só
+  DNS TXT (passivo); categoria `surface`. Registrado no engine (`_CHECKS`+`_DEFAULT_ORDER`, 18→**19 checks**,
+  após `dns`) e no `GateConfig.checks` default + `security-gate.yml`. **Camadas do relatório:** os formatters
+  (`formatters/terminal.py`) agrupam **Surface** (servidor+DNS: headers/ssl/dns/https/surface) vs **Deep**
+  (exposição+código: o resto); o JSON ganha `summary.{surface,deep}` (pass/fail/checks). **Plano:** Pro seed
+  ganha `email_security` (Free 4 inalterado; Team/Enterprise `["all"]` já incluem — `["all"]` deriva de
+  `_DEFAULT_ORDER`). ⚠️ o seed é `ON CONFLICT DO NOTHING` → contas **Pro já existentes** precisam do check
+  adicionado via admin de planos (KL-151 P3); o CI/CLI (dogfooding) usa a config, não os planos, então já roda.
+  **Validação real (3 alvos):** klarim.net **100/100** no e-mail (SPF/DKIM/DMARC PASS) / **90/100** full
+  (só rate_limit HIGH, inalterado; Surface 15 · Deep 28) · sistema.igoove.com.br (SPF PASS, DKIM FAIL MEDIUM,
+  DMARC FAIL HIGH p=none) · Cloud Run leads-api (SPF PASS, DKIM FAIL, DMARC PASS). **Scan público inalterado**
+  (o scanner não foi tocado). **+22 backend** (`test_kl154_email_security.py`); ajustados os contadores de
+  18→19 em `test_kl141_gate_engine`/`test_kl151_gate_product`/`test_kl151_p3_portal_admin`/`test_kl151_p2_scan_cli`.
+  **2238 pytest passed.** Docs: `docs/ARCHITECTURE.md` §11 (diagrama de dependência Gate→scanner). Relatório:
+  `claude/reports/KL-154_email_security_gate.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

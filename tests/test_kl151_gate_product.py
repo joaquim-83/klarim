@@ -337,7 +337,7 @@ def test_get_allowed_checks_free_vs_all():
     assert g.get_allowed_checks({"checks_allowed": ["headers", "ssl", "exposure", "https_redirect"]}) \
         == ["headers", "ssl", "exposure", "https_redirect"]
     assert g.get_allowed_checks({"checks_allowed": ["all"]}) == g.ALL_CHECK_NAMES
-    assert len(g.get_allowed_checks({"checks_allowed": ["all"]})) == 18
+    assert len(g.get_allowed_checks({"checks_allowed": ["all"]})) == 19  # KL-154: +email_security
 
 
 # =========================================================================== #

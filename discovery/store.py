@@ -4495,7 +4495,7 @@ class TargetStore:
          ["headers", "ssl", "exposure", "https_redirect"], False, ["email"], 0),
         ("Pro", "pro", 4900, 50, 10, 90,
          ["headers", "ssl", "exposure", "https_redirect", "credentials", "cors", "cookies",
-          "api", "infrastructure"], False, ["email", "webhook"], 0),
+          "api", "infrastructure", "email_security"], False, ["email", "webhook"], 0),
         ("Team", "team", 14900, 200, 50, 365,
          ["all"], False, ["email", "webhook", "slack"], 0),
         ("Enterprise", "enterprise", 0, -1, -1, -1,

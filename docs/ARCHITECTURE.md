@@ -447,3 +447,38 @@ NOVO, distinto do `access_level` do KL-82 (visibilidade do resultado). Contas le
   ações sensíveis (403 estruturado → o dashboard `LevelPrompt.jsx` abre o modal certo e re-executa
   a ação). Verificação estende a tabela `ownership_verifications` do KL-68 (colunas `token`/`domain`).
 - **`/cadastrar`** virou 1 campo (só e-mail) → `POST /account/signup` sem senha (nível 1).
+
+## 11. Security Gate (`security_gate/`) — dependência sobre o scanner
+
+O **Security Gate** (KL-141/149/151/152) é um scanner de **exposição/configuração pós-deploy**
+(NÃO é DAST — não envia payload de ataque), empacotável e portável (futuro pacote pip). Módulo
+SEPARADO do `scanner/`, com modelos próprios (`security_gate/models.py`: `Result`/`Status`/
+`Severity`/`GateReport`). O engine (`engine.py`) só orquestra; cada check vive em `checks/`.
+
+**Regra de dependência — via ÚNICA (Gate importa do scanner; o scanner NUNCA importa o Gate):**
+
+```
+security_gate/                        scanner/
+  checks/headers.py  ──── importa ──▶  checks/check_hsts.HSTS_MAX_AGE_RECOMMENDED  (threshold)
+  checks/ssl.py      ──── importa ──▶  tls_analyzer.{get_tls_info, WEAK_PROTOCOLS}  (handshake)
+  checks/email_security.py (KL-154)    checks/check_21_spf.check   ─┐
+        │  import LAZY (dentro do try)  checks/check_22_dkim.check   ├─▶ CheckResult
+        └── adapta via ─────────────▶  checks/check_23_dmarc.check ─┘
+             checks/scanner_adapter.adapt_check_result()  (CheckResult → Result)
+```
+
+- **Adaptador de interface (KL-154, `checks/scanner_adapter.py`):** o scanner devolve `CheckResult`
+  (PASS/FAIL/INCONCLUSO; severidade PT-BR CRITICA/ALTA/MEDIA/BAIXA); o Gate espera `Result`
+  (PASS/FAIL/ERROR; CRITICAL/HIGH/MEDIUM/LOW/INFO). `adapt_check_result` traduz por VALOR de string
+  (não por identidade de enum → desacoplado) — INCONCLUSO→ERROR (neutro), ALTA→HIGH etc. Acesso a
+  campo defensivo (`getattr`): se o scanner mudar a interface, degrada em vez de quebrar.
+- **`checks/email_security.py` (KL-154):** roda SPF/DKIM/DMARC via os checks 21/22/23 do scanner
+  (mesmo código do scan público — sem reimplementar) e adapta o resultado. **Imports LAZY** (dentro
+  do `try`): se o scanner sumir/mudar ou a dependência de DNS faltar, cada check vira um `Result`
+  ERROR isolado (nunca derruba o gate). Só DNS TXT (passivo). Categoria `surface`.
+- **Camadas do relatório (KL-154):** os formatters (`formatters/terminal.py`) agrupam os resultados
+  em **Surface** (servidor + DNS: `headers`/`ssl`/`dns`/`https`/`surface`) e **Deep** (exposição +
+  código: os demais). O JSON ganha `summary.{surface,deep}` (pass/fail/checks).
+- **Gate por plano:** `api/gate.py::get_allowed_checks` filtra os checks pelo plano do dev (Free 4 ·
+  Pro +`email_security`/9→10 · Team/Enterprise `["all"]` = todos). O `["all"]` deriva de
+  `_DEFAULT_ORDER` → um check novo entra automaticamente nos planos "all".

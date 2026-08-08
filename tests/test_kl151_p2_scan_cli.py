@@ -151,8 +151,8 @@ def test_scan_ok_returns_score_and_results(client, store, monkeypatch):
     assert body["high"] == 1 and body["critical"] == 0
     assert len(body["results"]) == 2
     assert body["plan"] == "Free"
-    # checks do plano Free (4) + bloqueados (14)
-    assert body["checks_run"] == _FREE["checks_allowed"] and len(body["checks_blocked"]) == 14
+    # checks do plano Free (4) + bloqueados (15 = 19 total − 4; KL-154 +email_security)
+    assert body["checks_run"] == _FREE["checks_allowed"] and len(body["checks_blocked"]) == 15
     assert body["dashboard_url"].endswith(f"/gate/runs/{body['run_id']}")
     # run persistido com metadata
     assert store.runs[-1]["metadata"] == {"commit": "abc123", "ci": "gh"}

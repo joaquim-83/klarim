@@ -21,6 +21,7 @@ from .checks.cors import check_cors
 from .checks.credentials import check_credentials
 from .checks.dependencies import check_dependencies
 from .checks.dns_security import check_dns_security
+from .checks.email_security import check_email_security
 from .checks.error_disclosure import check_error_disclosure
 from .checks.exposure import check_exposure
 from .checks.form_security import check_form_security
@@ -66,14 +67,16 @@ _CHECKS = {
     "tls_ciphers": check_tls_ciphers,
     "subdomain": check_subdomain_takeover,
     "infrastructure": check_infrastructure_urls,
+    # KL-154 — SPF/DKIM/DMARC importados do scanner (via adaptador). Check de superfície (DNS-only).
+    "email_security": check_email_security,
     # rate_limit é o ÚLTIMO: dispara um mini-burst de 10 requests; rodando por último, seu efeito
     # (possível 429 no IP do gate) não contamina os demais checks.
     "rate_limit": check_rate_limit,
 }
 _DEFAULT_ORDER = ["headers", "ssl", "exposure", "credentials", "api",
                   "cors", "cookies", "https_redirect", "open_redirect", "error_disclosure",
-                  "jwt", "form_security", "dns", "dependencies", "tls_ciphers", "subdomain",
-                  "infrastructure", "rate_limit"]
+                  "jwt", "form_security", "dns", "email_security", "dependencies", "tls_ciphers",
+                  "subdomain", "infrastructure", "rate_limit"]
 # Checks que comparam paths contra o fingerprint de SPA fallback (KL-147). headers/ssl/credentials
 # NÃO têm paths para comparar → não recebem o fingerprint.
 _SPA_AWARE = frozenset({"exposure", "api"})

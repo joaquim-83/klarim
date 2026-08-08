@@ -145,7 +145,7 @@ def test_public_plans(client, store):
     free = next(p for p in plans if p["slug"] == "free")
     assert free["checks_count"] == 4
     team = next(p for p in plans if p["slug"] == "team")
-    assert team["checks_count"] == 18   # ["all"] → todos
+    assert team["checks_count"] == 19   # ["all"] → todos (KL-154: +email_security)
 
 
 # =========================================================================== #
@@ -201,7 +201,7 @@ def test_admin_plans_requires_admin(client, store):
 def test_admin_list_plans(client, store):
     r = client.get("/admin/gate/plans", headers=_admin())
     assert r.status_code == 200
-    assert len(r.json()["plans"]) == 4 and len(r.json()["all_checks"]) == 18
+    assert len(r.json()["plans"]) == 4 and len(r.json()["all_checks"]) == 19  # KL-154
 
 
 def test_admin_update_plan(client, store):

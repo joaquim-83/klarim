@@ -15,12 +15,13 @@ class GateConfig:
     target: str = ""
     fail_on: str = "critical"
     timeout: int = 60
-    # KL-149 — default inclui os 18 checks (5 do KL-141 + 13 novos). Ordem de execução é do engine.
+    # KL-149 — 18 checks (5 do KL-141 + 13 novos); KL-154 — +email_security (SPF/DKIM/DMARC do
+    # scanner) = 19. Ordem de execução é a do engine (`_DEFAULT_ORDER`).
     checks: List[str] = field(default_factory=lambda: [
         "headers", "ssl", "exposure", "credentials", "api",
         "cors", "cookies", "https_redirect", "open_redirect", "error_disclosure", "jwt",
-        "form_security", "dns", "dependencies", "tls_ciphers", "subdomain", "infrastructure",
-        "rate_limit"])
+        "form_security", "dns", "email_security", "dependencies", "tls_ciphers", "subdomain",
+        "infrastructure", "rate_limit"])
 
     # Headers
     hsts_min_age: int = 31_536_000

@@ -36,7 +36,8 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--checks", default=None,
                    help="Checks a rodar (CSV). Disponíveis: headers,ssl,exposure,credentials,api,"
                         "cors,cookies,https_redirect,open_redirect,error_disclosure,jwt,"
-                        "form_security,dns,dependencies,tls_ciphers,subdomain,infrastructure,rate_limit")
+                        "form_security,dns,email_security,dependencies,tls_ciphers,subdomain,"
+                        "infrastructure,rate_limit")
     p.add_argument("--config", default="security-gate.yml", help="YAML de configuração")
     p.add_argument("--json", action="store_true", help="Saída em JSON (integração)")
     p.add_argument("--quiet", action="store_true", help="Mostra só os FAIL/ERROR")

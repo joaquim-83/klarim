@@ -82,8 +82,8 @@ def test_run_all_returns_report(monkeypatch):
         monkeypatch.setitem(sge._CHECKS, k, _fake)
     monkeypatch.setattr(sge, "_detect_spa_fallback", _no_spa)
     rep = _run(sge.run_all("https://x.test"))
-    # KL-149: 18 checks no default (5 do KL-141 + 13 novos).
-    assert isinstance(rep, GateReport) and len(rep.results) == len(sge._DEFAULT_ORDER) == 18
+    # KL-149: 18 checks (5 do KL-141 + 13 novos). KL-154: +email_security = 19.
+    assert isinstance(rep, GateReport) and len(rep.results) == len(sge._DEFAULT_ORDER) == 19
     assert rep.duration_ms >= 0
 
 
@@ -112,8 +112,8 @@ def test_run_all_check_error_isolated(monkeypatch):
     monkeypatch.setattr(sge, "_detect_spa_fallback", _no_spa)
     rep = _run(sge.run_all("https://x.test"))
     assert any(r.status == Status.ERROR and "headers" in r.check for r in rep.results)
-    # os outros 17 checks seguiram (isolamento do erro).
-    assert sum(1 for r in rep.results if r.status == Status.PASS) == len(sge._DEFAULT_ORDER) - 1 == 17
+    # os outros 18 checks seguiram (isolamento do erro).
+    assert sum(1 for r in rep.results if r.status == Status.PASS) == len(sge._DEFAULT_ORDER) - 1 == 18
 
 
 def test_engine_respects_timeout(monkeypatch):

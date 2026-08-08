@@ -46,6 +46,7 @@ checks:
   jwt: {enabled: true}                  # alg=none / sem exp / PII no payload (NUNCA forja token)
   form_security: {enabled: true}        # <form action> p/ domínio externo (CRITICAL)
   dns: {enabled: true}                  # DNSSEC + CAA
+  email_security: {enabled: true}       # KL-154 — SPF/DKIM/DMARC (importado do scanner; só DNS TXT)
   dependencies: {enabled: true}         # libs JS com CVE conhecida (base local, sem API externa)
   tls_ciphers: {enabled: true}          # cipher suites fracas (RC4/DES/3DES/NULL) (CRITICAL)
   subdomain: {enabled: true}            # subdomain takeover (CNAME p/ PaaS desativado)
