@@ -3,9 +3,11 @@
 (não bloqueia — igual ao `_enforce_rpm`); os testes injetam um fake Redis para exercitar as regras.
 
 Camadas (na ordem em que o endpoint verifica — fail-fast no 1º limite violado):
-  1. IP    — `gate:rl:ip:{ip}`         — 10/hora (qualquer conta).
-  2. user  — `gate:rl:user:{acct}`     — por plano (free 5 · pro 50 · team 200 · enterprise ∞) /hora.
-  3. domain— `gate:rl:domain:{domain}` — 1 scan por domínio a cada 30 min (qualquer conta).
+  1. IP    — `gate:rl:ip:{ip}`                  — 10/hora (qualquer conta).
+  2. user  — `gate:rl:user:{acct}`              — por plano (free 5 · pro 50 · team 200 · ent ∞) /hora.
+  3. domain— `gate:rl:domain:{acct}:{domain}`   — 1 scan por domínio a cada X min POR CONTA (key por
+             account_id, sem interferência entre usuários — KL-155). TTL por plano: free 30min ·
+             pro 5min · team/ent SKIP (camada 3 não se aplica).
   4. interval — `gate:rl:last:{acct}`  — intervalo mínimo entre domínios DIFERENTES por conta
                                           (free 5min · pro 1min · team/ent 0).
 Abuso: `gate:rl:distinct:{acct}` (SADD do domínio, TTL 24h). > 20 domínios distintos/24h → suspende.
@@ -21,8 +23,10 @@ from typing import Optional
 USER_HOURLY_LIMITS = {"free": 5, "pro": 50, "team": 200, "enterprise": -1}
 # Camada 1 — teto por hora por IP (fixo).
 IP_HOURLY_LIMIT = 10
-# Camada 3 — 1 scan por domínio a cada 30 min.
-DOMAIN_WINDOW_SEC = 1800
+# Camada 3 — 1 scan por domínio a cada X min, POR CONTA (KL-155). TTL por plano (segundos);
+# 0 = SKIP (a camada não se aplica ao plano). `DOMAIN_WINDOW_SEC` fica como o default Free.
+DOMAIN_TTL_BY_PLAN = {"free": 1800, "pro": 300, "team": 0, "enterprise": 0}
+DOMAIN_WINDOW_SEC = DOMAIN_TTL_BY_PLAN["free"]
 # Camada 4 — intervalo mínimo entre domínios DIFERENTES, por conta (segundos).
 INTERVAL_BY_PLAN = {"free": 300, "pro": 60, "team": 0, "enterprise": 0}
 # Abuso — teto de domínios distintos em 24h.
@@ -69,15 +73,20 @@ async def check_user(redis, account_id: int, plan_slug: str) -> Optional[int]:
     return ttl if n > limit else None
 
 
-async def check_domain(redis, domain: str) -> Optional[int]:
-    """Camada 3. SET NX EX — a 1ª ocorrência do domínio na janela grava a chave; as seguintes
-    (dentro de 30 min) batem no lock → bloqueado."""
-    key = f"gate:rl:domain:{domain}"
-    ok = await redis.set(key, "1", nx=True, ex=DOMAIN_WINDOW_SEC)
+async def check_domain(redis, account_id: int, domain: str, plan_slug: str) -> Optional[int]:
+    """Camada 3 (KL-155). Cooldown POR CONTA por domínio (`gate:rl:domain:{acct}:{domain}`), com
+    TTL variável pelo plano: free 30min · pro 5min · team/ent SKIP. SET NX EX — a 1ª ocorrência
+    grava a chave; as seguintes (dentro do TTL) batem no lock → bloqueado. Key por account_id →
+    um Free e um Pro no mesmo domínio NÃO interferem."""
+    ttl = DOMAIN_TTL_BY_PLAN.get(plan_slug, DOMAIN_TTL_BY_PLAN["free"])
+    if ttl <= 0:
+        return None   # team/enterprise: a camada 3 não se aplica
+    key = f"gate:rl:domain:{account_id}:{domain}"
+    ok = await redis.set(key, "1", nx=True, ex=ttl)
     if ok:
         return None
-    ttl = await redis.ttl(key)
-    return int(ttl) if ttl and int(ttl) > 0 else DOMAIN_WINDOW_SEC
+    remaining = await redis.ttl(key)
+    return int(remaining) if remaining and int(remaining) > 0 else ttl
 
 
 async def check_interval(redis, account_id: int, domain: str, plan_slug: str) -> Optional[int]:
@@ -120,7 +129,7 @@ async def enforce(redis, ip: str, account_id: int, plan: Optional[dict],
     ra = await check_user(redis, account_id, slug)
     if ra is not None:
         return _payload(ra, "user", slug)
-    ra = await check_domain(redis, domain)
+    ra = await check_domain(redis, account_id, domain, slug)
     if ra is not None:
         return _payload(ra, "domain", slug)
     ra = await check_interval(redis, account_id, domain, slug)

@@ -2091,6 +2091,16 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   **NÃO** alterou backend nem scanner. Sem rota Astro nova nem `public/*.js` novo → **nginx intocado**.
   **+21 node --test → 187 pass**; `npm run build` OK. Validado no browser (dev): home/dual-card/dropdowns/
   security-gate/auth-guard, zero erro no console. Relatório: `claude/reports/KL-153_P2_report.md`.
+- **KL-155** — domain rate limit do Gate por plano + key por conta (carry-over do KL-153) ✅. A camada 3 do
+  `api/gate_rate_limiter.py` usava key GLOBAL `gate:rl:domain:{domain}` + TTL fixo 1800s → um CI com 2 pushes
+  do mesmo domínio em 30 min tomava 429 (e o lock de um Free bloqueava um Pro). Agora a key é **por conta**
+  `gate:rl:domain:{account_id}:{domain}` (Opção A do card) e o **TTL varia pelo plano** (`DOMAIN_TTL_BY_PLAN`):
+  **free 1800s · pro 300s · team/ent 0 = SKIP** (a camada não seta key). `check_domain(redis, account_id,
+  domain, plan_slug)`; `enforce` passa `account_id`+slug. Um Free e um Pro no mesmo domínio **não interferem**
+  (keys separadas). **NÃO** alterou frontend nem scanner. **+6 testes** (`test_kl155_domain_rl.py`, fake Redis
+  com `tick` p/ simular expiração) + `test_kl153_backend::test_domain_limit_same_domain_429` atualizado à nova
+  assinatura. **2283 pytest passed.** Docs: `docs/SECURITY.md` §12 (tabela de TTL por plano). Relatório:
+  `claude/reports/KL-155_report.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

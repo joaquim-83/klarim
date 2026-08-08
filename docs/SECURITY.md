@@ -454,12 +454,27 @@ zero forja de token, nenhum payload de injeção) são invioláveis.
   — cada scan é rastreável ao CPF do dev (NULL quando sem KYC). O CPF entra no audit, nunca em log de app.
 - **Rate limiting de 3 camadas + intervalo + abuso (`api/gate_rate_limiter.py`, tudo em Redis).** Verificado
   ANTES do scan, fail-fast na ordem: **(0)** conta `suspended` → 403 em TODO endpoint Gate · **(1)** IP
-  10/h · **(2)** conta por plano/h (free 5 · pro 50 · team 200 · enterprise ∞) · **(3)** 1 scan/domínio a
-  cada 30 min · **(4)** intervalo mínimo entre domínios DIFERENTES por conta (free 5min · pro 1min ·
-  team/ent 0). 429 → `{detail, retry_after_seconds, limit_type, current_plan, upgrade_url}` + header
-  `Retry-After`. **Detecção de abuso:** > 20 domínios distintos/24h (`gate:rl:distinct:{acct}`) → conta
-  **suspensa** + audit `abuse_detected` + warning de app. **Sem Redis → fail-open** (não bloqueia; igual ao
-  `_enforce_rpm`). Complementa (não substitui) o RPM-por-key e o teto de scans/dia do KL-151.
+  10/h · **(2)** conta por plano/h (free 5 · pro 50 · team 200 · enterprise ∞) · **(3)** cooldown por
+  domínio **POR CONTA** (`gate:rl:domain:{acct}:{domain}`, KL-155 — key por `account_id`, sem interferência
+  entre usuários), TTL **por plano** · **(4)** intervalo mínimo entre domínios DIFERENTES por conta (free
+  5min · pro 1min · team/ent 0). 429 → `{detail, retry_after_seconds, limit_type, current_plan,
+  upgrade_url}` + header `Retry-After`. **Detecção de abuso:** > 20 domínios distintos/24h
+  (`gate:rl:distinct:{acct}`) → conta **suspensa** + audit `abuse_detected` + warning de app. **Sem Redis →
+  fail-open** (não bloqueia; igual ao `_enforce_rpm`). Complementa (não substitui) o RPM-por-key e o teto de
+  scans/dia do KL-151.
+
+  **Camada 3 — TTL do cooldown por domínio, por plano (KL-155, `DOMAIN_TTL_BY_PLAN`):**
+
+  | Plano | TTL | Comportamento |
+  |---|---|---|
+  | Free | 1800s (30 min) | 1 scan por domínio a cada 30 min |
+  | Pro | 300s (5 min) | 1 scan por domínio a cada 5 min |
+  | Team | — | **SKIP** (a camada não se aplica; nenhuma key setada) |
+  | Enterprise | — | **SKIP** |
+
+  A key é **por conta** (`{acct}:{domain}`), então o cooldown é por-usuário (como as demais camadas) e um
+  Free e um Pro no MESMO domínio não interferem. Resolve o falso 429 de um CI com 2 pushes do mesmo domínio
+  em 30 min (o CI da própria Klarim usa a CLI, não a API, então não era afetado).
 - **Scan avulso (sem projeto).** `POST /gate/scan` sem projeto casando o domínio faz um scan **avulso**:
   exige conta autenticada + **e-mail confirmado**, sem verificação de domínio (a barreira do KL-151 valia
   só para o modelo de projetos). URL pública qualquer; o rate limiting e o audit aplicam normalmente. Scans

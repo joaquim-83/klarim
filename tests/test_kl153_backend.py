@@ -378,8 +378,8 @@ def test_ip_limit_10_then_429():
 
 def test_domain_limit_same_domain_429():
     r = FakeRedis()
-    assert _run(rl.check_domain(r, "acme.com.br")) is None
-    assert _run(rl.check_domain(r, "acme.com.br")) is not None   # 2º em 30min bloqueia
+    assert _run(rl.check_domain(r, 10, "acme.com.br", "free")) is None
+    assert _run(rl.check_domain(r, 10, "acme.com.br", "free")) is not None   # 2º em 30min (Free) bloqueia
 
 
 def test_interval_free_different_domain_429():
