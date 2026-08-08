@@ -2101,6 +2101,22 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   com `tick` p/ simular expiração) + `test_kl153_backend::test_domain_limit_same_domain_429` atualizado à nova
   assinatura. **2283 pytest passed.** Docs: `docs/SECURITY.md` §12 (tabela de TTL por plano). Relatório:
   `claude/reports/KL-155_report.md`.
+- **KL-156** — 5 fixes pós-teste manual do Security Gate (KL-153) ✅. **(1) Dropdowns do header não
+  fechavam:** classe `nav-dropdown` nos `<details>` (`NavDropdown.astro` + hambúrguer mobile) + lógica no
+  **`web/public/header.js`** (externo, CSP `'self'`, `?v=4`) — fecha ao clicar fora e fecha o OUTRO ao abrir
+  um. Lógica pura `otherDropdowns` (`nav.js`). Validado no browser (abrir devs fecha empresas; clicar fora
+  fecha tudo). **(2) KYC exige e-mail confirmado (não phone_verified):** `api/gate.py::_kyc_complete(cpf,
+  address, phone, email_confirmed)` — `kyc_completed` = CPF válido + endereço ≥10 + telefone + **email_
+  confirmed** (a única verificação REAL; `phone_verified` fica no schema p/ SMS futuro, não gateia). **(3+4)
+  Upgrade end-to-end:** o bug era o front abrir `checkout_url` (=`/dashboard/gate?upgrade=…`) → só reabria o
+  dashboard. Agora o `GatePortal.jsx` mostra um **modal PIX** (QR `br_code_base64` + copia-e-cola) + polling
+  de `/api/account/upgrade/status?charge_id=` (reusa `_confirm_subscription_payment` do prefixo `gate:`);
+  reusa o padrão do `PlanSection`. Backend: sem AbacatePay configurado → **200 `{fallback, contact_email:
+  suporte@klarim.net, message}`** (nunca 503 cru/loading silencioso). 409/429/erro → mensagem inline. **(5)
+  Plano Gate visível:** bloco "Seu plano" no `GatePortal` (plano + scans/hora + cooldown KL-155 + próximo
+  plano) + seção Security Gate no `AccountSettings.jsx` (`/dashboard/conta`). Helpers puros `planName`/
+  `planDetails`/`canUpgrade` (`ux.js`). **NÃO** alterou engine/scanner. **+3 backend + +4 node --test → 2286
+  pytest · 191 node pass · build OK.** Docs: `docs/SECURITY.md` §12. Relatório: `claude/reports/KL-156_report.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

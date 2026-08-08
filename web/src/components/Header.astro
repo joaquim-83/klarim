@@ -39,8 +39,9 @@ import { EMPRESA_LINKS, DEV_LINKS } from '../lib/nav.js';
         <a href="/entrar" class="hidden min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white sm:inline-flex">Entrar</a>
         <a href="/cadastrar" class="hidden min-h-[44px] items-center rounded-lg bg-brand-500 px-3.5 py-2 text-sm font-semibold text-[var(--accent-text)] transition-colors hover:bg-brand-400 active:scale-95 sm:inline-flex">Cadastrar</a>
 
-        <!-- Mobile: hambúrguer → drawer com as 2 seções separadas (CSP-safe, <details>). -->
-        <details class="group relative sm:hidden">
+        <!-- Mobile: hambúrguer → drawer com as 2 seções separadas (CSP-safe, <details>). Fecha ao
+             clicar fora via /header.js (classe nav-dropdown). -->
+        <details class="nav-dropdown group relative sm:hidden">
           <summary class="inline-flex min-h-[44px] min-w-[44px] cursor-pointer list-none items-center justify-center rounded-lg text-slate-300 transition-colors hover:bg-slate-800 hover:text-white marker:content-none [&::-webkit-details-marker]:hidden" aria-label="Abrir menu">
             <span class="text-xl group-open:hidden" aria-hidden="true">☰</span>
             <span class="hidden text-xl group-open:inline" aria-hidden="true">✕</span>
@@ -87,4 +88,4 @@ import { EMPRESA_LINKS, DEV_LINKS } from '../lib/nav.js';
 
 <!-- ?v= = cache-busting (padrão do projeto). Sem a versão, o Cloudflare cacheou o HTML de fallback
      do SSR na janela do deploy → o browser bloqueia o script (nosniff). Bump a cada alteração. -->
-<script src="/header.js?v=3" is:inline></script>
+<script src="/header.js?v=4" is:inline></script>

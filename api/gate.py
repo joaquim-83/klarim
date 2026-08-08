@@ -42,7 +42,16 @@ logger = logging.getLogger("gate")
 # KL-153 — mensagem única de conta suspensa (todos os endpoints Gate devolvem 403 com este corpo).
 _SUSPENDED_MSG = ("Conta suspensa por atividade incomum. "
                   "Entre em contato com suporte@klarim.net.")
+_SUPPORT_EMAIL = "suporte@klarim.net"   # KL-156 — fallback quando o pagamento não está configurado
 _GATE_UPGRADE_ATTEMPTS: dict = {}
+
+
+def _kyc_complete(cpf, address, phone, email_confirmed) -> bool:
+    """KL-156 — `kyc_completed` = CPF válido + endereço (≥10 chars) + telefone + **e-mail
+    CONFIRMADO**. O `email_confirmed` é a ÚNICA verificação de identidade REAL (código no signup);
+    `phone_verified` é placeholder p/ SMS futuro e NÃO gateia mais. Defesa-em-profundidade: o
+    endpoint já devolve 403 sem e-mail confirmado, mas a condição também o exige."""
+    return bool(cpf and address and len(str(address)) >= 10 and phone and email_confirmed)
 
 # Lista canônica dos checks do Gate (para o enforcement `["all"]`).
 ALL_CHECK_NAMES: List[str] = list(_ENGINE_ORDER)
@@ -621,9 +630,9 @@ class KYCBody(BaseModel):
 
 @router.post("/account/kyc")
 async def account_kyc(body: KYCBody, request: Request) -> dict:
-    """KL-153 — KYC progressivo. Exige sessão + e-mail confirmado. `kyc_completed` vira TRUE só
-    quando CPF válido + endereço (≥10 chars) + telefone estão TODOS presentes. `phone_verified` é
-    TRUE quando há telefone (placeholder para verificação por SMS futura)."""
+    """KL-153/KL-156 — KYC progressivo. Exige sessão + e-mail confirmado. `kyc_completed` vira TRUE
+    só quando CPF válido + endereço (≥10 chars) + telefone + **e-mail confirmado** (KL-156 — o
+    e-mail é a verificação de identidade REAL; `phone_verified` é placeholder de SMS e não gateia)."""
     user = await auth_users.require_user(request)
     store = get_target_store()
     fields = await store.get_account_gate_fields(user["id"]) or {}
@@ -640,7 +649,8 @@ async def account_kyc(body: KYCBody, request: Request) -> dict:
 
     address = (body.address or "").strip()
     phone = (body.phone or "").strip()
-    kyc_completed = bool(cpf and len(address) >= 10 and phone)
+    # KL-156: exige e-mail confirmado (defesa-em-profundidade — o endpoint já 403 acima).
+    kyc_completed = _kyc_complete(cpf, address, phone, fields.get("email_confirmed"))
     phone_verified = bool(phone)
     await store.update_user_kyc(user["id"], cpf=cpf, address=(address or None),
                                phone=(phone or None), phone_verified=phone_verified,
@@ -680,9 +690,15 @@ async def gate_upgrade(body: GateUpgradeBody, request: Request) -> dict:
     current = await get_effective_gate_plan(user["id"]) or {}
     if (current.get("slug") or "free") == slug:
         raise HTTPException(status_code=409, detail=f"Você já está no plano {target.get('name')}.")
-    if not _m._payments_enabled():
-        raise HTTPException(status_code=503, detail="Pagamentos não configurados no momento.")
     amount = int(target["price_brl"])
+    price_display = f"R$ {amount // 100}/mês"
+    # KL-156: sem pagamento configurado → fallback claro (nunca loading silencioso). Responde 200
+    # com `fallback` + e-mail de suporte para o front mostrar a mensagem acionável.
+    if not _m._payments_enabled():
+        return {"fallback": True, "plan": slug, "price_display": price_display,
+                "contact_email": _SUPPORT_EMAIL,
+                "message": f"Para assinar o plano {target.get('name')}, entre em contato pelo "
+                           f"e-mail {_SUPPORT_EMAIL}."}
     try:
         data = await _create_gate_pix_charge(
             amount, f"Klarim Security Gate {target.get('name')} — assinatura mensal")
@@ -697,8 +713,10 @@ async def gate_upgrade(body: GateUpgradeBody, request: Request) -> dict:
         data.get("brCodeBase64"), expires_at=data.get("expiresAt"))
     await log_gate_audit(user["id"], "upgrade_requested", request,
                          detail={"plan": slug, "charge_id": charge_id})
+    # KL-156: o front mostra o PIX (QR `br_code_base64` + copia-e-cola `br_code`) e faz polling em
+    # /account/upgrade/status?charge_id= — NÃO abre `checkout_url` (que só reabria o dashboard).
     return {"checkout_url": f"/dashboard/gate?upgrade={charge_id}", "plan": slug,
-            "price_display": f"R$ {amount // 100}/mês", "charge_id": charge_id,
+            "price_display": price_display, "charge_id": charge_id,
             "br_code": data.get("brCode"), "br_code_base64": data.get("brCodeBase64"),
             "expires_at": data.get("expiresAt")}
 

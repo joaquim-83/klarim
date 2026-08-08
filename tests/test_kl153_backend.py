@@ -578,3 +578,36 @@ def test_provision_gate_developer(store):
     assert api_key.startswith("KLM_")
     assert store.users[30]["account_type"] == "developer"
     assert any(k["account_id"] == 30 for k in store.keys)
+
+
+# =========================================================================== #
+# KL-156 — KYC exige e-mail confirmado · upgrade com fallback (não erro silencioso)
+# =========================================================================== #
+
+def test_kl156_kyc_complete_requires_email_confirmed():
+    # Mesmo com CPF+endereço+telefone, sem e-mail confirmado → kyc_completed=FALSE.
+    assert g._kyc_complete(VALID_CPF, "Rua Exemplo 123 Centro", "999", False) is False
+    assert g._kyc_complete(VALID_CPF, "Rua Exemplo 123 Centro", "999", True) is True
+    # Falta um campo → FALSE mesmo com e-mail confirmado.
+    assert g._kyc_complete(VALID_CPF, "curto", "999", True) is False       # endereço < 10
+    assert g._kyc_complete(VALID_CPF, "Rua Exemplo 123 Centro", "", True) is False  # sem telefone
+
+
+def test_kl156_kyc_endpoint_email_not_confirmed_403(client, store):
+    # O endpoint barra ANTES (403) — a conta continua sem KYC.
+    store.users[10]["email_confirmed"] = False
+    r = client.post("/account/kyc", json={"cpf": VALID_CPF, "address": "Rua Exemplo 123 Centro",
+                                          "phone": "999"}, cookies=_cookie(_dev(store)))
+    assert r.status_code == 403
+    assert store.users[10]["kyc_completed"] is False
+
+
+def test_kl156_upgrade_fallback_when_payments_disabled(client, store, monkeypatch):
+    store.users[10]["gate_plan_id"] = 1   # Free (sem trial) → pode subir
+    monkeypatch.setattr(m, "_payments_enabled", lambda: False)   # AbacatePay não configurado
+    r = client.post("/account/gate/upgrade", json={"plan": "pro"}, cookies=_cookie(_dev(store)))
+    assert r.status_code == 200                       # NÃO é erro silencioso
+    body = r.json()
+    assert body["fallback"] is True
+    assert "suporte@klarim.net" in body["contact_email"]
+    assert "suporte@klarim.net" in body["message"]

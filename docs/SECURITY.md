@@ -445,7 +445,11 @@ zero forja de token, nenhum payload de injeção) são invioláveis.
 ## 12. Security Gate — KYC + rate limiting + scan avulso (KL-153)
 
 - **KYC progressivo (`POST /account/kyc`).** O dev roda scans sem KYC (resultado RESUMIDO); o KYC
-  (CPF + endereço ≥10 chars + telefone) libera o resultado COMPLETO. `validate_cpf` (`api/validators.py`)
+  (CPF + endereço ≥10 chars + telefone + **e-mail confirmado** — KL-156) libera o resultado COMPLETO.
+  **KL-156:** o `email_confirmed` (código no signup) é a ÚNICA verificação de identidade REAL —
+  `phone_verified` era auto-setado ao preencher o telefone (placeholder de SMS) e NÃO gateia mais
+  (`_kyc_complete(cpf, address, phone, email_confirmed)`). O endpoint já devolvia 403 sem e-mail
+  confirmado; a condição de `kyc_completed` reforça (defesa-em-profundidade). `validate_cpf` (`api/validators.py`)
   valida **formato + os 2 dígitos verificadores** (módulo 11) — NÃO consulta a Receita Federal; rejeita
   sequências repetidas. CPF guardado **formatado** (`000.000.000-00`), **único** (`idx_users_cpf` parcial);
   CPF de outra conta → **409**. Exige **e-mail confirmado** (403 senão). `kyc_completed`/`kyc_completed_at`

@@ -46,5 +46,18 @@
       try { await fetch('/api/account/logout', { method: 'POST', credentials: 'include' }); } catch (e) {}
       window.location.href = '/';
     });
+
+    // KL-156 — dropdowns do header (<details class="nav-dropdown">): fechar ao clicar fora e
+    // fechar o outro ao abrir um (não podem ficar os dois abertos). Vale p/ desktop + drawer mobile.
+    var dropdowns = document.querySelectorAll('details.nav-dropdown');
+    document.addEventListener('click', function (e) {
+      dropdowns.forEach(function (d) { if (!d.contains(e.target)) d.removeAttribute('open'); });
+    });
+    dropdowns.forEach(function (d) {
+      d.addEventListener('toggle', function () {
+        if (!d.open) return;
+        dropdowns.forEach(function (other) { if (other !== d) other.removeAttribute('open'); });
+      });
+    });
   });
 })();

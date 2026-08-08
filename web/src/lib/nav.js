@@ -47,3 +47,9 @@ export function dashboardMenu(_accountType) {
     { href: '/dashboard/conta', label: 'Minha conta' },
   ];
 }
+
+// KL-156 — quais dropdowns fechar quando `current` abre (todos os outros). Lógica pura usada pelo
+// header.js (fechar o outro dropdown ao abrir um; e todos ao clicar fora).
+export function otherDropdowns(all, current) {
+  return Array.from(all || []).filter((d) => d !== current);
+}

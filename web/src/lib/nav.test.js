@@ -1,7 +1,7 @@
 // KL-153 P2 — testes da configuração de navegação (node --test, sem deps).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { EMPRESA_LINKS, DEV_LINKS, PRODUCT_CARDS, authState, dashboardMenu } from './nav.js'
+import { EMPRESA_LINKS, DEV_LINKS, PRODUCT_CARDS, authState, dashboardMenu, otherDropdowns } from './nav.js'
 
 // --- Header: dropdowns "Para empresas" / "Para devs" --- //
 test('EMPRESA_LINKS: 4 links, começa por "Verificar meu site"', () => {
@@ -46,4 +46,12 @@ test('dashboardMenu: "Security Gate" visível para owner E developer', () => {
     assert.ok(labels.includes('Security Gate'), `type=${type}`)
     assert.ok(labels.includes('Meu dashboard'))
   }
+})
+
+// --- KL-156: fechar o outro dropdown ao abrir um --- //
+test('otherDropdowns: devolve todos menos o que abriu', () => {
+  const a = { id: 'a' }, b = { id: 'b' }, c = { id: 'c' }
+  assert.deepEqual(otherDropdowns([a, b, c], b), [a, c])
+  assert.deepEqual(otherDropdowns([a], a), [])
+  assert.deepEqual(otherDropdowns(null, a), [])
 })

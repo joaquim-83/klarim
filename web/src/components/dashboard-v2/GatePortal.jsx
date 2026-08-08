@@ -2,8 +2,8 @@ import { useEffect, useState, useCallback, Fragment } from 'react'
 import { card } from './shared.js'
 import { planProgress, DEFAULT_URL } from '../../lib/gate/snippets.js'
 import {
-  normalizeUrl, categorySummary, kycBannerVisible, usageText, upgradeTarget, rateLimitMessage,
-  formatCountdown, shouldShowWizard,
+  normalizeUrl, categorySummary, kycBannerVisible, usageText, rateLimitMessage,
+  formatCountdown, shouldShowWizard, planDetails, canUpgrade,
 } from '../../lib/gate/ux.js'
 import GateIntegrationTabs from './GateIntegrationTabs.jsx'
 import GateOnboarding from './GateOnboarding.jsx'
@@ -44,21 +44,81 @@ function Section({ title, children, right }) {
   )
 }
 
-// ---- Barra de status: score + plano + uso + upgrade inline ---- //
+// ---- Modal de pagamento PIX (KL-156) — mostra o QR + copia-e-cola e faz polling do status ---- //
+function PixUpgradeModal({ charge, onDone, onClose }) {
+  const [copied, setCopied] = useState(false)
+  const [paid, setPaid] = useState(false)
+  const qr = charge.br_code_base64
+    ? (String(charge.br_code_base64).startsWith('data:') ? charge.br_code_base64 : `data:image/png;base64,${charge.br_code_base64}`)
+    : null
+  useEffect(() => {
+    if (!charge.charge_id) return undefined
+    let alive = true
+    const iv = setInterval(async () => {
+      try {
+        const r = await api(`/api/account/upgrade/status?charge_id=${encodeURIComponent(charge.charge_id)}`)
+        if (alive && r.paid) { setPaid(true); clearInterval(iv); setTimeout(() => onDone?.(), 1200) }
+      } catch { /* best-effort; o webhook confirma de qualquer forma */ }
+    }, 4000)
+    return () => { alive = false; clearInterval(iv) }
+  }, [charge.charge_id])
+  function copy() {
+    if (charge.br_code) { navigator.clipboard?.writeText(charge.br_code); setCopied(true); setTimeout(() => setCopied(false), 2000) }
+  }
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal="true" aria-label="Pagamento PIX">
+      <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-6 text-center shadow-2xl">
+        {paid ? (
+          <div><p className="text-2xl">✅</p><p className="mt-2 font-bold text-white">Pagamento confirmado!</p><p className="mt-1 text-sm text-slate-300">Ativando o plano {charge.plan}…</p></div>
+        ) : (
+          <>
+            <h3 className="text-lg font-bold text-white">Assinar {charge.plan} — {charge.price_display}</h3>
+            <p className="mt-1 text-sm text-slate-300">Pague com PIX para ativar. A confirmação é automática.</p>
+            {qr && <img src={qr} alt="QR Code PIX" className="mx-auto mt-4 h-52 w-52 rounded-lg bg-[#ffffff] p-2" />}
+            {charge.br_code && (
+              <div className="mt-3">
+                <p className="text-xs text-slate-500">PIX copia-e-cola:</p>
+                <div className="mt-1 flex items-center gap-2">
+                  <code className="flex-1 truncate rounded border border-slate-700 bg-slate-950 px-2 py-1.5 text-xs text-slate-300">{charge.br_code}</code>
+                  <button onClick={copy} className="shrink-0 rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-200 hover:bg-slate-800">{copied ? 'Copiado ✓' : 'Copiar'}</button>
+                </div>
+              </div>
+            )}
+            <div className="mt-4 inline-flex items-center gap-2 text-xs text-slate-400">
+              <span className="h-3 w-3 animate-spin rounded-full border-2 border-slate-600 border-t-brand-500" aria-hidden="true" /> aguardando pagamento…
+            </div>
+            <button onClick={onClose} className="mt-4 block w-full text-sm text-slate-400 hover:text-slate-200">Fechar</button>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+// ---- Barra de status: score + plano + uso + upgrade inline (KL-153/156) ---- //
 function StatusBar({ status, lastRun, onUpgraded }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
+  const [fallback, setFallback] = useState(null)   // {message, contact_email}
+  const [charge, setCharge] = useState(null)        // dados do PIX p/ o modal
   const slug = status.plan_slug || 'free'
-  const next = upgradeTarget(slug)
+  const details = planDetails(slug)
+  const next = details.next
 
   async function upgrade() {
-    setBusy(true); setErr('')
+    setBusy(true); setErr(''); setFallback(null)
     try {
       const r = await api('/api/account/gate/upgrade', { method: 'POST', body: JSON.stringify({ plan: next.slug }) })
-      if (r.checkout_url) window.open(r.checkout_url, '_blank', 'noopener')
-      onUpgraded?.()
+      if (r.fallback) {                              // pagamento não configurado → mensagem clara
+        setFallback({ message: r.message, contact_email: r.contact_email })
+      } else if (r.br_code_base64 || r.charge_id) {  // PIX gerado → mostra QR + polling
+        setCharge({ ...r, plan: next.label })
+      } else {
+        onUpgraded?.()
+      }
     } catch (e) {
-      setErr(e.status === 429 ? (e.data?.detail || 'Muitas tentativas. Aguarde.') : e.message)
+      // 409 (já no plano), 429 (rate), 400/502 → mensagem inline; NUNCA loading silencioso.
+      setErr(e.data?.detail || e.message || 'Não foi possível iniciar o upgrade.')
     } finally { setBusy(false) }
   }
 
@@ -76,17 +136,37 @@ function StatusBar({ status, lastRun, onUpgraded }) {
         </div>
         <div className="flex flex-wrap items-center gap-3">
           <div className="text-right">
-            <div className="text-sm font-semibold text-white">Plano {status.plan || 'Free'}</div>
+            <div className="text-sm font-semibold text-white">Plano {status.plan || details.name}</div>
             <div className="text-xs text-slate-400">{usageText(status.scans_used_hour, status.scans_limit_hour)}</div>
           </div>
-          {next && (
+          {canUpgrade(slug) && (
             <button type="button" onClick={upgrade} disabled={busy} className={smBrand}>
               {busy ? '…' : `Upgrade → ${next.label} (${next.price_display})`}
             </button>
           )}
         </div>
       </div>
+
+      {/* KL-156 (Fix 5) — bloco "Seu plano" com limites explícitos + próximo plano. */}
+      <dl className="mt-4 grid grid-cols-2 gap-x-4 gap-y-1 rounded-xl border border-slate-800 bg-slate-900/40 p-3 text-sm sm:grid-cols-4">
+        <div><dt className="text-xs text-slate-500">Plano</dt><dd className="font-semibold text-white">{details.name} <span className="font-normal text-slate-400">(Security Gate)</span></dd></div>
+        <div><dt className="text-xs text-slate-500">Scans por hora</dt><dd className="text-slate-200">{details.scansHour}</dd></div>
+        <div><dt className="text-xs text-slate-500">Cooldown por domínio</dt><dd className="text-slate-200">{details.cooldownLabel}</dd></div>
+        <div><dt className="text-xs text-slate-500">Nível de acesso</dt><dd className="text-slate-200">{status.access_level === 'complete' ? 'Completo (KYC)' : 'Básico'}</dd></div>
+        {next && (
+          <div className="col-span-2 sm:col-span-4"><dt className="sr-only">Próximo plano</dt>
+            <dd className="text-xs text-slate-400">Próximo plano: <span className="font-medium text-slate-200">{next.label} ({next.price_display})</span> — {planDetails(next.slug).scansHour} scans/hora, cooldown {planDetails(next.slug).cooldownLabel}.</dd></div>
+        )}
+      </dl>
+
       {err && <p className="mt-2 text-sm text-red-400">{err}</p>}
+      {fallback && (
+        <div className="mt-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-100">
+          {fallback.message || 'Assinatura indisponível no momento.'}{' '}
+          {fallback.contact_email && <a href={`mailto:${fallback.contact_email}`} className="font-semibold text-brand-400 hover:underline">{fallback.contact_email}</a>}
+        </div>
+      )}
+      {charge && <PixUpgradeModal charge={charge} onDone={() => { setCharge(null); onUpgraded?.() }} onClose={() => setCharge(null)} />}
     </div>
   )
 }

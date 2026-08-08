@@ -4,7 +4,7 @@ import assert from 'node:assert/strict'
 import {
   normalizeUrl, maskCPF, isValidCPF, categorySummary, showChecksDetail, groupChecksByCategory,
   kycBannerVisible, showGateBridge, wizardNext, shouldShowWizard, formatCountdown, rateLimitMessage,
-  usageText, upgradeTarget, ctaState, ctaLabel, signupBody,
+  usageText, upgradeTarget, ctaState, ctaLabel, signupBody, planName, planDetails, canUpgrade,
 } from './ux.js'
 
 const VALID_CPF = '529.982.247-25'
@@ -111,6 +111,33 @@ test('upgradeTarget: próximo plano com preço', () => {
   assert.equal(upgradeTarget('free').price_display, 'R$ 49/mês')
   assert.equal(upgradeTarget('pro').slug, 'team')
   assert.equal(upgradeTarget('team'), null)
+})
+
+// --- KL-156: bloco do plano + upgrade --- //
+test('planName: nome legível por slug', () => {
+  assert.equal(planName('free'), 'Free')
+  assert.equal(planName('pro'), 'Pro')
+  assert.equal(planName('team'), 'Team')
+  assert.equal(planName('enterprise'), 'Enterprise')
+  assert.equal(planName(undefined), 'Free')   // fallback
+})
+
+test('planDetails: limites + próximo plano', () => {
+  const free = planDetails('free')
+  assert.equal(free.name, 'Free')
+  assert.equal(free.scansHour, 5)
+  assert.equal(free.cooldownLabel, '30 minutos')
+  assert.equal(free.next.slug, 'pro')
+  const team = planDetails('team')
+  assert.equal(team.cooldownLabel, 'sem cooldown')
+  assert.equal(team.next, null)
+})
+
+test('canUpgrade: false no plano máximo', () => {
+  assert.equal(canUpgrade('free'), true)
+  assert.equal(canUpgrade('pro'), true)
+  assert.equal(canUpgrade('team'), false)
+  assert.equal(canUpgrade('enterprise'), false)
 })
 
 // --- CTA da landing --- //

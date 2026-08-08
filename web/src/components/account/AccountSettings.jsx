@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { apiPost, apiPut, apiDelete } from '../../lib/api.js';
 import { card, field, label, errorBox, okBox, btn } from './ui.js';
+import { planName } from '../../lib/gate/ux.js';
 
-// Gestão de conta (KL-57): dados pessoais, segurança (senha), plano e exclusão.
-// Ilha React na página SSR /dashboard/conta (protegida pelo middleware).
+// Gestão de conta (KL-57): dados pessoais, segurança (senha), plano, Security Gate (KL-156) e
+// exclusão. Ilha React na página SSR /dashboard/conta (protegida pelo middleware).
 
 function fmtDate(iso) {
   if (!iso) return '—';
@@ -27,8 +28,39 @@ export default function AccountSettings({ user = {} }) {
       <PersonalData user={user} />
       <Security email={user.email} />
       <Plan user={user} />
+      <GateSection />
       <DangerZone />
     </div>
+  );
+}
+
+// --- Security Gate (KL-156) — mostra o plano dev + link para o dashboard Gate --------------- #
+function GateSection() {
+  const [st, setSt] = useState(null);   // null=carregando · {}=erro/deslogado
+  useEffect(() => {
+    let alive = true;
+    fetch('/api/account/gate/status', { credentials: 'include' })
+      .then((r) => (r.ok ? r.json() : {}))
+      .then((d) => { if (alive) setSt(d || {}); })
+      .catch(() => { if (alive) setSt({}); });
+    return () => { alive = false; };
+  }, []);
+  if (st === null) return null;
+  const active = !!st.is_developer;
+  return (
+    <section className={card}>
+      <h2 className="text-lg font-bold text-white">Security Gate</h2>
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+        <p className="text-sm text-slate-300">
+          {active
+            ? <>Plano <strong className="text-white">{planName(st.plan_slug)}</strong> (Security Gate).</>
+            : 'Scan de segurança pós-deploy no seu CI/CD.'}
+        </p>
+        <a href="/dashboard/gate" className="text-sm font-medium text-brand-400 hover:underline">
+          {active ? 'Abrir dashboard →' : 'Ativar Security Gate →'}
+        </a>
+      </div>
+    </section>
   );
 }
 

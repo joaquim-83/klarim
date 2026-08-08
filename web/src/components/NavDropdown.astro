@@ -1,9 +1,10 @@
 ---
 // KL-153 P2 — dropdown de navegação CSP-safe (<details>/<summary>, sem JS inline). Abre no
-// clique/tap (desktop e mobile). Usado pelo Header para "Para empresas" e "Para devs".
+// clique/tap. Fecha ao clicar fora / ao abrir o outro (KL-156, via /header.js pela classe
+// `nav-dropdown`). Usado pelo Header para "Para empresas" e "Para devs".
 const { label, links } = Astro.props;
 ---
-<details class="group relative hidden sm:block">
+<details class="nav-dropdown group relative hidden sm:block">
   <summary class="inline-flex min-h-[44px] cursor-pointer list-none items-center gap-1 rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white marker:content-none [&::-webkit-details-marker]:hidden">
     {label}
     <span class="text-[10px] transition-transform group-open:rotate-180" aria-hidden="true">▼</span>

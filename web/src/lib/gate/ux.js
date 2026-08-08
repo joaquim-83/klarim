@@ -142,6 +142,31 @@ export function upgradeTarget(planSlug) {
   return _NEXT[planSlug] || null;
 }
 
+// KL-156 — metadados do plano p/ o bloco "Seu plano" (espelham os limites do backend; só HINT
+// visual — o enforcement é server-side). Cooldown por domínio = KL-155 (free 30min · pro 5min ·
+// team/ent sem cooldown). Scans/hora = camada 2 do rate limiter.
+const _PLAN_META = {
+  free: { name: 'Free', scansHour: 5, cooldownLabel: '30 minutos' },
+  pro: { name: 'Pro', scansHour: 50, cooldownLabel: '5 minutos' },
+  team: { name: 'Team', scansHour: 200, cooldownLabel: 'sem cooldown' },
+  enterprise: { name: 'Enterprise', scansHour: 'ilimitado', cooldownLabel: 'sem cooldown' },
+};
+
+export function planName(slug) {
+  return (_PLAN_META[slug] || _PLAN_META.free).name;
+}
+
+export function planDetails(slug) {
+  const m = _PLAN_META[slug] || _PLAN_META.free;
+  return { slug: slug || 'free', name: m.name, scansHour: m.scansHour,
+           cooldownLabel: m.cooldownLabel, next: upgradeTarget(slug) };
+}
+
+// Só há upgrade se existe um próximo plano (Team/Enterprise já são o topo).
+export function canUpgrade(slug) {
+  return upgradeTarget(slug) !== null;
+}
+
 // ---- Estado do CTA da landing / menu ---- //
 // status = GET /api/account/gate/status (ou {ok:false} se não logado).
 export function ctaState({ ok, gate_active } = {}) {
