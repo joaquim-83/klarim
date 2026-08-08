@@ -1,28 +1,33 @@
 import { useEffect, useState, useCallback, Fragment } from 'react'
-import { card, brandBtn, outlineBtn } from './shared.js'
+import { card } from './shared.js'
 import { planProgress, DEFAULT_URL } from '../../lib/gate/snippets.js'
+import {
+  normalizeUrl, categorySummary, kycBannerVisible, usageText, upgradeTarget, rateLimitMessage,
+  formatCountdown, shouldShowWizard,
+} from '../../lib/gate/ux.js'
 import GateIntegrationTabs from './GateIntegrationTabs.jsx'
 import GateOnboarding from './GateOnboarding.jsx'
 import GateVendors from './GateVendors.jsx'
 
-// KL-151 P3 / KL-152 P1 — portal do dev do Security Gate. Consome /api/gate/* e /api/account/gate/*
-// com o cookie de sessão (HttpOnly, same-origin). KL-152: visual alinhado ao dashboard (tokens
-// theme-aware do KL-87 — títulos text-white, cards `card` de shared.js), inputs com label, badge de
-// plano com barra, abas de integração e wizard de onboarding (aparece até o 1º scan).
+// KL-153 P2 — portal do dev redesenhado (resolve a Quebra 10). Status bar (score/plano/uso +
+// upgrade INLINE), "Novo scan" avulso, resultado filtrado por KYC, integração, histórico. Ativa o
+// Gate sozinho quando a conta ainda é owner (Quebra 2). Tokens theme-aware (KL-87). Trata 429 com
+// mensagem contextual (../../lib/gate/ux.js). O cookie de sessão (HttpOnly, same-origin) autentica.
 
 const ONBOARDED_KEY = 'klarim_gate_onboarded'
 
 async function api(path, opts = {}) {
-  const r = await fetch(path, { headers: opts.body ? { 'Content-Type': 'application/json' } : {}, ...opts })
-  if (!r.ok) {
-    let detail = `Erro ${r.status}`
-    try { detail = (await r.json()).detail || detail } catch { /* ignore */ }
-    throw new Error(detail)
-  }
-  return r.json()
+  const r = await fetch(path, {
+    credentials: 'include',
+    headers: opts.body ? { 'Content-Type': 'application/json' } : {}, ...opts,
+  })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok) { const e = new Error(data.detail || `Erro ${r.status}`); e.status = r.status; e.data = data; throw e }
+  return data
 }
 
 const semColor = (s) => (s >= 90 ? '#22c55e' : s >= 50 ? '#eab308' : '#ef4444')
+const sema = (s) => (s >= 90 ? '🟢' : s >= 50 ? '🟡' : '🔴')
 const ICON = { pass: '✅', fail: '❌', error: '⚠️', skip: '⏭️' }
 const smBrand = 'inline-flex min-h-[40px] items-center rounded-lg bg-brand-500 px-3 py-1.5 text-sm font-semibold text-[var(--accent-text)] transition-colors hover:bg-brand-400 disabled:opacity-40'
 const smOutline = 'inline-flex min-h-[40px] items-center rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-200 transition-colors hover:bg-slate-800 disabled:opacity-40'
@@ -39,13 +44,132 @@ function Section({ title, children, right }) {
   )
 }
 
-function Field({ label, ...props }) {
+// ---- Barra de status: score + plano + uso + upgrade inline ---- //
+function StatusBar({ status, lastRun, onUpgraded }) {
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const slug = status.plan_slug || 'free'
+  const next = upgradeTarget(slug)
+
+  async function upgrade() {
+    setBusy(true); setErr('')
+    try {
+      const r = await api('/api/account/gate/upgrade', { method: 'POST', body: JSON.stringify({ plan: next.slug }) })
+      if (r.checkout_url) window.open(r.checkout_url, '_blank', 'noopener')
+      onUpgraded?.()
+    } catch (e) {
+      setErr(e.status === 429 ? (e.data?.detail || 'Muitas tentativas. Aguarde.') : e.message)
+    } finally { setBusy(false) }
+  }
+
   return (
-    <label className="block">
-      <span className="mb-1 block text-sm font-medium text-slate-200">{label}</span>
-      <input {...props}
-        className="h-12 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-base text-slate-100 placeholder:text-slate-500 focus:border-brand-500 focus:outline-none" />
-    </label>
+    <div className={`mb-6 ${card}`}>
+      <div className="flex flex-wrap items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          {lastRun ? (
+            <>
+              <div className="text-3xl font-extrabold" style={{ color: semColor(lastRun.score) }}>{lastRun.score}<span className="text-sm text-slate-400">/100</span></div>
+              <div className="text-2xl" aria-hidden="true">{sema(lastRun.score)}</div>
+              <div className="text-xs text-slate-400">último scan</div>
+            </>
+          ) : <div className="text-sm text-slate-400">Nenhum scan ainda — rode o primeiro abaixo.</div>}
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <div className="text-right">
+            <div className="text-sm font-semibold text-white">Plano {status.plan || 'Free'}</div>
+            <div className="text-xs text-slate-400">{usageText(status.scans_used_hour, status.scans_limit_hour)}</div>
+          </div>
+          {next && (
+            <button type="button" onClick={upgrade} disabled={busy} className={smBrand}>
+              {busy ? '…' : `Upgrade → ${next.label} (${next.price_display})`}
+            </button>
+          )}
+        </div>
+      </div>
+      {err && <p className="mt-2 text-sm text-red-400">{err}</p>}
+    </div>
+  )
+}
+
+// ---- Novo scan avulso (modal) ---- //
+function NewScan({ onScanned }) {
+  const [open, setOpen] = useState(false)
+  const [url, setUrl] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [res, setRes] = useState(null)
+  const [rl, setRl] = useState(null)    // rate-limit
+  const [err, setErr] = useState('')
+
+  async function scan() {
+    const scanUrl = normalizeUrl(url)
+    if (!scanUrl) { setErr('Digite a URL.'); return }
+    setBusy(true); setErr(''); setRl(null); setRes(null)
+    try {
+      const r = await api('/api/gate/scan', { method: 'POST', body: JSON.stringify({ url: scanUrl }) })
+      setRes(r); onScanned?.()
+    } catch (e) {
+      if (e.status === 429) setRl(rateLimitMessage(e.data?.limit_type, e.data?.retry_after_seconds))
+      else setErr(e.message)
+    } finally { setBusy(false) }
+  }
+
+  if (!open) return <button type="button" onClick={() => setOpen(true)} className={smBrand}>+ Novo scan</button>
+  return (
+    <div className="mt-1 w-full">
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="min-w-0 flex-1">
+          <span className="mb-1 block text-sm font-medium text-slate-200">URL do site</span>
+          <input value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://meuapp.com"
+            className="h-12 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-base text-slate-100 focus:border-brand-500 focus:outline-none" />
+        </label>
+        <button type="button" onClick={scan} disabled={busy} className={smBrand}>{busy ? 'Escaneando…' : 'Escanear'}</button>
+        <button type="button" onClick={() => { setOpen(false); setRes(null); setRl(null) }} className="text-sm text-slate-400 hover:text-slate-200">fechar</button>
+      </div>
+      {err && <p className="mt-2 text-sm text-red-400">{err}</p>}
+      {rl && <RateLimitNote note={rl} />}
+      {res && <ScanResultCard res={res} />}
+    </div>
+  )
+}
+
+function RateLimitNote({ note }) {
+  const [left, setLeft] = useState(Number(note.retryAfterSeconds) || 0)
+  useEffect(() => {
+    setLeft(Number(note.retryAfterSeconds) || 0)
+    const iv = setInterval(() => setLeft((s) => (s > 0 ? s - 1 : 0)), 1000)
+    return () => clearInterval(iv)
+  }, [note])
+  return (
+    <div className="mt-3 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-sm">
+      <p className="font-semibold text-amber-200">{note.title}</p>
+      <p className="mt-1 text-amber-100">{note.message}</p>
+      {left > 0 && <p className="mt-1 font-mono text-amber-300">⏳ {formatCountdown(left)}</p>}
+      {note.showUpgrade && <a href="/security-gate#planos" className="mt-2 inline-block font-semibold text-brand-400 hover:underline">Fazer upgrade →</a>}
+    </div>
+  )
+}
+
+function ScanResultCard({ res }) {
+  const cats = categorySummary(res)
+  return (
+    <div className="mt-3 rounded-xl border border-slate-800 bg-slate-900/40 p-4">
+      <div className="flex items-center gap-3">
+        <span className="text-2xl font-extrabold" style={{ color: semColor(res.score) }}>{res.score}/100</span>
+        <span className="text-xl" aria-hidden="true">{sema(res.score)}</span>
+        <span className="text-sm text-slate-300">{res.passed ? 'Passou ✅' : 'Reprovou ❌'}</span>
+      </div>
+      <ul className="mt-3 space-y-1 text-sm text-slate-200">
+        {cats.map((c) => (
+          <li key={c.name} className="flex justify-between"><span className="capitalize">{c.name.replace(/_/g, ' ')}</span>
+            <span className={c.status === 'pass' ? 'text-green-400' : 'text-red-400'}>{c.checks_passed}/{c.checks_total}</span></li>
+        ))}
+      </ul>
+      {kycBannerVisible(res.access_level) && (
+        <div className="mt-3 rounded-lg border border-amber-500/40 bg-amber-500/10 p-2.5 text-sm text-amber-200">
+          🔒 {res.kyc_message || 'Complete seu cadastro para ver os detalhes de cada verificação.'}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -55,12 +179,8 @@ function ApiKeyCard() {
   const [newKey, setNewKey] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
-
-  const load = useCallback(() => {
-    api('/api/account/gate/key-info').then(setInfo).catch((e) => setErr(e.message))
-  }, [])
+  const load = useCallback(() => { api('/api/account/gate/key-info').then(setInfo).catch((e) => setErr(e.message)) }, [])
   useEffect(load, [load])
-
   async function regenerate() {
     if (!window.confirm('Regenerar emite uma nova key. A atual vale por mais 1h (o CI em andamento não quebra). Continuar?')) return
     setBusy(true); setErr('')
@@ -71,10 +191,8 @@ function ApiKeyCard() {
       load()
     } catch (e) { setErr(e.message) } finally { setBusy(false) }
   }
-
   return (
-    <Section title="🔑 Sua API Key"
-      right={<button onClick={regenerate} disabled={busy} className={smOutline}>{busy ? '…' : 'Regenerar →'}</button>}>
+    <Section title="🔑 Sua API Key" right={<button onClick={regenerate} disabled={busy} className={smOutline}>{busy ? '…' : 'Regenerar →'}</button>}>
       {err && <p className="text-sm text-red-400">{err}</p>}
       {newKey ? (
         <div className="rounded-lg border border-green-500/40 bg-green-500/10 p-3">
@@ -83,33 +201,31 @@ function ApiKeyCard() {
         </div>
       ) : info?.has_key ? (
         <p className="font-mono text-slate-200">{info.masked}
-          <span className="ml-2 font-sans text-xs text-slate-400">
-            criada {String(info.created_at || '').slice(0, 10)}
-            {info.last_used_at ? ` · último uso ${String(info.last_used_at).slice(0, 10)}` : ' · nunca usada'}
-          </span>
+          <span className="ml-2 font-sans text-xs text-slate-400">criada {String(info.created_at || '').slice(0, 10)}
+            {info.last_used_at ? ` · último uso ${String(info.last_used_at).slice(0, 10)}` : ' · nunca usada'}</span>
         </p>
       ) : <p className="text-sm text-slate-400">Nenhuma API key ativa.</p>}
     </Section>
   )
 }
 
-// ---- Projetos ---- //
+// ---- Projetos + planos ---- //
 function NewProject({ onDone }) {
   const [open, setOpen] = useState(false)
-  const [url, setUrl] = useState('')
-  const [name, setName] = useState('')
-  const [err, setErr] = useState('')
-  const [busy, setBusy] = useState(false)
+  const [url, setUrl] = useState(''); const [name, setName] = useState('')
+  const [err, setErr] = useState(''); const [busy, setBusy] = useState(false)
   async function create() {
     setBusy(true); setErr('')
     try { await api('/api/gate/projects', { method: 'POST', body: JSON.stringify({ url, name }) }); setOpen(false); setUrl(''); setName(''); onDone() }
     catch (e) { setErr(e.message) } finally { setBusy(false) }
   }
-  if (!open) return <button onClick={() => setOpen(true)} className={smBrand}>+ Novo projeto</button>
+  if (!open) return <button onClick={() => setOpen(true)} className={smOutline}>+ Novo projeto</button>
   return (
     <div className="grid gap-3 sm:grid-cols-2">
-      <Field label="Nome do projeto" placeholder="Ex: Meu App" value={name} onChange={(e) => setName(e.target.value)} />
-      <Field label="URL do site" placeholder="https://meuapp.com.br" value={url} onChange={(e) => setUrl(e.target.value)} />
+      <label className="block"><span className="mb-1 block text-sm font-medium text-slate-200">Nome do projeto</span>
+        <input placeholder="Ex: Meu App" value={name} onChange={(e) => setName(e.target.value)} className="h-12 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-base text-slate-100 focus:border-brand-500 focus:outline-none" /></label>
+      <label className="block"><span className="mb-1 block text-sm font-medium text-slate-200">URL do site (domínio verificável)</span>
+        <input placeholder="https://meuapp.com.br" value={url} onChange={(e) => setUrl(e.target.value)} className="h-12 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-base text-slate-100 focus:border-brand-500 focus:outline-none" /></label>
       <div className="flex flex-wrap items-center gap-2 sm:col-span-2">
         <button onClick={create} disabled={busy || !url} className={smBrand}>{busy ? 'Criando…' : 'Criar projeto'}</button>
         <button onClick={() => setOpen(false)} className="text-sm text-slate-400 hover:text-slate-200">cancelar</button>
@@ -124,43 +240,29 @@ function PlanBadge({ plan, allowedCount }) {
   return (
     <div className="mt-4 rounded-xl border border-slate-800 bg-slate-900/40 p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <span className="text-sm font-semibold text-white">
-          Plano {plan.name} <span className="font-normal text-slate-400">· {pr.count} checks incluídos</span>
-        </span>
-        {pr.next && (
-          <a href="/security-gate#planos" className="text-xs font-semibold text-brand-400 hover:underline">
-            Upgrade → {pr.next.label} ({pr.next.checks} checks)
-          </a>
-        )}
+        <span className="text-sm font-semibold text-white">Plano {plan.name} <span className="font-normal text-slate-400">· {pr.count} checks incluídos</span></span>
+        {pr.next && <a href="/security-gate#planos" className="text-xs font-semibold text-brand-400 hover:underline">Upgrade → {pr.next.label} ({pr.next.checks} checks)</a>}
       </div>
-      <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-800">
-        <div className="h-full rounded-full bg-brand-500 transition-all" style={{ width: `${pr.pct}%` }} />
-      </div>
+      <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-slate-800"><div className="h-full rounded-full bg-brand-500 transition-all" style={{ width: `${pr.pct}%` }} /></div>
       <p className="mt-1 text-xs text-slate-400">{pr.count}/{pr.total} checks</p>
     </div>
   )
 }
 
-function Projects({ onSelect }) {
-  const [data, setData] = useState(null)
-  const [err, setErr] = useState('')
+function Projects({ onSelect, refreshKey }) {
+  const [data, setData] = useState(null); const [err, setErr] = useState('')
   const load = useCallback(() => api('/api/gate/projects').then(setData).catch((e) => setErr(e.message)), [])
-  useEffect(load, [load])
+  useEffect(() => { load() }, [load, refreshKey])
   const projects = data?.projects || []
-
   return (
     <Section title={`Meus Projetos (${projects.length})`} right={<NewProject onDone={load} />}>
       {err && <p className="text-sm text-red-400">{err}</p>}
-      {projects.length === 0 ? <p className="text-sm text-slate-400">Nenhum projeto ainda. Crie um acima.</p> : (
+      {projects.length === 0 ? <p className="text-sm text-slate-400">Nenhum projeto verificado. O “Novo scan” acima funciona sem projeto (scan avulso).</p> : (
         <ul className="space-y-2">
           {projects.map((p) => (
             <li key={p.id} className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-900/40 p-3">
-              <div className="min-w-0">
-                <div className="truncate font-semibold text-white">{p.domain}</div>
-                <div className="text-xs text-slate-400">
-                  {p.verified ? `✅ Verificado (${p.verification_method || '—'})` : '⏳ Não verificado'}
-                </div>
-              </div>
+              <div className="min-w-0"><div className="truncate font-semibold text-white">{p.domain}</div>
+                <div className="text-xs text-slate-400">{p.verified ? `✅ Verificado (${p.verification_method || '—'})` : '⏳ Não verificado'}</div></div>
               <button onClick={() => onSelect(p)} className="shrink-0 text-sm font-medium text-brand-400 hover:underline">Ver histórico →</button>
             </li>
           ))}
@@ -173,8 +275,7 @@ function Projects({ onSelect }) {
 
 // ---- Runs ---- //
 function RunDetail({ runId }) {
-  const [run, setRun] = useState(null)
-  const [err, setErr] = useState('')
+  const [run, setRun] = useState(null); const [err, setErr] = useState('')
   useEffect(() => { api(`/api/gate/runs/${runId}`).then((r) => setRun(r.run)).catch((e) => setErr(e.message)) }, [runId])
   if (err) return <p className="text-sm text-red-400">{err}</p>
   if (!run) return <p className="text-sm text-slate-400">Carregando…</p>
@@ -182,40 +283,24 @@ function RunDetail({ runId }) {
   return (
     <div className="mt-2 rounded-lg border border-slate-800 bg-slate-900/40 p-3">
       <ul className="space-y-1 text-sm text-slate-200">
-        {results.map((r, i) => (
-          <li key={i}><span>{ICON[r.status] || '•'}</span> <span className="text-slate-400">[{r.severity}]</span> <strong>{r.check}</strong>: {r.detail}</li>
-        ))}
+        {results.map((r, i) => (<li key={i}><span>{ICON[r.status] || '•'}</span> <span className="text-slate-400">[{r.severity}]</span> <strong>{r.check}</strong>: {r.detail}</li>))}
       </ul>
       {(run.checks_blocked || []).length > 0 && (
-        <div className="mt-3 rounded-md bg-slate-800/60 p-2 text-sm text-slate-300">
-          🔒 {run.checks_blocked.length} checks bloqueados no seu plano:
-          {' '}{run.checks_blocked.slice(0, 5).join(', ')}{run.checks_blocked.length > 5 ? '…' : ''}
-          {' '}<a href="/security-gate#planos" className="font-medium text-brand-400">Fazer upgrade →</a>
-        </div>
-      )}
-      {run.metadata && Object.keys(run.metadata).length > 0 && (
-        <p className="mt-2 text-xs text-slate-500">Metadata: {Object.entries(run.metadata).map(([k, v]) => `${k}=${v}`).join(' · ')}</p>
+        <div className="mt-3 rounded-md bg-slate-800/60 p-2 text-sm text-slate-300">🔒 {run.checks_blocked.length} checks bloqueados no seu plano:{' '}{run.checks_blocked.slice(0, 5).join(', ')}{run.checks_blocked.length > 5 ? '…' : ''}{' '}<a href="/security-gate#planos" className="font-medium text-brand-400">Fazer upgrade →</a></div>
       )}
     </div>
   )
 }
 
 function Runs({ project, onBack }) {
-  const [runs, setRuns] = useState(null)
-  const [err, setErr] = useState('')
-  const [openRun, setOpenRun] = useState(null)
-  useEffect(() => {
-    api(`/api/gate/runs?project_id=${project.id}`).then((r) => setRuns(r.runs)).catch((e) => setErr(e.message))
-  }, [project.id])
-
+  const [runs, setRuns] = useState(null); const [err, setErr] = useState(''); const [openRun, setOpenRun] = useState(null)
+  useEffect(() => { api(`/api/gate/runs?project_id=${project.id}`).then((r) => setRuns(r.runs)).catch((e) => setErr(e.message)) }, [project.id])
   return (
     <Section title={`${project.domain} — Histórico`} right={<button onClick={onBack} className="text-sm text-slate-400 hover:text-slate-200">← Voltar</button>}>
       {err && <p className="text-sm text-red-400">{err}</p>}
-      {!runs ? <p className="text-sm text-slate-400">Carregando…</p> : runs.length === 0 ? (
-        <p className="text-sm text-slate-400">Nenhum run ainda. Rode o Gate no seu CI/CD (veja a integração abaixo).</p>
-      ) : (
+      {!runs ? <p className="text-sm text-slate-400">Carregando…</p> : runs.length === 0 ? <p className="text-sm text-slate-400">Nenhum run ainda.</p> : (
         <table className="w-full text-sm">
-          <thead><tr className="text-left text-slate-400"><th className="py-1">Data</th><th>Score</th><th>Status</th><th>CI</th><th></th></tr></thead>
+          <thead><tr className="text-left text-slate-400"><th className="py-1">Data</th><th>Score</th><th>Status</th><th></th></tr></thead>
           <tbody>
             {runs.map((r) => (
               <Fragment key={r.id}>
@@ -223,10 +308,9 @@ function Runs({ project, onBack }) {
                   <td className="py-1.5">{String(r.created_at || '').slice(0, 16).replace('T', ' ')}</td>
                   <td><span style={{ color: semColor(r.score) }} className="font-bold">{r.score}</span></td>
                   <td>{r.passed ? '✅ PASS' : '❌ FAIL'}</td>
-                  <td className="text-xs text-slate-400">{r.metadata?.ci || 'manual'}</td>
                   <td><button onClick={() => setOpenRun(openRun === r.id ? null : r.id)} className="text-brand-400">{openRun === r.id ? 'fechar' : 'ver'}</button></td>
                 </tr>
-                {openRun === r.id && <tr><td colSpan={5}><RunDetail runId={r.id} /></td></tr>}
+                {openRun === r.id && <tr><td colSpan={4}><RunDetail runId={r.id} /></td></tr>}
               </Fragment>
             ))}
           </tbody>
@@ -236,59 +320,107 @@ function Runs({ project, onBack }) {
   )
 }
 
+// ---- Histórico geral (todos os runs da conta) ---- //
+function AllRuns({ refreshKey }) {
+  const [runs, setRuns] = useState(null); const [err, setErr] = useState('')
+  useEffect(() => { api('/api/gate/runs?limit=20').then((r) => setRuns(r.runs)).catch((e) => setErr(e.message)) }, [refreshKey])
+  return (
+    <Section title="Histórico de scans">
+      {err && <p className="text-sm text-red-400">{err}</p>}
+      {!runs ? <p className="text-sm text-slate-400">Carregando…</p> : runs.length === 0 ? <p className="text-sm text-slate-400">Nenhum scan ainda.</p> : (
+        <ul className="divide-y divide-slate-800">
+          {runs.map((r) => (
+            <li key={r.id} className="flex items-center justify-between gap-3 py-2 text-sm">
+              <span className="min-w-0 truncate text-slate-300">{String(r.url || '').replace(/^https?:\/\//, '')}</span>
+              <span className="flex shrink-0 items-center gap-3">
+                <span style={{ color: semColor(r.score) }} className="font-bold">{r.score}</span>
+                <span>{r.passed ? '✅' : '❌'}</span>
+                <span className="text-xs text-slate-500">{String(r.created_at || '').slice(0, 10)}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Section>
+  )
+}
+
 export default function GatePortal() {
+  const [status, setStatus] = useState(null)     // null=carregando
   const [selected, setSelected] = useState(null)
   const [firstUrl, setFirstUrl] = useState(DEFAULT_URL)
-  const [showOnboard, setShowOnboard] = useState(null)   // null=carregando · bool
+  const [lastRun, setLastRun] = useState(null)
+  const [showOnboard, setShowOnboard] = useState(false)
+  const [refreshKey, setRefreshKey] = useState(0)
+
+  const refresh = useCallback(() => setRefreshKey((k) => k + 1), [])
+  const reloadStatus = useCallback(() => api('/api/account/gate/status').then(setStatus).catch(() => setStatus({ error: true })), [])
 
   useEffect(() => {
-    api('/api/gate/projects').then((r) => {
-      const p = (r.projects || [])[0]
-      if (p) setFirstUrl(p.url || `https://${p.domain}`)
-    }).catch(() => {})
-    let done = false
-    try { done = !!localStorage.getItem(ONBOARDED_KEY) } catch { /* */ }
-    if (done) { setShowOnboard(false); return }
-    api('/api/gate/runs?limit=1')
-      .then((r) => setShowOnboard((r.runs || []).length === 0))
-      .catch(() => setShowOnboard(false))
+    let alive = true
+    ;(async () => {
+      let st = await api('/api/account/gate/status').catch(() => null)
+      // Quebra 2: conta owner sem Gate → ativa automaticamente e revela o dashboard.
+      if (st && !st.is_developer) {
+        try {
+          const act = await api('/api/account/gate/activate', { method: 'POST' })
+          if (act.api_key) { try { sessionStorage.setItem('klarim_gate_new_key', act.api_key) } catch { /* */ } }
+          st = await api('/api/account/gate/status').catch(() => st)
+        } catch { /* segue com o status atual */ }
+      }
+      if (!alive) return
+      setStatus(st || { error: true })
+      const runsRes = await api('/api/gate/runs?limit=1').catch(() => ({ runs: [] }))
+      const first = (runsRes.runs || [])[0]
+      if (alive && first) setLastRun(first)
+      let onboarded = false
+      try { onboarded = !!localStorage.getItem(ONBOARDED_KEY) } catch { /* */ }
+      if (alive) setShowOnboard(!onboarded && shouldShowWizard(st, (runsRes.runs || []).length))
+      const proj = await api('/api/gate/projects').catch(() => ({ projects: [] }))
+      const p = (proj.projects || [])[0]
+      if (alive && p) setFirstUrl(p.url || `https://${p.domain}`)
+    })()
+    return () => { alive = false }
   }, [])
 
   const dismissOnboard = () => setShowOnboard(false)
-  const completeOnboard = () => {
-    try { localStorage.setItem(ONBOARDED_KEY, '1') } catch { /* */ }
-    setShowOnboard(false)
+  const completeOnboard = () => { try { localStorage.setItem(ONBOARDED_KEY, '1') } catch { /* */ } setShowOnboard(false); refresh() }
+  const onScanned = () => { api('/api/gate/runs?limit=1').then((r) => setLastRun((r.runs || [])[0] || null)).catch(() => {}); reloadStatus(); refresh() }
+
+  if (!status) {
+    return <div className="py-10 text-center text-sm text-slate-400">Carregando o Security Gate…</div>
   }
 
   return (
     <div>
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-white">Security Gate</h1>
-        <p className="mt-1 text-sm text-slate-300">Scan de segurança pós-deploy no seu CI/CD.</p>
+        <p className="mt-1 text-sm text-slate-300">Scan de segurança pós-deploy — 86 verificações no seu CI/CD.</p>
       </div>
 
-      {showOnboard && (
-        <div className="mb-6">
-          <GateOnboarding onDone={completeOnboard} onSkip={dismissOnboard} />
-        </div>
+      {!status.error && <StatusBar status={status} lastRun={lastRun} onUpgraded={reloadStatus} />}
+
+      {showOnboard ? (
+        <GateOnboarding onDone={completeOnboard} onSkip={dismissOnboard} kycCompleted={!!status.kyc_completed} />
+      ) : (
+        <>
+          <Section title="🔎 Novo scan" right={null}>
+            <p className="mb-2 text-sm text-slate-300">Escaneie qualquer URL na hora (scan avulso, sem verificar domínio).</p>
+            <NewScan onScanned={onScanned} />
+          </Section>
+
+          <ApiKeyCard />
+          {selected ? <Runs project={selected} onBack={() => setSelected(null)} /> : <Projects onSelect={setSelected} refreshKey={refreshKey} />}
+          <GateVendors />
+
+          <Section title="⚙️ Integração no CI/CD" right={<a href="/docs/gate/github-actions" className="text-sm font-medium text-brand-400 hover:underline">Ver documentação →</a>}>
+            <p className="mb-3 text-sm text-slate-300">Guarde a API key como o secret <code className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-100">KLARIM_KEY</code> e adicione ao seu pipeline (URL já preenchida):</p>
+            <GateIntegrationTabs url={firstUrl} />
+          </Section>
+
+          <AllRuns refreshKey={refreshKey} />
+        </>
       )}
-
-      <ApiKeyCard />
-      {selected
-        ? <Runs project={selected} onBack={() => setSelected(null)} />
-        : <Projects onSelect={setSelected} />}
-
-      {/* Fornecedores — só aparece para contas Enterprise (self-hide via 403). */}
-      <GateVendors />
-
-      <Section title="⚙️ Integração no CI/CD"
-        right={<a href="/docs/gate/github-actions" className="text-sm font-medium text-brand-400 hover:underline">Ver documentação →</a>}>
-        <p className="mb-3 text-sm text-slate-300">
-          Guarde a API key como o secret <code className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-100">KLARIM_KEY</code> e
-          adicione ao seu pipeline (a URL do projeto já vem preenchida):
-        </p>
-        <GateIntegrationTabs url={firstUrl} />
-      </Section>
     </div>
   )
 }

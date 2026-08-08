@@ -2066,6 +2066,31 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   (Prompt 2). **+39 testes** (`test_kl153_backend.py`); 6 FakeStores dos testes KL-151 atualizados (audit
   kwargs, KYC fields, `list_gate_projects`, scan avulso). **2277 pytest passed.** Docs: `docs/API.md`,
   `docs/SECURITY.md` §12. Relatório: `claude/reports/KL-153_P1_report.md`.
+- **KL-153 (Prompt 2/2)** — frontend: separa os DOIS públicos (empresa × dev) + redesenha a experiência do
+  Gate ✅ (fecha o KL-153). **Reforço:** os testes frontend são **`node --test`** (não Vitest), sobre lógica
+  PURA de `src/lib/*.js` — os 29 comportamentos do card viraram testes de função pura (padrão KL-89), os
+  componentes as consomem. **2 libs novas:** `web/src/lib/nav.js` (`EMPRESA_LINKS`/`DEV_LINKS`/`PRODUCT_CARDS`/
+  `authState`/`dashboardMenu`) e `web/src/lib/gate/ux.js` (`normalizeUrl`, `maskCPF`/`isValidCPF` [espelha o
+  backend], `categorySummary`/`groupChecksByCategory`/`showChecksDetail`, `kycBannerVisible`, `showGateBridge`,
+  `wizardNext`/`shouldShowWizard`, `formatCountdown`/`rateLimitMessage`, `usageText`/`upgradeTarget`,
+  `ctaState`/`ctaLabel`, `signupBody`). **(1) Header** (`Header.astro`+`NavDropdown.astro`): dropdown único
+  "Desenvolvedor" → **"Para empresas ▼"** (verificar/monitoramento/setores/planos) + **"Para devs ▼"**
+  (Security Gate/docs/planos dev/API), CSP-safe (`<details>`, tap/click), **hambúrguer→drawer** no mobile.
+  **(2) Home** (`home/ProductSplit.astro`+`index.astro`): dual-card abaixo do hero (empresa "Verificar meu
+  site"→`#scan` × dev "Começar grátis"→`/security-gate`), linguagem separada; hero segue 1ª tela `min-h-[100dvh]`.
+  **(3) Bridge** (`ScanResultDetail.jsx`): card `<GateBridge>` ao fim do resultado do scan público ("86 pontos
+  adicionais" → `/security-gate`), só no sucesso. **(4) Wizard SCAN-FIRST 6 steps** (`GateOnboarding.jsx`
+  reescrito): URL→`POST /gate/scan` avulso→scanning→resumo(+banner KYC)→**KYC inline** (CPF mascarado/validado
+  →`POST /account/kyc`; "pular"→step 6)→completo (do run persistido `GET /gate/runs/{id}`, **não re-escaneia**)→
+  CI/CD. Pula KYC se `kyc_completed`. **(5) Dashboard** (`GatePortal.jsx` reescrito): status bar (score+plano+
+  uso/hora + **Upgrade inline** →`POST /account/gate/upgrade`→`checkout_url`), **Novo scan** avulso (modal,
+  resultado KYC-aware+banner), API key, projetos+planos, histórico; tokens KL-87. **(6) Menu:** "🔒 Security
+  Gate" no dropdown do usuário (owner E dev); o `/dashboard/gate` **auto-ativa** o Gate p/ owner (`activate` no
+  mount). **(7)** `cadastrar.astro` lê `?type=developer`→`SignupForm` envia `source=security-gate` (via
+  `signupBody`)+redirect `/dashboard/gate`. **(8) 429:** `rateLimitMessage`+countdown por `limit_type`.
+  **NÃO** alterou backend nem scanner. Sem rota Astro nova nem `public/*.js` novo → **nginx intocado**.
+  **+21 node --test → 187 pass**; `npm run build` OK. Validado no browser (dev): home/dual-card/dropdowns/
+  security-gate/auth-guard, zero erro no console. Relatório: `claude/reports/KL-153_P2_report.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

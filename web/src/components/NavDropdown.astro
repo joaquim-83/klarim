@@ -1,0 +1,16 @@
+---
+// KL-153 P2 — dropdown de navegação CSP-safe (<details>/<summary>, sem JS inline). Abre no
+// clique/tap (desktop e mobile). Usado pelo Header para "Para empresas" e "Para devs".
+const { label, links } = Astro.props;
+---
+<details class="group relative hidden sm:block">
+  <summary class="inline-flex min-h-[44px] cursor-pointer list-none items-center gap-1 rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white marker:content-none [&::-webkit-details-marker]:hidden">
+    {label}
+    <span class="text-[10px] transition-transform group-open:rotate-180" aria-hidden="true">▼</span>
+  </summary>
+  <div class="absolute right-0 top-full z-40 mt-1 w-56 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 py-1 shadow-2xl">
+    {links.map((l) => (
+      <a href={l.href} class="flex min-h-[44px] items-center px-4 text-sm text-slate-200 transition-colors hover:bg-slate-800 hover:text-white">{l.label}</a>
+    ))}
+  </div>
+</details>

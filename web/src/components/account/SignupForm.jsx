@@ -1,13 +1,16 @@
 import { useState } from 'react';
 import { apiPost } from '../../lib/api.js';
 import { field, btn, card, label, errorBox } from './ui.js';
+import { signupBody } from '../../lib/gate/ux.js';
 
 // Cadastro SEM senha (KL-99 — conta sem fricção). Um único campo (e-mail) → POST /account/signup
 // sem senha → conta nível 1 + e-mail de confirmação com link. O usuário já entra logado e cai no
 // dashboard (com banner de "confirme seu e-mail"); a senha pode ser definida depois, quando uma
 // ação sensível exigir (prompt de nível 1 → 2). Preserva url/role/invite/plan (KL-68/KL-44).
-export default function SignupForm({ email: initialEmail = '', url = '', redirect = '/dashboard', role = '', invite = '', plan = '' }) {
+// KL-153 P2: `source='security-gate'` → conta developer + API key (redirect p/ /dashboard/gate).
+export default function SignupForm({ email: initialEmail = '', url = '', redirect = '/dashboard', role = '', invite = '', plan = '', source = '' }) {
   const emailFromScan = !!initialEmail;
+  const isDev = source === 'security-gate';   // KL-153 P2
   const isTech = role === 'technician';   // KL-44 P3: perfil de profissional de TI
   const planName = plan === 'agency' ? 'Agency' : (plan === 'pro' ? 'Pro' : '');   // KL-44 P6
   const [email, setEmail] = useState(initialEmail);
@@ -34,9 +37,10 @@ export default function SignupForm({ email: initialEmail = '', url = '', redirec
     setError('');
     setBusy(true);
     // KL-99: sem `password` → conta nível 1 (sem senha). O backend envia o link de confirmação.
-    const { ok, status, data, error: err } = await apiPost('/account/signup', {
-      email, url: url || undefined,
-      role: role || undefined, invite: invite || undefined, plan: plan || undefined });
+    // KL-153: `source='security-gate'` cria conta developer + API key (via signupBody).
+    const { ok, status, data, error: err } = await apiPost('/account/signup',
+      signupBody({ email, url: url || undefined, role: role || undefined,
+        invite: invite || undefined, plan: plan || undefined, source: source || undefined }));
     setBusy(false);
     if (ok) { window.location.href = nextUrl(data); return; }
     if (status === 409) return setError('Já existe uma conta com este e-mail. Faça login.');
@@ -49,9 +53,10 @@ export default function SignupForm({ email: initialEmail = '', url = '', redirec
 
   return (
     <div className={card}>
-      <h1 className="text-2xl font-bold text-white">{isTech ? 'Crie seu perfil de profissional de TI' : (planName ? `Comece seu trial ${planName}` : 'Criar sua conta')}</h1>
+      <h1 className="text-2xl font-bold text-white">{isDev ? 'Comece com o Security Gate' : isTech ? 'Crie seu perfil de profissional de TI' : (planName ? `Comece seu trial ${planName}` : 'Criar sua conta')}</h1>
       <p className="mt-2 text-sm text-slate-400">
-        {isTech ? 'Gerencie os sites dos seus clientes em um só painel.'
+        {isDev ? 'Conta de desenvolvedor + API key na hora. Escaneie seu deploy e integre no CI/CD.'
+          : isTech ? 'Gerencie os sites dos seus clientes em um só painel.'
           : planName ? `Teste o plano ${planName} por 30 dias, sem cartão. Depois sua conta continua no Gratuito automaticamente.`
           : 'Só o seu e-mail. Sem senha para começar — você define depois, se quiser.'}
       </p>

@@ -94,12 +94,38 @@ export default function ScanResultDetail({ result, url = '', onRefresh = null })
 
       {details}
 
+      {/* KL-153 P2 — ponte scan-público → Security Gate. Só renderiza aqui (resultado pronto);
+          nunca em loading/erro (o componente só monta no sucesso). Linguagem de dev. */}
+      <GateBridge />
+
       <div className="text-center">
         <a href="/" className="inline-flex min-h-[44px] items-center px-1 text-sm text-brand-400 hover:text-brand-300">
           ← Pesquisar outro site
         </a>
       </div>
     </div>
+  );
+}
+
+// --- Ponte para o Security Gate (KL-153 P2) ------------------------------------------------- #
+function GateBridge() {
+  return (
+    <section className="rounded-2xl border border-slate-700 bg-slate-900/70 p-5 sm:p-6">
+      <div className="flex items-start gap-4">
+        <span className="mt-0.5 text-2xl" aria-hidden="true">{'</>'}</span>
+        <div className="min-w-0">
+          <h3 className="text-lg font-bold text-white">Quer ir mais fundo?</h3>
+          <p className="mt-1 text-sm text-slate-300">
+            O Security Gate verifica <strong className="text-white">86 pontos adicionais</strong> que o scan
+            de superfície não cobre: credenciais expostas, configurações de API, segurança do CI/CD e mais.
+          </p>
+          <a href="/security-gate"
+            className="mt-4 inline-flex min-h-[44px] items-center rounded-xl border border-brand-500 px-4 text-sm font-semibold text-brand-400 transition-colors hover:bg-brand-500 hover:text-[var(--accent-text)]">
+            Conhecer o Security Gate →
+          </a>
+        </div>
+      </div>
+    </section>
   );
 }
 

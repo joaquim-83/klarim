@@ -1,0 +1,130 @@
+// KL-153 P2 — testes da lógica pura da UX do Gate (node --test, sem deps).
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import {
+  normalizeUrl, maskCPF, isValidCPF, categorySummary, showChecksDetail, groupChecksByCategory,
+  kycBannerVisible, showGateBridge, wizardNext, shouldShowWizard, formatCountdown, rateLimitMessage,
+  usageText, upgradeTarget, ctaState, ctaLabel, signupBody,
+} from './ux.js'
+
+const VALID_CPF = '529.982.247-25'
+
+// --- URL --- //
+test('normalizeUrl: aceita domínio nu, http, https, localhost', () => {
+  assert.equal(normalizeUrl('example.com'), 'https://example.com')
+  assert.equal(normalizeUrl('https://x.com'), 'https://x.com')
+  assert.equal(normalizeUrl('http://localhost:3000'), 'http://localhost:3000')
+  assert.equal(normalizeUrl('  '), '')
+})
+
+// --- CPF (máscara + validação) --- //
+test('maskCPF: formata progressivamente', () => {
+  assert.equal(maskCPF('529'), '529')
+  assert.equal(maskCPF('529982'), '529.982')
+  assert.equal(maskCPF('52998224725'), '529.982.247-25')
+  assert.equal(maskCPF('529.982.247-25'), '529.982.247-25')
+  assert.equal(maskCPF('5299822472599'), '529.982.247-25')   // corta em 11 dígitos
+})
+
+test('isValidCPF: valida os 2 dígitos verificadores', () => {
+  assert.equal(isValidCPF(VALID_CPF), true)
+  assert.equal(isValidCPF('52998224725'), true)
+  assert.equal(isValidCPF('529.982.247-20'), false)   // DV errado
+  assert.equal(isValidCPF('111.111.111-11'), false)   // repetido
+  assert.equal(isValidCPF('529.982.247'), false)      // curto
+})
+
+// --- Resultado por KYC --- //
+test('categorySummary: devolve as categorias com contagens', () => {
+  const r = { categories: [{ name: 'headers', checks_total: 7, checks_passed: 3, status: 'fail' }] }
+  assert.equal(categorySummary(r).length, 1)
+  assert.equal(categorySummary({}).length, 0)
+})
+
+test('showChecksDetail: só no nível complete', () => {
+  assert.equal(showChecksDetail('complete'), true)
+  assert.equal(showChecksDetail('basic'), false)
+})
+
+test('groupChecksByCategory: agrupa preservando ordem', () => {
+  const g = groupChecksByCategory([
+    { category: 'ssl', check: 'a' }, { category: 'headers', check: 'b' }, { category: 'ssl', check: 'c' }])
+  assert.deepEqual(g.map((x) => x.name), ['ssl', 'headers'])
+  assert.equal(g[0].checks.length, 2)
+})
+
+test('kycBannerVisible: aparece enquanto não completo', () => {
+  assert.equal(kycBannerVisible('basic'), true)
+  assert.equal(kycBannerVisible('complete'), false)
+})
+
+// --- Bridge scan→Gate --- //
+test('showGateBridge: só com resultado (não loading/erro)', () => {
+  assert.equal(showGateBridge('result', { score: 80 }), true)
+  assert.equal(showGateBridge('progress', null), false)
+  assert.equal(showGateBridge('error', null), false)
+  assert.equal(showGateBridge('result', null), false)
+})
+
+// --- Wizard --- //
+test('wizardNext: fluxo 6 steps com KYC condicional', () => {
+  assert.equal(wizardNext(1), 2)
+  assert.equal(wizardNext(2), 3)
+  assert.equal(wizardNext(3, { kycCompleted: false }), 4)   // sem KYC → step KYC
+  assert.equal(wizardNext(3, { kycCompleted: true }), 5)    // com KYC → pula p/ completo
+  assert.equal(wizardNext(4, { skip: true }), 6)            // "pular por agora" → CI/CD
+  assert.equal(wizardNext(4, {}), 5)                        // confirmou KYC → completo
+  assert.equal(wizardNext(5), 6)
+})
+
+test('shouldShowWizard: só quando não há scans', () => {
+  assert.equal(shouldShowWizard({ is_developer: true }, 0), true)
+  assert.equal(shouldShowWizard({ is_developer: true }, 3), false)
+  assert.equal(shouldShowWizard(null, 0), false)
+})
+
+// --- Rate limit --- //
+test('formatCountdown: mm:ss', () => {
+  assert.equal(formatCountdown(305), '05:05')
+  assert.equal(formatCountdown(0), '00:00')
+  assert.equal(formatCountdown(-5), '00:00')
+})
+
+test('rateLimitMessage: mensagem contextual por limit_type', () => {
+  const u = rateLimitMessage('user', 3600)
+  assert.equal(u.showUpgrade, true)
+  assert.match(u.message, /plano Free/)
+  assert.match(rateLimitMessage('ip', 600).message, /IP/)
+  assert.match(rateLimitMessage('domain', 600).message, /domínio foi escaneado/)
+  assert.match(rateLimitMessage('interval', 300).message, /entre domínios diferentes/)
+  assert.match(rateLimitMessage('domain_interval', 300).message, /entre domínios diferentes/)
+})
+
+// --- Uso + upgrade --- //
+test('usageText: mostra uso e trata ilimitado', () => {
+  assert.equal(usageText(3, 5), '3 de 5 scans usados esta hora')
+  assert.match(usageText(3, -1), /ilimitado/)
+})
+
+test('upgradeTarget: próximo plano com preço', () => {
+  assert.equal(upgradeTarget('free').slug, 'pro')
+  assert.equal(upgradeTarget('free').price_display, 'R$ 49/mês')
+  assert.equal(upgradeTarget('pro').slug, 'team')
+  assert.equal(upgradeTarget('team'), null)
+})
+
+// --- CTA da landing --- //
+test('ctaState/ctaLabel: 3 estados', () => {
+  assert.equal(ctaState({ ok: false }), 'logged_out')
+  assert.equal(ctaState({ ok: true, gate_active: false }), 'inactive')
+  assert.equal(ctaState({ ok: true, gate_active: true }), 'active')
+  assert.equal(ctaLabel('logged_out').href, '/cadastrar?type=developer')
+  assert.equal(ctaLabel('active').href, '/dashboard/gate')
+  assert.equal(ctaLabel('inactive').action, 'activate')
+})
+
+// --- signup source=security-gate --- //
+test('signupBody: inclui source quando dev', () => {
+  assert.equal(signupBody({ email: 'a@b.com', source: 'security-gate' }).source, 'security-gate')
+  assert.equal('source' in signupBody({ email: 'a@b.com' }), false)
+})

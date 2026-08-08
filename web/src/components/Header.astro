@@ -1,9 +1,13 @@
 ---
 import Logo from './Logo.astro';
-// Contas de usuário (KL-51 f3). O cookie de sessão é HttpOnly (JS não lê), então o header
-// começa deslogado e o /header.js consulta /api/account/me para revelar o menu do usuário
-// (avatar + dropdown) e a busca persistente (KL-90 item 1). Script EXTERNO (coberto por
-// script-src 'self' na CSP) — não precisa de hash inline.
+import NavDropdown from './NavDropdown.astro';
+import { EMPRESA_LINKS, DEV_LINKS } from '../lib/nav.js';
+// KL-153 P2 — header separa os DOIS públicos: "Para empresas" (site/seguro/clientes) e "Para
+// devs" (deploy/pipeline/CI-CD). Substitui o dropdown único "Desenvolvedor" do KL-152.
+// Contas de usuário (KL-51 f3): o cookie de sessão é HttpOnly (JS não lê), então o header começa
+// deslogado e o /header.js consulta /api/account/me para revelar o menu do usuário (avatar +
+// dropdown) + a busca persistente (KL-90). Script EXTERNO (script-src 'self'), sem hash inline.
+// Dropdowns/drawer CSP-safe via <details>/<summary> (sem JS inline).
 ---
 
 <header class="absolute inset-x-0 top-0 z-30">
@@ -12,8 +16,7 @@ import Logo from './Logo.astro';
       <Logo />
     </a>
 
-    <!-- KL-90 item 1: busca persistente (pesquisar qualquer site de qualquer página).
-         Começa oculta; o /header.js revela para o usuário logado. -->
+    <!-- KL-90: busca persistente. Começa oculta; o /header.js revela para o usuário logado. -->
     <form action="/scan" method="GET" data-auth-search class="relative hidden max-w-xs flex-1">
       <input type="text" name="url" placeholder="Pesquisar site…" aria-label="Pesquisar site"
         class="h-11 w-full rounded-full border border-slate-700 bg-slate-800/60 pl-10 pr-3 text-sm text-white placeholder:text-slate-500 outline-none focus:border-brand-500" />
@@ -30,40 +33,37 @@ import Logo from './Logo.astro';
 
       <!-- Estado deslogado (padrão) -->
       <div data-auth="out" class="flex items-center gap-1">
+        <NavDropdown label="Para empresas" links={EMPRESA_LINKS} />
+        <NavDropdown label="Para devs" links={DEV_LINKS} />
         <a href="/blog" class="hidden min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white sm:inline-flex">Blog</a>
-        <!-- Dropdown "Desenvolvedor" (agrupa o Security Gate; a doc é interna a ele). CSP-safe:
-             <details>/<summary>, sem JS inline. Segue o breakpoint do Blog (sm+). -->
-        <details class="group relative hidden sm:block">
-          <summary class="inline-flex min-h-[44px] cursor-pointer list-none items-center gap-1 rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white marker:content-none [&::-webkit-details-marker]:hidden">
-            Desenvolvedor
-            <span class="text-[10px] transition-transform group-open:rotate-180" aria-hidden="true">▼</span>
+        <a href="/entrar" class="hidden min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white sm:inline-flex">Entrar</a>
+        <a href="/cadastrar" class="hidden min-h-[44px] items-center rounded-lg bg-brand-500 px-3.5 py-2 text-sm font-semibold text-[var(--accent-text)] transition-colors hover:bg-brand-400 active:scale-95 sm:inline-flex">Cadastrar</a>
+
+        <!-- Mobile: hambúrguer → drawer com as 2 seções separadas (CSP-safe, <details>). -->
+        <details class="group relative sm:hidden">
+          <summary class="inline-flex min-h-[44px] min-w-[44px] cursor-pointer list-none items-center justify-center rounded-lg text-slate-300 transition-colors hover:bg-slate-800 hover:text-white marker:content-none [&::-webkit-details-marker]:hidden" aria-label="Abrir menu">
+            <span class="text-xl group-open:hidden" aria-hidden="true">☰</span>
+            <span class="hidden text-xl group-open:inline" aria-hidden="true">✕</span>
           </summary>
-          <div class="absolute right-0 top-full z-40 mt-1 w-52 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 py-1 shadow-2xl">
-            <a href="/security-gate" class="flex min-h-[44px] items-center gap-2 px-4 text-sm text-slate-200 transition-colors hover:bg-slate-800 hover:text-white">🔒 Security Gate</a>
-            <a href="/docs/gate/github-actions" class="flex min-h-[44px] items-center gap-2 px-4 text-sm text-slate-400 transition-colors hover:bg-slate-800 hover:text-white">📖 Documentação</a>
+          <div class="absolute right-0 top-full z-40 mt-1 w-64 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 py-2 shadow-2xl">
+            <p class="px-4 pb-1 pt-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Para empresas</p>
+            {EMPRESA_LINKS.map((l) => (<a href={l.href} class="flex min-h-[44px] items-center px-4 text-sm text-slate-200 hover:bg-slate-800">{l.label}</a>))}
+            <p class="px-4 pb-1 pt-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Para devs</p>
+            {DEV_LINKS.map((l) => (<a href={l.href} class="flex min-h-[44px] items-center px-4 text-sm text-slate-200 hover:bg-slate-800">{l.label}</a>))}
+            <div class="mt-2 border-t border-slate-800 pt-1">
+              <a href="/blog" class="flex min-h-[44px] items-center px-4 text-sm text-slate-200 hover:bg-slate-800">Blog</a>
+              <a href="/entrar" class="flex min-h-[44px] items-center px-4 text-sm text-slate-200 hover:bg-slate-800">Entrar</a>
+              <a href="/cadastrar" class="flex min-h-[44px] items-center px-4 text-sm font-semibold text-brand-400 hover:bg-slate-800">Cadastrar →</a>
+            </div>
           </div>
         </details>
-        <a href="/planos" class="inline-flex min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Planos</a>
-        <a href="/entrar" class="inline-flex min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Entrar</a>
-        <a href="/cadastrar" class="inline-flex min-h-[44px] items-center rounded-lg bg-brand-500 px-3.5 py-2 text-sm font-semibold text-[var(--accent-text)] transition-colors hover:bg-brand-400 active:scale-95">Cadastrar</a>
       </div>
 
-      <!-- Estado logado (revelado pelo /header.js): Blog + Planos + menu do usuário (avatar). -->
+      <!-- Estado logado (revelado pelo /header.js): dropdowns + menu do usuário (avatar). -->
       <div data-auth="in" class="relative hidden items-center gap-1">
+        <NavDropdown label="Para empresas" links={EMPRESA_LINKS} />
+        <NavDropdown label="Para devs" links={DEV_LINKS} />
         <a href="/blog" class="hidden min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white sm:inline-flex">Blog</a>
-        <!-- Dropdown "Desenvolvedor" (agrupa o Security Gate; a doc é interna a ele). CSP-safe:
-             <details>/<summary>, sem JS inline. Segue o breakpoint do Blog (sm+). -->
-        <details class="group relative hidden sm:block">
-          <summary class="inline-flex min-h-[44px] cursor-pointer list-none items-center gap-1 rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white marker:content-none [&::-webkit-details-marker]:hidden">
-            Desenvolvedor
-            <span class="text-[10px] transition-transform group-open:rotate-180" aria-hidden="true">▼</span>
-          </summary>
-          <div class="absolute right-0 top-full z-40 mt-1 w-52 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 py-1 shadow-2xl">
-            <a href="/security-gate" class="flex min-h-[44px] items-center gap-2 px-4 text-sm text-slate-200 transition-colors hover:bg-slate-800 hover:text-white">🔒 Security Gate</a>
-            <a href="/docs/gate/github-actions" class="flex min-h-[44px] items-center gap-2 px-4 text-sm text-slate-400 transition-colors hover:bg-slate-800 hover:text-white">📖 Documentação</a>
-          </div>
-        </details>
-        <a href="/planos" class="inline-flex min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white">Planos</a>
         <button type="button" id="user-menu-btn" aria-label="Menu do usuário"
           class="inline-flex h-10 w-10 items-center justify-center rounded-full bg-brand-500 text-sm font-bold text-[var(--accent-text)] transition-transform hover:scale-105">
           <span id="user-initial">👤</span>
@@ -74,6 +74,9 @@ import Logo from './Logo.astro';
             <p id="user-email" class="truncate text-xs text-slate-400"></p>
           </div>
           <a href="/dashboard" class="flex min-h-[44px] items-center px-4 text-sm text-slate-200 hover:bg-slate-800">Meu dashboard</a>
+          <!-- KL-153: Security Gate visível p/ TODOS os tipos de conta; o /dashboard/gate ativa
+               o Gate sozinho quando a conta ainda é owner. -->
+          <a href="/dashboard/gate" class="flex min-h-[44px] items-center gap-2 px-4 text-sm text-slate-200 hover:bg-slate-800">🔒 Security Gate</a>
           <a href="/dashboard/conta" class="flex min-h-[44px] items-center px-4 text-sm text-slate-200 hover:bg-slate-800">Minha conta</a>
           <button type="button" data-logout class="flex min-h-[44px] w-full items-center px-4 text-left text-sm text-slate-400 hover:bg-slate-800 hover:text-white">Sair</button>
         </div>
@@ -82,8 +85,6 @@ import Logo from './Logo.astro';
   </nav>
 </header>
 
-<!-- ?v= = cache-busting (padrão do projeto, como theme.js?v=2). Sem a versão, o Cloudflare
-     cacheou o HTML de fallback do SSR durante a janela do deploy (o arquivo ainda não existia
-     no astro) e passou a servir text/html → o browser bloqueia o script (nosniff) e o login
-     não togglava. Bump da versão a cada alteração deste arquivo. -->
+<!-- ?v= = cache-busting (padrão do projeto). Sem a versão, o Cloudflare cacheou o HTML de fallback
+     do SSR na janela do deploy → o browser bloqueia o script (nosniff). Bump a cada alteração. -->
 <script src="/header.js?v=3" is:inline></script>

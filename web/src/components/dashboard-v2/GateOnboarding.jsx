@@ -1,215 +1,257 @@
 import { useEffect, useState } from 'react'
-import { card, brandBtn, outlineBtn } from './shared.js'
-import { ONBOARDING_PLATFORMS, buildSnippet, secretSteps, DEFAULT_URL, SECRET_NAME }
-  from '../../lib/gate/snippets.js'
-import GateCodeBlock, { CopyBtn } from './GateCodeBlock.jsx'
+import { card, brandBtn } from './shared.js'
+import {
+  normalizeUrl, maskCPF, isValidCPF, categorySummary, groupChecksByCategory, wizardNext,
+} from '../../lib/gate/ux.js'
+import GateIntegrationTabs from './GateIntegrationTabs.jsx'
 
-// KL-152 P1 — wizard de onboarding (5 steps) que guia o dev até o 1º scan. Aparece quando
-// `gate_runs` está vazio; dismissível ("Pular"), reaparece até o 1º scan; some após completar
-// (flag em localStorage). Estado 100% no React (a escolha de plataforma não vai ao backend).
-// A key crua só é exibida no Step 2 se veio da ativação (sessionStorage) OU se o dev gerar uma nova.
+// KL-153 P2 — wizard SCAN-FIRST (6 steps): 1 URL → 2 scanning → 3 resumo → 4 KYC → 5 completo →
+// 6 CI/CD. Consome o scan AVULSO (`POST /api/gate/scan` sem project_id, cookie de sessão) e o KYC
+// (`POST /api/account/kyc`). O resultado COMPLETO (step 5) vem do run persistido
+// (`GET /api/gate/runs/{id}`) — não re-escaneia (o rate limit por domínio barraria). A lógica pura
+// (normalização de URL, CPF, agregação por categoria, transições) vive em ../../lib/gate/ux.js.
 
-const SESSION_KEY = 'klarim_gate_new_key'   // key crua recém-gerada (ativação/registro/regenerar)
+const SESSION_KEY = 'klarim_gate_new_key'
+const sema = (s) => (s >= 90 ? '🟢' : s >= 50 ? '🟡' : '🔴')
 
 async function api(path, opts = {}) {
-  const r = await fetch(path, { headers: opts.body ? { 'Content-Type': 'application/json' } : {}, ...opts })
-  if (!r.ok) { let d = `Erro ${r.status}`; try { d = (await r.json()).detail || d } catch { /* */ } throw new Error(d) }
-  return r.json()
+  const r = await fetch(path, {
+    credentials: 'include',
+    headers: opts.body ? { 'Content-Type': 'application/json' } : {}, ...opts,
+  })
+  const data = await r.json().catch(() => ({}))
+  if (!r.ok) { const e = new Error(data.detail || `Erro ${r.status}`); e.status = r.status; e.data = data; throw e }
+  return data
 }
 
-function StepShell({ n, title, children, onSkip }) {
+function Shell({ n, title, children }) {
   return (
     <div className={`${card} border-brand-500/40`}>
       <div className="mb-4 flex items-center justify-between gap-3">
         <h3 className="text-lg font-bold text-white">{title}</h3>
-        <span className="shrink-0 rounded-full bg-slate-800 px-2.5 py-1 text-xs font-medium text-slate-300">
-          Step {n} de 5
-        </span>
+        <span className="shrink-0 rounded-full bg-slate-800 px-2.5 py-1 text-xs font-medium text-slate-300">Passo {n} de 6</span>
       </div>
       {children}
-      {onSkip && (
-        <div className="mt-5 text-right">
-          <button type="button" onClick={onSkip} className="text-sm text-slate-400 hover:text-slate-200">
-            Pular wizard →
-          </button>
-        </div>
-      )}
     </div>
   )
 }
 
-const sema = (s) => (s >= 90 ? '🟢' : s >= 50 ? '🟡' : '🔴')
+function CategoryRows({ cats }) {
+  return (
+    <ul className="mt-4 space-y-1.5">
+      {cats.map((c) => {
+        const ok = (c.status || (c.checks_failed > 0 ? 'fail' : 'pass')) === 'pass'
+        return (
+          <li key={c.name} className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2 text-sm">
+            <span className="font-medium capitalize text-slate-100">{c.name.replace(/_/g, ' ')}</span>
+            <span className={ok ? 'text-green-400' : 'text-red-400'}>
+              {c.checks_passed} de {c.checks_total} {ok ? '✅' : '❌'}
+            </span>
+          </li>
+        )
+      })}
+    </ul>
+  )
+}
 
-export default function GateOnboarding({ onDone, onSkip }) {
+export default function GateOnboarding({ onDone, onSkip, kycCompleted = false }) {
   const [step, setStep] = useState(1)
-  const [platform, setPlatform] = useState(null)
-  const [url, setUrl] = useState(DEFAULT_URL)
+  const [url, setUrl] = useState('')
+  const [result, setResult] = useState(null)   // resposta do /gate/scan (basic OU complete)
+  const [fullRun, setFullRun] = useState(null)  // run detalhado (results completos) p/ o step 5
+  const [err, setErr] = useState('')
+  const [busy, setBusy] = useState(false)
+  // KYC
+  const [cpf, setCpf] = useState('')
+  const [address, setAddress] = useState('')
+  const [phone, setPhone] = useState('')
   const [fullKey, setFullKey] = useState('')
-  const [keyInfo, setKeyInfo] = useState(null)
-  const [genBusy, setGenBusy] = useState(false)
-  const [firstRun, setFirstRun] = useState(null)
 
-  // Dados no mount: key crua (sessionStorage), metadados da key e a URL do 1º projeto.
-  useEffect(() => {
-    try { const k = sessionStorage.getItem(SESSION_KEY); if (k) setFullKey(k) } catch { /* */ }
-    api('/api/account/gate/key-info').then(setKeyInfo).catch(() => {})
-    api('/api/gate/projects').then((r) => {
-      const p = (r.projects || [])[0]
-      if (p) setUrl(p.url || `https://${p.domain}`)
-    }).catch(() => {})
-  }, [])
+  useEffect(() => { try { const k = sessionStorage.getItem(SESSION_KEY); if (k) setFullKey(k) } catch { /* */ } }, [])
 
-  // Step 4: polling do 1º run a cada 10s.
-  useEffect(() => {
-    if (step !== 4 || firstRun) return undefined
-    let alive = true
-    const tick = () => api('/api/gate/runs?limit=1')
-      .then((r) => { const run = (r.runs || [])[0]; if (alive && run) setFirstRun(run) })
-      .catch(() => {})
-    tick()
-    const iv = setInterval(tick, 10000)
-    return () => { alive = false; clearInterval(iv) }
-  }, [step, firstRun])
-
-  async function generateKey() {
-    setGenBusy(true)
+  async function runScan() {
+    const scanUrl = normalizeUrl(url)
+    if (!scanUrl) { setErr('Digite a URL do seu projeto.'); return }
+    setErr(''); setBusy(true); setStep(2)
     try {
-      const r = await api('/api/account/gate/regenerate-key', { method: 'POST' })
-      if (r.api_key) {
-        setFullKey(r.api_key)
-        try { sessionStorage.setItem(SESSION_KEY, r.api_key) } catch { /* */ }
-      }
-    } catch { /* mantém o masked */ } finally { setGenBusy(false) }
+      const r = await api('/api/gate/scan', { method: 'POST', body: JSON.stringify({ url: scanUrl }) })
+      setResult(r)
+      setStep(3)
+    } catch (e) {
+      setErr(e.status === 429 ? (e.data?.detail || 'Limite de consultas. Aguarde um pouco.') : e.message)
+      setStep(1)
+    } finally { setBusy(false) }
   }
 
-  const finish = () => {
-    try { sessionStorage.removeItem(SESSION_KEY) } catch { /* */ }
-    onDone?.()
+  async function loadFullRun() {
+    if (!result?.run_id) { setStep(5); return }
+    try { const r = await api(`/api/gate/runs/${result.run_id}`); setFullRun(r.run) } catch { /* usa o resumo */ }
+    setStep(5)
   }
 
-  // ---- Step 1: escolher CI/CD ---- //
+  async function submitKyc() {
+    if (!isValidCPF(cpf)) { setErr('CPF inválido. Verifique os dígitos.'); return }
+    setErr(''); setBusy(true)
+    try {
+      await api('/api/account/kyc', { method: 'POST', body: JSON.stringify({ cpf, address, phone }) })
+      await loadFullRun()   // step 5 com o resultado completo
+    } catch (e) {
+      setErr(e.status === 409 ? 'Este CPF já está vinculado a outra conta.'
+        : e.status === 422 ? 'CPF inválido. Verifique os dígitos e tente novamente.'
+        : e.message)
+    } finally { setBusy(false) }
+  }
+
+  const skipKyc = () => setStep(wizardNext(4, { skip: true }))   // → 6 (CI/CD com o resumo)
+  const finish = () => { try { sessionStorage.removeItem(SESSION_KEY) } catch { /* */ } onDone?.() }
+
+  // ---- Step 1: URL ---- //
   if (step === 1) {
     return (
-      <StepShell n={1} title="Configurar o Security Gate" onSkip={onSkip}>
-        <p className="mb-4 text-sm text-slate-300">Escolha onde roda o seu CI/CD:</p>
-        <div className="flex flex-wrap gap-2">
-          {ONBOARDING_PLATFORMS.map((p) => (
-            <button key={p.id} type="button"
-              onClick={() => { setPlatform(p.id); setStep(2) }}
-              className="min-h-[44px] rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-200 transition-colors hover:border-brand-500 hover:bg-slate-800">
-              {p.label}
-            </button>
-          ))}
+      <Shell n={1} title="Digite a URL do seu projeto">
+        <p className="mb-3 text-sm text-slate-300">Qualquer formato — o Gate escaneia o deploy no ar (sem verificar domínio).</p>
+        <label className="block">
+          <span className="mb-1 block text-sm font-medium text-slate-200">URL do projeto</span>
+          <input type="text" value={url} onChange={(e) => setUrl(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') runScan() }}
+            placeholder="https://meuapp.com  ·  meuapp.com  ·  http://localhost:3000"
+            className="h-12 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-base text-slate-100 placeholder:text-slate-500 focus:border-brand-500 focus:outline-none" />
+        </label>
+        {err && <p className="mt-2 text-sm text-red-400">{err}</p>}
+        <div className="mt-5 flex flex-wrap items-center gap-3">
+          <button type="button" onClick={runScan} disabled={busy} className={brandBtn}>Escanear →</button>
+          {onSkip && <button type="button" onClick={onSkip} className="text-sm text-slate-400 hover:text-slate-200">Pular wizard →</button>}
         </div>
-      </StepShell>
+      </Shell>
     )
   }
 
-  const plat = platform || 'github'
-  const sec = secretSteps(plat)
-
-  // ---- Step 2: adicionar o secret ---- //
+  // ---- Step 2: scanning ---- //
   if (step === 2) {
     return (
-      <StepShell n={2} title="Adicione a API key como secret" onSkip={onSkip}>
-        <ol className="space-y-2 text-sm text-slate-300">
-          <li><span className="text-slate-400">1.</span> Vá em <strong className="text-white">{sec.where}</strong></li>
-          <li><span className="text-slate-400">2.</span> Nome do secret: <code className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-100">{sec.name}</code></li>
-          {sec.flags.length > 0 && (
-            <li><span className="text-slate-400">3.</span> Marque: {sec.flags.map((f) => (
-              <span key={f} className="mr-1 rounded bg-slate-800 px-1.5 py-0.5 text-xs text-slate-100">☑ {f}</span>))}</li>
-          )}
-        </ol>
-        <div className="mt-4">
-          <p className="mb-1 text-sm font-medium text-slate-200">Valor:</p>
-          {fullKey ? (
-            <div className="flex items-center gap-2">
-              <code className="min-w-0 flex-1 truncate rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 font-mono text-sm text-slate-100">{fullKey}</code>
-              <CopyBtn text={fullKey} />
-            </div>
-          ) : (
-            <div className="rounded-lg border border-slate-700 bg-slate-800/60 p-3 text-sm text-slate-300">
-              <p>Sua key foi exibida <strong className="text-white">uma única vez</strong> ao ativar
-                {keyInfo?.prefix ? <> (prefixo <code className="text-slate-100">{keyInfo.prefix}…</code>)</> : null}.
-                Se não a guardou, gere uma nova:</p>
-              <button type="button" onClick={generateKey} disabled={genBusy}
-                className={`mt-3 ${outlineBtn}`}>
-                {genBusy ? 'Gerando…' : 'Gerar nova key'}
-              </button>
-              <p className="mt-2 text-xs text-slate-500">A anterior continua válida por 1h (nenhum pipeline em andamento quebra).</p>
-            </div>
-          )}
-          {sec.exportLine && (
-            <p className="mt-2 text-xs text-slate-400">No terminal: <code className="text-slate-200">{sec.exportLine}{fullKey || 'KLM_…'}</code></p>
-          )}
+      <Shell n={2} title="Escaneando…">
+        <div className="py-6 text-center">
+          <div className="mx-auto h-8 w-8 animate-spin rounded-full border-2 border-slate-600 border-t-brand-500" aria-hidden="true" />
+          <p className="mt-3 text-sm text-slate-300">Rodando as verificações de segurança em {normalizeUrl(url)}…</p>
+          <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-slate-800">
+            <div className="h-full w-2/3 animate-pulse rounded-full bg-brand-500" />
+          </div>
         </div>
-        <div className="mt-6 flex flex-wrap gap-2">
-          <button type="button" onClick={() => setStep(1)} className={outlineBtn}>← Voltar</button>
-          <button type="button" onClick={() => setStep(3)} className={brandBtn}>Já adicionei ✓</button>
-        </div>
-      </StepShell>
+      </Shell>
     )
   }
 
-  // ---- Step 3: colar o YAML ---- //
-  if (step === 3) {
+  // ---- Step 3: resumo (basic) ---- //
+  if (step === 3 && result) {
+    const cats = categorySummary(result)
     return (
-      <StepShell n={3} title="Cole no seu pipeline" onSkip={onSkip}>
-        <p className="mb-3 text-sm text-slate-300">
-          Cole este trecho <strong className="text-white">após o deploy</strong> no seu workflow — a URL já
-          está preenchida ({url}) e a key vem do secret <code className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-100">{SECRET_NAME}</code>:
-        </p>
-        <GateCodeBlock code={buildSnippet(plat, url)} filename={plat} />
-        <div className="mt-6 flex flex-wrap gap-2">
-          <button type="button" onClick={() => setStep(2)} className={outlineBtn}>← Voltar</button>
-          <button type="button" onClick={() => setStep(4)} className={brandBtn}>Já colei ✓</button>
+      <Shell n={3} title="Resultado resumido">
+        <div className="flex items-center gap-4">
+          <div className="text-4xl font-extrabold text-white">{result.score}<span className="text-lg text-slate-400">/100</span></div>
+          <div className="text-3xl" aria-hidden="true">{sema(result.score)}</div>
+          <div className="text-sm text-slate-300">{result.passed ? 'Passou ✅' : 'Reprovou ❌'}</div>
         </div>
-      </StepShell>
+        <CategoryRows cats={cats} />
+        <div className="mt-5 rounded-xl border border-amber-500/40 bg-amber-500/10 p-3 text-sm text-amber-200">
+          🔒 Para ver os detalhes e as recomendações de cada verificação, confirme sua identidade.
+        </div>
+        <div className="mt-5">
+          <button type="button" onClick={() => setStep(wizardNext(3, { kycCompleted }))} className={brandBtn}>
+            Ver detalhes completos →
+          </button>
+        </div>
+      </Shell>
     )
   }
 
-  // ---- Step 4: fazer deploy + polling ---- //
+  // ---- Step 4: KYC inline ---- //
   if (step === 4) {
     return (
-      <StepShell n={4} title="Faça o deploy" onSkip={onSkip}>
-        {!firstRun ? (
-          <div className="py-4 text-center">
-            <p className="text-sm text-slate-300">Faça push de qualquer mudança e aguarde o pipeline rodar.</p>
-            <div className="mt-4 inline-flex items-center gap-3 text-slate-300">
-              <span className="h-5 w-5 animate-spin rounded-full border-2 border-slate-600 border-t-brand-500" aria-hidden="true" />
-              <span className="text-sm">Aguardando o primeiro scan…</span>
-            </div>
-            <p className="mt-2 text-xs text-slate-500">Verificando a cada 10 segundos.</p>
-          </div>
-        ) : (
-          <div className="rounded-xl border border-green-500/40 bg-green-500/10 p-4">
-            <p className="font-semibold text-white">✅ Primeiro scan recebido!</p>
-            <div className="mt-2 flex flex-wrap gap-x-6 gap-y-1 text-sm text-slate-200">
-              <span>Score: <strong>{firstRun.score}/100</strong> {sema(firstRun.score)}</span>
-              {firstRun.duration_ms != null && <span>Duração: {Math.round(firstRun.duration_ms / 1000)}s</span>}
-              <span>Checks: {(firstRun.checks_run || []).length} rodados</span>
-              <span>{firstRun.passed ? 'Passou ✅' : 'Reprovou ❌'}</span>
-            </div>
-            <button type="button" onClick={() => setStep(5)} className={`mt-4 ${brandBtn}`}>
-              Ver próximos passos →
-            </button>
-          </div>
-        )}
-      </StepShell>
+      <Shell n={4} title="Confirme sua identidade">
+        <p className="text-sm text-slate-300">
+          Para proteger domínios contra uso indevido, os detalhes das verificações exigem confirmação de
+          identidade. Seus dados são protegidos pela LGPD e usados exclusivamente para vincular consultas à
+          sua conta.
+        </p>
+        <div className="mt-4 grid gap-3">
+          <label className="block">
+            <span className="mb-1 block text-sm font-medium text-slate-200">CPF</span>
+            <input inputMode="numeric" value={cpf} onChange={(e) => setCpf(maskCPF(e.target.value))}
+              placeholder="000.000.000-00"
+              className="h-12 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-base text-slate-100 focus:border-brand-500 focus:outline-none" />
+            {cpf && !isValidCPF(cpf) && <span className="mt-1 block text-xs text-red-400">CPF incompleto ou inválido.</span>}
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-sm font-medium text-slate-200">Endereço completo</span>
+            <textarea value={address} onChange={(e) => setAddress(e.target.value)} rows={2}
+              placeholder="Rua, número, bairro, cidade/UF, CEP"
+              className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-base text-slate-100 focus:border-brand-500 focus:outline-none" />
+          </label>
+          <label className="block">
+            <span className="mb-1 block text-sm font-medium text-slate-200">Telefone</span>
+            <input inputMode="tel" value={phone} onChange={(e) => setPhone(e.target.value)}
+              placeholder="+55 (00) 00000-0000"
+              className="h-12 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-base text-slate-100 focus:border-brand-500 focus:outline-none" />
+          </label>
+        </div>
+        {err && <p className="mt-2 text-sm text-red-400">{err}</p>}
+        <div className="mt-5 flex flex-wrap items-center gap-3">
+          <button type="button" onClick={submitKyc} disabled={busy || !isValidCPF(cpf)} className={brandBtn}>
+            {busy ? 'Confirmando…' : 'Confirmar'}
+          </button>
+          <button type="button" onClick={skipKyc} className="text-sm text-slate-400 hover:text-slate-200">Pular por agora →</button>
+        </div>
+      </Shell>
     )
   }
 
-  // ---- Step 5: pronto ---- //
+  // ---- Step 5: resultado completo ---- //
+  if (step === 5) {
+    const groups = groupChecksByCategory(fullRun?.results || result?.results || [])
+    return (
+      <Shell n={5} title="Resultado completo">
+        {groups.length === 0 ? (
+          <p className="text-sm text-slate-400">Detalhes indisponíveis. Veja o histórico no dashboard.</p>
+        ) : (
+          <div className="space-y-3">
+            {groups.map((g) => (
+              <details key={g.name} className="rounded-lg border border-slate-800 bg-slate-900/40">
+                <summary className="cursor-pointer list-none px-3 py-2 text-sm font-semibold capitalize text-slate-100">
+                  {g.name.replace(/_/g, ' ')} ({g.checks.length})
+                </summary>
+                <ul className="space-y-1 px-3 pb-3 text-sm text-slate-200">
+                  {g.checks.map((c, i) => (
+                    <li key={i} className="border-t border-slate-800 pt-1">
+                      <span>{c.status === 'pass' ? '✅' : c.status === 'fail' ? '❌' : '⚠️'}</span>{' '}
+                      <span className="text-slate-400">[{c.severity}]</span> <strong>{c.check}</strong>: {c.detail}
+                    </li>
+                  ))}
+                </ul>
+              </details>
+            ))}
+          </div>
+        )}
+        <div className="mt-5">
+          <button type="button" onClick={() => setStep(6)} className={brandBtn}>Integrar no CI/CD →</button>
+        </div>
+      </Shell>
+    )
+  }
+
+  // ---- Step 6: integração CI/CD ---- //
   return (
-    <StepShell n={5} title="🎉 Security Gate configurado!">
-      <p className="text-sm text-slate-300">Seu site será escaneado a cada deploy. Próximos passos:</p>
-      <ul className="mt-3 space-y-2 text-sm text-slate-200">
-        <li>👥 Convide um colega do time (Convites, no dashboard)</li>
-        <li>⚙️ Personalize os checks no <code className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-100">security-gate.yml</code></li>
-        <li>➕ Adicione outro projeto</li>
-        <li>📈 Acompanhe o histórico de scores por projeto</li>
-      </ul>
-      <button type="button" onClick={finish} className={`mt-6 ${brandBtn}`}>Ir para o dashboard →</button>
-    </StepShell>
+    <Shell n={6} title="Integre no seu CI/CD">
+      <p className="mb-2 text-sm text-slate-300">Rode o Gate a cada deploy. A URL já vem preenchida; a key vem do secret <code className="rounded bg-slate-800 px-1.5 py-0.5 text-slate-100">KLARIM_KEY</code>.</p>
+      {fullKey && (
+        <div className="mb-3 rounded-lg border border-green-500/40 bg-green-500/10 p-3 text-sm">
+          <p className="text-green-300">Sua API key (guarde — exibida uma vez):</p>
+          <code className="mt-1 block break-all font-mono text-slate-100">{fullKey}</code>
+        </div>
+      )}
+      <GateIntegrationTabs url={normalizeUrl(url)} />
+      <div className="mt-5">
+        <button type="button" onClick={finish} className={brandBtn}>Ir para o dashboard →</button>
+      </div>
+    </Shell>
   )
 }

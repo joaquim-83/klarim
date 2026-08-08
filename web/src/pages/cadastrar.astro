@@ -15,6 +15,11 @@ const redirect = params.get('redirect') || '/dashboard';
 const role = params.get('role') === 'technician' ? 'technician' : '';   // KL-44 P3
 const invite = params.get('invite') || '';
 const plan = ['pro', 'agency'].includes(params.get('plan')) ? params.get('plan') : '';   // KL-44 P6
+// KL-153 P2 — ?type=developer (vindo da landing do Security Gate) → conta developer + API key
+// (source=security-gate) e redirect direto ao portal do Gate (onde o wizard aparece).
+const isDev = params.get('type') === 'developer';
+const source = isDev ? 'security-gate' : '';
+const redirectTo = isDev ? '/dashboard/gate' : redirect;
 ---
 
 <Base
@@ -25,7 +30,7 @@ const plan = ['pro', 'agency'].includes(params.get('plan')) ? params.get('plan')
   <Header />
   <main class={FORM_CONTAINER}>
     <ClaimContext url={url} />
-    <SignupForm client:load email={email} url={url} redirect={redirect} role={role} invite={invite} plan={plan} />
+    <SignupForm client:load email={email} url={url} redirect={redirectTo} role={role} invite={invite} plan={plan} source={source} />
   </main>
   <Footer />
 </Base>
