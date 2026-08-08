@@ -13,7 +13,9 @@ export const onRequest = defineMiddleware(async (context, next) => {
   if (url.pathname === '/dashboard/v2') return redirect('/dashboard', 301);
   if (url.pathname === '/dashboard' || url.pathname.startsWith('/dashboard/')) {
     const token = cookies.get(COOKIE)?.value;
-    const to = '/entrar?redirect=' + encodeURIComponent(url.pathname);
+    // KL-159 — preserva o query string (ex.: ?upgrade=pro) no redirect de login, para o dashboard
+    // disparar o fluxo certo após entrar. É sempre um caminho LOCAL (pathname+search do request).
+    const to = '/entrar?redirect=' + encodeURIComponent(url.pathname + url.search);
     if (!token) return redirect(to);
     try {
       const res = await fetch(`${API}/account/me`, {

@@ -173,6 +173,16 @@ export function canSubmitKyc(cpf, address, phone) {
   return isValidCPF(cpf) && (address || '').trim().length >= 10 && !!(phone || '').trim();
 }
 
+// KL-159 — coage o `detail` de um erro da API para STRING. O backend às vezes devolve um OBJETO
+// (ex.: 403 `{error:'insufficient_level', required_level, current_level}`) — jogar o objeto num
+// nó React quebra o render. Devolve sempre uma string exibível.
+export function errDetail(data, status) {
+  const d = data && data.detail;
+  if (typeof d === 'string') return d;
+  if (d && typeof d === 'object') return d.error || `Erro ${status}`;
+  return `Erro ${status}`;
+}
+
 // ---- Estado do CTA da landing / menu ---- //
 // status = GET /api/account/gate/status (ou {ok:false} se não logado).
 export function ctaState({ ok, gate_active } = {}) {

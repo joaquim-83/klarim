@@ -34,9 +34,12 @@ const numOrInf = (n) => (n === -1 ? '∞' : String(n));
 const historyLabel = (d) => (d === -1 ? 'Ilimitado' : `${d} dias`);
 const checksLabel = (p) =>
   p.slug === 'enterprise' ? 'Todos + terceiros' : p.checks_count >= 18 ? 'Todos (18)' : `${p.checks_count} checks`;
+// KL-159 — "Assinar" (pro/team) leva ao `/dashboard/gate?upgrade={slug}`, que dispara o fluxo de
+// pagamento no dashboard (modal PIX / fallback / define-senha). Logado no Free → paga; anônimo →
+// o middleware manda ao /entrar e volta ao dashboard. Free → cadastro; Enterprise → vendas.
 const ctaFor = (p) => (p.slug === 'free' ? { href: '/cadastrar?type=developer', label: 'Começar grátis →' }
   : p.slug === 'enterprise' ? { href: '/contato', label: 'Falar com vendas' }
-  : { href: '/cadastrar?type=developer', label: 'Assinar →' });
+  : { href: `/dashboard/gate?upgrade=${p.slug}`, label: 'Assinar →' });
 
 const CATEGORIES = [
   ['🔒', 'Headers de segurança', 'HSTS, CSP, X-Frame, nosniff… (7 checks)'],

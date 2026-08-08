@@ -3,12 +3,14 @@ import { card } from './shared.js'
 import { planProgress, DEFAULT_URL } from '../../lib/gate/snippets.js'
 import {
   normalizeUrl, categorySummary, kycBannerVisible, usageText, rateLimitMessage,
-  formatCountdown, shouldShowWizard, planDetails, canUpgrade, groupChecksByCategory,
+  formatCountdown, shouldShowWizard, planDetails, canUpgrade, groupChecksByCategory, planName,
+  errDetail,
 } from '../../lib/gate/ux.js'
 import GateIntegrationTabs from './GateIntegrationTabs.jsx'
 import GateOnboarding from './GateOnboarding.jsx'
 import GateVendors from './GateVendors.jsx'
 import KycBanner from './KycBanner.jsx'
+import { SetPasswordModal } from './LevelPrompt.jsx'
 
 // KL-153 P2 — portal do dev redesenhado (resolve a Quebra 10). Status bar (score/plano/uso +
 // upgrade INLINE), "Novo scan" avulso, resultado filtrado por KYC, integração, histórico. Ativa o
@@ -23,7 +25,11 @@ async function api(path, opts = {}) {
     headers: opts.body ? { 'Content-Type': 'application/json' } : {}, ...opts,
   })
   const data = await r.json().catch(() => ({}))
-  if (!r.ok) { const e = new Error(data.detail || `Erro ${r.status}`); e.status = r.status; e.data = data; throw e }
+  if (!r.ok) {
+    // KL-159: `detail` pode ser um OBJETO (ex.: 403 {error:insufficient_level,...}). NUNCA jogar o
+    // objeto na `message` (React quebra ao renderizá-lo) — coage p/ string; o objeto fica em `e.data`.
+    const e = new Error(errDetail(data, r.status)); e.status = r.status; e.data = data; throw e
+  }
   return data
 }
 
@@ -96,32 +102,45 @@ function PixUpgradeModal({ charge, onDone, onClose }) {
   )
 }
 
-// ---- Barra de status: score + plano + uso + upgrade inline (KL-153/156) ---- //
-function StatusBar({ status, lastRun, onUpgraded }) {
+// ---- Barra de status: score + plano + uso + upgrade inline (KL-153/156/159) ---- //
+function StatusBar({ status, lastRun, onUpgraded, autoUpgrade }) {
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
   const [fallback, setFallback] = useState(null)   // {message, contact_email}
   const [charge, setCharge] = useState(null)        // dados do PIX p/ o modal
+  const [pwFor, setPwFor] = useState(null)          // KL-159: slug aguardando "definir senha" (nível 1→2)
+  const [autoRan, setAutoRan] = useState(false)
   const slug = status.plan_slug || 'free'
   const details = planDetails(slug)
   const next = details.next
 
-  async function upgrade() {
+  // KL-159 — `upgrade(planSlug)`: aceita o plano ALVO (do botão = próximo; ou de ?upgrade=). Trata:
+  // fallback (sem pagamento) · PIX (modal+polling) · 403 insufficient_level (pede senha e re-tenta)
+  // · 409/429/erro (mensagem inline). NUNCA fica em silêncio.
+  async function upgrade(planSlug) {
+    const target = planSlug || next?.slug
+    if (!target) return
     setBusy(true); setErr(''); setFallback(null)
     try {
-      const r = await api('/api/account/gate/upgrade', { method: 'POST', body: JSON.stringify({ plan: next.slug }) })
-      if (r.fallback) {                              // pagamento não configurado → mensagem clara
-        setFallback({ message: r.message, contact_email: r.contact_email })
-      } else if (r.br_code_base64 || r.charge_id) {  // PIX gerado → mostra QR + polling
-        setCharge({ ...r, plan: next.label })
-      } else {
-        onUpgraded?.()
-      }
+      const r = await api('/api/account/gate/upgrade', { method: 'POST', body: JSON.stringify({ plan: target }) })
+      if (r.fallback) setFallback({ message: r.message, contact_email: r.contact_email })
+      else if (r.br_code_base64 || r.charge_id) setCharge({ ...r, plan: planName(target) })
+      else onUpgraded?.()
     } catch (e) {
-      // 409 (já no plano), 429 (rate), 400/502 → mensagem inline; NUNCA loading silencioso.
-      setErr(e.data?.detail || e.message || 'Não foi possível iniciar o upgrade.')
+      if (e.data?.detail?.error === 'insufficient_level') {
+        setPwFor(target)   // conta sem senha → abre o modal de senha e re-tenta ao concluir
+      } else {
+        setErr(e.message || 'Não foi possível iniciar o upgrade. Tente novamente.')
+      }
     } finally { setBusy(false) }
   }
+
+  // KL-159 — auto-upgrade vindo da página de Planos (`/dashboard/gate?upgrade=pro`).
+  useEffect(() => {
+    if (autoUpgrade && !autoRan && ['pro', 'team'].includes(autoUpgrade)) {
+      setAutoRan(true); upgrade(autoUpgrade)
+    }
+  }, [autoUpgrade, autoRan])
 
   return (
     <div className={`mb-6 ${card}`}>
@@ -141,7 +160,7 @@ function StatusBar({ status, lastRun, onUpgraded }) {
             <div className="text-xs text-slate-400">{usageText(status.scans_used_hour, status.scans_limit_hour)}</div>
           </div>
           {canUpgrade(slug) && (
-            <button type="button" onClick={upgrade} disabled={busy} className={smBrand}>
+            <button type="button" onClick={() => upgrade()} disabled={busy} className={smBrand}>
               {busy ? '…' : `Upgrade → ${next.label} (${next.price_display})`}
             </button>
           )}
@@ -168,6 +187,9 @@ function StatusBar({ status, lastRun, onUpgraded }) {
         </div>
       )}
       {charge && <PixUpgradeModal charge={charge} onDone={() => { setCharge(null); onUpgraded?.() }} onClose={() => setCharge(null)} />}
+      {/* KL-159 — conta sem senha (nível 1) → define a senha e re-tenta o upgrade automaticamente. */}
+      {pwFor && <SetPasswordModal onClose={() => setPwFor(null)}
+        onDone={() => { const s = pwFor; setPwFor(null); upgrade(s) }} />}
     </div>
   )
 }
@@ -459,6 +481,10 @@ export default function GatePortal() {
   const [lastRun, setLastRun] = useState(null)
   const [showOnboard, setShowOnboard] = useState(false)
   const [refreshKey, setRefreshKey] = useState(0)
+  // KL-159 — auto-upgrade vindo da página de Planos (`/dashboard/gate?upgrade=pro`).
+  const [autoUpgrade] = useState(() => {
+    try { return new URLSearchParams(window.location.search).get('upgrade') } catch { return null }
+  })
 
   const refresh = useCallback(() => setRefreshKey((k) => k + 1), [])
   const reloadStatus = useCallback(() => api('/api/account/gate/status').then(setStatus).catch(() => setStatus({ error: true })), [])
@@ -505,7 +531,7 @@ export default function GatePortal() {
         <p className="mt-1 text-sm text-slate-300">Scan de segurança pós-deploy — 86 verificações no seu CI/CD.</p>
       </div>
 
-      {!status.error && <StatusBar status={status} lastRun={lastRun} onUpgraded={reloadStatus} />}
+      {!status.error && <StatusBar status={status} lastRun={lastRun} onUpgraded={reloadStatus} autoUpgrade={autoUpgrade} />}
 
       {showOnboard ? (
         <GateOnboarding onDone={completeOnboard} onSkip={dismissOnboard} kycCompleted={!!status.kyc_completed} />

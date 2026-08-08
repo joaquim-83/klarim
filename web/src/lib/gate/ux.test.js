@@ -5,7 +5,7 @@ import {
   normalizeUrl, maskCPF, isValidCPF, categorySummary, showChecksDetail, groupChecksByCategory,
   kycBannerVisible, showGateBridge, wizardNext, shouldShowWizard, formatCountdown, rateLimitMessage,
   usageText, upgradeTarget, ctaState, ctaLabel, signupBody, planName, planDetails, canUpgrade,
-  canSubmitKyc,
+  canSubmitKyc, errDetail,
 } from './ux.js'
 
 const VALID_CPF = '529.982.247-25'
@@ -147,6 +147,14 @@ test('canSubmitKyc: CPF válido + endereço ≥10 + telefone', () => {
   assert.equal(canSubmitKyc('111.111.111-11', 'Rua Exemplo 123 Centro', '11999'), false)  // CPF inválido
   assert.equal(canSubmitKyc('529.982.247-25', 'curto', '11999'), false)                    // endereço < 10
   assert.equal(canSubmitKyc('529.982.247-25', 'Rua Exemplo 123 Centro', ''), false)        // sem telefone
+})
+
+// --- KL-159: coerção do detail de erro para STRING (nunca objeto) --- //
+test('errDetail: string, objeto {error} e ausente', () => {
+  assert.equal(errDetail({ detail: 'Você já está no plano Pro.' }, 409), 'Você já está no plano Pro.')
+  assert.equal(errDetail({ detail: { error: 'insufficient_level', required_level: 2 } }, 403), 'insufficient_level')
+  assert.equal(errDetail({}, 500), 'Erro 500')
+  assert.equal(errDetail({ detail: { foo: 1 } }, 422), 'Erro 422')   // objeto sem .error → fallback
 })
 
 // --- CTA da landing --- //

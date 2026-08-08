@@ -2148,6 +2148,23 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   (dev): conta dev nova → **plano "Free"** (5 scans/h, não Pro); scan → banner clicável → modal → KYC completo
   (CPF 529.982.247-25) → `access_level=complete`, banner some, detalhes aparecem; zero erro no console. **+1 node
   (`canSubmitKyc`) → 2287 pytest · 193 node pass · build OK.** Relatório: `claude/reports/KL-158_report.md`.
+- **KL-159** — fluxo de pagamento do Gate quebrado (3ª vez reportado) ✅. **Diagnóstico (por etapa):**
+  (1) Backend — `POST /account/gate/upgrade` com dev **nível 1** (passwordless via `source=security-gate`,
+  KL-99) → **403 `{detail:{error:insufficient_level,required_level:2}}`** (o endpoint exige `_require_level
+  2`); com nível 2 → 200 fallback (AbacatePay OFF no dev). AbacatePay não está no dev stack. `gate_plans`
+  pro=R$49 OK. (2) Frontend dashboard — nível 2 funciona (fallback aparece); **nível 1 → 403 → "nada
+  acontece"** porque `setErr(e.data.detail)` recebia um **OBJETO** e o React quebrava ao renderizá-lo. (3)
+  Planos — CTAs "Assinar" eram `<a href="/cadastrar?type=developer">` estáticos → logado no Free →
+  `/cadastrar` → (KL-157) redireciona ao dashboard, **sem pagamento**. **Fixes:** (A) backend inalterado
+  (a regra nível≥2 fica). (B) `ux.js::errDetail` coage o `detail` p/ **string** (nunca objeto); o
+  `GatePortal` `upgrade(planSlug)` trata fallback/PIX/**403 insufficient_level → abre o `SetPasswordModal`
+  do KL-99 e re-tenta o upgrade ao definir a senha**/409/erro (nunca silêncio); lê `?upgrade=pro|team` e
+  **auto-dispara** no mount. (C) os CTAs "Assinar" (pro/team) da `security-gate.astro` → **`/dashboard/gate?
+  upgrade={slug}`**; `middleware.js` preserva o `?query` no redirect de login. **Validado no BROWSER** (dev):
+  nível 1 → "Defina uma senha" (não "nada acontece"); nível 2 `?upgrade=pro` → **auto-upgrade** → mensagem
+  com `mailto:suporte@klarim.net` (prod: modal PIX); Network mostra o POST processado; zero erro no console.
+  **+1 backend (nível 1 → 403) + 1 node (`errDetail`) → 2288 pytest · 194 node pass.** Engine/scanner/rate
+  limit **inalterados**. Relatório: `claude/reports/KL-159_report.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

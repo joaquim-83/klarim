@@ -580,6 +580,17 @@ def test_upgrade_same_plan_409(client, store, monkeypatch):
     assert r.status_code == 409
 
 
+def test_kl159_upgrade_passwordless_403_insufficient_level(client, store):
+    # KL-159: conta sem senha (nível 1, passwordless via source=security-gate) → 403 estruturado;
+    # o front detecta `insufficient_level` e abre o modal "definir senha" antes de re-tentar.
+    store.users[10]["account_level"] = 1
+    store.users[10]["gate_plan_id"] = 1
+    r = client.post("/account/gate/upgrade", json={"plan": "pro"}, cookies=_cookie(_dev(store)))
+    assert r.status_code == 403
+    assert r.json()["detail"]["error"] == "insufficient_level"
+    assert r.json()["detail"]["required_level"] == 2
+
+
 def test_provision_gate_developer(store):
     store.users[30] = {"id": 30, "email": "n@acme.com", "account_type": "owner", "gate_plan_id": None,
                        "gate_trial_ends_at": None, "is_active": True, "account_level": 2}
