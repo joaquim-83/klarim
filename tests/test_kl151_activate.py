@@ -67,7 +67,11 @@ class FakeStore:
         u = self.users.get(int(account_id))
         return None if not u else {"id": account_id, "gate_plan_id": u["gate_plan_id"],
                                    "gate_trial_ends_at": u.get("gate_trial_ends_at"),
-                                   "account_type": u["account_type"]}
+                                   "account_type": u["account_type"], "email_confirmed": True,
+                                   "kyc_completed": False, "suspended": False, "cpf": None}
+
+    async def list_gate_projects(self, account_id):
+        return []
 
     async def set_account_type(self, account_id, account_type):
         u = self.users.get(int(account_id))
@@ -100,7 +104,8 @@ class FakeStore:
         return [dict(k) for k in self.keys if k["account_id"] == int(account_id)]
 
     async def insert_gate_audit(self, account_id, action, key_id=None, target_domain=None,
-                                detail=None, ip_address=None, user_agent=None):
+                                detail=None, ip_address=None, user_agent=None, cpf=None,
+                                url_scanned=None, domain=None, score=None, passed=None):
         self.audits.append({"account_id": account_id, "action": action, "detail": detail or {},
                             "created_at": _now()})
 

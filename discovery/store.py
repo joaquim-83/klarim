@@ -1060,6 +1060,31 @@ CREATE TABLE IF NOT EXISTS gate_vendor_scans (
 );
 CREATE INDEX IF NOT EXISTS idx_gate_vendor_scans_vendor
     ON gate_vendor_scans(vendor_id, created_at DESC);
+
+-- KL-153 — KYC progressivo do Security Gate. O dev roda scans sem KYC (resultado RESUMIDO); o
+-- KYC (CPF + endereço + telefone) libera o resultado COMPLETO e é gravado no audit (rastreio por
+-- CPF). `phone` já existe (perfil dev, KL-151). `cpf` guardado FORMATADO (000.000.000-00), único.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS cpf VARCHAR(14);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS address TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS kyc_completed BOOLEAN DEFAULT FALSE;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS kyc_completed_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS suspended BOOLEAN DEFAULT FALSE;
+-- Unicidade só sobre CPFs preenchidos (uma conta sem KYC tem cpf NULL).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_cpf ON users(cpf) WHERE cpf IS NOT NULL;
+
+-- KL-153 — audit do scan por CPF (compliance): quem (cpf), o quê (url/domínio) e o resultado
+-- (score/passed). Colunas ADICIONADAS ao gate_audit_log existente (CREATE TABLE IF NOT EXISTS não
+-- altera tabela já criada) — por isso ALTER idempotente.
+ALTER TABLE gate_audit_log ADD COLUMN IF NOT EXISTS cpf VARCHAR(14);
+ALTER TABLE gate_audit_log ADD COLUMN IF NOT EXISTS url_scanned TEXT;
+ALTER TABLE gate_audit_log ADD COLUMN IF NOT EXISTS domain VARCHAR(255);
+ALTER TABLE gate_audit_log ADD COLUMN IF NOT EXISTS score INTEGER;
+ALTER TABLE gate_audit_log ADD COLUMN IF NOT EXISTS passed BOOLEAN;
+
+-- KL-153 — scan avulso (sem projeto): um run pode não ter projeto vinculado. project_id vira
+-- NULLABLE (DROP NOT NULL é idempotente — reexecutar não dá erro).
+ALTER TABLE gate_runs ALTER COLUMN project_id DROP NOT NULL;
 """
 
 
@@ -4625,20 +4650,29 @@ class TargetStore:
     # --- KL-151 P4: audit log + Enterprise (CNPJ/contrato) --- #
 
     _GATE_AUDIT_COLS = ("id", "account_id", "key_id", "action", "target_domain", "detail",
-                        "ip_address", "user_agent", "created_at")
+                        "ip_address", "user_agent", "cpf", "url_scanned", "domain", "score",
+                        "passed", "created_at")
 
     async def insert_gate_audit(self, account_id: int, action: str, key_id: Optional[int] = None,
                                 target_domain: Optional[str] = None, detail: Optional[dict] = None,
                                 ip_address: Optional[str] = None,
-                                user_agent: Optional[str] = None) -> None:
+                                user_agent: Optional[str] = None,
+                                cpf: Optional[str] = None, url_scanned: Optional[str] = None,
+                                domain: Optional[str] = None, score: Optional[int] = None,
+                                passed: Optional[bool] = None) -> None:
         """Registra uma ação no audit log. NUNCA recebe/guarda o VALOR de uma API key (só o prefixo,
-        no `detail`). Best-effort no chamador (fire-and-forget) — o audit não deve derrubar a ação."""
+        no `detail`). KL-153: nos scans, grava `cpf`/`url_scanned`/`domain`/`score`/`passed` para
+        compliance. Best-effort no chamador (fire-and-forget) — o audit não deve derrubar a ação."""
         def _fn(cur):
             cur.execute(
                 "INSERT INTO gate_audit_log (account_id, key_id, action, target_domain, detail, "
-                "  ip_address, user_agent) VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                "  ip_address, user_agent, cpf, url_scanned, domain, score, passed) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                 (int(account_id), key_id, (action or "")[:50], (target_domain or None),
-                 json.dumps(detail or {}), (ip_address or None), (user_agent or "")[:500] or None))
+                 json.dumps(detail or {}), (ip_address or None), (user_agent or "")[:500] or None,
+                 (cpf or None), (url_scanned or None), (domain or None),
+                 (int(score) if score is not None else None),
+                 (bool(passed) if passed is not None else None)))
 
         await asyncio.to_thread(self._run, _fn)
 
@@ -4848,13 +4882,56 @@ class TargetStore:
         return await asyncio.to_thread(self._run, _fn)
 
     async def get_account_gate_fields(self, account_id: int) -> Optional[Dict[str, Any]]:
-        """Campos do Gate na conta (para o cálculo do plano efetivo). None se a conta não existe."""
+        """Campos do Gate na conta (plano efetivo + KYC + suspensão — KL-153). None se a conta não
+        existe."""
         def _fn(cur):
             cur.execute(
                 "SELECT id, email, account_type, gate_plan_id, gate_trial_started_at, "
-                "  gate_trial_ends_at FROM users WHERE id = %s", (int(account_id),))
+                "  gate_trial_ends_at, email_confirmed, kyc_completed, kyc_completed_at, "
+                "  suspended, cpf, address, phone, phone_verified "
+                "FROM users WHERE id = %s", (int(account_id),))
             rows = self._rows_to_dicts(cur)
             return rows[0] if rows else None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    # --- KL-153: KYC + suspensão --- #
+
+    async def is_cpf_taken(self, cpf: str, exclude_account_id: Optional[int] = None) -> bool:
+        """True se o CPF (formatado) já pertence a OUTRA conta."""
+        def _fn(cur):
+            if exclude_account_id is not None:
+                cur.execute("SELECT 1 FROM users WHERE cpf = %s AND id <> %s LIMIT 1",
+                            (cpf, int(exclude_account_id)))
+            else:
+                cur.execute("SELECT 1 FROM users WHERE cpf = %s LIMIT 1", (cpf,))
+            return cur.fetchone() is not None
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def update_user_kyc(self, account_id: int, cpf: Optional[str], address: Optional[str],
+                              phone: Optional[str], phone_verified: bool,
+                              kyc_completed: bool, kyc_completed_at=None) -> bool:
+        """Grava os campos de KYC. `kyc_completed_at` só é setado (COALESCE) na PRIMEIRA vez que o
+        KYC fica completo — não é sobrescrito em edições posteriores."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE users SET cpf = %s, address = %s, phone = %s, phone_verified = %s, "
+                "  kyc_completed = %s, "
+                "  kyc_completed_at = CASE WHEN %s THEN COALESCE(kyc_completed_at, %s) ELSE NULL END "
+                "WHERE id = %s",
+                (cpf, address, phone, bool(phone_verified), bool(kyc_completed),
+                 bool(kyc_completed), kyc_completed_at, int(account_id)))
+            return cur.rowcount > 0
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def set_user_suspended(self, account_id: int, suspended: bool) -> bool:
+        """Marca/desmarca a conta como suspensa (detecção de abuso — KL-153)."""
+        def _fn(cur):
+            cur.execute("UPDATE users SET suspended = %s WHERE id = %s",
+                        (bool(suspended), int(account_id)))
+            return cur.rowcount > 0
 
         return await asyncio.to_thread(self._run, _fn)
 

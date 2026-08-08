@@ -441,3 +441,30 @@ zero forja de token, nenhum payload de injeção) são invioláveis.
 - **Audit log (P4, `gate_audit_log`):** CADA ação do Gate (scan/key/project/invite/plan/enterprise) é
   registrada com IP/UA. **NUNCA guarda o valor da API key — só o prefixo.** `target_domain` obrigatório em
   todo scan (compliance Enterprise). Leitura admin (todas as contas) e dev (só a própria, ownership).
+
+## 12. Security Gate — KYC + rate limiting + scan avulso (KL-153)
+
+- **KYC progressivo (`POST /account/kyc`).** O dev roda scans sem KYC (resultado RESUMIDO); o KYC
+  (CPF + endereço ≥10 chars + telefone) libera o resultado COMPLETO. `validate_cpf` (`api/validators.py`)
+  valida **formato + os 2 dígitos verificadores** (módulo 11) — NÃO consulta a Receita Federal; rejeita
+  sequências repetidas. CPF guardado **formatado** (`000.000.000-00`), **único** (`idx_users_cpf` parcial);
+  CPF de outra conta → **409**. Exige **e-mail confirmado** (403 senão). `kyc_completed`/`kyc_completed_at`
+  gravados só quando os 3 campos estão presentes; `kyc_completed_at` nunca é sobrescrito (COALESCE).
+- **Audit por CPF (compliance).** O `gate_audit_log` ganhou `cpf`/`url_scanned`/`domain`/`score`/`passed`
+  — cada scan é rastreável ao CPF do dev (NULL quando sem KYC). O CPF entra no audit, nunca em log de app.
+- **Rate limiting de 3 camadas + intervalo + abuso (`api/gate_rate_limiter.py`, tudo em Redis).** Verificado
+  ANTES do scan, fail-fast na ordem: **(0)** conta `suspended` → 403 em TODO endpoint Gate · **(1)** IP
+  10/h · **(2)** conta por plano/h (free 5 · pro 50 · team 200 · enterprise ∞) · **(3)** 1 scan/domínio a
+  cada 30 min · **(4)** intervalo mínimo entre domínios DIFERENTES por conta (free 5min · pro 1min ·
+  team/ent 0). 429 → `{detail, retry_after_seconds, limit_type, current_plan, upgrade_url}` + header
+  `Retry-After`. **Detecção de abuso:** > 20 domínios distintos/24h (`gate:rl:distinct:{acct}`) → conta
+  **suspensa** + audit `abuse_detected` + warning de app. **Sem Redis → fail-open** (não bloqueia; igual ao
+  `_enforce_rpm`). Complementa (não substitui) o RPM-por-key e o teto de scans/dia do KL-151.
+- **Scan avulso (sem projeto).** `POST /gate/scan` sem projeto casando o domínio faz um scan **avulso**:
+  exige conta autenticada + **e-mail confirmado**, sem verificação de domínio (a barreira do KL-151 valia
+  só para o modelo de projetos). URL pública qualquer; o rate limiting e o audit aplicam normalmente. Scans
+  COM projeto verificado seguem idênticos (backward compat).
+- **Upgrade via PIX (`POST /account/gate/upgrade`).** Nível ≥2 (pagamento exige senha). Gera cobrança PIX
+  avulsa mensal na AbacatePay (recorrência é escopo futuro); reusa a tabela `subscription_payments` com o
+  plano prefixado `gate:{slug}` → o webhook confirmado ativa o `gate_plan_id` (`plan_upgraded` no audit).
+  NUNCA guarda dado de cartão/PIX (só o id da cobrança).

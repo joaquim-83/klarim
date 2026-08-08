@@ -2036,6 +2036,37 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   **2238 pytest passed.** Docs: `docs/ARCHITECTURE.md` §11 (diagrama de dependência Gate→scanner). Relatório:
   `claude/reports/KL-154_email_security_gate.md`.
 
+- **KL-153 (Prompt 1/2)** — backend da UX do Security Gate: KYC progressivo + rate limiting 3 camadas +
+  scan avulso + resultado filtrado por KYC + upgrade + status ✅. **Adaptações ao codebase real** (o card
+  descreve `accounts`/Alembic genéricos): tabela é **`users`**, migrations idempotentes no `_SCHEMA`/
+  `ensure_schema` (**sem Alembic**), `phone` já existia. **Schema:** ALTERs em `users` (`cpf VARCHAR(14)`
+  formatado + `idx_users_cpf` único parcial · `address` · `phone_verified` · `kyc_completed` ·
+  `kyc_completed_at` · `suspended`), 5 colunas novas em `gate_audit_log` (`cpf`/`url_scanned`/`domain`/
+  `score`/`passed`) e `gate_runs.project_id` **NULLABLE** (scan avulso). **`api/validators.py::validate_cpf`**
+  (puro): formato + 2 DVs (módulo 11), rejeita sequência repetida, NÃO consulta Receita, devolve formatado.
+  **`POST /account/kyc`** (JWT + e-mail confirmado): 422 CPF inválido · 409 CPF de outra conta · 403 sem
+  e-mail; `kyc_completed=TRUE` só com CPF+endereço(≥10)+telefone (`phone_verified`=TRUE se há telefone,
+  placeholder SMS). **`api/gate_rate_limiter.py`** (Redis, fail-open sem Redis): **(1)** IP 10/h · **(2)**
+  conta/h por plano (free 5·pro 50·team 200·ent ∞) · **(3)** 1/domínio/30min · **(4)** intervalo entre
+  domínios diferentes (free 5min·pro 1min·team/ent 0); 429 com `{limit_type, retry_after_seconds,
+  upgrade_url}`+`Retry-After`. **Abuso:** >20 domínios distintos/24h → **suspende** a conta (audit
+  `abuse_detected`); conta `suspended` → **403** em `/gate/scan`. **`POST /gate/scan` reescrito:** aceita
+  `project_id` opcional (ausente → casa por domínio OU **scan avulso** sem projeto, exige e-mail confirmado);
+  ordem suspenso→rate limit→abuso→teto diário→engine. **Resultado filtrado por KYC:** sem KYC → `basic`
+  (`score`+`categories` com contagens + `kyc_required_for_details`); com KYC → `complete` (`results`+
+  `history`+`ci_snippet`). Audit do scan grava `cpf`/`score`/`passed`. **`GET /account/gate/status`** ganhou
+  `is_developer`/`kyc_completed`/`has_api_key`/`api_key_prefix`/`has_projects`/`projects_count`/
+  `scans_used_hour`/`scans_limit_hour`/`access_level`/`suspended`/`plan_slug` (`plan` segue como NOME, backward
+  compat). **`POST /account/gate/upgrade`** (nível ≥2): PIX AbacatePay avulso mensal (recorrência = futuro),
+  plano `gate:{slug}` na `subscription_payments` → o webhook (`_confirm_subscription_payment`) ativa o
+  `gate_plan_id` (`plan_upgraded`). **`POST /account/signup` `source="security-gate"`** → conta developer +
+  API key na resposta (reusa `provision_gate_developer`). **`/account/gate/activate`** já era idempotente
+  (confirmado). **Store:** `is_cpf_taken`/`update_user_kyc`/`set_user_suspended`, `get_account_gate_fields`
+  estendido (KYC+suspensão), `insert_gate_audit` estendido. **NÃO** alterou o scanner público nem o frontend
+  (Prompt 2). **+39 testes** (`test_kl153_backend.py`); 6 FakeStores dos testes KL-151 atualizados (audit
+  kwargs, KYC fields, `list_gate_projects`, scan avulso). **2277 pytest passed.** Docs: `docs/API.md`,
+  `docs/SECURITY.md` §12. Relatório: `claude/reports/KL-153_P1_report.md`.
+
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.
 # KL-124 pipeline test: 2026-07-28T10:19:29Z

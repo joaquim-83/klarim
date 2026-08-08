@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import base64
 import hashlib
+import logging
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
@@ -27,6 +28,8 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel
 
 from api import auth_users
+from api import gate_rate_limiter as gate_rl   # KL-153 — rate limiting de 3 camadas + abuso
+from api.validators import validate_cpf        # KL-153 — validação de CPF (KYC)
 from discovery.store import get_target_store
 from security_gate.config import GateConfig
 from security_gate.engine import _DEFAULT_ORDER as _ENGINE_ORDER, run_all
@@ -34,6 +37,12 @@ from security_gate.models import SEVERITY_RANK, Severity, Status
 from security_gate import vendor as _vendor
 
 router = APIRouter()
+logger = logging.getLogger("gate")
+
+# KL-153 — mensagem única de conta suspensa (todos os endpoints Gate devolvem 403 com este corpo).
+_SUSPENDED_MSG = ("Conta suspensa por atividade incomum. "
+                  "Entre em contato com suporte@klarim.net.")
+_GATE_UPGRADE_ATTEMPTS: dict = {}
 
 # Lista canônica dos checks do Gate (para o enforcement `["all"]`).
 ALL_CHECK_NAMES: List[str] = list(_ENGINE_ORDER)
@@ -71,14 +80,18 @@ def _client_meta(request: Optional[Request]) -> Tuple[Optional[str], Optional[st
 
 async def log_gate_audit(account_id: int, action: str, request: Optional[Request] = None,
                          key_id: Optional[int] = None, domain: Optional[str] = None,
-                         detail: Optional[dict] = None) -> None:
+                         detail: Optional[dict] = None, cpf: Optional[str] = None,
+                         url_scanned: Optional[str] = None, score: Optional[int] = None,
+                         passed: Optional[bool] = None) -> None:
     """Registra uma ação no `gate_audit_log`. Fail-safe (nunca derruba a ação). O `detail` NUNCA
-    contém o valor de uma API key — só o prefixo."""
+    contém o valor de uma API key — só o prefixo. KL-153: nos scans, grava `cpf`/`url_scanned`/
+    `domain`/`score`/`passed` (compliance — rastreio por CPF)."""
     ip, ua = _client_meta(request)
     try:
         await get_target_store().insert_gate_audit(
             account_id=account_id, action=action, key_id=key_id, target_domain=domain,
-            detail=detail or {}, ip_address=ip, user_agent=ua)
+            detail=detail or {}, ip_address=ip, user_agent=ua, cpf=cpf, url_scanned=url_scanned,
+            domain=domain, score=score, passed=passed)
     except Exception as exc:  # noqa: BLE001 - audit best-effort
         print(f"[gate] audit falhou ({action}): {exc!r}", flush=True)
 
@@ -300,6 +313,153 @@ def _passed_for(report, fail_on: str) -> bool:
 
 
 # --------------------------------------------------------------------------- #
+# KL-153 — KYC, filtragem do resultado do scan por nível de KYC, scan avulso
+# --------------------------------------------------------------------------- #
+
+_KYC_MESSAGE = ("Complete seu cadastro (CPF + endereço + telefone) para ver os detalhes de cada "
+                "verificação, recomendações e o histórico de scans.")
+
+
+def _access_level(kyc_completed: bool) -> str:
+    return "complete" if kyc_completed else "basic"
+
+
+def _aggregate_categories(results: List[dict]) -> List[dict]:
+    """Agrega os checks por categoria em `{name, status, checks_total, checks_passed,
+    checks_failed}` (sem vazar os checks individuais — é o que o nível 'basic' vê)."""
+    order: List[str] = []
+    cats: dict = {}
+    for r in results:
+        c = r.get("category") or "outros"
+        if c not in cats:
+            cats[c] = {"name": c, "checks_total": 0, "checks_passed": 0, "checks_failed": 0}
+            order.append(c)
+        d = cats[c]
+        d["checks_total"] += 1
+        if r.get("status") == "pass":
+            d["checks_passed"] += 1
+        elif r.get("status") == "fail":
+            d["checks_failed"] += 1
+    for c in order:
+        cats[c]["status"] = "fail" if cats[c]["checks_failed"] > 0 else "pass"
+    return [cats[c] for c in order]
+
+
+def _ci_snippet(url: str, fail_on: str) -> str:
+    """Snippet de GitHub Actions pré-preenchido (só no nível 'complete')."""
+    return (
+        "# .github/workflows/security-gate.yml\n"
+        "name: Security Gate\n"
+        "on: [push]\n"
+        "jobs:\n"
+        "  security-gate:\n"
+        "    runs-on: ubuntu-latest\n"
+        "    steps:\n"
+        "      - run: pip install httpx\n"
+        f"      - run: python klarim_gate_cli.py scan {url} --fail-on {fail_on}\n"
+        "        env:\n"
+        "          KLARIM_API_KEY: ${{ secrets.KLARIM_API_KEY }}\n"
+    )
+
+
+async def _scan_history(store, account_id: int, domain: str, exclude_run_id: int,
+                        limit: int = 10) -> List[dict]:
+    """Runs anteriores do MESMO domínio pela mesma conta (só no nível 'complete')."""
+    try:
+        runs = await store.list_gate_runs(account_id=account_id, limit=50)
+    except Exception:  # noqa: BLE001 - histórico é best-effort
+        return []
+    out = []
+    for r in runs or []:
+        if r.get("id") == exclude_run_id:
+            continue
+        if _extract_domain(r.get("url") or "") != domain:
+            continue
+        out.append({"id": r.get("id"), "score": r.get("score"), "passed": r.get("passed"),
+                    "created_at": _iso(r.get("created_at"))})
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _build_scan_response(*, run_id, scan_url, report, results, passed, fail_on, allowed, blocked,
+                         plan_name, kyc_completed, history, ci_snippet) -> dict:
+    """Monta a resposta do scan FILTRADA por KYC. 'basic' (sem KYC): score + categorias com
+    contagens (sem checks individuais/paths/recomendações/histórico). 'complete' (com KYC): tudo."""
+    base = {
+        "run_id": run_id, "url": scan_url, "score": report.score, "passed": passed,
+        "threshold": fail_on, "fail_on": fail_on, "duration_ms": report.duration_ms,
+        "critical": report.critical_count, "high": report.high_count, "medium": report.medium_count,
+        "checks_run": allowed, "checks_blocked": blocked, "plan": plan_name,
+        "categories": _aggregate_categories(results),
+        "access_level": _access_level(kyc_completed),
+        "dashboard_url": f"https://klarim.net/dashboard/gate/runs/{run_id}",
+    }
+    if kyc_completed:
+        base["results"] = results
+        base["history"] = history
+        base["ci_snippet"] = ci_snippet
+    else:
+        base["kyc_required_for_details"] = True
+        base["kyc_message"] = _KYC_MESSAGE
+    return base
+
+
+async def _resolve_scan_project(store, account_id: int, plan: dict, acct: dict,
+                                project_id: Optional[int], domain: str):
+    """Resolve o projeto do scan e devolve `(project|None, third_party)`.
+
+    - `project_id` explícito → valida posse + verificação (comportamento clássico).
+    - senão, casa por domínio um projeto EXISTENTE (backward compat com o CI atual).
+    - senão → **scan avulso** (KL-153): sem projeto; exige `email_confirmed`.
+    """
+    def _verify_gate(project):
+        if not project.get("verified") and not plan.get("scan_third_party"):
+            raise HTTPException(status_code=403,
+                                detail="Domínio não verificado. Verifique em "
+                                       "/api/gate/projects/{id}/verify/start.")
+        return (not project.get("verified")) and bool(plan.get("scan_third_party"))
+
+    if project_id is not None:
+        project = await store.get_gate_project_by_id(int(project_id))
+        if not project or project.get("account_id") != account_id:
+            raise HTTPException(status_code=404, detail="Projeto não encontrado.")
+        return project, _verify_gate(project)
+
+    project = await store.get_gate_project_by_domain(account_id, domain)
+    if project:
+        return project, _verify_gate(project)
+
+    # Scan avulso: sem projeto, sem verificação de domínio. Exige e-mail confirmado.
+    if not acct.get("email_confirmed"):
+        raise HTTPException(status_code=403,
+                            detail="Confirme seu e-mail antes de escanear.")
+    return None, False
+
+
+async def provision_gate_developer(store, account_id: int) -> str:
+    """KL-153 — promove a conta a `developer`, concede Free + trial Pro 14d e cria a API key.
+    Devolve a key COMPLETA (exibida UMA VEZ). Usado pelo signup `source=security-gate`."""
+    await store.set_account_type(account_id, "developer")
+    free = await store.get_gate_plan_by_slug("free")
+    now = _now()
+    await store.set_account_gate_plan(account_id, (free or {}).get("id"), now,
+                                      now + timedelta(days=_TRIAL_DAYS))
+    full_key, prefix, key_hash = generate_api_key()
+    await store.create_gate_api_key(account_id, prefix, key_hash, name="default")
+    await log_gate_audit(account_id, "key_created", detail={"key_prefix": prefix})
+    await log_gate_audit(account_id, "gate_activated", detail={"source": "security-gate"})
+    return full_key
+
+
+async def _create_gate_pix_charge(amount_cents: int, description: str) -> dict:
+    """Cria a cobrança PIX na AbacatePay (seam isolado — os testes monkeypatcham isto)."""
+    import api.main as _m
+    client = _m.AbacatePayClient(_m._api_key())
+    return await client.create_pix_charge(amount_cents, description)
+
+
+# --------------------------------------------------------------------------- #
 # 1. Registro dev (público) — cria conta developer + API key + projeto + trial Pro
 # --------------------------------------------------------------------------- #
 
@@ -422,8 +582,9 @@ def _gate_active(account_type: Optional[str]) -> bool:
 
 @router.get("/account/gate/status")
 async def gate_status(request: Request) -> dict:
-    """Estado do Gate para a conta LOGADA — a landing `/security-gate` usa para escolher o CTA
-    (ativar × abrir dashboard). 401 se não há sessão (a landing trata como "não logado")."""
+    """Estado do Gate para a conta LOGADA — a landing `/security-gate` (CTA ativar × abrir) e o
+    dashboard (KL-153: wizard × KYC × upgrade) usam para decidir o que renderizar. 401 se não há
+    sessão (a landing trata como "não logado")."""
     user = await auth_users.require_user(request)
     store = get_target_store()
     fields = await store.get_account_gate_fields(user["id"]) or {}
@@ -432,10 +593,114 @@ async def gate_status(request: Request) -> dict:
     plan = await get_effective_gate_plan(user["id"]) if active else None
     keys = await store.list_gate_api_keys(user["id"])
     active_key = next((k for k in keys if k.get("is_active")), None)
-    return {"logged_in": True, "gate_active": active, "account_type": account_type,
-            "plan": (plan or {}).get("name"), "has_key": bool(active_key),
-            "key_prefix": (active_key or {}).get("key_prefix"),
-            "dashboard_url": "/dashboard/gate"}
+    projects = await store.list_gate_projects(user["id"]) if active else []
+    kyc = bool(fields.get("kyc_completed"))
+    slug = (plan or {}).get("slug") or "free"
+    used, limit = await gate_rl.user_hour_usage(_scan_redis(), user["id"], slug)
+    prefix = (active_key or {}).get("key_prefix")
+    return {
+        "logged_in": True, "gate_active": active, "account_type": account_type,
+        "is_developer": active,
+        "kyc_completed": kyc,
+        "has_api_key": bool(active_key), "has_key": bool(active_key),
+        "api_key_prefix": prefix, "key_prefix": prefix,
+        "has_projects": bool(projects), "projects_count": len(projects),
+        # `plan` mantém o NOME (backward compat com a landing); `plan_slug` traz o slug.
+        "plan": (plan or {}).get("name"), "plan_slug": slug if active else None,
+        "scans_used_hour": used, "scans_limit_hour": limit,
+        "access_level": _access_level(kyc),
+        "suspended": bool(fields.get("suspended")),
+        "dashboard_url": "/dashboard/gate"}
+
+
+class KYCBody(BaseModel):
+    cpf: str
+    address: Optional[str] = None
+    phone: Optional[str] = None
+
+
+@router.post("/account/kyc")
+async def account_kyc(body: KYCBody, request: Request) -> dict:
+    """KL-153 — KYC progressivo. Exige sessão + e-mail confirmado. `kyc_completed` vira TRUE só
+    quando CPF válido + endereço (≥10 chars) + telefone estão TODOS presentes. `phone_verified` é
+    TRUE quando há telefone (placeholder para verificação por SMS futura)."""
+    user = await auth_users.require_user(request)
+    store = get_target_store()
+    fields = await store.get_account_gate_fields(user["id"]) or {}
+    if not fields.get("email_confirmed"):
+        raise HTTPException(status_code=403,
+                            detail="Confirme seu email antes de completar o cadastro.")
+    try:
+        cpf = validate_cpf(body.cpf)
+    except ValueError:
+        raise HTTPException(status_code=422,
+                            detail="CPF inválido. Verifique os dígitos e tente novamente.")
+    if await store.is_cpf_taken(cpf, exclude_account_id=user["id"]):
+        raise HTTPException(status_code=409, detail="Este CPF já está vinculado a outra conta.")
+
+    address = (body.address or "").strip()
+    phone = (body.phone or "").strip()
+    kyc_completed = bool(cpf and len(address) >= 10 and phone)
+    phone_verified = bool(phone)
+    await store.update_user_kyc(user["id"], cpf=cpf, address=(address or None),
+                               phone=(phone or None), phone_verified=phone_verified,
+                               kyc_completed=kyc_completed, kyc_completed_at=_now())
+    await log_gate_audit(user["id"], "kyc_completed" if kyc_completed else "kyc_updated", request,
+                         detail={"kyc_completed": kyc_completed}, cpf=cpf)
+    updated = await store.get_account_gate_fields(user["id"]) or {}
+    return {"kyc_completed": kyc_completed,
+            "kyc_completed_at": _iso(updated.get("kyc_completed_at")),
+            "access_level": _access_level(kyc_completed)}
+
+
+class GateUpgradeBody(BaseModel):
+    plan: str
+
+
+@router.post("/account/gate/upgrade")
+async def gate_upgrade(body: GateUpgradeBody, request: Request) -> dict:
+    """KL-153 — upgrade de plano do Gate via PIX (AbacatePay). Gera uma cobrança avulsa do mês (a
+    integração não tem assinatura recorrente — recorrência é escopo futuro); o webhook de pagamento
+    confirmado ativa o `gate_plan_id`. Nível ≥ 2 (pagamento exige senha)."""
+    import api.main as _m
+    user = await auth_users.require_user(request)
+    _m._require_level(user, 2)
+    slug = (body.plan or "").lower().strip()
+    if slug not in ("pro", "team"):
+        raise HTTPException(status_code=400, detail="Plano inválido para upgrade.")
+    ok, retry = await _m._redis_allow("gate_upgrade", _m._client_ip(request), 10, 3600,
+                                      _GATE_UPGRADE_ATTEMPTS)
+    if not ok:
+        raise HTTPException(status_code=429, detail="Muitas tentativas. Aguarde um pouco.",
+                            headers={"Retry-After": str(retry)})
+    store = get_target_store()
+    target = await store.get_gate_plan_by_slug(slug)
+    if not target or int(target.get("price_brl") or 0) <= 0:
+        raise HTTPException(status_code=400, detail="Plano indisponível para compra.")
+    current = await get_effective_gate_plan(user["id"]) or {}
+    if (current.get("slug") or "free") == slug:
+        raise HTTPException(status_code=409, detail=f"Você já está no plano {target.get('name')}.")
+    if not _m._payments_enabled():
+        raise HTTPException(status_code=503, detail="Pagamentos não configurados no momento.")
+    amount = int(target["price_brl"])
+    try:
+        data = await _create_gate_pix_charge(
+            amount, f"Klarim Security Gate {target.get('name')} — assinatura mensal")
+    except Exception as exc:  # noqa: BLE001 - falha na AbacatePay
+        raise HTTPException(status_code=502, detail=f"Falha ao criar cobrança: {exc}") from exc
+    charge_id = data.get("id")
+    if not charge_id:
+        raise HTTPException(status_code=502, detail="AbacatePay não retornou o id da cobrança.")
+    # Reusa a tabela de pagamentos de assinatura; o prefixo `gate:` roteia a ativação no webhook.
+    await store.create_subscription_payment(
+        user["id"], f"gate:{slug}", amount, charge_id, data.get("brCode"),
+        data.get("brCodeBase64"), expires_at=data.get("expiresAt"))
+    await log_gate_audit(user["id"], "upgrade_requested", request,
+                         detail={"plan": slug, "charge_id": charge_id})
+    return {"checkout_url": f"/dashboard/gate?upgrade={charge_id}", "plan": slug,
+            "price_display": f"R$ {amount // 100}/mês", "charge_id": charge_id,
+            "br_code": data.get("brCode"), "br_code_base64": data.get("brCodeBase64"),
+            "expires_at": data.get("expiresAt")}
 
 
 @router.post("/account/gate/activate")
@@ -730,41 +995,70 @@ async def gate_create_project(body: GateProjectBody, request: Request) -> dict:
 
 class GateScanBody(BaseModel):
     url: str
+    project_id: Optional[int] = None   # KL-153: explícito → valida o projeto; ausente → domínio/avulso
     fail_on: Optional[str] = None
     timeout: Optional[int] = None
     metadata: Optional[dict] = None
 
 
 @router.post("/gate/scan")
-async def gate_scan(body: GateScanBody, request: Request) -> dict:
-    """Roda a engine do Gate contra `url` no SERVIDOR e devolve o resultado (síncrono, <60s). Só
-    escaneia domínio REGISTRADO como projeto e VERIFICADO (exceto planos com `scan_third_party`).
-    Os checks rodados são os do plano — os bloqueados voltam em `checks_blocked` (CTA de upgrade)."""
+async def gate_scan(body: GateScanBody, request: Request):
+    """Roda a engine do Gate contra `url` no SERVIDOR e devolve o resultado (síncrono, <60s).
+
+    KL-153: aceita **scan avulso** (sem projeto/verificação — exige e-mail confirmado) além do scan
+    de projeto verificado. Antes do scan: conta suspensa → 403; rate limiting de 3 camadas (IP →
+    conta → domínio → intervalo) → 429; detecção de abuso (>20 domínios/24h → suspende). O resultado
+    é **filtrado por KYC**: sem KYC → resumido (score + categorias); com KYC → completo."""
+    import api.main as _m
     ctx = await _resolve_gate_account(request)
+    account_id = ctx["account_id"]
     plan = ctx["plan"] or {}
+    store = get_target_store()
+    acct = await store.get_account_gate_fields(account_id) or {}
+
+    # (0) Conta suspensa → 403 em TODOS os endpoints Gate.
+    if acct.get("suspended"):
+        return JSONResponse(status_code=403, content={"detail": _SUSPENDED_MSG, "suspended": True})
+
     domain = _extract_domain(body.url)
     if not domain:
         raise HTTPException(status_code=400, detail="URL inválida.")
-    store = get_target_store()
-    project = await store.get_gate_project_by_domain(ctx["account_id"], domain)
-    if not project:
-        raise HTTPException(status_code=403,
-                            detail="Domínio não registrado como projeto. Crie-o em /api/gate/projects.")
-    if not project.get("verified") and not plan.get("scan_third_party"):
-        raise HTTPException(status_code=403,
-                            detail="Domínio não verificado. Verifique em "
-                                   "/api/gate/projects/{id}/verify/start.")
-    third_party = (not project.get("verified")) and bool(plan.get("scan_third_party"))
-    # Consome 1 crédito de scan/dia (atômico) ANTES de rodar — invalidez de domínio já barrou acima.
+
+    # (1) Resolve projeto (explícito / por domínio / avulso). Levanta os 403/404 apropriados.
+    project, third_party = await _resolve_scan_project(store, account_id, plan, acct,
+                                                       body.project_id, domain)
+
+    # (2) Rate limiting de 3 camadas + intervalo (fail-fast). Sem Redis → fail-open.
+    redis = _scan_redis()
+    ip = _m._client_ip(request)
+    limited = await gate_rl.enforce(redis, ip, account_id, plan, domain)
+    if limited:
+        await log_gate_audit(account_id, "scan_blocked", request, key_id=ctx.get("key_id"),
+                             domain=domain, detail={"reason": limited["limit_type"]})
+        return JSONResponse(status_code=429, content=limited,
+                            headers={"Retry-After": str(limited["retry_after_seconds"])})
+
+    # (3) Detecção de abuso: >20 domínios distintos/24h → suspende a conta.
+    if await gate_rl.is_abuse(redis, account_id, domain):
+        await store.set_user_suspended(account_id, True)
+        domains = await gate_rl.get_distinct_domains(redis, account_id)
+        await log_gate_audit(account_id, "abuse_detected", request, key_id=ctx.get("key_id"),
+                             domain=domain, detail={"distinct_domains": domains[:50]})
+        logger.warning("[gate] conta %s suspensa por abuso: %d domínios distintos em 24h",
+                       account_id, len(domains))
+        return JSONResponse(status_code=403, content={"detail": _SUSPENDED_MSG, "suspended": True})
+
+    # (4) Teto diário do plano (existente).
     try:
-        await enforce_scan_limit(ctx["account_id"], plan)
+        await enforce_scan_limit(account_id, plan)
     except HTTPException as exc:
         if exc.status_code == 429:
-            await log_gate_audit(ctx["account_id"], "scan_blocked", request, key_id=ctx.get("key_id"),
+            await log_gate_audit(account_id, "scan_blocked", request, key_id=ctx.get("key_id"),
                                  domain=domain, detail={"reason": "daily_limit",
                                                         "limit": plan.get("scans_per_day")})
         raise
 
+    # (5) Engine.
     allowed = get_allowed_checks(plan)
     blocked = [c for c in ALL_CHECK_NAMES if c not in allowed]
     scan_url = body.url.strip()
@@ -781,21 +1075,25 @@ async def gate_scan(body: GateScanBody, request: Request) -> dict:
     passed = _passed_for(report, fail_on)
 
     run_id = await store.create_gate_run(
-        project_id=project["id"], account_id=ctx["account_id"], url=scan_url,
+        project_id=(project or {}).get("id"), account_id=account_id, url=scan_url,
         score=report.score, passed=passed, fail_on=fail_on, duration_ms=report.duration_ms,
         results=results, checks_run=allowed, checks_blocked=blocked, metadata=(body.metadata or {}))
 
-    # Audit obrigatório (compliance Enterprise): SEMPRE com target_domain.
-    await log_gate_audit(ctx["account_id"], "scan", request, key_id=ctx.get("key_id"), domain=domain,
+    # (6) Audit obrigatório: cpf + url + domínio + score + passed (compliance — rastreio por CPF).
+    await log_gate_audit(account_id, "scan", request, key_id=ctx.get("key_id"), domain=domain,
                          detail={"url": scan_url, "score": report.score, "passed": passed,
                                  "duration_ms": report.duration_ms, "plan": plan.get("name"),
-                                 "third_party": third_party})
+                                 "third_party": third_party, "standalone": project is None},
+                         cpf=acct.get("cpf"), url_scanned=scan_url, score=report.score, passed=passed)
 
-    return {"run_id": run_id, "url": scan_url, "score": report.score, "passed": passed,
-            "duration_ms": report.duration_ms, "critical": report.critical_count,
-            "high": report.high_count, "medium": report.medium_count, "results": results,
-            "checks_run": allowed, "checks_blocked": blocked, "plan": plan.get("name"),
-            "dashboard_url": f"https://klarim.net/dashboard/gate/runs/{run_id}"}
+    # (7) Resultado filtrado por KYC.
+    kyc = bool(acct.get("kyc_completed"))
+    history = await _scan_history(store, account_id, domain, run_id) if kyc else []
+    snippet = _ci_snippet(scan_url, fail_on) if kyc else None
+    return _build_scan_response(run_id=run_id, scan_url=scan_url, report=report, results=results,
+                                passed=passed, fail_on=fail_on, allowed=allowed, blocked=blocked,
+                                plan_name=plan.get("name"), kyc_completed=kyc, history=history,
+                                ci_snippet=snippet)
 
 
 @router.get("/gate/runs")

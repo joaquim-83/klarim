@@ -342,10 +342,12 @@ enforcement **no servidor**. O endpoint de scan, a CLI e o frontend são os Prom
 |---|---|---|---|
 | POST | `/gate/register` | público | Cria conta `developer` + API key (1×) + 1º projeto + trial Pro 14d. E-mail já com conta → **409 estruturado** (`account_exists`+`login_url`; `activate_after_login=true` se o Gate ainda não está ativo) |
 | **POST** | **`/account/gate/activate`** | **JWT (nível ≥1)** | **Ativa o Gate numa conta EXISTENTE (owner→both) + API key (1×, se não houver) + trial Pro 14d. Idempotente (`already_active`)** |
-| **GET** | **`/account/gate/status`** | **JWT (401 se sem sessão)** | **Estado p/ a landing decidir o CTA: `{logged_in, gate_active, plan, has_key, key_prefix, dashboard_url}`** |
+| **GET** | **`/account/gate/status`** | **JWT (401 se sem sessão)** | **Estado p/ a landing/dashboard decidir o que renderizar. KL-153: `{logged_in, gate_active, is_developer, kyc_completed, has_api_key, api_key_prefix, has_projects, projects_count, plan, plan_slug, scans_used_hour, scans_limit_hour, access_level, suspended, dashboard_url}`** |
+| **POST** | **`/account/kyc`** | **JWT (email confirmado)** | **KL-153 — KYC progressivo. Body `{cpf, address?, phone?}`. `kyc_completed=TRUE` só com CPF válido + endereço ≥10 chars + telefone. 422 CPF inválido · 409 CPF de outra conta · 403 sem e-mail confirmado. `phone_verified`=TRUE quando há telefone (SMS futuro)** |
+| **POST** | **`/account/gate/upgrade`** | **JWT (nível ≥2)** | **KL-153 — upgrade de plano do Gate via PIX (AbacatePay, avulso mensal). Body `{plan: pro\|team}`. Retorna `{checkout_url, plan, price_display, charge_id, br_code, br_code_base64}`. 409 se já no plano. Webhook `gate:{slug}` ativa o `gate_plan_id`** |
 | POST | `/account/gate/regenerate-key` | JWT | Revoga as keys ativas e emite uma nova (1×) |
 | GET | `/account/gate/keys` | JWT | Lista keys (prefixo/estado/uso — nunca o valor) |
-| **POST** | **`/gate/scan`** | **API key** | **Roda a engine no SERVIDOR contra a URL (domínio verificado). Retorna score/passed/results/`checks_run`/`checks_blocked`. `passed` respeita `fail_on`. Persiste em `gate_runs`. Enforcement de scans/dia (429)** |
+| **POST** | **`/gate/scan`** | **API key ou JWT** | **KL-153: roda a engine no SERVIDOR contra a URL. `project_id` opcional (ausente → casa por domínio OU **scan avulso** sem projeto, exige e-mail confirmado). ANTES do scan: conta suspensa→403; rate limit 3 camadas (IP→conta→domínio→intervalo)→429 `{limit_type, retry_after_seconds, upgrade_url}`+`Retry-After`; abuso (>20 domínios/24h)→suspende. Resultado **filtrado por KYC**: sem KYC→resumido (`score`+`categories`+`kyc_required_for_details`); com KYC→completo (`results`+`history`+`ci_snippet`). Persiste em `gate_runs`, audit com `cpf`/`score`/`passed`** |
 | **GET** | **`/gate/runs`** | **API key** | **Runs da conta (sumário; filtro `project_id`, `limit`)** |
 | **GET** | **`/gate/runs/{id}`** | **API key** | **Detalhe do run (com `results`); 404 se não é da conta** |
 | **GET** | **`/gate/runs/{id}/pdf`** | **API key** | **Exporta o run como PDF (WeasyPrint) — KL-152 P3** |
@@ -369,6 +371,11 @@ enforcement **no servidor**. O endpoint de scan, a CLI e o frontend são os Prom
 | GET · PUT · POST | `/admin/gate/plans[/{id}]` | JWT admin | Admin de planos (P3) |
 | GET · POST | `/admin/gate/accounts[/{id}/plan]` | JWT admin | Contas dev + atribuir plano (P3) |
 | **POST** | **`/admin/gate/accounts/{id}/enterprise`** | **JWT admin** | **CNPJ/contrato/notas Enterprise (P4)** |
+
+> **KL-153 — registro direto como developer:** `POST /account/signup` aceita `source: "security-gate"`
+> → cria a conta como `developer`, concede Free + trial Pro 14d e devolve a **API key** (1×) no corpo
+> (`{user, account_type: "developer", api_key}`) para o wizard mostrar. Qualquer outro valor/ausência →
+> comportamento normal (owner). Reusa o mesmo provisionamento do `/gate/register`.
 
 ---
 

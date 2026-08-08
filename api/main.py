@@ -519,6 +519,7 @@ class SignupBody(BaseModel):
     role: Optional[str] = None  # KL-44 P3: 'technician' cria perfil de profissional de TI
     invite: Optional[str] = None  # KL-44 P3: código de convite de técnico (auto-vincula)
     plan: Optional[str] = None  # KL-44 P6: 'pro'|'agency' → trial de 30 dias do plano
+    source: Optional[str] = None  # KL-153: 'security-gate' → conta developer + API key na resposta
 
 
 class AccountLoginBody(BaseModel):
@@ -798,6 +799,21 @@ async def account_signup(body: SignupBody, request: Request) -> JSONResponse:
     if not already_verified:
         # Conta não confirmada → e-mail de boas-vindas com link (fire-and-forget).
         _spawn(_send_welcome_confirmation(user["id"], email))
+    # KL-153: registro vindo da landing do Security Gate → conta developer + API key na resposta
+    # (o wizard mostra a key UMA VEZ). Reusa o mesmo provisionamento do /gate/register.
+    if (body.source or "").strip() == "security-gate":
+        import api.gate as _gate
+        try:
+            api_key = await _gate.provision_gate_developer(store, user["id"])
+        except Exception as exc:  # noqa: BLE001 - conta já criada; provisionamento é best-effort
+            print(f"[account] provisionamento gate falhou u={user['id']}: {exc!r}", flush=True)
+            api_key = None
+        payload = {"user": _user_public(user), "account_type": "developer", "api_key": api_key}
+        if claim:
+            payload["claim"] = claim
+        resp = JSONResponse(payload)
+        _set_session_cookie(resp, auth_users.create_user_token(user))
+        return resp
     return _account_session_response(user, claim)
 
 
@@ -8450,6 +8466,21 @@ async def _confirm_subscription_payment(charge_id: str) -> bool:
     row = await store.mark_subscription_payment(charge_id, "paid")  # só transiciona de pending
     if not row:
         return False
+    # KL-153: upgrade de plano do Security Gate (plano prefixado `gate:pro`/`gate:team`) — ativa o
+    # `gate_plan_id` em vez do plano de site.
+    plan_field = row.get("plan") or ""
+    if isinstance(plan_field, str) and plan_field.startswith("gate:"):
+        slug = plan_field.split(":", 1)[1]
+        try:
+            import api.gate as _gate
+            gp = await store.get_gate_plan_by_slug(slug)
+            if gp:
+                await store.set_account_gate_plan(row["user_id"], gp["id"], None, None)
+                await _gate.log_gate_audit(row["user_id"], "plan_upgraded", detail={"plan": slug})
+            print(f"[gate] plano {slug} ativado p/ user={row['user_id']}", flush=True)
+        except Exception as exc:  # noqa: BLE001 - pagamento já registrado; ativação best-effort
+            print(f"[gate] ativação de plano falhou charge={charge_id}: {exc!r}", flush=True)
+        return True
     try:
         await plans.activate_paid(row["user_id"], row["plan"])
         await _sync_user_vigilias(row["user_id"])            # cria as vigílias do novo plano

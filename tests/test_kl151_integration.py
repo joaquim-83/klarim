@@ -77,7 +77,11 @@ class FakeStore:
         u = self.users.get(int(account_id))
         return None if not u else {"id": account_id, "gate_plan_id": u["gate_plan_id"],
                                    "gate_trial_ends_at": u.get("gate_trial_ends_at"),
-                                   "account_type": u["account_type"]}
+                                   "account_type": u["account_type"],
+                                   # KL-153 — KYC completo → scan devolve resultado detalhado.
+                                   "email_confirmed": True, "kyc_completed": True,
+                                   "kyc_completed_at": None, "suspended": False, "cpf": None,
+                                   "address": None, "phone": None, "phone_verified": False}
 
     async def get_gate_plan(self, pid):
         return dict(_PLANS[pid]) if pid in _PLANS else None
@@ -150,10 +154,13 @@ class FakeStore:
 
     # audit
     async def insert_gate_audit(self, account_id, action, key_id=None, target_domain=None,
-                                detail=None, ip_address=None, user_agent=None):
+                                detail=None, ip_address=None, user_agent=None, cpf=None,
+                                url_scanned=None, domain=None, score=None, passed=None):
         self.audits.append({"account_id": account_id, "action": action, "key_id": key_id,
                             "target_domain": target_domain, "detail": detail or {},
-                            "ip_address": ip_address, "created_at": _now()})
+                            "ip_address": ip_address, "cpf": cpf, "url_scanned": url_scanned,
+                            "domain": domain, "score": score, "passed": passed,
+                            "created_at": _now()})
 
     async def list_gate_audit(self, account_id=None, action=None, limit=50):
         rows = [a for a in self.audits

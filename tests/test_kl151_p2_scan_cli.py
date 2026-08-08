@@ -59,7 +59,11 @@ class FakeStore:
     async def get_account_gate_fields(self, account_id):
         return {"id": account_id, "email": "d@acme.com", "account_type": "developer",
                 "gate_plan_id": self.plan["id"], "gate_trial_started_at": None,
-                "gate_trial_ends_at": None}
+                "gate_trial_ends_at": None,
+                # KL-153 — KYC completo → o scan devolve o resultado detalhado (`results`).
+                "email_confirmed": True, "kyc_completed": True, "kyc_completed_at": None,
+                "suspended": False, "cpf": None, "address": None, "phone": None,
+                "phone_verified": False}
 
     async def get_gate_plan(self, plan_id):
         return dict(self.plan) if plan_id == self.plan["id"] else None
@@ -192,11 +196,13 @@ def test_scan_unverified_domain_403(monkeypatch):
     assert r.status_code == 403 and "verific" in r.json()["detail"].lower()
 
 
-def test_scan_unregistered_domain_403(client, store, monkeypatch):
+def test_scan_unregistered_domain_standalone_ok(client, store, monkeypatch):
+    # KL-153: domínio não registrado → scan AVULSO (não mais 403) — a conta tem e-mail confirmado.
     key = "KLM_" + "d" * 32
     _register_key(store, key)
+    _mock_engine(monkeypatch, _report([("ssl_valid", "ssl", Severity.CRITICAL, Status.PASS)]))
     r = client.post("/gate/scan", json={"url": "https://outro.com"}, headers={"X-API-Key": key})
-    assert r.status_code == 403
+    assert r.status_code == 200
 
 
 def test_scan_limit_exceeded_429(client, store, monkeypatch):
