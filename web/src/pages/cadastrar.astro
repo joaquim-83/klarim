@@ -7,6 +7,7 @@ import Footer from '../components/Footer.astro';
 import SignupForm from '../components/account/SignupForm.jsx';
 import ClaimContext from '../components/account/ClaimContext.astro';
 import { FORM_CONTAINER } from '../lib/layout.js';
+import { fetchSessionUser, loggedInRedirect } from '../lib/serverAuth.js';
 
 const params = Astro.url.searchParams;
 const email = params.get('email') || '';
@@ -20,6 +21,11 @@ const plan = ['pro', 'agency'].includes(params.get('plan')) ? params.get('plan')
 const isDev = params.get('type') === 'developer';
 const source = isDev ? 'security-gate' : '';
 const redirectTo = isDev ? '/dashboard/gate' : redirect;
+
+// KL-157 (Fix 2) — usuário JÁ logado NUNCA vê o form de cadastro. Detecção server-side (a página é
+// no-store no nginx → confiável, sem cache). Dev → /dashboard/gate; senão → o redirect/dashboard.
+const sessionUser = await fetchSessionUser(Astro.cookies);
+if (sessionUser) return Astro.redirect(loggedInRedirect(isDev, redirect));
 ---
 
 <Base

@@ -90,9 +90,18 @@ export default function GateLandingCTA() {
     }
   }
 
-  // 1º paint (SSR/loading) e não logado: link para o registro (não-JS friendly).
-  if (state === 'loading' || state === 'logged_out') {
-    return <a href="/cadastrar?type=developer" className={BTN}>Começar grátis →</a>
+  // KL-157 (Fix 1): durante a verificação de auth mostra SKELETON — NUNCA o CTA de anônimo (o bug
+  // era o usuário logado ver/clicar "Criar conta" antes do fetch resolver). Só após confirmar que
+  // NÃO há sessão (`logged_out`) é que o link de cadastro aparece.
+  if (state === 'loading') {
+    return (
+      <span className={`${BTN} pointer-events-none opacity-70`} aria-busy="true" aria-label="Carregando">
+        Carregando…
+      </span>
+    )
+  }
+  if (state === 'logged_out') {
+    return <a href="/cadastrar?type=developer" className={BTN}>Criar conta →</a>
   }
   if (state === 'active') {
     return <a href="/dashboard/gate" className={BTN}>Abrir dashboard →</a>

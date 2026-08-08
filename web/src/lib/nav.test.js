@@ -2,6 +2,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EMPRESA_LINKS, DEV_LINKS, PRODUCT_CARDS, authState, dashboardMenu, otherDropdowns } from './nav.js'
+import { loggedInRedirect } from './serverAuth.js'
 
 // --- Header: dropdowns "Para empresas" / "Para devs" --- //
 test('EMPRESA_LINKS: 4 links, começa por "Verificar meu site"', () => {
@@ -54,4 +55,12 @@ test('otherDropdowns: devolve todos menos o que abriu', () => {
   assert.deepEqual(otherDropdowns([a, b, c], b), [a, c])
   assert.deepEqual(otherDropdowns([a], a), [])
   assert.deepEqual(otherDropdowns(null, a), [])
+})
+
+// --- KL-157: redirect do usuário logado que cai no /cadastrar --- //
+test('loggedInRedirect: dev → /dashboard/gate; senão → fallback/dashboard', () => {
+  assert.equal(loggedInRedirect(true), '/dashboard/gate')
+  assert.equal(loggedInRedirect(true, '/x'), '/dashboard/gate')   // dev ignora o fallback
+  assert.equal(loggedInRedirect(false, '/dashboard/conta'), '/dashboard/conta')
+  assert.equal(loggedInRedirect(false), '/dashboard')
 })

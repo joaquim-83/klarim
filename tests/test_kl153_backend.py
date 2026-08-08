@@ -532,6 +532,11 @@ def test_status_shape(client, store):
     assert body["projects_count"] == 0
 
 
+def test_status_no_auth_401(client, store):
+    # KL-157: sem sessão → 401 (o front trata como deslogado e mostra "Criar conta").
+    assert client.get("/account/gate/status").status_code == 401
+
+
 def test_activate_owner_becomes_developer(client, store):
     store.users[20] = {"id": 20, "email": "owner@acme.com", "is_active": True, "account_level": 2,
                        "account_type": "owner", "gate_plan_id": None, "gate_trial_ends_at": None,

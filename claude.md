@@ -2117,6 +2117,23 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   plano) + seção Security Gate no `AccountSettings.jsx` (`/dashboard/conta`). Helpers puros `planName`/
   `planDetails`/`canUpgrade` (`ux.js`). **NÃO** alterou engine/scanner. **+3 backend + +4 node --test → 2286
   pytest · 191 node pass · build OK.** Docs: `docs/SECURITY.md` §12. Relatório: `claude/reports/KL-156_report.md`.
+- **KL-157** — fix crítico: `/security-gate` e `/cadastrar` não detectavam sessão ativa (usuário logado
+  tratado como anônimo) ✅. **Como o auth-state é detectado nas páginas Astro:** cookie `klarim_session`
+  **HttpOnly** (o JS do cliente NÃO lê o valor); o `src/middleware.js` valida server-side (`GET /account/me`
+  com Bearer) **só para `/dashboard/*`**; o `header.js` + ilhas React fazem `fetch` client-side. **Root cause:**
+  (a) `cadastrar.astro` (SSR) nunca checava sessão → logado via o form; (b) os CTAs da seção Planos da
+  `/security-gate` são `<a>` estáticos p/ `/cadastrar?type=developer`; (c) o `GateLandingCTA` mostrava o link
+  de cadastro DURANTE o loading. **Cache importa:** `/security-gate` é CDN-cacheada (`max-age=300`) → detecção
+  ali fica no CLIENTE (ilha); `/cadastrar`+`/entrar` são `no-store` → SSR ali é confiável. **Fixes:**
+  **`web/src/lib/serverAuth.js`** (`fetchSessionUser`/`loggedInRedirect`); **`cadastrar.astro`** redireciona o
+  logado (dev→`/dashboard/gate`, senão o redirect) — catch-all confiável (no-store); **`GateLandingCTA`** mostra
+  **skeleton "Carregando…"** no loading e só "Criar conta →" após confirmar deslogado (nunca CTA de anônimo p/
+  logado); **`SignupForm`** leva `redirect=/dashboard/gate` no login do fluxo dev; a seção Gate do
+  `AccountSettings` (KL-156) já funciona. **Validado no BROWSER (dev, sessão simulada com JWT do seed sem
+  digitar senha):** logado → herói "Abrir dashboard" + `/cadastrar` redireciona + seção Gate em `/dashboard/conta`;
+  deslogado → "Criar conta" + form; zero erro no console. **+1 backend (`/account/gate/status` sem sessão →
+  401) + +1 node (`loggedInRedirect`) → 2287 pytest · 192 node pass.** **NÃO** alterou scan/engine/rate limit.
+  Relatório: `claude/reports/KL-157_report.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.
