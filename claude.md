@@ -2166,7 +2166,7 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   **+1 backend (nível 1 → 403) + 1 node (`errDetail`) → 2288 pytest · 194 node pass.** Engine/scanner/rate
   limit **inalterados**. Relatório: `claude/reports/KL-159_report.md`.
 - **KL-150 (Prompt 1/2)** — 4 fixes funcionais de navegação/UX (site público + dashboard), **100%
-  frontend** (zero backend/engine/rate-limit) ✅ **PRONTO PARA REVISÃO VISUAL — NÃO deployado**
+  frontend** (zero backend/engine/rate-limit) ✅ **DEPLOYADO 09/08/2026 (CI run #293 verde)**
   (validado no `docker-compose.dev.yml`, aguarda o dono). **(Fix 1)** sobreposição avatar × dropdowns
   (`web/public/header.js` → `?v=5`): o menu do avatar (`<div#user-menu>`) e os `<details.nav-dropdown>`
   viraram UM conjunto — abrir um fecha os outros + o avatar; clicar fora fecha tudo (`closeDropdowns`/
@@ -2200,7 +2200,8 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   nos 2 estados + drawer. Os acessos rápidos "Planos e preços · Documentação da API" no hero da landing
   ficam. Ver a entrada KL-161 abaixo.
 - **KL-161** — Conformidade LGPD completa (canal de direitos/DSAR, DPO, política, termos, ROPA) ✅
-  **PRONTO PARA REVISÃO VISUAL — NÃO deployado** (validado no `docker-compose.dev.yml`). **(1) Canal
+  **DEPLOYADO 09/08/2026** (CI run #293 verde; `privacidade@klarim.net` confirmado como remetente no
+  Resend — `confirmation_sent:true` em prod; tabela `lgpd_requests` criada na VM). **(1) Canal
   `/lgpd`:** página Astro + ilha `components/lgpd/LGPDForm.jsx` (tipo/nome/e-mail/CPF opcional
   mascarado/descrição; lê `?tipo=` e pré-seleciona — o link "Remover meus dados" do perfil manda
   `?tipo=exclusao`); lógica pura `web/src/lib/lgpd.js`. **`POST /lgpd/request`** (público, sem conta):

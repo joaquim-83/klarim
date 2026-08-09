@@ -1,7 +1,7 @@
 # KL-150 (ajuste) + KL-161 — Menu "Desenvolvedor" + conformidade LGPD completa
 
-> **Status: PRONTO PARA REVISÃO VISUAL** — implementado e validado no `docker-compose.dev.yml`.
-> **NENHUM deploy/push foi feito.** Aguarda a validação do Cidinei antes de subir.
+> **Status: DEPLOYADO EM PRODUÇÃO ✅** (09/08/2026) — validação visual aprovada pelo Cidinei,
+> push + CI/CD verde, verificação pós-deploy OK. Ver a seção **Deploy** no fim.
 
 ## Resumo
 
@@ -120,3 +120,43 @@ ao lado de `privacidade`. `/api/lgpd/request` já é coberto pelo proxy `/api/` 
 
 Engine de scan, rate limiting do scanner, scanner público e o SEO (títulos/URLs/Schema.org do KL-132)
 permaneceram intactos. `/lgpd` fica fora do sitemap (consistente com `/contato`, `/privacidade`).
+
+---
+
+## Deploy (09/08/2026)
+
+Commits (direto no `main`, convenção do repo):
+- `e2a37fe` — `feat(KL-150): menu Desenvolvedor + redirect dev + dashboard dev diferenciada`
+- `2f7d371` — `feat(KL-161): conformidade LGPD — canal de direitos /lgpd + DPO + ROPA`
+- `git push origin main`: `dc17918..2f7d371` ✓
+
+**CI/CD — GitHub Actions run #293** (ID `31313545327`) — conclusão **success**:
+
+| Step | Status | Tempo |
+|---|---|---|
+| Nginx config check | ✓ | 9s |
+| Test (pytest) | ✓ | 1m42s |
+| Build web (Astro) | ✓ | 15s |
+| Deploy to GCP VM | ✓ | 3m46s |
+| Security Gate (live, pós-deploy) | ✓ | 32s |
+
+(Único aviso: deprecação do Node.js 20 nas actions — informativo, não bloqueia.)
+
+**Verificação pós-deploy (produção `klarim.net`):**
+- `GET /lgpd` → **200**; `GET /lgpd?tipo=exclusao` → **200**.
+- `POST /api/lgpd/request` (`type=acesso`) → **200** `{id: 19f26d10-…, confirmation_sent: true,
+  cpf_warning: false}` — o INSERT retornou o protocolo (tabela OK) e o e-mail foi despachado.
+- `POST` com tipo inválido → **422**.
+- **VM** (`sudo docker exec klarim-db-1 psql … "\d lgpd_requests"`): tabela criada pelo
+  `ensure_schema` com todas as colunas + 3 índices (pkey, email, status). Linha de teste
+  confirmada (`acesso · teste@teste.com · pending`).
+- **E-mail (`confirmation_sent: true`)**: o remetente **`privacidade@klarim.net` FUNCIONA no
+  Resend** (o domínio `klarim.net` já é verificado → o alias envia sem config extra). Foram
+  disparados a confirmação ao titular (`teste@teste.com`) e a notificação ao operador
+  (`klarimscan@gmail.com`).
+
+**Limpeza:** a linha de teste do deploy (`teste@teste.com`, "Teste de deploy") foi **removida** da
+produção — `lgpd_requests` voltou a 0 registros (fila LGPD limpa para o operador).
+
+**Sem flush Redis** necessário (nada de scoring/score). Nenhum `.env` novo é obrigatório
+(`LGPD_FROM_EMAIL`/`LGPD_ADMIN_EMAIL` têm defaults corretos).
