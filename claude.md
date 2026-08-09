@@ -2227,7 +2227,7 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   privacidade/termos/footer/perfil, endpoint end-to-end, **zero erro no console**. Engine/scanner/rate-limit
   do scan e SEO (KL-132) intactos. Relatório: `claude/reports/KL-150_P1adj_KL-161_report.md`.
 - **KL-160** — Rate limiting no Nginx + fix de falsos positivos SPA do Gate + botão de varredura no
-  admin ✅ **PRONTO PARA REVISÃO — NÃO deployado** (validado no dev + `nginx -t` + Gate real). **(Fix A,
+  admin ✅ **DEPLOYADO 09/08/2026 (score 100/100 🟢 em prod)**. Validado no dev + `nginx -t` + Gate real. **(Fix A,
   URGENTE)** `location ~* ^/(adminer|_profiler|phpMyAdmin|pma|dbadmin|sql|mysql|cpanel|webmail|roundcube|
   squirrelmail|horde|wp-content/debug) { return 404; }` nos 2 configs — o bloco do KL-138 cobria `/admin(/|$)`
   mas deixava `/adminer` virar SPA fallback → o Gate reportava `admin_panel_exposed` falso. **(Fix B)**
@@ -2249,8 +2249,11 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   **DNSSEC** já resolvido (Gate real: `Dnssec Ok — zona assinada`). **+11 pytest (`test_kl160_security_scan`
   6 + `test_kl147` +5) + 7 node → 2311 pytest · 218 test:unit · build OK · `nginx -t` OK**. Rate-limit
   validado em nginx standalone (mesmo CF-IP → 429; CF-IPs distintos → sem throttle). Painel validado no
-  browser. **Risco:** o bloqueio de IP direto mexe no `default_server` do 443 (SNI) e o dev é HTTP-only →
-  revisar antes do deploy (rollback: VM fallback). Após o deploy, o job Security Gate deve ir a ~100.
+  browser. **Pós-deploy:** o `rate_limit` do Gate continuava FAIL — o check era SEQUENCIAL (10 GETs) e o
+  leaky bucket do nginx refilla entre eles (RTT ≈ refill) → nunca disparava. Fix: `security_gate/checks/
+  rate_limit.py` faz a rajada **CONCORRENTE** (`asyncio.gather`, ≤10 requests) + `security-gate.yml` testa
+  `/api/scan/` (zona strict 2r/s/burst 5; `/` e `/api/` são generosos de propósito) → **score 100/100 🟢**
+  em prod. O bloqueio de IP direto (`ssl_reject_handshake` no 443 default_server) subiu sem quebrar o site.
   Relatório: `claude/reports/KL-160_report.md`; `docs/SECURITY.md` §13 + `docs/DEPLOY.md` §8.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos

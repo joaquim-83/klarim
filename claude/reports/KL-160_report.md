@@ -102,6 +102,20 @@ de MAIOR risco (não testáveis 100% fora de produção):
   score ~100** (admin_panel/debug/dnssec PASS por Fix B + rate_limit PASS por Parte C).
 - `docs/SECURITY.md` (§ rate limiting / IP-block / self-scan / DNSSEC) e `docs/DEPLOY.md` atualizados.
 
+## Deploy (09/08/2026) + refinamento do rate-limit check
+
+Commit `cf791a8` deployado (CI run #295 verde, incl. nginx-check + Deploy + Security Gate). Site UP
+(páginas 200), `/adminer`/`/_profiler`/`/pma` → 404, admin_panel/debug/DNSSEC PASS.
+
+**Refinamento (commit seguinte):** o `rate_limit` continuava FAIL no Gate — o check enviava 10 GETs
+**SEQUENCIAIS** e o leaky bucket do nginx "refilla" entre um e outro (RTT ~400ms ≈ o refill de 2r/s),
+então nunca disparava o 429 mesmo com o limite ativo (comprovado: 12 requests CONCORRENTES → 4×307 +
+**8×429**). Dois ajustes: (1) `security_gate/checks/rate_limit.py` faz a rajada **CONCORRENTE**
+(`asyncio.gather`, ≤10 requests, passivo) — corrige o falso negativo p/ todos os clientes do Gate;
+(2) `security-gate.yml` inclui `/api/scan/` (zona `scan` 2r/s/burst 5, que a rajada dispara; `/` e
+`/api/` têm limite generoso de propósito e não tripam com 10 requests). **Resultado contra prod:
+`Rate limit ativo em /api/scan/ (4/10 → 429)` → score 100/100 🟢, 0 findings.**
+
 ## Arquivos
 
 **Nginx:** `frontend/nginx/http.conf`, `frontend/nginx/https.conf.template`.

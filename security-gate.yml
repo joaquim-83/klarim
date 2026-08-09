@@ -54,8 +54,12 @@ checks:
   rate_limit:
     enabled: true
     endpoints:                          # onde o mini-burst de 10 requests procura o 429
-      - /
+      # KL-160 — `/api/scan/` é a zona MAIS restrita (2r/s, burst 5) → o mini-burst de 10 a dispara
+      # de forma determinística. `/` e `/api/` têm limite generoso de propósito (navegação: 30/10 r/s,
+      # burst 50/20) e NÃO tripam com só 10 requests — testar só eles daria um falso "sem rate limit".
+      - /api/scan/
       - /api/
+      - /
 
 notifications:                    # usadas no Prompt 4 (e-mail/webhook)
   email:
