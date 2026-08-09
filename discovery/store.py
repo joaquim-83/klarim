@@ -1085,6 +1085,24 @@ ALTER TABLE gate_audit_log ADD COLUMN IF NOT EXISTS passed BOOLEAN;
 -- KL-153 — scan avulso (sem projeto): um run pode não ter projeto vinculado. project_id vira
 -- NULLABLE (DROP NOT NULL é idempotente — reexecutar não dá erro).
 ALTER TABLE gate_runs ALTER COLUMN project_id DROP NOT NULL;
+
+-- KL-161 — canal de direitos do titular (LGPD/DSAR): solicitações de acesso/correção/exclusão/
+-- portabilidade/revogação de consentimento. Público (sem conta). Rate limit no endpoint.
+-- `gen_random_uuid()` é nativo no Postgres 13+ (sem pgcrypto). O protocolo = id (UUID).
+CREATE TABLE IF NOT EXISTS lgpd_requests (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    type VARCHAR(50) NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    email VARCHAR(255) NOT NULL,
+    cpf VARCHAR(14),
+    description TEXT NOT NULL,
+    status VARCHAR(20) DEFAULT 'pending',
+    admin_notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    resolved_at TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_lgpd_requests_status ON lgpd_requests(status, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_lgpd_requests_email ON lgpd_requests(email);
 """
 
 
@@ -4371,6 +4389,35 @@ class TargetStore:
     # --- KL-133: blog editorial ------------------------------------------- #
 
     _BLOG_STATUSES = ("draft", "published", "archived")
+
+    # ----- KL-161: solicitações LGPD (DSAR) ------------------------------- #
+
+    async def create_lgpd_request(self, *, req_type: str, name: str, email: str,
+                                  cpf: Optional[str], description: str) -> str:
+        """KL-161 — grava uma solicitação de direitos do titular (LGPD). Devolve o id (UUID),
+        usado como protocolo. Campos já chegam sanitizados/validados do endpoint."""
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO lgpd_requests (type, name, email, cpf, description) "
+                "VALUES (%s, %s, %s, %s, %s) RETURNING id::text AS id",
+                (req_type, name[:255], email[:255], cpf, description))
+            return self._rows_to_dicts(cur)[0]["id"]
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def list_lgpd_requests(self, status: Optional[str] = None, limit: int = 100
+                                 ) -> List[Dict[str, Any]]:
+        """KL-161 — lista as solicitações LGPD (uso admin/painel futuro), mais recentes primeiro."""
+        def _fn(cur):
+            if status:
+                cur.execute("SELECT id::text AS id, type, name, email, cpf, description, status, "
+                            "admin_notes, created_at, resolved_at FROM lgpd_requests "
+                            "WHERE status = %s ORDER BY created_at DESC LIMIT %s", (status, limit))
+            else:
+                cur.execute("SELECT id::text AS id, type, name, email, cpf, description, status, "
+                            "admin_notes, created_at, resolved_at FROM lgpd_requests "
+                            "ORDER BY created_at DESC LIMIT %s", (limit,))
+            return self._rows_to_dicts(cur)
+        return await asyncio.to_thread(self._run, _fn)
 
     async def create_blog_post(self, title: str, content: str, slug: Optional[str] = None,
                                subtitle: Optional[str] = None, meta_description: Optional[str] = None,

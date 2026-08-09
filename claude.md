@@ -2165,6 +2165,66 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   com `mailto:suporte@klarim.net` (prod: modal PIX); Network mostra o POST processado; zero erro no console.
   **+1 backend (nível 1 → 403) + 1 node (`errDetail`) → 2288 pytest · 194 node pass.** Engine/scanner/rate
   limit **inalterados**. Relatório: `claude/reports/KL-159_report.md`.
+- **KL-150 (Prompt 1/2)** — 4 fixes funcionais de navegação/UX (site público + dashboard), **100%
+  frontend** (zero backend/engine/rate-limit) ✅ **PRONTO PARA REVISÃO VISUAL — NÃO deployado**
+  (validado no `docker-compose.dev.yml`, aguarda o dono). **(Fix 1)** sobreposição avatar × dropdowns
+  (`web/public/header.js` → `?v=5`): o menu do avatar (`<div#user-menu>`) e os `<details.nav-dropdown>`
+  viraram UM conjunto — abrir um fecha os outros + o avatar; clicar fora fecha tudo (`closeDropdowns`/
+  `closeAvatar`). **(Fix 2)** CTA de plano da landing `/security-gate` ciente de auth: ilha
+  **`GatePlanCTA.jsx`** (`client:load`, consulta `/account/gate/status`) — deslogado →
+  `/cadastrar?type=developer&plan={slug}`, logado → `/dashboard/gate?upgrade={slug}` (Free abre ·
+  Enterprise → `/contato`); SSR-safe (1º paint = link de cadastro; o `/cadastrar` do KL-157 já
+  redireciona o logado). `cadastrar.astro` separa **plano Gate** (dev, pro/team → `?upgrade=`) do
+  **plano owner** (KL-44 P6, pro/agency → trial); `serverAuth.loggedInRedirect(isDev,fallback,gatePlan)`
+  + `SignupForm` (login dev carrega o `redirect` com `?upgrade=`); href/label/redirect puros em
+  `lib/nav.js` (`gatePlanCtaHref`/`gatePlanCtaLabel`/`gateSignupRedirect`). **(Fix 3)** dashboard
+  diferenciada p/ dev: `DashboardV2` busca o gate status e ramifica — **developer PURO** (`account_type=
+  'developer'`) → SÓ a seção Gate (sem "Adicione seu primeiro site"); **both** → seção Gate no TOPO +
+  sites abaixo; **owner sem Gate** → inalterado. Novo `GateDashboardSection.jsx` (card plano/scans/nível
+  + "Abrir dashboard Gate →" + checklist "Primeiros passos"); checklist puro `ux.js::gateOnboardingSteps`
+  (conta · API key · 1º scan via `/gate/runs` · **domínio VERIFICADO** p/ CI-CD via `/gate/projects`
+  contando `verified` — o cadastro cria 1 projeto não verificado, então "qualquer projeto" marcaria cedo
+  demais · upgrade). Decisão de layout pura: `showGateDashboardSection`/`isPureDeveloper`. **(Fix 4)**
+  "Para devs" simplificado: `DEV_LINKS`=1 destino (Security Gate) → no header vira LINK DIRETO (sem
+  dropdown); os antigos Documentação/Planos/API viraram acessos rápidos no hero da landing ("Planos e
+  preços · Documentação da API"). **Decisão (KL-153 preservado):** o `nav.dashboardMenu` (menu do
+  header) SEGUE mostrando "Security Gate" p/ TODOS os tipos de conta (o `/dashboard/gate` auto-ativa) —
+  o teste #3 do card ("owner sem Gate → sem seção Gate") é satisfeito na PÁGINA (via
+  `showGateDashboardSection`), não regredindo o menu. **Validação no browser** (dev): Fix 1 (3
+  combinações), Fix 2 (CTAs deslogado/logado), Fix 3 (pure dev só-Gate · both Gate+sites · owner sem
+  Gate), Fix 4 (link direto + acessos rápidos); **zero erro no console**. **+9 node → 203 test:unit ·
+  2288 pytest (sem mudança backend) · build OK.** SEO (KL-132) intacto. Relatório:
+  `claude/reports/KL-150_P1_report.md`. **AJUSTE (KL-150 + KL-161):** o Fix 4 foi **revertido** — "Para
+  devs" (link direto) voltou a ser o dropdown **"Desenvolvedor ▼"** (`nav.js::DEV_DROPDOWN_LABEL`, 1
+  sub-item Security Gate, preparado p/ crescer); `Header.astro` usa `<NavDropdown label={DEV_DROPDOWN_LABEL}>`
+  nos 2 estados + drawer. Os acessos rápidos "Planos e preços · Documentação da API" no hero da landing
+  ficam. Ver a entrada KL-161 abaixo.
+- **KL-161** — Conformidade LGPD completa (canal de direitos/DSAR, DPO, política, termos, ROPA) ✅
+  **PRONTO PARA REVISÃO VISUAL — NÃO deployado** (validado no `docker-compose.dev.yml`). **(1) Canal
+  `/lgpd`:** página Astro + ilha `components/lgpd/LGPDForm.jsx` (tipo/nome/e-mail/CPF opcional
+  mascarado/descrição; lê `?tipo=` e pré-seleciona — o link "Remover meus dados" do perfil manda
+  `?tipo=exclusao`); lógica pura `web/src/lib/lgpd.js`. **`POST /lgpd/request`** (público, sem conta):
+  valida (tipo∈{acesso,correcao,exclusao,portabilidade,revogacao,outra}, e-mail, nome, descrição≥10),
+  **CPF opcional** (inválido→`cpf_warning`, NÃO bloqueia nem grava), **rate limit 3/e-mail/dia**
+  (`_redis_allow`), grava em **`lgpd_requests`** (UUID=protocolo; status pending→in_progress→resolved/
+  denied, no `ensure_schema`) e dispara 2 e-mails best-effort. **(2) E-mails** (`notifier/email_client.py`,
+  types `lgpd_confirmation`/`lgpd_admin`): confirmação ao titular (texto puro, protocolo, **até 15 dias
+  úteis**) + notificação ao operador (HTML, campos, Reply-To=titular). Remetente **`privacidade@klarim.net`**
+  (env `LGPD_FROM_EMAIL`; `klarim.net` já verificado no Resend → basta o alias p/ ENVIAR); operador
+  **`klarimscan@gmail.com`** (env `LGPD_ADMIN_EMAIL`). **Recebimento** em `privacidade@`: se sem MX/
+  forwarding, é só remetente e o **formulário `/lgpd` é o canal oficial** (tudo fica em `lgpd_requests`).
+  **(3) `/privacidade`:** §1 Encarregado (DPO)→`/lgpd`+`privacidade@`; §2 dados do Gate (nome/CPF/
+  endereço/telefone/API key/histórico); §5 Reoon=deliverability; §6 retenção (KYC=conta+30d · audit
+  CPF+IP+URL=2a · logs 90d) e prazo **48h→15 dias úteis**; §7 revogação + link `/lgpd`. **(4) `/termos`:**
+  nova **§9 Security Gate** (KYC, auditoria por CPF, uso indevido→suspensão, PIX, cancelamento via `/lgpd`);
+  §4 prazo 48h→15 dias úteis. **(5) Footer:** "Seus direitos (LGPD)"→`/lgpd`. **(6) Perfil `/site/{domínio}`:**
+  "Remover meus dados (LGPD)"→`/lgpd?tipo=exclusao`. **(7) ROPA** `docs/LGPD.md` (tabela de tratamento +
+  DPO + canal + notas). **(8) Nginx:** `lgpd` nas allowlists de conteúdo (`http.conf` + `https.conf.template`,
+  ao lado de `privacidade`; `/api/lgpd/request` já vai pelo proxy `/api/`). **+12 backend
+  (`test_kl161_lgpd.py`) + 8 node → 2300 pytest · 211 test:unit · build OK · `nginx -t` OK** (validado como
+  a CI). **Validação no browser:** dropdown Desenvolvedor, `/lgpd` (form+pré-seleção+submit→protocolo),
+  privacidade/termos/footer/perfil, endpoint end-to-end, **zero erro no console**. Engine/scanner/rate-limit
+  do scan e SEO (KL-132) intactos. Relatório: `claude/reports/KL-150_P1adj_KL-161_report.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

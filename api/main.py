@@ -6087,6 +6087,106 @@ async def api_contact(body: ContactBody, request: Request) -> dict:
 
 
 # --------------------------------------------------------------------------- #
+# KL-161 — canal de direitos do titular (LGPD / DSAR)
+# --------------------------------------------------------------------------- #
+
+class LGPDRequestBody(BaseModel):
+    type: str
+    name: str
+    email: str
+    cpf: Optional[str] = None
+    description: str
+
+
+# slug (PT, casa com o `?tipo=` do link "Remover meus dados") → rótulo exibível.
+_LGPD_TYPES = {
+    "acesso": "Acesso aos dados",
+    "correcao": "Correção",
+    "exclusao": "Exclusão",
+    "portabilidade": "Portabilidade",
+    "revogacao": "Revogar consentimento",
+    "outra": "Outra",
+}
+_LGPD_RL_MAX = 3          # solicitações por e-mail por dia (anti-spam)
+_LGPD_RL_WINDOW = 86400
+_lgpd_attempts: dict = {}  # fallback in-memory do _redis_allow
+
+
+def _lgpd_from_email() -> str:
+    """Remetente dos e-mails LGPD. `klarim.net` já é verificado no Resend → basta o alias."""
+    return os.environ.get("LGPD_FROM_EMAIL", "privacidade@klarim.net")
+
+
+def _lgpd_admin_email() -> str:
+    """Destinatário interno das notificações LGPD (operador)."""
+    return os.environ.get("LGPD_ADMIN_EMAIL", "klarimscan@gmail.com")
+
+
+@app.post("/lgpd/request")
+async def api_lgpd_request(body: LGPDRequestBody, request: Request) -> dict:
+    """Canal de direitos do titular (DSAR). **Público** (sem conta): qualquer pessoa pode exercer
+    seus direitos LGPD. Valida, grava em `lgpd_requests` e dispara 2 e-mails (confirmação ao
+    titular + notificação ao operador), best-effort. Rate limit 3/e-mail/dia."""
+    req_type = (body.type or "").strip().lower()
+    name = _sanitize_str((body.name or "").strip(), 255)
+    email = _sanitize_str((body.email or "").strip().lower(), 255)
+    description = _sanitize_str((body.description or "").strip(), 5000)
+
+    if req_type not in _LGPD_TYPES:
+        raise HTTPException(status_code=422, detail="Tipo de solicitação inválido.")
+    if not email or not _EMAIL_RE.match(email):
+        raise HTTPException(status_code=422, detail="E-mail inválido.")
+    if not name:
+        raise HTTPException(status_code=422, detail="Nome obrigatório.")
+    if len(description) < 10:
+        raise HTTPException(status_code=422,
+                            detail="Descreva sua solicitação (mínimo 10 caracteres).")
+
+    # CPF é OPCIONAL: se preenchido e inválido, apenas AVISA (não bloqueia) e não grava o valor.
+    cpf_stored: Optional[str] = None
+    cpf_warning = False
+    raw_cpf = (body.cpf or "").strip()
+    if raw_cpf:
+        try:
+            from api.validators import validate_cpf
+            cpf_stored = validate_cpf(raw_cpf)
+        except ValueError:
+            cpf_warning = True
+
+    # Rate limit por E-MAIL (o titular pode trocar de rede; a chave é o e-mail). Só conta após a
+    # validação passar → uma requisição malformada não queima a cota.
+    allowed, retry = await _redis_allow("lgpd", email, _LGPD_RL_MAX, _LGPD_RL_WINDOW, _lgpd_attempts)
+    if not allowed:
+        raise HTTPException(status_code=429, detail="Muitas solicitações. Tente novamente amanhã.",
+                            headers={"Retry-After": str(retry)})
+
+    protocol = await get_target_store().create_lgpd_request(
+        req_type=req_type, name=name, email=email, cpf=cpf_stored, description=description)
+
+    type_label = _LGPD_TYPES[req_type]
+    confirmation_sent = False
+    if _email_enabled():
+        try:  # confirmação ao titular (best-effort — o registro já está gravado)
+            await _mailer().send_lgpd_confirmation(email, type_label, protocol, _lgpd_from_email())
+            confirmation_sent = True
+        except Exception as exc:  # noqa: BLE001
+            print(f"[lgpd] confirmação ao titular falhou: {exc!r}", flush=True)
+        try:  # notificação ao operador
+            await _mailer().send_lgpd_admin_notification(
+                _lgpd_admin_email(), _lgpd_from_email(), type_label=type_label, name=name,
+                email=email, cpf=cpf_stored, description=description, protocol=protocol)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[lgpd] notificação ao operador falhou: {exc!r}", flush=True)
+
+    return {
+        "id": protocol,
+        "message": "Solicitação registrada com sucesso. Prazo: até 15 dias úteis.",
+        "confirmation_sent": confirmation_sent,
+        "cpf_warning": cpf_warning,
+    }
+
+
+# --------------------------------------------------------------------------- #
 # Recuperação de relatórios (token temporário por e-mail)
 # --------------------------------------------------------------------------- #
 

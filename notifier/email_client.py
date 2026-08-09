@@ -90,6 +90,8 @@ EMAIL_TYPES = {
     "vigilia_uptime": "Vigília — disponibilidade (KL-44 P4)",
     "vigilia_changes": "Vigília — integridade do site (KL-44 P4)",
     "vigilia_phishing": "Vigília — domínios suspeitos (KL-44 P4)",
+    "lgpd_confirmation": "LGPD — confirmação de solicitação ao titular (KL-161)",
+    "lgpd_admin": "LGPD — notificação de nova solicitação ao operador (KL-161)",
 }
 
 
@@ -1392,6 +1394,67 @@ class KlarimMailer:
             params["reply_to"] = email
         # Destinatário interno (scan@klarim.net) → ignora blocklist, mas registra (KL-62).
         return await self._send(params, email_type="contact", source="contact_form",
+                                skip_blocklist=True)
+
+    # ----- KL-161: canal de direitos LGPD (DSAR) --------------------------- #
+
+    async def send_lgpd_confirmation(self, to_email: str, type_label: str, protocol: str,
+                                     from_address: str) -> Dict[str, Any]:
+        """KL-161 — confirma ao TITULAR que a solicitação LGPD foi recebida. Transacional
+        (`privacidade@klarim.net`), TEXTO PURO, sem links de ação. Prazo legal: até 15 dias
+        úteis (LGPD/ANPD). Registrado no email_log; ignora blocklist (é resposta a um pedido)."""
+        text = (
+            "Olá,\n\n"
+            f"Recebemos a sua solicitação de \"{type_label}\" referente aos seus dados pessoais.\n\n"
+            f"Protocolo: {protocol}\n\n"
+            "Prazo de resposta: até 15 dias úteis, conforme a Lei Geral de Proteção de Dados "
+            "(LGPD, Lei nº 13.709/2018) e as diretrizes da ANPD.\n\n"
+            "Se você não fez esta solicitação, pode ignorar este e-mail.\n\n"
+            "Encarregado de Proteção de Dados — Klarim\n"
+            "privacidade@klarim.net"
+        )
+        return await self._send({
+            "from": from_address,
+            "to": [to_email],
+            "subject": "Sua solicitação LGPD foi recebida — Klarim",
+            "text": text,
+        }, email_type="lgpd_confirmation", source="lgpd", skip_blocklist=True)
+
+    async def send_lgpd_admin_notification(self, to_admin: str, from_address: str, *,
+                                           type_label: str, name: str, email: str,
+                                           cpf: Optional[str], description: str,
+                                           protocol: str) -> Dict[str, Any]:
+        """KL-161 — notifica o OPERADOR de uma nova solicitação LGPD (todos os campos + protocolo).
+        Destinatário interno (klarimscan@gmail.com) → ignora blocklist, mas registra (KL-62).
+        Reply-To = e-mail do titular (basta responder). HTML com escape (defense-in-depth)."""
+        import html as _html
+
+        def _safe(s: Any) -> str:
+            return _html.escape(str(s or "")).strip()
+
+        body = (
+            "<div style=\"font-family:Arial,sans-serif;background:#0D1117;color:#E6EDF3;"
+            "padding:24px;border-radius:8px\">"
+            "<h2 style=\"color:#FF6B35\">Nova solicitação LGPD — klarim.net</h2>"
+            f"<p><b>Protocolo:</b> {_safe(protocol)}</p>"
+            f"<p><b>Tipo:</b> {_safe(type_label)}</p>"
+            f"<p><b>Nome:</b> {_safe(name) or '—'}</p>"
+            f"<p><b>E-mail:</b> {_safe(email)}</p>"
+            f"<p><b>CPF:</b> {_safe(cpf) or '— (não informado)'}</p>"
+            f"<p><b>Descrição:</b><br>{_safe(description).replace(chr(10), '<br>')}</p>"
+            "<p style=\"color:#8B949E;font-size:12px\">Prazo de resposta: até 15 dias úteis. "
+            "Responda diretamente a este e-mail para falar com o titular.</p>"
+            "</div>"
+        )
+        params = {
+            "from": from_address,
+            "to": [to_admin],
+            "subject": f"[LGPD] Nova solicitação: {type_label} — {name or email}",
+            "html": body,
+        }
+        if email:
+            params["reply_to"] = email
+        return await self._send(params, email_type="lgpd_admin", source="lgpd",
                                 skip_blocklist=True)
 
     # ----- helpers --------------------------------------------------------- #
