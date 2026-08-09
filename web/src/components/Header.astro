@@ -1,7 +1,7 @@
 ---
 import Logo from './Logo.astro';
 import NavDropdown from './NavDropdown.astro';
-import { EMPRESA_LINKS, DEV_LINKS } from '../lib/nav.js';
+import { EMPRESA_LINKS, DEV_LINKS, DEV_DROPDOWN_LABEL } from '../lib/nav.js';
 // KL-153 P2 — header separa os DOIS públicos: "Para empresas" (site/seguro/clientes) e "Para
 // devs" (deploy/pipeline/CI-CD). Substitui o dropdown único "Desenvolvedor" do KL-152.
 // Contas de usuário (KL-51 f3): o cookie de sessão é HttpOnly (JS não lê), então o header começa
@@ -34,7 +34,8 @@ import { EMPRESA_LINKS, DEV_LINKS } from '../lib/nav.js';
       <!-- Estado deslogado (padrão) -->
       <div data-auth="out" class="flex items-center gap-1">
         <NavDropdown label="Para empresas" links={EMPRESA_LINKS} />
-        <NavDropdown label="Para devs" links={DEV_LINKS} />
+        <!-- KL-150 (ajuste): "Desenvolvedor ▼" — dropdown (preparado para novos produtos). -->
+        <NavDropdown label={DEV_DROPDOWN_LABEL} links={DEV_LINKS} />
         <a href="/blog" class="hidden min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white sm:inline-flex">Blog</a>
         <a href="/entrar" class="hidden min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white sm:inline-flex">Entrar</a>
         <a href="/cadastrar" class="hidden min-h-[44px] items-center rounded-lg bg-brand-500 px-3.5 py-2 text-sm font-semibold text-[var(--accent-text)] transition-colors hover:bg-brand-400 active:scale-95 sm:inline-flex">Cadastrar</a>
@@ -49,7 +50,7 @@ import { EMPRESA_LINKS, DEV_LINKS } from '../lib/nav.js';
           <div class="absolute right-0 top-full z-40 mt-1 w-64 overflow-hidden rounded-xl border border-slate-800 bg-slate-900 py-2 shadow-2xl">
             <p class="px-4 pb-1 pt-1 text-xs font-semibold uppercase tracking-wide text-slate-500">Para empresas</p>
             {EMPRESA_LINKS.map((l) => (<a href={l.href} class="flex min-h-[44px] items-center px-4 text-sm text-slate-200 hover:bg-slate-800">{l.label}</a>))}
-            <p class="px-4 pb-1 pt-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Para devs</p>
+            <p class="px-4 pb-1 pt-3 text-xs font-semibold uppercase tracking-wide text-slate-500">{DEV_DROPDOWN_LABEL}</p>
             {DEV_LINKS.map((l) => (<a href={l.href} class="flex min-h-[44px] items-center px-4 text-sm text-slate-200 hover:bg-slate-800">{l.label}</a>))}
             <div class="mt-2 border-t border-slate-800 pt-1">
               <a href="/blog" class="flex min-h-[44px] items-center px-4 text-sm text-slate-200 hover:bg-slate-800">Blog</a>
@@ -63,7 +64,8 @@ import { EMPRESA_LINKS, DEV_LINKS } from '../lib/nav.js';
       <!-- Estado logado (revelado pelo /header.js): dropdowns + menu do usuário (avatar). -->
       <div data-auth="in" class="relative hidden items-center gap-1">
         <NavDropdown label="Para empresas" links={EMPRESA_LINKS} />
-        <NavDropdown label="Para devs" links={DEV_LINKS} />
+        <!-- KL-150 (ajuste): "Desenvolvedor ▼" — dropdown (preparado para novos produtos). -->
+        <NavDropdown label={DEV_DROPDOWN_LABEL} links={DEV_LINKS} />
         <a href="/blog" class="hidden min-h-[44px] items-center rounded-lg px-3 py-2 text-sm font-medium text-slate-300 transition-colors hover:text-white sm:inline-flex">Blog</a>
         <button type="button" id="user-menu-btn" aria-label="Menu do usuário"
           class="inline-flex h-10 w-10 items-center justify-center rounded-full bg-brand-500 text-sm font-bold text-[var(--accent-text)] transition-transform hover:scale-105">
@@ -88,4 +90,4 @@ import { EMPRESA_LINKS, DEV_LINKS } from '../lib/nav.js';
 
 <!-- ?v= = cache-busting (padrão do projeto). Sem a versão, o Cloudflare cacheou o HTML de fallback
      do SSR na janela do deploy → o browser bloqueia o script (nosniff). Bump a cada alteração. -->
-<script src="/header.js?v=4" is:inline></script>
+<script src="/header.js?v=5" is:inline></script>

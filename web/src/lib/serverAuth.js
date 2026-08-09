@@ -4,6 +4,8 @@
 // /cadastrar) para redirecionar o usuário logado. Usar SÓ em páginas `no-store` (não cacheadas):
 // /cadastrar e /entrar são no-store no nginx; /security-gate é cacheada (max-age=300) → lá a
 // detecção fica no cliente (ilha GateLandingCTA).
+import { gateSignupRedirect } from './nav.js';
+
 const API = process.env.KLARIM_API_URL || 'http://api:8000';
 const COOKIE = 'klarim_session';
 
@@ -24,6 +26,7 @@ export async function fetchSessionUser(cookies) {
 }
 
 // Destino do redirect quando um usuário LOGADO cai numa página de cadastro/entrada.
-export function loggedInRedirect(isDev, fallback = '/dashboard') {
-  return isDev ? '/dashboard/gate' : (fallback || '/dashboard');
+// KL-150 (Fix 2): no fluxo dev, um plano Gate (pro/team) leva ao portal já com ?upgrade=.
+export function loggedInRedirect(isDev, fallback = '/dashboard', gatePlan = '') {
+  return isDev ? gateSignupRedirect(gatePlan) : (fallback || '/dashboard');
 }

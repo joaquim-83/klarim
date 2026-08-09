@@ -22,11 +22,14 @@ import TechnicianView from './TechnicianView.jsx';              // modo técnico
 import ConfirmEmailBanner from './ConfirmEmailBanner.jsx';      // regressão: banner confirmar e-mail
 import Modal from './Modal.jsx';
 import AddSiteModal from './AddSiteModal.jsx';
+import GateDashboardSection from './GateDashboardSection.jsx';   // KL-150 (Fix 3) — seção Gate p/ devs
 import { useLevelGate, LevelBadge } from './LevelPrompt.jsx';    // KL-99 — prompts de nível de conta
+import { showGateDashboardSection, isPureDeveloper } from '../../lib/gate/ux.js';
 
 export default function DashboardV2({ user = {} }) {
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
+  const [gate, setGate] = useState(undefined);   // KL-150 (Fix 3): undefined=carregando · null=n/a · obj=status
   const [selectedId, setSelectedId] = useState(null);
   const [scanning, setScanning] = useState(false);
   const [toast, setToast] = useState('');
@@ -53,6 +56,15 @@ export default function DashboardV2({ user = {} }) {
   }, []);
 
   useEffect(() => { load(initialSiteId || null); }, [load, initialSiteId]);
+  // KL-150 (Fix 3) — estado do Gate p/ decidir o layout (dev × owner). Sempre resolve (falha → null),
+  // então nunca trava o skeleton. Endpoint leve; não altera o fluxo de owner.
+  useEffect(() => {
+    let alive = true;
+    apiGet('/account/gate/status')
+      .then(({ ok, data: d }) => { if (alive) setGate(ok ? d : null); })
+      .catch(() => { if (alive) setGate(null); });
+    return () => { alive = false; };
+  }, []);
   useEffect(() => {
     if (!toast) return undefined;
     const t = setTimeout(() => setToast(''), 3000);
@@ -79,6 +91,25 @@ export default function DashboardV2({ user = {} }) {
     const { ok } = await apiDelete(`/account/sites/${site.id}`);
     if (ok) { setToast(`${site.domain} removido do monitoramento`); load(null); }
     else setToast('Não foi possível remover o site.');
+  }
+
+  // KL-150 (Fix 3) — espera o gate status para diferenciar dev × owner (evita piscar o
+  // "Adicione seu primeiro site" para uma conta developer). Sempre resolve → nunca trava.
+  if (gate === undefined) return <Skeleton />;
+  const pureDev = isPureDeveloper(gate);
+  // Seção Gate no topo para contas `both` (dev + owner); no dev PURO ela é o único conteúdo.
+  const gateSection = showGateDashboardSection(gate) && !pureDev
+    ? <GateDashboardSection status={gate} /> : null;
+
+  // Conta developer PURA: só a seção Gate — nada de sites/onboarding de owner.
+  if (pureDev) {
+    return (
+      <div className="space-y-6">
+        <ConfirmEmailBanner user={user} />
+        <GateDashboardSection status={gate} />
+        <Toast toast={toast} />
+      </div>
+    );
   }
 
   if (error) {
@@ -109,6 +140,7 @@ export default function DashboardV2({ user = {} }) {
     return (
       <div className="space-y-6">
         <ConfirmEmailBanner user={user} />
+        {gateSection}
         <TechnicianClients isTech={isTech} />
         <EmptyDashboard data={data} />
         {addModal && <AddSiteModal onClose={() => setAddModal(false)} onAdded={() => load(null)} />}
@@ -125,6 +157,7 @@ export default function DashboardV2({ user = {} }) {
   return (
     <div className="space-y-6">
       <ConfirmEmailBanner user={user} />
+      {gateSection}
       <TechnicianClients isTech={isTech} />
 
       <div className="lg:flex lg:gap-6">

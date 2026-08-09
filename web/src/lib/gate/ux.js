@@ -198,6 +198,38 @@ export function ctaLabel(state) {
   }
 }
 
+// ---- KL-150 (Fix 3): seção Security Gate no dashboard principal ---- //
+// Mostra a seção Gate NO /dashboard quando a conta é dev (developer OU both). Owner sem Gate → não
+// mostra (dashboard de owner inalterado). O menu do header (nav.dashboardMenu) segue exibindo
+// "Security Gate" p/ TODOS (KL-153 — /dashboard/gate auto-ativa quando a conta ainda é owner).
+export function showGateDashboardSection(status) {
+  return !!(status && status.is_developer);
+}
+
+// Conta dev PURA (sem faceta de owner) → o /dashboard mostra SÓ a seção Gate (sem "Adicione seu
+// primeiro site"). `both` também é dev, mas é owner → Gate + a seção de sites.
+export function isPureDeveloper(status) {
+  return !!(status && status.account_type === 'developer');
+}
+
+// Checklist de "Primeiros passos" do dev — marcado automaticamente pelos dados do gate status +
+// contagem de runs + projetos VERIFICADOS (has_api_key / primeiro scan / domínio verificado p/
+// CI-CD / upgrade). Pura/testável. Obs.: `verifiedProjects` (não `projects_count`) — o cadastro
+// já cria um projeto NÃO verificado, então contar qualquer projeto marcaria o passo cedo demais.
+export function gateOnboardingSteps(status, runsCount, verifiedProjects) {
+  const s = status || {};
+  const scans = Number(runsCount || 0);
+  const verified = Number(verifiedProjects || 0);
+  const plan = s.plan_slug || 'free';
+  return [
+    { key: 'account', label: 'Conta criada', done: true },
+    { key: 'apikey', label: 'API key gerada', done: !!s.has_api_key },
+    { key: 'scan', label: 'Primeiro scan realizado', done: scans > 0 },
+    { key: 'cicd', label: 'Integrar no CI/CD (verifique um domínio)', done: verified > 0 },
+    { key: 'upgrade', label: 'Fazer upgrade para Pro', done: plan !== 'free' },
+  ];
+}
+
 // Corpo do POST /account/signup do fluxo dev (inclui `source=security-gate`).
 export function signupBody(fields = {}) {
   const body = { email: fields.email };

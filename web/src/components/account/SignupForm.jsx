@@ -23,7 +23,8 @@ export default function SignupForm({ email: initialEmail = '', url = '', redirec
   if (url) navQ.set('url', url);
   if (email) navQ.set('email', email);
   // KL-157 (Fix 4): fluxo dev → o "Faça login" leva de volta ao portal do Gate após entrar.
-  if (isDev) navQ.set('redirect', '/dashboard/gate');
+  // KL-150 (Fix 2): usa o `redirect` recebido (inclui ?upgrade= quando veio de "Assinar Pro/Team").
+  if (isDev) navQ.set('redirect', redirect || '/dashboard/gate');
   const loginHref = `/entrar${navQ.toString() ? `?${navQ}` : ''}`;
   function nextUrl(data) {
     const c = data?.claim;

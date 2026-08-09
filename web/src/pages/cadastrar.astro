@@ -8,6 +8,7 @@ import SignupForm from '../components/account/SignupForm.jsx';
 import ClaimContext from '../components/account/ClaimContext.astro';
 import { FORM_CONTAINER } from '../lib/layout.js';
 import { fetchSessionUser, loggedInRedirect } from '../lib/serverAuth.js';
+import { gateSignupRedirect } from '../lib/nav.js';
 
 const params = Astro.url.searchParams;
 const email = params.get('email') || '';
@@ -15,17 +16,22 @@ const url = params.get('url') || '';
 const redirect = params.get('redirect') || '/dashboard';
 const role = params.get('role') === 'technician' ? 'technician' : '';   // KL-44 P3
 const invite = params.get('invite') || '';
-const plan = ['pro', 'agency'].includes(params.get('plan')) ? params.get('plan') : '';   // KL-44 P6
 // KL-153 P2 — ?type=developer (vindo da landing do Security Gate) → conta developer + API key
 // (source=security-gate) e redirect direto ao portal do Gate (onde o wizard aparece).
 const isDev = params.get('type') === 'developer';
 const source = isDev ? 'security-gate' : '';
-const redirectTo = isDev ? '/dashboard/gate' : redirect;
+// KL-150 (Fix 2) — o `?plan=` significa coisas diferentes por público: no fluxo dev é um plano Gate
+// (pro/team) que vira UPGRADE no portal após o signup (NÃO um trial owner); no fluxo owner é o trial
+// Pro/Agency do KL-44 P6. Nunca cruze os dois (um plano Gate não deve criar um trial owner).
+const gatePlan = isDev && ['pro', 'team'].includes(params.get('plan')) ? params.get('plan') : '';
+const plan = (!isDev && ['pro', 'agency'].includes(params.get('plan'))) ? params.get('plan') : '';
+const redirectTo = isDev ? gateSignupRedirect(gatePlan) : redirect;
 
 // KL-157 (Fix 2) — usuário JÁ logado NUNCA vê o form de cadastro. Detecção server-side (a página é
-// no-store no nginx → confiável, sem cache). Dev → /dashboard/gate; senão → o redirect/dashboard.
+// no-store no nginx → confiável, sem cache). Dev → /dashboard/gate (com ?upgrade= se houver plano
+// Gate); senão → o redirect/dashboard.
 const sessionUser = await fetchSessionUser(Astro.cookies);
-if (sessionUser) return Astro.redirect(loggedInRedirect(isDev, redirect));
+if (sessionUser) return Astro.redirect(loggedInRedirect(isDev, redirect, gatePlan));
 ---
 
 <Base

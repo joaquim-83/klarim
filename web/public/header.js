@@ -27,37 +27,46 @@
       }
     } catch (e) { /* deslogado: mantém o padrão */ }
 
-    // dropdown do usuário
+    // KL-150 (Fix 1) — o menu do usuário (avatar, <div>) e os dropdowns de navegação
+    // (<details class="nav-dropdown">) fazem parte do MESMO conjunto: abrir um fecha os outros e
+    // clicar fora fecha tudo (antes o avatar e os dropdowns se ignoravam → sobreposição).
     var btn = document.getElementById('user-menu-btn');
     var menu = document.getElementById('user-menu');
+    var dropdowns = document.querySelectorAll('details.nav-dropdown');
+
+    function closeDropdowns(except) {
+      dropdowns.forEach(function (d) { if (d !== except) d.removeAttribute('open'); });
+    }
+    function closeAvatar() { if (menu) menu.classList.add('hidden'); }
+
     if (btn && menu) {
       btn.addEventListener('click', function (e) {
         e.stopPropagation();
         menu.classList.toggle('hidden');
-      });
-      document.addEventListener('click', function (e) {
-        if (!menu.contains(e.target) && e.target !== btn) menu.classList.add('hidden');
+        if (!menu.classList.contains('hidden')) closeDropdowns(null);  // avatar abriu → fecha dropdowns
       });
     }
+
+    // abrir um dropdown → fecha os outros dropdowns + o avatar
+    dropdowns.forEach(function (d) {
+      d.addEventListener('toggle', function () {
+        if (!d.open) return;
+        closeDropdowns(d);
+        closeAvatar();
+      });
+    });
+
+    // clicar fora → fecha o avatar E todos os dropdowns
+    document.addEventListener('click', function (e) {
+      if (menu && btn && !menu.contains(e.target) && e.target !== btn) closeAvatar();
+      dropdowns.forEach(function (d) { if (!d.contains(e.target)) d.removeAttribute('open'); });
+    });
 
     // logout
     var lo = document.querySelector('[data-logout]');
     if (lo) lo.addEventListener('click', async function () {
       try { await fetch('/api/account/logout', { method: 'POST', credentials: 'include' }); } catch (e) {}
       window.location.href = '/';
-    });
-
-    // KL-156 — dropdowns do header (<details class="nav-dropdown">): fechar ao clicar fora e
-    // fechar o outro ao abrir um (não podem ficar os dois abertos). Vale p/ desktop + drawer mobile.
-    var dropdowns = document.querySelectorAll('details.nav-dropdown');
-    document.addEventListener('click', function (e) {
-      dropdowns.forEach(function (d) { if (!d.contains(e.target)) d.removeAttribute('open'); });
-    });
-    dropdowns.forEach(function (d) {
-      d.addEventListener('toggle', function () {
-        if (!d.open) return;
-        dropdowns.forEach(function (other) { if (other !== d) other.removeAttribute('open'); });
-      });
     });
   });
 })();

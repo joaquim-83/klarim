@@ -10,11 +10,12 @@ export const EMPRESA_LINKS = [
   { href: '/planos', label: 'Planos empresa' },
 ];
 
+// KL-150 (ajuste) — o menu de devs volta a ser um DROPDOWN "Desenvolvedor ▼" (preparado para
+// crescer com novos produtos). Hoje tem 1 sub-item (Security Gate); o dropdown com 1 item é
+// intencional. Os antigos "Documentação/Planos dev/API" seguem como acessos rápidos na landing.
+export const DEV_DROPDOWN_LABEL = 'Desenvolvedor';
 export const DEV_LINKS = [
   { href: '/security-gate', label: 'Security Gate' },
-  { href: '/docs/gate/github-actions', label: 'Documentação' },
-  { href: '/security-gate#planos', label: 'Planos dev' },
-  { href: '/docs/gate/api', label: 'API' },
 ];
 
 // Cards da home separando os dois produtos. Linguagem DISTINTA por público (regra do card).
@@ -52,4 +53,28 @@ export function dashboardMenu(_accountType) {
 // header.js (fechar o outro dropdown ao abrir um; e todos ao clicar fora).
 export function otherDropdowns(all, current) {
   return Array.from(all || []).filter((d) => d !== current);
+}
+
+// KL-150 (Fix 2) — CTA dos planos da landing /security-gate, ciente do estado de auth.
+// LOGADO vai direto ao portal do Gate (Free → abrir; Pro/Team → upgrade); DESLOGADO passa pelo
+// cadastro developer (que, após o signup, redireciona ao portal com ?upgrade= — ver
+// `gateSignupRedirect`). Enterprise sempre fala com vendas. Pura/testável.
+export function gatePlanCtaHref(slug, loggedIn) {
+  if (slug === 'enterprise') return '/contato';
+  if (slug === 'free') return loggedIn ? '/dashboard/gate' : '/cadastrar?type=developer';
+  // pro / team
+  return loggedIn ? `/dashboard/gate?upgrade=${slug}` : `/cadastrar?type=developer&plan=${slug}`;
+}
+
+export function gatePlanCtaLabel(slug) {
+  if (slug === 'free') return 'Começar grátis →';
+  if (slug === 'enterprise') return 'Falar com vendas';
+  return 'Assinar →';   // pro / team
+}
+
+// KL-150 (Fix 2) — destino pós-signup do fluxo dev: com um plano Gate (pro/team) redireciona ao
+// portal já disparando o upgrade (`?upgrade=`); sem plano, só ao portal. Usado no `cadastrar.astro`
+// e reusado pelo `loggedInRedirect` (serverAuth) p/ o usuário logado que cai no /cadastrar.
+export function gateSignupRedirect(gatePlan) {
+  return gatePlan ? `/dashboard/gate?upgrade=${gatePlan}` : '/dashboard/gate';
 }

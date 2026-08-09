@@ -6,6 +6,7 @@ import Base from '../layouts/Base.astro';
 import Header from '../components/Header.astro';
 import Footer from '../components/Footer.astro';
 import GateLandingCTA from '../components/security-gate/GateLandingCTA.jsx';
+import GatePlanCTA from '../components/security-gate/GatePlanCTA.jsx';
 import { PAGE_CONTAINER } from '../lib/layout.js';
 
 const API = process.env.KLARIM_API_URL || 'http://api:8000';
@@ -34,12 +35,11 @@ const numOrInf = (n) => (n === -1 ? '∞' : String(n));
 const historyLabel = (d) => (d === -1 ? 'Ilimitado' : `${d} dias`);
 const checksLabel = (p) =>
   p.slug === 'enterprise' ? 'Todos + terceiros' : p.checks_count >= 18 ? 'Todos (18)' : `${p.checks_count} checks`;
-// KL-159 — "Assinar" (pro/team) leva ao `/dashboard/gate?upgrade={slug}`, que dispara o fluxo de
-// pagamento no dashboard (modal PIX / fallback / define-senha). Logado no Free → paga; anônimo →
-// o middleware manda ao /entrar e volta ao dashboard. Free → cadastro; Enterprise → vendas.
-const ctaFor = (p) => (p.slug === 'free' ? { href: '/cadastrar?type=developer', label: 'Começar grátis →' }
-  : p.slug === 'enterprise' ? { href: '/contato', label: 'Falar com vendas' }
-  : { href: `/dashboard/gate?upgrade=${p.slug}`, label: 'Assinar →' });
+// KL-150 (Fix 2) — o CTA de cada plano virou ilha `GatePlanCTA` (ciente de auth): logado vai direto
+// ao portal (Free abre · Pro/Team disparam o upgrade); deslogado passa pelo cadastro developer, que
+// após o signup redireciona ao portal já com ?upgrade=. Href/label ficam em `lib/nav.js` (testável).
+const ctaClass = (p) =>
+  `mt-6 inline-flex min-h-[44px] items-center justify-center rounded-lg px-4 text-sm font-semibold transition-colors ${p.slug === 'pro' ? 'bg-brand-500 text-[var(--accent-text)] hover:bg-brand-400' : 'border border-slate-700 text-slate-200 hover:bg-slate-800'}`;
 
 const CATEGORIES = [
   ['🔒', 'Headers de segurança', 'HSTS, CSP, X-Frame, nosniff… (7 checks)'],
@@ -112,6 +112,12 @@ const curlSnippet = `curl -s https://klarim.net/api/gate/scan \\
           Ver documentação
         </a>
       </div>
+      <!-- KL-150 (Fix 4): acessos rápidos que saíram do dropdown "Para devs" do header. -->
+      <p class="mt-4 text-sm text-slate-400">
+        <a href="#planos" class="font-medium text-brand-400 hover:underline">Planos e preços</a>
+        <span class="mx-2 text-slate-600">·</span>
+        <a href="/docs/gate/api" class="font-medium text-brand-400 hover:underline">Documentação da API</a>
+      </p>
     </section>
 
     <!-- O que verificamos -->
@@ -184,10 +190,7 @@ const curlSnippet = `curl -s https://klarim.net/api/gate/scan \\
               <li class="flex items-start gap-2"><span class="text-brand-400">✓</span>{checksLabel(p)}</li>
               <li class="flex items-start gap-2"><span class="text-brand-400">✓</span>Histórico: {historyLabel(p.history_days)}</li>
             </ul>
-            <a href={ctaFor(p).href}
-              class={`mt-6 inline-flex min-h-[44px] items-center justify-center rounded-lg px-4 text-sm font-semibold transition-colors ${p.slug === 'pro' ? 'bg-brand-500 text-[var(--accent-text)] hover:bg-brand-400' : 'border border-slate-700 text-slate-200 hover:bg-slate-800'}`}>
-              {ctaFor(p).label}
-            </a>
+            <GatePlanCTA client:load slug={p.slug} className={ctaClass(p)} />
           </div>
         ))}
       </div>

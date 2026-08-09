@@ -5,7 +5,7 @@ import {
   normalizeUrl, maskCPF, isValidCPF, categorySummary, showChecksDetail, groupChecksByCategory,
   kycBannerVisible, showGateBridge, wizardNext, shouldShowWizard, formatCountdown, rateLimitMessage,
   usageText, upgradeTarget, ctaState, ctaLabel, signupBody, planName, planDetails, canUpgrade,
-  canSubmitKyc, errDetail,
+  canSubmitKyc, errDetail, showGateDashboardSection, isPureDeveloper, gateOnboardingSteps,
 } from './ux.js'
 
 const VALID_CPF = '529.982.247-25'
@@ -171,4 +171,46 @@ test('ctaState/ctaLabel: 3 estados', () => {
 test('signupBody: inclui source quando dev', () => {
   assert.equal(signupBody({ email: 'a@b.com', source: 'security-gate' }).source, 'security-gate')
   assert.equal('source' in signupBody({ email: 'a@b.com' }), false)
+})
+
+// --- KL-150 (Fix 3): seção Security Gate no dashboard principal --- //
+test('showGateDashboardSection: só p/ conta dev (is_developer)', () => {
+  assert.equal(showGateDashboardSection({ is_developer: true, account_type: 'developer' }), true)
+  assert.equal(showGateDashboardSection({ is_developer: true, account_type: 'both' }), true)
+  assert.equal(showGateDashboardSection({ is_developer: false, account_type: 'owner' }), false)
+  assert.equal(showGateDashboardSection(null), false)
+  assert.equal(showGateDashboardSection({}), false)
+})
+
+test('isPureDeveloper: só account_type=developer (both é dev + owner)', () => {
+  assert.equal(isPureDeveloper({ account_type: 'developer' }), true)
+  assert.equal(isPureDeveloper({ account_type: 'both' }), false)
+  assert.equal(isPureDeveloper({ account_type: 'owner' }), false)
+  assert.equal(isPureDeveloper(null), false)
+})
+
+test('gateOnboardingSteps: marca automaticamente pelos dados do gate status', () => {
+  // dev recém-cadastrado: API key + 1 projeto NÃO verificado, 0 scans, plano free.
+  const novo = gateOnboardingSteps({ has_api_key: true, plan_slug: 'free' }, 0, 0)
+  assert.equal(novo.length, 5)
+  const done = Object.fromEntries(novo.map((s) => [s.key, s.done]))
+  assert.equal(done.account, true)      // conta criada — sempre
+  assert.equal(done.apikey, true)       // has_api_key
+  assert.equal(done.scan, false)        // 0 runs
+  assert.equal(done.cicd, false)        // 0 projetos VERIFICADOS (o cadastro cria 1 não verificado)
+  assert.equal(done.upgrade, false)     // plano free
+
+  const avancado = gateOnboardingSteps({ has_api_key: true, plan_slug: 'pro' }, 3, 2)
+  const d2 = Object.fromEntries(avancado.map((s) => [s.key, s.done]))
+  assert.equal(d2.scan, true)           // 3 runs
+  assert.equal(d2.cicd, true)           // 2 projetos verificados
+  assert.equal(d2.upgrade, true)        // plano pago
+})
+
+test('gateOnboardingSteps: robusto a status ausente', () => {
+  const steps = gateOnboardingSteps(null, null, null)
+  assert.equal(steps.length, 5)
+  assert.equal(steps.find((s) => s.key === 'account').done, true)
+  assert.equal(steps.find((s) => s.key === 'scan').done, false)
+  assert.equal(steps.find((s) => s.key === 'cicd').done, false)
 })

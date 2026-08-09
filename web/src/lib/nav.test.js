@@ -1,7 +1,8 @@
 // KL-153 P2 — testes da configuração de navegação (node --test, sem deps).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { EMPRESA_LINKS, DEV_LINKS, PRODUCT_CARDS, authState, dashboardMenu, otherDropdowns } from './nav.js'
+import { EMPRESA_LINKS, DEV_LINKS, DEV_DROPDOWN_LABEL, PRODUCT_CARDS, authState, dashboardMenu,
+  otherDropdowns, gatePlanCtaHref, gatePlanCtaLabel, gateSignupRedirect } from './nav.js'
 import { loggedInRedirect } from './serverAuth.js'
 
 // --- Header: dropdowns "Para empresas" / "Para devs" --- //
@@ -13,12 +14,15 @@ test('EMPRESA_LINKS: 4 links, começa por "Verificar meu site"', () => {
     ['/#scan', '/#para-empresas', '/setores', '/planos'])
 })
 
-test('DEV_LINKS: 4 links (Security Gate, Documentação, Planos dev, API)', () => {
-  assert.equal(DEV_LINKS.length, 4)
-  assert.deepEqual(DEV_LINKS.map((l) => l.label),
-    ['Security Gate', 'Documentação', 'Planos dev', 'API'])
+// KL-150 (ajuste): dropdown "Desenvolvedor ▼" com 1 sub-item (Security Gate).
+test('DEV_DROPDOWN_LABEL = "Desenvolvedor"', () => {
+  assert.equal(DEV_DROPDOWN_LABEL, 'Desenvolvedor')
+})
+
+test('DEV_LINKS: 1 sub-item (Security Gate)', () => {
+  assert.equal(DEV_LINKS.length, 1)
+  assert.equal(DEV_LINKS[0].label, 'Security Gate')
   assert.equal(DEV_LINKS[0].href, '/security-gate')
-  assert.equal(DEV_LINKS[3].href, '/docs/gate/api')
 })
 
 // --- Header: estado logado/deslogado --- //
@@ -63,4 +67,38 @@ test('loggedInRedirect: dev → /dashboard/gate; senão → fallback/dashboard',
   assert.equal(loggedInRedirect(true, '/x'), '/dashboard/gate')   // dev ignora o fallback
   assert.equal(loggedInRedirect(false, '/dashboard/conta'), '/dashboard/conta')
   assert.equal(loggedInRedirect(false), '/dashboard')
+})
+
+// --- KL-150 (Fix 2): CTA de plano ciente de auth + redirect pós-signup com upgrade --- //
+test('gatePlanCtaHref: deslogado passa pelo cadastro developer', () => {
+  assert.equal(gatePlanCtaHref('free', false), '/cadastrar?type=developer')
+  assert.equal(gatePlanCtaHref('pro', false), '/cadastrar?type=developer&plan=pro')
+  assert.equal(gatePlanCtaHref('team', false), '/cadastrar?type=developer&plan=team')
+  assert.equal(gatePlanCtaHref('enterprise', false), '/contato')
+})
+
+test('gatePlanCtaHref: logado vai direto ao portal (Pro/Team com upgrade)', () => {
+  assert.equal(gatePlanCtaHref('free', true), '/dashboard/gate')
+  assert.equal(gatePlanCtaHref('pro', true), '/dashboard/gate?upgrade=pro')
+  assert.equal(gatePlanCtaHref('team', true), '/dashboard/gate?upgrade=team')
+  assert.equal(gatePlanCtaHref('enterprise', true), '/contato')   // vendas independe de auth
+})
+
+test('gatePlanCtaLabel: por slug', () => {
+  assert.equal(gatePlanCtaLabel('free'), 'Começar grátis →')
+  assert.equal(gatePlanCtaLabel('pro'), 'Assinar →')
+  assert.equal(gatePlanCtaLabel('team'), 'Assinar →')
+  assert.equal(gatePlanCtaLabel('enterprise'), 'Falar com vendas')
+})
+
+test('gateSignupRedirect: plan=pro → redirect inclui upgrade=pro', () => {
+  assert.equal(gateSignupRedirect('pro'), '/dashboard/gate?upgrade=pro')
+  assert.equal(gateSignupRedirect('team'), '/dashboard/gate?upgrade=team')
+  assert.equal(gateSignupRedirect(''), '/dashboard/gate')     // sem plano → só o portal
+  assert.equal(gateSignupRedirect(null), '/dashboard/gate')
+})
+
+test('loggedInRedirect: dev com plano Gate → portal com upgrade', () => {
+  assert.equal(loggedInRedirect(true, '/dashboard', 'pro'), '/dashboard/gate?upgrade=pro')
+  assert.equal(loggedInRedirect(true, '/dashboard', ''), '/dashboard/gate')
 })
