@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { admin } from '../../lib/admin/adminApi'
 import { Card, StatCard, Loading, ErrorBox, relativeTime, formatDate } from './ui'
 import AdminShell from './AdminShell'
+import PlatformSecurityCard from './PlatformSecurityCard'   // KL-160
 
 // Portado de frontend/src/pages/admin/Sistema.jsx (KL-51 fase 2). Auto-refresh 30s preservado.
 const OK = '#00D26A'
@@ -115,6 +116,9 @@ export default function SistemaPage() {
             <Row label="Último scan" value={w.scan.last_scan_at ? relativeTime(w.scan.last_scan_at) : '—'} />
           </WorkerCard>
         </div>
+
+        {/* KL-160 — varredura de segurança da plataforma (self-scan pelo Gate) */}
+        <PlatformSecurityCard />
 
         {/* Dependências */}
         <Card title="Health das dependências">

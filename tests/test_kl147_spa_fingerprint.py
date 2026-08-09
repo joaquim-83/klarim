@@ -66,6 +66,36 @@ def test_no_match_when_no_etag_and_no_cl():
     assert matches_spa_fingerprint(_resp(**{"content-type": "text/html"}), fp) is False
 
 
+# --- KL-160: fallback por Last-Modified quando o Cloudflare remove o ETag --- #
+_LM = "Sat, 09 Aug 2026 07:00:00 GMT"
+# Cenário Cloudflare: ETag removido (None) mas mesmo Last-Modified em todo path (SPA fallback).
+_CF_FP = {"etag": None, "content_type": "text/html", "content_length": "2514", "last_modified": _LM}
+
+
+def test_match_by_last_modified_when_etag_stripped():
+    # /adminer atrás do CF: sem ETag, mesmo Last-Modified + HTML → fallback (não exposição).
+    r = _resp(**{"content-type": "text/html; charset=utf-8", "last-modified": _LM})
+    assert matches_spa_fingerprint(r, _CF_FP) is True
+
+
+def test_no_match_different_last_modified():
+    r = _resp(**{"content-type": "text/html", "last-modified": "Sat, 09 Aug 2026 09:99:99 GMT"})
+    assert matches_spa_fingerprint(r, _CF_FP) is False
+
+
+def test_no_match_same_lm_but_not_html():
+    # mesmo Last-Modified mas Content-Type não-HTML (endpoint real) → NÃO é fallback de SPA.
+    r = _resp(**{"content-type": "application/json", "last-modified": _LM})
+    assert matches_spa_fingerprint(r, _CF_FP) is False
+
+
+def test_last_modified_fallback_needs_fingerprint_lm():
+    # fingerprint sem last_modified (probe também sem) → não casa por LM.
+    fp = {"etag": None, "content_type": "text/html", "content_length": "2514", "last_modified": None}
+    r = _resp(**{"content-type": "text/html", "last-modified": _LM})
+    assert matches_spa_fingerprint(r, fp) is False
+
+
 # =========================================================================== #
 # _detect_spa_fallback (probe de controle)
 # =========================================================================== #
@@ -103,14 +133,22 @@ def test_detect_nginx_404_returns_none():
 
 def test_detect_spa_200_captures_fingerprint():
     h = _Handler(default=(200, {"etag": '"6a71ccfa-9d2"', "content-type": "text/html; charset=utf-8",
-                                "content-length": "2514"}))
+                                "content-length": "2514", "last-modified": _LM}))
     fp = _run(_detect(h))
     assert fp is not None
     assert fp["etag"] == '"6a71ccfa-9d2"'
     assert fp["content_type"] == "text/html"          # normalizado (sem charset)
     assert fp["content_length"] == "2514"
+    assert fp["last_modified"] == _LM                 # KL-160: capturado p/ o fallback CF
     # o probe usa HEAD num path /_klarim_gate_probe_*
     assert h.calls and h.calls[0][0] == "HEAD" and h.calls[0][1].startswith("/_klarim_gate_probe_")
+
+
+def test_detect_captures_last_modified_without_etag():
+    # atrás do Cloudflare o ETag some, mas o Last-Modified fica → fingerprint ainda serve.
+    h = _Handler(default=(200, {"content-type": "text/html", "last-modified": _LM}))
+    fp = _run(_detect(h))
+    assert fp is not None and fp["etag"] is None and fp["last_modified"] == _LM
 
 
 def test_detect_network_error_returns_none():

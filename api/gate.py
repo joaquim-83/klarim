@@ -14,9 +14,11 @@ domínio só escaneia se verificado (ou convite do dono).
 """
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import logging
+import os
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
@@ -1528,6 +1530,132 @@ async def admin_gate_accounts(request: Request) -> dict:
     for a in accounts:
         a["gate_trial_ends_at"] = _iso(a.get("gate_trial_ends_at"))
     return {"accounts": accounts}
+
+
+# ------------------------------------------------------------------------- #
+# KL-160 — varredura de segurança da PLATAFORMA (self-scan pelo painel admin)
+# ------------------------------------------------------------------------- #
+# Roda o Security Gate contra o próprio klarim.net e salva em `platform_security_scans`. Assíncrono
+# (não bloqueia a UI) — o POST dispara e devolve na hora; o painel faz polling do /status. Admin-only
+# (o middleware `_admin_auth_mw` já exige o Bearer admin em qualquer rota /admin*). Rate limit 5min.
+
+_SECSCAN_TARGET = "https://klarim.net"
+_SECSCAN_COOLDOWN = 300                       # 1 varredura manual a cada 5 min
+_SECSCAN_RUNNING_KEY = "admin:secscan:running"
+_SECSCAN_COOLDOWN_KEY = "admin:secscan:cooldown"
+_secscan_running_mem = {"v": False}           # fallback quando não há Redis (dev)
+
+
+async def _run_platform_security_scan(store, redis) -> None:
+    """Roda o Gate completo (todos os checks) contra o klarim.net e persiste o resultado. Alerta o
+    operador se o score cair < 80 ou surgir um finding CRÍTICO. Fail-safe: erro vira um run com
+    `error` (não trava). Sempre limpa o flag de 'running' no fim."""
+    url = _SECSCAN_TARGET
+    try:
+        checks = list(_ENGINE_ORDER)
+        config = GateConfig(target=url, fail_on="critical", checks=checks, timeout=60)
+        report = await run_all(url=url, timeout=60, checks=checks, config=config)
+        results = [_serialize_result(r) for r in report.results]
+        low = sum(1 for r in report.results
+                  if r.status == Status.FAIL and r.severity == Severity.LOW)
+        await store.create_platform_security_scan(
+            url=url, score=report.score, passed=report.passed, critical=report.critical_count,
+            high=report.high_count, medium=report.medium_count, low=low,
+            duration_ms=report.duration_ms, results=results, error=report.error,
+            triggered_by="admin")
+        if (report.score is not None and report.score < 80) or report.critical_count > 0:
+            await _alert_platform_scan(url, report)
+    except Exception as exc:  # noqa: BLE001 - nunca deixa o flag preso; grava o erro
+        logger.warning("[secscan] varredura falhou: %r", exc)
+        try:
+            await store.create_platform_security_scan(
+                url=url, score=None, passed=None, critical=0, high=0, medium=0, low=0,
+                duration_ms=None, results=None, error=str(exc), triggered_by="admin")
+        except Exception:  # noqa: BLE001
+            pass
+    finally:
+        _secscan_running_mem["v"] = False
+        if redis is not None:
+            try:
+                await redis.delete(_SECSCAN_RUNNING_KEY)
+            except Exception:  # noqa: BLE001
+                pass
+
+
+async def _alert_platform_scan(url: str, report) -> None:
+    """Best-effort — avisa o operador (score baixo/critical). Reusa o mailer transacional."""
+    try:
+        import api.main as _m
+        if not _m._email_enabled():
+            return
+        to = os.environ.get("LGPD_ADMIN_EMAIL", "klarimscan@gmail.com")
+        subj = f"[Klarim] ⚠️ Varredura de segurança: {report.score}/100 "
+        subj += "— CRÍTICO" if report.critical_count else "— score baixo"
+        lines = "\n".join(f"- [{r.severity.value}] {r.check}: {r.detail}"
+                          for r in report.results if r.status == Status.FAIL)
+        text = (f"A varredura de segurança de {url} retornou {report.score}/100.\n\n"
+                f"Críticos: {report.critical_count} · Altos: {report.high_count} · "
+                f"Médios: {report.medium_count}\n\nFindings:\n{lines or '—'}\n\n"
+                "Veja o detalhe no painel: /painel/sistema")
+        await _m._mailer()._send({
+            "from": _m._mailer().from_address, "to": [to],
+            "subject": subj, "text": text,
+        }, email_type="admin_alert", source="secscan", skip_blocklist=True)
+    except Exception as exc:  # noqa: BLE001 - alerta é opcional
+        logger.info("[secscan] alerta não enviado: %r", exc)
+
+
+@router.post("/admin/security-scan")
+async def admin_security_scan(request: Request) -> JSONResponse:
+    """Dispara a varredura do Gate contra o klarim.net (assíncrona). 429 se dentro do cooldown de
+    5 min; devolve `running` se já há uma em curso."""
+    store = get_target_store()
+    redis = _scan_redis()
+    if redis is not None:
+        try:
+            if await redis.get(_SECSCAN_RUNNING_KEY):
+                return JSONResponse({"status": "running"})
+            ttl = await redis.ttl(_SECSCAN_COOLDOWN_KEY)
+            if ttl and ttl > 0:
+                return JSONResponse({"status": "cooldown", "retry_after": ttl}, status_code=429,
+                                    headers={"Retry-After": str(ttl)})
+            await redis.set(_SECSCAN_COOLDOWN_KEY, "1", ex=_SECSCAN_COOLDOWN)
+            await redis.set(_SECSCAN_RUNNING_KEY, "1", ex=180)
+        except Exception:  # noqa: BLE001 - Redis fora → segue com o guard in-memory
+            pass
+    if _secscan_running_mem["v"]:
+        return JSONResponse({"status": "running"})
+    _secscan_running_mem["v"] = True
+    asyncio.create_task(_run_platform_security_scan(store, redis))
+    return JSONResponse({"status": "started", "url": _SECSCAN_TARGET})
+
+
+@router.get("/admin/security-scan/status")
+async def admin_security_scan_status(request: Request) -> dict:
+    """Estado da varredura (running) + último resultado + histórico (sumário)."""
+    store = get_target_store()
+    redis = _scan_redis()
+    running = _secscan_running_mem["v"]
+    if redis is not None:
+        try:
+            running = bool(await redis.get(_SECSCAN_RUNNING_KEY))
+        except Exception:  # noqa: BLE001
+            pass
+    history = await store.list_platform_security_scans(limit=20)
+    for h in history:
+        h["created_at"] = _iso(h.get("created_at"))
+    return {"running": running, "target": _SECSCAN_TARGET,
+            "last": history[0] if history else None, "history": history}
+
+
+@router.get("/admin/security-scan/{scan_id}")
+async def admin_security_scan_detail(scan_id: int, request: Request) -> dict:
+    """Uma varredura COMPLETA (com os checks detalhados) — para o detalhe expandível no painel."""
+    scan = await get_target_store().get_platform_security_scan(scan_id)
+    if not scan:
+        raise HTTPException(status_code=404, detail="Varredura não encontrada.")
+    scan["created_at"] = _iso(scan.get("created_at"))
+    return {"scan": scan}
 
 
 class AssignPlanBody(BaseModel):

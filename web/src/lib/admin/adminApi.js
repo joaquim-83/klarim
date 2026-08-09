@@ -287,4 +287,9 @@ export const admin = {
   gateUpdatePlan: (id, body) => put(`/admin/gate/plans/${id}`, body),
   gateAccounts: () => get('/admin/gate/accounts'),
   gateAssignPlan: (accountId, planId) => post(`/admin/gate/accounts/${accountId}/plan`, { plan_id: planId }),
+
+  // KL-160 — varredura de segurança da plataforma (self-scan pelo painel)
+  securityScan: () => post('/admin/security-scan'),
+  securityScanStatus: () => get('/admin/security-scan/status'),
+  securityScanDetail: (id) => get(`/admin/security-scan/${id}`),
 }

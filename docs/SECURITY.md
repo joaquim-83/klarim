@@ -487,3 +487,35 @@ zero forja de token, nenhum payload de injeção) são invioláveis.
   avulsa mensal na AbacatePay (recorrência é escopo futuro); reusa a tabela `subscription_payments` com o
   plano prefixado `gate:{slug}` → o webhook confirmado ativa o `gate_plan_id` (`plan_upgraded` no audit).
   NUNCA guarda dado de cartão/PIX (só o id da cobrança).
+
+## 13. Rate limiting na aplicação + bloqueio de IP direto + self-scan (KL-160)
+
+Defesa DoS/abuso na origem, **independente do Cloudflare** (que protege via domínio, não via IP).
+
+- **Rate limiting no Nginx** (`frontend/nginx/http.conf` + `https.conf.template`, no TOPO de cada
+  arquivo). Zonas: `general 30r/s` (burst 50) em `/` + páginas Astro · `api 10r/s` (burst 20) em
+  `/api/` · `scan 2r/s` (burst 5) em `/api/scan/`. Excedente → **429** (`limit_req_status 429`).
+  Assets (`_astro`/`/assets`), MCP/SSE e OAuth ficam **sem** limite (não throttlar bursts de assets
+  nem o SSE). ⚠️ **A chave é o IP REAL do cliente** (`CF-Connecting-IP` via `map`), NÃO
+  `$binary_remote_addr` — atrás do CF o `$remote_addr` é a edge do Cloudflare, e usá-lo criaria UM
+  bucket para o site inteiro (throttle global). Sem CF (acesso direto), o `map` cai no `$remote_addr`.
+  As zonas ficam **no próprio arquivo de config** (não num conf.d à parte) porque o `nginx -t` da CI
+  monta cada config sozinho; como só um config é carregado por vez (entrypoint HTTP×HTTPS), não há
+  zona duplicada.
+- **Bloqueio de IP direto** (só HTTPS): `server { listen 443 ssl default_server; ssl_reject_handshake
+  on; }` recusa o handshake TLS de SNI desconhecido (sem cert); `server { listen 80 default_server;
+  return 444; }` fecha a conexão HTTP. O bloco do klarim.net **perdeu** o `default_server` — o CF
+  conecta com SNI=klarim.net e casa o server real; scanners no IP direto batem no reject/444.
+- **Paths de admin/debug** (Fix A): novo `location ~* ^/(adminer|_profiler|phpMyAdmin|pma|dbadmin|
+  sql|mysql|cpanel|webmail|roundcube|squirrelmail|horde|wp-content/debug) { return 404; }` — o bloco
+  do KL-138 cobria `/admin(/|$)` mas deixava `/adminer` passar (virava SPA fallback → falso positivo
+  no Gate).
+- **Fingerprint de SPA por `last-modified`** (Fix B, `security_gate/`): o guard do KL-147 usava o
+  ETag como comparador; o Cloudflare **remove** o ETag → o Gate reportava `/adminer`/`/_profiler`
+  (200+index.html) como exposição. Agora o probe captura `last_modified` e um 200 com o MESMO
+  Last-Modified + Content-Type HTML é tratado como fallback (não exposição).
+- **Self-scan da plataforma** (`POST /admin/security-scan`, admin-only): roda o Gate contra
+  klarim.net (assíncrono, cooldown 5 min), salva em `platform_security_scans` (tabela DEDICADA, não
+  `gate_runs`), painel em Sistema com histórico + detalhe. Alerta o operador se score < 80 ou CRÍTICO.
+- **DNSSEC:** ativo (`✅ Dnssec Ok — zona assinada` no Gate real). O finding NoNameservers do card
+  não se reproduz — DNSSEC habilitado no Cloudflare + DS no registrador. Config manual, sem código.

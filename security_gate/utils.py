@@ -59,8 +59,16 @@ def matches_spa_fingerprint(response: httpx.Response, fingerprint: dict | None) 
     fp_etag = fingerprint.get("etag")
     if resp_etag and fp_etag and resp_etag == fp_etag:
         return True
-    # Fallback quando o servidor não envia ETag: mesmo Content-Type + mesmo Content-Length.
+    # KL-160 — fallback por Last-Modified quando o ETag é removido pelo proxy (o Cloudflare tira o
+    # ETag → o KL-147 ficava sem comparador e reportava /adminer, /_profiler etc. como exposição).
+    # Um SPA serve o MESMO index.html (mesmo Last-Modified) para todo path; + Content-Type HTML
+    # confirma que é o fallback, não um endpoint real (que teria JSON/binário ou outro timestamp).
     resp_ct = (response.headers.get("content-type") or "").split(";")[0].strip()
+    resp_lm = response.headers.get("last-modified")
+    fp_lm = fingerprint.get("last_modified")
+    if resp_lm and fp_lm and resp_lm == fp_lm and "text/html" in resp_ct:
+        return True
+    # Fallback quando o servidor não envia ETag: mesmo Content-Type + mesmo Content-Length.
     resp_cl = response.headers.get("content-length")
     fp_ct = fingerprint.get("content_type")
     fp_cl = fingerprint.get("content_length")

@@ -302,3 +302,24 @@ docker compose exec worker python -c "from google.cloud import storage; c=storag
 b=c.bucket('klarim-raw'); print('exists:', b.exists()); \
 [print(' ', x.name, x.size) for x in list(b.list_blobs(max_results=5))]"
 ```
+
+## 8. Rate limiting no Nginx + bloqueio de IP direto (KL-160)
+
+As zonas de rate limiting (`limit_req_zone` + `map $http_cf_connecting_ip`) e o bloqueio de IP
+direto (`ssl_reject_handshake`/`return 444` nos `default_server`) vivem **dentro** de
+`frontend/nginx/http.conf` e `https.conf.template` (não em conf.d à parte) — o `nginx -t` da CI
+monta cada config sozinho, e só um é carregado por vez (HTTP×HTTPS), então não há zona duplicada.
+
+- **Sem variável de ambiente nova.** A chave do rate limit é o `CF-Connecting-IP` (IP real do
+  cliente atrás do Cloudflare); sem CF cai no `$remote_addr`.
+- **Verificação pós-deploy** (o job **Security Gate** do CI faz isso contra klarim.net LIVE; deve
+  ficar verde com score ~100):
+  ```bash
+  # rate limit ativo: burst de requests → 429
+  for i in $(seq 1 40); do curl -s -o /dev/null -w "%{http_code}\n" https://klarim.net/api/health; done | sort | uniq -c
+  # IP direto rejeitado (SNI/Host que não casa klarim.net): handshake TLS recusado / 444
+  curl -sk https://34.135.194.208/ -o /dev/null -w "%{http_code}\n" || echo "rejeitado (esperado)"
+  ```
+- ⚠️ **Risco/rollback:** o bloqueio de IP direto mexe no `default_server` do 443 (SNI). Se algo
+  quebrar, reverter o DNS no Cloudflare para a VM fallback (ver CLAUDE.md §1) e/ou remover os blocos
+  `default_server` de reject; `nginx -t` na VM antes de recarregar (`docker compose exec web nginx -t`).

@@ -2226,6 +2226,32 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   a CI). **Validação no browser:** dropdown Desenvolvedor, `/lgpd` (form+pré-seleção+submit→protocolo),
   privacidade/termos/footer/perfil, endpoint end-to-end, **zero erro no console**. Engine/scanner/rate-limit
   do scan e SEO (KL-132) intactos. Relatório: `claude/reports/KL-150_P1adj_KL-161_report.md`.
+- **KL-160** — Rate limiting no Nginx + fix de falsos positivos SPA do Gate + botão de varredura no
+  admin ✅ **PRONTO PARA REVISÃO — NÃO deployado** (validado no dev + `nginx -t` + Gate real). **(Fix A,
+  URGENTE)** `location ~* ^/(adminer|_profiler|phpMyAdmin|pma|dbadmin|sql|mysql|cpanel|webmail|roundcube|
+  squirrelmail|horde|wp-content/debug) { return 404; }` nos 2 configs — o bloco do KL-138 cobria `/admin(/|$)`
+  mas deixava `/adminer` virar SPA fallback → o Gate reportava `admin_panel_exposed` falso. **(Fix B)**
+  `security_gate` — o guard de SPA fallback do KL-147 usava ETag como comparador; o Cloudflare REMOVE o
+  ETag → falso positivo. Agora `_detect_spa_fallback` captura `last_modified` e `matches_spa_fingerprint`
+  trata **mesmo Last-Modified + Content-Type HTML = fallback** (não exposição). **Validado contra o
+  klarim.net REAL: `admin_panel_exposed`/`debug_exposed` → PASS** (correção Gate-side, não precisa do
+  nginx). **(Parte C)** rate limiting no Nginx (topo de http.conf/https.conf.template — no próprio arquivo
+  porque o `nginx -t` da CI monta cada config sozinho; só um é carregado por vez → sem zona duplicada):
+  `general 30r/s`/`api 10r/s`/`scan 2r/s` + `limit_req_status 429`. ⚠️ **Chave = CF-Connecting-IP** (IP
+  real via `map`), NUNCA `$binary_remote_addr` (atrás do CF seria a edge → 1 bucket global). Assets/MCP/
+  SSE/OAuth ficam SEM limite. **Bloqueio de IP direto** (só HTTPS): `ssl_reject_handshake on` no 443
+  default_server + `return 444` no 80 default_server; o bloco klarim.net perdeu o `default_server` (o CF
+  manda SNI=klarim.net → casa o server real; IP direto → reject). **(Parte D)** `POST /admin/security-scan`
+  (admin-only, assíncrono, cooldown 5min) roda o Gate contra klarim.net e salva em **`platform_security_
+  scans`** (tabela DEDICADA — `gate_runs` exige account_id/project_id NOT NULL de cliente); `GET .../status`
+  (polling) + `GET .../{id}` (detalhe); alerta se score<80/crítico. UI `PlatformSecurityCard.jsx` na página
+  Sistema (score+findings+botão+histórico expandível FAIL-primeiro; lógica pura em `lib/admin/securityScan.js`).
+  **DNSSEC** já resolvido (Gate real: `Dnssec Ok — zona assinada`). **+11 pytest (`test_kl160_security_scan`
+  6 + `test_kl147` +5) + 7 node → 2311 pytest · 218 test:unit · build OK · `nginx -t` OK**. Rate-limit
+  validado em nginx standalone (mesmo CF-IP → 429; CF-IPs distintos → sem throttle). Painel validado no
+  browser. **Risco:** o bloqueio de IP direto mexe no `default_server` do 443 (SNI) e o dev é HTTP-only →
+  revisar antes do deploy (rollback: VM fallback). Após o deploy, o job Security Gate deve ir a ~100.
+  Relatório: `claude/reports/KL-160_report.md`; `docs/SECURITY.md` §13 + `docs/DEPLOY.md` §8.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

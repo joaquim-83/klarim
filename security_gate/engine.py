@@ -92,12 +92,15 @@ async def _detect_spa_fallback(client: httpx.AsyncClient, base_url: str) -> Opti
     try:
         r = await client.head(probe, follow_redirects=True)
         if r.status_code == 200:
+            # KL-160: `last_modified` é o comparador de fallback quando o ETag é removido pelo
+            # proxy (o Cloudflare tira o ETag → o guard do KL-147 ficava sem comparador primário).
             fp = {"etag": r.headers.get("etag"),
                   "content_type": (r.headers.get("content-type") or "").split(";")[0].strip(),
-                  "content_length": r.headers.get("content-length")}
-            logger.info("[gate] SPA fallback detectado (etag=%s, content_type=%s, cl=%s) — paths "
-                        "com este fingerprint serão tratados como fallback, não exposição.",
-                        fp["etag"], fp["content_type"], fp["content_length"])
+                  "content_length": r.headers.get("content-length"),
+                  "last_modified": r.headers.get("last-modified")}
+            logger.info("[gate] SPA fallback detectado (etag=%s, content_type=%s, cl=%s, lm=%s) — "
+                        "paths com este fingerprint serão tratados como fallback, não exposição.",
+                        fp["etag"], fp["content_type"], fp["content_length"], fp["last_modified"])
             return fp
     except Exception:  # noqa: BLE001 - probe best-effort; erro nunca derruba o gate
         pass

@@ -1103,6 +1103,26 @@ CREATE TABLE IF NOT EXISTS lgpd_requests (
 );
 CREATE INDEX IF NOT EXISTS idx_lgpd_requests_status ON lgpd_requests(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_lgpd_requests_email ON lgpd_requests(email);
+
+-- KL-160 — varredura de segurança da PLATAFORMA (self-scan do Klarim pelo Security Gate, disparada
+-- pelo painel admin). Tabela DEDICADA (não `gate_runs`, que exige account_id/project_id NOT NULL de
+-- um cliente — poluiria os stats de clientes). Guarda score/counts + os results completos (JSONB).
+CREATE TABLE IF NOT EXISTS platform_security_scans (
+    id SERIAL PRIMARY KEY,
+    url VARCHAR(500) NOT NULL,
+    score INTEGER,
+    passed BOOLEAN,
+    critical INTEGER DEFAULT 0,
+    high INTEGER DEFAULT 0,
+    medium INTEGER DEFAULT 0,
+    low INTEGER DEFAULT 0,
+    duration_ms INTEGER,
+    results JSONB,
+    error TEXT,
+    triggered_by VARCHAR(50) DEFAULT 'admin',
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_platform_sec_scans_created ON platform_security_scans(created_at DESC);
 """
 
 
@@ -4417,6 +4437,47 @@ class TargetStore:
                             "admin_notes, created_at, resolved_at FROM lgpd_requests "
                             "ORDER BY created_at DESC LIMIT %s", (limit,))
             return self._rows_to_dicts(cur)
+        return await asyncio.to_thread(self._run, _fn)
+
+    # ----- KL-160: varredura de segurança da plataforma (self-scan) ------- #
+
+    async def create_platform_security_scan(self, *, url: str, score: Optional[int],
+                                            passed: Optional[bool], critical: int, high: int,
+                                            medium: int, low: int, duration_ms: Optional[int],
+                                            results, error: Optional[str] = None,
+                                            triggered_by: str = "admin") -> int:
+        """KL-160 — persiste uma varredura de segurança da plataforma. Devolve o id."""
+        res_json = json.dumps(results) if results is not None else None
+
+        def _fn(cur):
+            cur.execute(
+                "INSERT INTO platform_security_scans (url, score, passed, critical, high, medium, "
+                "  low, duration_ms, results, error, triggered_by) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s) RETURNING id",
+                (url, score, passed, critical, high, medium, low, duration_ms, res_json, error,
+                 triggered_by))
+            return self._rows_to_dicts(cur)[0]["id"]
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def list_platform_security_scans(self, limit: int = 20) -> List[Dict[str, Any]]:
+        """KL-160 — histórico de varreduras (sumário, SEM os results). Mais recentes primeiro."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT id, url, score, passed, critical, high, medium, low, duration_ms, error, "
+                "  triggered_by, created_at FROM platform_security_scans "
+                "ORDER BY created_at DESC LIMIT %s", (limit,))
+            return self._rows_to_dicts(cur)
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def get_platform_security_scan(self, scan_id: int) -> Optional[Dict[str, Any]]:
+        """KL-160 — uma varredura COMPLETA (com os results) para o detalhe expandível."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT id, url, score, passed, critical, high, medium, low, duration_ms, results, "
+                "  error, triggered_by, created_at FROM platform_security_scans WHERE id = %s",
+                (scan_id,))
+            rows = self._rows_to_dicts(cur)
+            return rows[0] if rows else None
         return await asyncio.to_thread(self._run, _fn)
 
     async def create_blog_post(self, title: str, content: str, slug: Optional[str] = None,

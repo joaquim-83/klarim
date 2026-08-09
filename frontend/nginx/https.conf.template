@@ -1,6 +1,38 @@
 # Config HTTPS (usada quando o certificado Let's Encrypt existe).
 # ${DOMAIN} é substituído pelo entrypoint via envsubst.
 # 80 -> redireciona para HTTPS (mantendo o webroot do ACME para renovação).
+
+# KL-160 — rate limiting na aplicação (independente do Cloudflare). ⚠️ Atrás do CF, $remote_addr é
+# o IP da EDGE do Cloudflare (todos os usuários compartilhariam UM bucket → throttle global). A chave
+# tem de ser o IP REAL do cliente = CF-Connecting-IP; acesso direto (sem CF) cai no $remote_addr da
+# conexão. As zonas ficam NESTE arquivo (não num conf.d à parte) porque o `nginx -t` da CI monta só
+# este config — uma zona externa ficaria indefinida e reprovaria o teste. Só um dos configs
+# (http.conf OU https) é carregado por vez (entrypoint), então não há zona duplicada.
+map $http_cf_connecting_ip $klarim_client_ip {
+    default $http_cf_connecting_ip;
+    ""      $remote_addr;
+}
+limit_req_zone $klarim_client_ip zone=general:10m rate=30r/s;
+limit_req_zone $klarim_client_ip zone=api:10m rate=10r/s;
+limit_req_zone $klarim_client_ip zone=scan:10m rate=2r/s;
+limit_req_status 429;   # padrão do nginx é 503; a app quer 429 (Too Many Requests)
+
+# KL-160 — bloqueia acesso via IP direto (sem passar pelo Cloudflare): SNI/Host que não casa nenhum
+# server_name cai neste default_server. 443: rejeita o handshake TLS (sem cert, sem servir nada);
+# 80: fecha a conexão (444). O CF conecta com SNI=${DOMAIN} → casa o server real abaixo, não este.
+server {
+    listen 80 default_server;
+    server_name _;
+    server_tokens off;
+    return 444;
+}
+server {
+    listen 443 ssl default_server;
+    server_name _;
+    server_tokens off;
+    ssl_reject_handshake on;   # nginx ≥1.19.4 — recusa TLS de SNI desconhecido sem precisar de cert
+}
+
 server {
     listen 80;
     server_name ${DOMAIN} www.${DOMAIN} painel.${DOMAIN};
@@ -51,9 +83,9 @@ server {
 }
 
 server {
-    # default_server: continua sendo o server 443 padrão (SNI não-casado), mesmo com
-    # o bloco mta-sts. antes (implícito por ser o 1º); agora explícito.
-    listen 443 ssl default_server;
+    # KL-160 — NÃO é mais o default_server: o SNI não-casado (IP direto) vai ao bloco de reject
+    # acima. Este server responde só quando o SNI casa ${DOMAIN}/www (o Cloudflare envia esse SNI).
+    listen 443 ssl;
     http2 on;
     server_name ${DOMAIN} www.${DOMAIN};
     server_tokens off;
@@ -109,6 +141,10 @@ server {
     # 200+HTML → o scanner interpreta como endpoint ativo e intensifica). Complementa os blocos
     # acima (`.env`/`.git`/`.DS_Store`/`.htaccess`/`.htpasswd` já caem em `location ~ /\.`).
     location ~* ^/(wp-config|phpmyadmin|swagger|redoc|graphql|_debug|config\.(json|yml|php)|dump\.sql|database\.sql|xmlrpc\.php|cgi-bin|shell|eval-stdin|vendor/phpunit|actuator|api-docs|v[23]/api-docs) { return 404; }
+    # KL-160 (URGENTE) — painéis de admin/debug que o bloco acima NÃO cobria: `/admin(/|$)` deixava
+    # `/adminer` passar (vira SPA fallback → o Gate reportava admin_panel_exposed/debug_exposed
+    # FALSO). Retorna 404 ANTES do fallback. Nenhuma rota pública/API começa por esses tokens.
+    location ~* ^/(adminer|_profiler|phpMyAdmin|pma|dbadmin|sql|mysql|cpanel|webmail|roundcube|squirrelmail|horde|wp-content/debug) { return 404; }
 
     # KL-51 — nova plataforma pública (Astro): a raiz, as páginas institucionais/
     # legais, o favicon/robots e os assets do Astro vão ao container `astro`. O
@@ -116,6 +152,7 @@ server {
     # abaixo). Resolver dinâmico + upstream em variável (mesmo motivo do /api/):
     # re-resolve o IP do `astro` a cada request, evitando 502 quando ele é recriado.
     location = / {
+        limit_req zone=general burst=50 nodelay;   # KL-160 — 30r/s por IP real
         resolver 127.0.0.11 valid=10s ipv6=off;
         set $klarim_astro astro:4321;
         proxy_pass http://$klarim_astro;
@@ -130,6 +167,7 @@ server {
         add_header Cache-Control "no-store" always;
     }
     location ~ ^/(termos|privacidade|lgpd|cookies|sobre|contato|scan|cadastrar|entrar|confirmar|confirmado|recuperar-senha|dashboard|laudo|planos|favicon\.svg|robots\.txt|track\.js|theme\.js|header\.js|planos-auth\.js|landing-stats\.js|cookie-consent\.js|docs-copy\.js)(/|$) {
+        limit_req zone=general burst=50 nodelay;   # KL-160
         resolver 127.0.0.11 valid=10s ipv6=off;
         set $klarim_astro astro:4321;
         proxy_pass http://$klarim_astro;
@@ -178,6 +216,7 @@ server {
     # /melhores, /estatisticas) e o **blog** (KL-133: /blog, /blog/{slug}). Cacheáveis (sem
     # form) — cache curto. (O sitemap e o /blog/rss.xml saíram p/ o FastAPI.)
     location ~ ^/(site|score|ranking|setores|setor|melhores|estatisticas|metodologia|blog|security-gate|docs)(/|$) {
+        limit_req zone=general burst=50 nodelay;   # KL-160
         resolver 127.0.0.11 valid=10s ipv6=off;
         set $klarim_astro astro:4321;
         proxy_pass http://$klarim_astro;
@@ -238,6 +277,7 @@ server {
 
     # SPA Vite (fluxo de scan existente + /painel). Fallback para o index.html.
     location / {
+        limit_req zone=general burst=50 nodelay;   # KL-160 — navegação geral
         try_files $uri /index.html;
     }
 
@@ -278,7 +318,25 @@ server {
     # no boot. Evita o 502 quando o container `api` é recriado (novo IP) e o `web`
     # não (bug do login do painel). O rewrite faz o strip do prefixo /api/ (o
     # proxy_pass com variável não o faz automaticamente).
+    # KL-160 — scans são pesados (rodam inline): zona `scan` mais restrita (2r/s, burst 5). Prefixo
+    # mais longo que /api/ → casa /api/scan/* primeiro. Mesmo proxy/rewrite do /api/ abaixo.
+    location /api/scan/ {
+        limit_req zone=scan burst=5 nodelay;
+        resolver 127.0.0.11 valid=10s ipv6=off;
+        set $klarim_api api:8000;
+        rewrite ^/api/(.*)$ /$1 break;
+        proxy_pass http://$klarim_api;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 10s;
+        proxy_read_timeout 180s;
+        proxy_send_timeout 180s;
+    }
     location /api/ {
+        limit_req zone=api burst=20 nodelay;   # KL-160 — 10r/s por IP real (CF-Connecting-IP)
         resolver 127.0.0.11 valid=10s ipv6=off;
         set $klarim_api api:8000;
         rewrite ^/api/(.*)$ /$1 break;
