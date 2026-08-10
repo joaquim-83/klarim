@@ -33,7 +33,7 @@ from api import auth_users
 from api import gate_rate_limiter as gate_rl   # KL-153 — rate limiting de 3 camadas + abuso
 from api.validators import validate_cpf        # KL-153 — validação de CPF (KYC)
 from discovery.store import get_target_store
-from security_gate.config import GateConfig
+from security_gate.config import GateConfig, load_config
 from security_gate.engine import _DEFAULT_ORDER as _ENGINE_ORDER, run_all
 from security_gate.models import SEVERITY_RANK, Severity, Status
 from security_gate import vendor as _vendor
@@ -1552,9 +1552,18 @@ async def _run_platform_security_scan(store, redis) -> None:
     `error` (não trava). Sempre limpa o flag de 'running' no fim."""
     url = _SECSCAN_TARGET
     try:
-        checks = list(_ENGINE_ORDER)
-        config = GateConfig(target=url, fail_on="critical", checks=checks, timeout=60)
-        report = await run_all(url=url, timeout=60, checks=checks, config=config)
+        # KL-160 fix — usa a MESMA config do CLI (`security-gate.yml`): inclui `/api/scan/` na checagem
+        # de rate limit (zona restrita 2r/s que dispara o 429) e a allowlist de exposição. Sem isto o
+        # admin usava os defaults (`["/","/api/"]`, generosos) → rate_limit FAIL → 90 (CLI dava 100).
+        # Caminho absoluto (raiz do repo, relativo a api/gate.py) — não depende do CWD do container.
+        yml = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                           "security-gate.yml")
+        config = load_config(yml)
+        config.target = url
+        config.fail_on = "critical"
+        config.timeout = 60
+        checks = config.checks or list(_ENGINE_ORDER)   # fail-safe: YAML sem checks → roda todos
+        report = await run_all(url=url, timeout=config.timeout, checks=checks, config=config)
         results = [_serialize_result(r) for r in report.results]
         low = sum(1 for r in report.results
                   if r.status == Status.FAIL and r.severity == Severity.LOW)

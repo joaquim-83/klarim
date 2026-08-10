@@ -2254,7 +2254,11 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   rate_limit.py` faz a rajada **CONCORRENTE** (`asyncio.gather`, ≤10 requests) + `security-gate.yml` testa
   `/api/scan/` (zona strict 2r/s/burst 5; `/` e `/api/` são generosos de propósito) → **score 100/100 🟢**
   em prod. O bloqueio de IP direto (`ssl_reject_handshake` no 443 default_server) subiu sem quebrar o site.
-  Relatório: `claude/reports/KL-160_report.md`; `docs/SECURITY.md` §13 + `docs/DEPLOY.md` §8.
+  **Fix (admin scan usa YAML):** o `POST /admin/security-scan` criava `GateConfig` com defaults
+  (`rate_limit_endpoints=["/","/api/"]`) → dava 90 enquanto o CLI dava 100. Agora `_run_platform_security_scan`
+  usa `load_config("security-gate.yml")` (a MESMA config do CLI, com `/api/scan/`) → admin e CLI batem em
+  **100/100**. Relatório: `claude/reports/KL-160_report.md` (+ `KL-160_fix_admin_scan_config.md`);
+  `docs/SECURITY.md` §13 + `docs/DEPLOY.md` §8.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.
