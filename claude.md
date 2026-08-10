@@ -2259,8 +2259,8 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   usa `load_config("security-gate.yml")` (a MESMA config do CLI, com `/api/scan/`) → admin e CLI batem em
   **100/100**. Relatório: `claude/reports/KL-160_report.md` (+ `KL-160_fix_admin_scan_config.md`);
   `docs/SECURITY.md` §13 + `docs/DEPLOY.md` §8.
-- **KL-150 P2** — 6 pendências (site público + Gate) ✅ **PRONTO PARA REVISÃO — NÃO deployado** (validado
-  no dev). **(1 diagnóstico+fix) Verificação de domínio do Gate:** o backend estava CORRETO (`gate_projects.
+- **KL-150 P2** — 6 pendências (site público + Gate) ✅ **DEPLOYADO 10/08/2026 (CI run #298 verde)**. Prod:
+  `/api/public/best` total=670 (real, não 300), home sem ProductSplit, landing "Como funciona"/19 categorias OK. **(1 diagnóstico+fix) Verificação de domínio do Gate:** o backend estava CORRETO (`gate_projects.
   verified` é setado por `POST /gate/projects/{id}/verify/check`; a lista o retorna; o front lê `p.verified`)
   — **faltava a UI**: o portal não tinha botão de verificar. ⚠️ **Gate-verify ≠ site/owner-verify do KL-99**
   (sistemas SEPARADOS, não propagam). Fix: `GatePortal.jsx` ganhou "Verificar →" + `VerifyProjectModal`

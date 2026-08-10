@@ -1,7 +1,8 @@
 # KL-150 P2 — Verificação, navegação, home, números, landing, assinatura
 
-> **Status: PRONTO PARA REVISÃO VISUAL** — implementado e validado no `docker-compose.dev.yml`.
-> **NENHUM push/deploy foi feito.** Aguarda a validação do Cidinei.
+> **Status: DEPLOYADO EM PRODUÇÃO ✅** (10/08/2026, CI run #298 verde). Validado no dev + pós-deploy:
+> `/api/public/best` total=670 (real, não 300), home sem ProductSplit, landing "Como funciona"/19
+> categorias/curl YAML, site 200. Itens 1/2 (verify UI + nav do portal) live (validados no dev).
 
 ## Resumo
 
