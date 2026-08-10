@@ -1,7 +1,8 @@
 # KL-150 P2 — Ajustes pós-validação: espaçamento, verificação, container, números
 
-> **Status: PRONTO PARA REVISÃO VISUAL** — implementado e validado no `docker-compose.dev.yml`.
-> **NENHUM push/deploy foi feito.** Aguarda a validação do Cidinei.
+> **Status: DEPLOYADO EM PRODUÇÃO ✅** (10/08/2026, CI run #300 verde). Pós-deploy exigiu **flush do
+> cache `public:best`/`public:stats`** no Redis da VM (o `/public/best` servia o 670 velho por até 1h);
+> depois: /melhores = 730 = `stats.score_100_count` (MATCH). Layout home + container Gate confirmados.
 
 ## Resumo
 
