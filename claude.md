@@ -2292,6 +2292,22 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `stats.score_100_count` (MATCH). **+2 pytest → 2315 · 220 node · build OK**. Relatório:
   `claude/reports/KL-150_P2_fixes_report.md`.
 
+- **Fix painel (scan HTML raw + analytics "bots")** ✅ **PRONTO PARA REVISÃO — NÃO deployado** (validado
+  no dev). **P1 (diagnóstico+fix):** o HTML cru na "Segurança da plataforma" NÃO era evidence gravado (a
+  `platform_security_scans` está limpa) — era TRANSITÓRIO: uma chamada de API do painel que pega um
+  **502/504** fazia o `web/src/lib/admin/adminApi.js::req()` jogar o **body HTML inteiro** do erro na
+  mensagem (`Erro ${status}. ${resp.text()}`), renderizado como texto. Fix: no `!resp.ok` o `req()` só
+  extrai o `detail` do JSON; se não-JSON (página de erro) usa mensagem genérica por status — **nunca o
+  HTML**. Defesa: `clampText` (novo em `lib/admin/securityScan.js`) + `break-words` no
+  `PlatformSecurityCard`. Validado parando o `api` (504→"Serviço temporariamente indisponível", zero HTML).
+  **P2 (diagnóstico — sem bug de visitantes):** a Visão Geral JÁ usa `server-metrics` (autoritativo) e o
+  `al_server_metrics` JÁ filtra `is_bot=false` → **Visitantes BR = 469** (7d prod, plausível). O "milhões"
+  era o card **"Bots filtrados" (1,45M/7d, is_bot=true)**, corretamente rotulado. **Melhoria (o filtro de
+  UA do card):** `_BOT_UA_RE` (regex em `discovery/store.py`) tira do count de visitantes os UAs de bot que
+  escapam do classificador — incl. as NOSSAS tools (`Klarim Security Gate`/`KlarimScanner`) + wp-admin
+  scanners → 469→421. **+2 pytest + 1 node → 2317 pytest · 221 test:unit · build OK**. Relatório:
+  `claude/reports/KL-150_painel_fixes_report.md`.
+
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.
 # KL-124 pipeline test: 2026-07-28T10:19:29Z

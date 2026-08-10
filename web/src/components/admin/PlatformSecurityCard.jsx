@@ -3,7 +3,7 @@ import { admin } from '../../lib/admin/adminApi'
 import { Card, formatDate } from './ui'
 import {
   scanSemaphore, findingsSummary, isUnhealthy, scanButtonLabel, triggerMessage,
-  severityColor, checkIcon, sortChecks,
+  severityColor, checkIcon, sortChecks, clampText,
 } from '../../lib/admin/securityScan'
 
 // KL-160 Parte 3 — "Segurança da plataforma": roda o Security Gate contra o klarim.net a partir do
@@ -93,7 +93,7 @@ export default function PlatformSecurityCard() {
           {scanButtonLabel({ running: status?.running, busy })}
         </button>
         {status?.running && <span className="text-sm text-klarim-muted">⏳ rodando… (atualiza sozinho)</span>}
-        {msg && <span className="text-sm text-klarim-muted">{msg}</span>}
+        {msg && <span className="max-w-full break-words text-sm text-klarim-muted">{clampText(msg, 300)}</span>}
       </div>
 
       {/* Histórico com detalhe expandível */}
@@ -121,7 +121,7 @@ export default function PlatformSecurityCard() {
                   {open && (
                     <div className="border-l-2 border-klarim-border px-3 py-2">
                       {expanded.loading ? <p className="text-sm text-klarim-muted">Carregando…</p>
-                        : expanded.error ? <p className="text-sm text-[#F85149]">{expanded.error}</p>
+                        : expanded.error ? <p className="break-words text-sm text-[#F85149]">{clampText(expanded.error, 300)}</p>
                         : (
                           <ul className="space-y-1 text-sm">
                             {sortChecks(expanded.results).map((c, i) => (
@@ -129,7 +129,7 @@ export default function PlatformSecurityCard() {
                                 <span aria-hidden="true">{checkIcon(c.status)}</span>
                                 <span className="font-mono text-[10px] uppercase" style={{ color: severityColor(c.severity) }}>[{c.severity}]</span>
                                 <span className="font-medium">{c.check}</span>
-                                <span className="text-klarim-muted">{c.detail}</span>
+                                <span className="min-w-0 break-words text-klarim-muted">{clampText(c.detail, 300)}</span>
                               </li>
                             ))}
                           </ul>

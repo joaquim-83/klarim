@@ -22,8 +22,20 @@ async function req(path, opts = {}) {
     throw new Error('Sessão expirada. Faça login novamente.')
   }
   if (!resp.ok) {
-    const detail = await resp.text().catch(() => '')
-    throw new Error(`Erro ${resp.status}. ${detail}`)
+    // KL-150 fix (P1) — NUNCA jogar o body CRU do erro na mensagem: um 502/503 do Cloudflare/nginx
+    // devolve uma PÁGINA HTML inteira (<html>/<style>/<script>) que, exibida no painel, aparecia como
+    // um bloco de HTML "renderizado como texto". Extrai só o `detail` do JSON da API; se a resposta
+    // não é JSON (página de erro), usa uma mensagem genérica por status — nunca o HTML.
+    const ct = resp.headers.get('content-type') || ''
+    let detail = ''
+    if (ct.includes('application/json')) {
+      detail = await resp.json().then((d) => (typeof d?.detail === 'string' ? d.detail : ''))
+        .catch(() => '')
+    }
+    const generic = resp.status >= 500
+      ? 'Serviço temporariamente indisponível. Tente novamente em instantes.'
+      : `Erro ${resp.status}.`
+    throw new Error(detail || generic)
   }
   return resp.status === 204 ? null : resp.json()
 }

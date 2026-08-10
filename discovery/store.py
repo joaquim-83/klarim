@@ -1188,6 +1188,17 @@ def _enrichment_where(mode: str = "all") -> str:
 _SITE_EVENT_DOMAIN = (r"regexp_replace(split_part(regexp_replace(lower(e.target_url), "
                       r"'^https?://', ''), '/', 1), '^www\.', '')")
 
+# KL-150 fix (P2) — regex (POSIX, case-insensitive via `~*`) de user-agents de BOT/ferramenta que
+# escapam do classificador `is_bot` e não devem contar como VISITANTES no analytics: nossas próprias
+# tools (Klarim Security Gate/KlarimScanner), crawlers/SEO bots, scanners de wp-admin e scripts
+# headless/HTTP. Constante hardcoded (sem input do usuário) → seguro embutir no SQL. Sem aspas simples.
+_BOT_UA_RE = (
+    r"(bot|crawl|spider|scrap|klarim|headless|lighthouse|prerender|phantom|puppeteer|playwright|"
+    r"selenium|yandex|baidu|ahrefs|semrush|mj12|dotbot|petalbot|censys|bytespider|gptbot|"
+    r"python-|curl/|wget|go-http|node-fetch|nodejs|okhttp|java/|libwww|axios|scrapy|"
+    r"wp-admin|wp-login|install\.php|xmlrpc)"
+)
+
 
 def _is_transient_ddl(exc: Exception) -> bool:
     """True se o erro é uma falha TRANSITÓRIA de DDL concorrente (deadlock / lock /
@@ -8512,7 +8523,13 @@ class TargetStore:
         final) é no módulo. SQL validado na VM (como os demais aa_*)."""
         def _fn(cur):
             p = (start, end)
-            human = "is_bot = false AND created_at >= %s AND created_at < %s"
+            # KL-150 fix (P2) — além do `is_bot=false` do classificador, exclui dos VISITANTES os
+            # user-agents de bot/ferramenta que escapam da classificação (as nossas próprias tools —
+            # Klarim Security Gate/KlarimScanner — crawlers, scanners de wp-admin, scripts headless…).
+            # Constante hardcoded (sem input do usuário) → seguro embutir no regex `~*`. Assim os
+            # "Visitantes BR" contam só gente de verdade; esses requests vão para `bots_filtered`.
+            human = (f"is_bot = false AND created_at >= %s AND created_at < %s "
+                     f"AND (user_agent IS NULL OR user_agent !~* '{_BOT_UA_RE}')")
 
             def scalar(sql, params=p):
                 cur.execute(sql, params)
@@ -8523,9 +8540,10 @@ class TargetStore:
             visitors_br = scalar(
                 f"SELECT COUNT(DISTINCT ip_address) FROM access_log WHERE {human} "
                 "AND country_code = 'BR'")
+            # Bots = classificados como bot OU UA de bot que escapou (consistente com o `human` acima).
             bots_filtered = scalar(
-                "SELECT COUNT(*) FROM access_log WHERE is_bot = true "
-                "AND created_at >= %s AND created_at < %s")
+                "SELECT COUNT(*) FROM access_log WHERE created_at >= %s AND created_at < %s "
+                f"AND (is_bot = true OR (user_agent IS NOT NULL AND user_agent ~* '{_BOT_UA_RE}'))")
             # KL-95: "Scans" e "Contas criadas" contam AÇÕES REAIS (tabelas de negócio), não
             # requests à API no access_log (que incluíam MCP/bots/testes/rate-limits).
             # Scans MANUAIS = tabela `scans` menos o worker automático (`source='discovery'`).

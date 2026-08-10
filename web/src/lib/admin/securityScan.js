@@ -53,6 +53,13 @@ export function checkIcon(status) {
   return { pass: '✅', fail: '❌', error: '⚠️', skip: '⏭️' }[(status || '').toLowerCase()] || '•';
 }
 
+// KL-150 fix (P1) — clampa um texto para exibição segura no painel (defesa contra `detail`/mensagens
+// muito longas, ex.: um body HTML que escapasse). Corta em `max` chars + "…". Sempre string.
+export function clampText(s, max = 400) {
+  const str = String(s == null ? '' : s)
+  return str.length > max ? `${str.slice(0, max)}…` : str
+}
+
 // Ordena os checks: FAIL primeiro (por severidade desc), depois error, depois pass.
 const _SEV_RANK = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
 const _STATUS_RANK = { fail: 0, error: 1, skip: 2, pass: 3 };
