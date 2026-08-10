@@ -1669,6 +1669,17 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   milhão/dia é plausível (scanner público é alvo de sondagem) e está corretamente separado dos visitantes; cada
   KPI tem **tooltip (ⓘ)** explicando o que conta e a fonte. Números validados na VM (`SHOW timezone`=UTC → bound
   tz-aware vs coluna naive é correto).
+  **Aba "Visão geral" DESATIVADA (KL-150, 10/08):** apesar dos fixes de fuso/rescan acima, os KPIs de visitante
+  do `access_log` continuam **divergindo do GA4** (GA4=4 vs painel=357) e as queries de `al_server_metrics` são
+  **pesadas** (deixavam TODO o painel lento). A aba "Visão geral" foi **comentada** (não deletada) em
+  `web/src/components/admin/AdminAnalytics.jsx` (entrada em `TABS` + render do `OverviewTab`); a 1ª aba passou a
+  ser **"Comportamento"** (`parseTabHash` cai no 1º `TAB_KEYS`; bookmark `#overview` também). Como a aba
+  "Comportamento" **também** chamava `server-metrics` (blocos "Domínios mais consultados" + "Mapa de calor"),
+  esses 2 blocos + a chamada `aaServerMetrics` foram **comentados** nela — a aba segue só com `ip-behavior`
+  (multi-site/jornada/retenção). Assim NENHUMA chamada a `server-metrics`/`analytics-metrics` ocorre no load.
+  **Backend intacto:** `get_server_metrics`/`get_analytics_metrics` (endpoints + MCP) seguem para consultas
+  pontuais. Reativar tudo (descomentar) quando a fonte for a **API do GA4**. `OverviewTab`/`KpiGrid`/`Tendência`/
+  `TopDomainsBlock`/`HeatmapBlock` continuam definidos no arquivo. Relatório: `claude/reports/KL-150_remove_visaogeral_report.md`.
 - **KL-137** — Simplificação RADICAL do pipeline de e-mail (reverte a complexidade acumulada nos
   KL-108..KL-136) ✅. O pipeline consumiu 10 cards e piorou (bounce oscilando, volume 4-400/dia); os
   e-mails sem link geravam ~7 visitas/semana. **(P1) Link no e-mail** (mantendo **text/plain**, NÃO

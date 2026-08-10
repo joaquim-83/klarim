@@ -21,7 +21,13 @@ const PERIODS = [
   { key: '30d', label: '30 dias' }, { key: '90d', label: '90 dias' },
 ]
 const TABS = [
-  { key: 'overview', label: 'Visão geral' }, { key: 'behavior', label: 'Comportamento' },
+  // KL-150 — aba "Visão geral" DESATIVADA. Motivo: os KPIs vêm do `access_log` (server-side) e não
+  // batem com o GA4 (GA4 = 4 visitantes, painel = 357), além das queries pesadas de
+  // `al_server_metrics` deixarem TODO o painel lento. Reativar quando a fonte for a API do GA4.
+  // Os componentes (OverviewTab/KpiGrid/Tendência) ficam PRESERVADOS abaixo (só o render foi
+  // comentado); os endpoints (get_server_metrics/get_analytics_metrics) seguem disponíveis via MCP.
+  // { key: 'overview', label: 'Visão geral' },
+  { key: 'behavior', label: 'Comportamento' },
   { key: 'events', label: 'Eventos' }, { key: 'pages', label: 'Páginas' },
   { key: 'journeys', label: 'Jornadas' },
 ]
@@ -83,10 +89,13 @@ export default function AdminAnalytics() {
           ))}
         </div>
 
+        {/* KL-150 — aba "Visão geral" desativada (ver TABS acima). OverviewTab preservado, não removido;
+            com 'overview' fora de TAB_KEYS, parseTabHash cai no 1º tab ('behavior') e nenhuma chamada a
+            server-metrics/analytics-metrics ocorre no load. Reativar junto com a entrada em TABS.
         {nav.tab === 'overview' && (
           <OverviewTab period={period} includeBots={includeBots} navigate={navigate}
             funnelSource={nav.params.funnel === 'server' ? 'server' : 'email'} />
-        )}
+        )} */}
         {nav.tab === 'behavior' && <BehaviorTab period={period} />}
         {nav.tab === 'events' && (
           <EventsTab key={JSON.stringify(nav.params)} period={period} initialParams={nav.params}
@@ -713,17 +722,21 @@ function SessionsDrilldown({ period, navigate }) {
 // Aba 5 — Comportamento (KL-92 P2: inteligência do access_log server-side)
 // =========================================================================== #
 function BehaviorTab({ period }) {
-  // Fontes independentes (loading/erro isolados): server-metrics (domínios+heatmap) e
-  // ip-behavior (multi-site+jornada+retenção). Uma falhar não zera a outra.
-  const server = useAsync(() => admin.aaServerMetrics(period), [period])
+  // KL-150 — a chamada a `server-metrics` (al_server_metrics) foi DESATIVADA nesta aba: é a query
+  // pesada que deixava o painel lento e cujos números vêm do `access_log` (não batem com o GA4).
+  // Com a "Visão geral" removida, esta é a 1ª aba — então NENHUMA chamada a server-metrics pode
+  // ocorrer no load. Os blocos que dependiam dela (Domínios mais consultados / Mapa de calor) ficam
+  // comentados (reversíveis) até a fonte ser a API do GA4. A aba segue com a inteligência de
+  // `ip-behavior` (multi-site / jornada pré-signup / retenção), que não usa os KPIs contestados.
+  // const server = useAsync(() => admin.aaServerMetrics(period), [period])
   const behavior = useAsync(() => admin.aaIpBehavior(period), [period])
   return (
     <div className="space-y-6">
-      <TopDomainsBlock server={server} />
+      {/* KL-150 — <TopDomainsBlock server={server} /> desativado (usa server-metrics). */}
       <MultiSiteBlock behavior={behavior} />
       <PreSignupJourneyBlock behavior={behavior} />
       <RetentionBlock behavior={behavior} />
-      <HeatmapBlock server={server} />
+      {/* KL-150 — <HeatmapBlock server={server} /> desativado (usa server-metrics). */}
     </div>
   )
 }
