@@ -17,7 +17,7 @@ class _Store:
     async def public_score_100_sites(self, sector=None, limit=200):
         return self._rows[:limit]
 
-    async def count_public_score_100_sites(self):
+    async def count_score_100_sites(self):
         self.count_calls += 1
         return self._total
 

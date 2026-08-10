@@ -3790,11 +3790,12 @@ async def public_best(request: Request) -> dict:
         rows = await get_target_store().public_score_100_sites(limit=300)
     except Exception:  # noqa: BLE001
         rows = []
-    # KL-150 P2 — `total` = contagem REAL de sites score 100 (a vitrine lista até 300, mas o número
-    # exibido em /melhores deve ser o total real, ex.: 719). Try SEPARADO: uma falha na contagem
-    # (ou store legada sem o método) NÃO zera a vitrine (cai no len(rows) abaixo).
+    # KL-150 P2 — `total` = nº de sites score 100 (a vitrine lista até 300, mas o número exibido em
+    # /melhores deve ser o total real). Usa a MESMA contagem de `public_platform_stats.score_100_count`
+    # (home/estatísticas) → todas as superfícies mostram o mesmo número. Try SEPARADO: uma falha na
+    # contagem (ou store legada sem o método) NÃO zera a vitrine (cai no len(rows) abaixo).
     try:
-        total = await get_target_store().count_public_score_100_sites()
+        total = await get_target_store().count_score_100_sites()
     except Exception:  # noqa: BLE001
         total = 0
     groups: dict = {}

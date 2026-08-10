@@ -57,14 +57,15 @@ const softwareApplication = {
 ---
 
 <Base title="Klarim" description={description} path="/" jsonLd={softwareApplication}>
-  {/* KL-81: nav no topo (header é `absolute`), hero centralizado (main flex-1), footer no fundo.
-      Cabe numa tela sem scroll. */}
-  {/* KL-81: 100dvh (compensa a barra de URL do Safari iOS); hero centralizado (main flex-1);
-      footer mínimo no fundo. Cabe numa tela sem scroll. */}
-  <div class="flex flex-col">
+  {/* KL-81 + KL-150 P2 fix (item 1): sticky-footer real — o `min-h-[100dvh]` fica no WRAPPER e o
+      `<main>` é `flex-1` (cresce no espaço restante, hero centralizado), com o footer no fundo da
+      MESMA tela (visível sem rolar). Antes o `min-h-[100dvh]` estava no `<main>` → ele sozinho já
+      ocupava a tela inteira e empurrava o footer para baixo do fold. `100dvh` compensa a barra de
+      URL do Safari iOS. */}
+  <div class="flex min-h-[100dvh] flex-col">
     <Header />
 
-    <main class="flex min-h-[100dvh] items-center justify-center px-5 py-8">
+    <main class="flex flex-1 items-center justify-center px-5 py-8">
       <div class="w-full max-w-2xl text-center">
         {/* Fonte menor (fix polish): cabe em 1 linha no desktop; ~2 linhas no mobile é ok. */}
         <h1 class="text-balance text-3xl font-extrabold tracking-tight text-white sm:text-4xl lg:text-5xl">

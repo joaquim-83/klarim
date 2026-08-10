@@ -975,7 +975,14 @@ async def gate_list_invites(request: Request) -> dict:
 async def gate_list_projects(request: Request) -> dict:
     """Projetos da conta (API key). Inclui o plano efetivo + os checks permitidos."""
     ctx = await _resolve_gate_account(request)
-    projects = await get_target_store().list_gate_projects(ctx["account_id"])
+    store = get_target_store()
+    # KL-150 P2 (item 2) — reconcilia: domínio já verificado no scanner (KL-99) → marca o projeto Gate
+    # como verificado (lazy, idempotente). Best-effort: falha aqui não pode quebrar a listagem.
+    try:
+        await store.propagate_scanner_verification(ctx["account_id"])
+    except Exception:  # noqa: BLE001
+        pass
+    projects = await store.list_gate_projects(ctx["account_id"])
     plan = ctx["plan"] or {}
     return {"projects": projects, "plan": {"slug": plan.get("slug"), "name": plan.get("name")},
             "allowed_checks": get_allowed_checks(plan)}
@@ -1001,8 +1008,19 @@ async def gate_create_project(body: GateProjectBody, request: Request) -> dict:
         raise HTTPException(status_code=409, detail="Você já tem um projeto para este domínio.")
     await log_gate_audit(ctx["account_id"], "project_created", request, key_id=ctx.get("key_id"),
                          domain=domain, detail={"project_id": project["id"], "domain": domain})
+    # KL-150 P2 (item 2) — se o domínio já foi verificado no scanner (KL-99) por esta conta, o
+    # projeto nasce já verificado. Best-effort; re-lê o estado para refletir na resposta.
+    try:
+        if await store.propagate_scanner_verification(ctx["account_id"]):
+            fresh = await store.get_gate_project(project["id"], ctx["account_id"])
+            if fresh:
+                project = fresh
+    except Exception:  # noqa: BLE001
+        pass
+    already = bool(project.get("verified"))
     return {"project": project,
-            "next_step": "Verifique o domínio via /api/gate/projects/{id}/verify/start"}
+            "next_step": ("Domínio já verificado (via scanner)." if already
+                          else "Verifique o domínio via /api/gate/projects/{id}/verify/start")}
 
 
 # --------------------------------------------------------------------------- #

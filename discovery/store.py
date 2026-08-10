@@ -5184,6 +5184,24 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    async def propagate_scanner_verification(self, account_id: int) -> int:
+        """KL-150 P2 (item 2) — propaga a verificação do SCANNER (KL-99) para o Gate: se a mesma conta
+        já provou ser dona do domínio (`user_sites.is_owner` + `targets.owner_verified`), marca os
+        projetos Gate NÃO verificados daquele domínio como `verified` (método `scanner`). Gate-verify e
+        owner-verify são tabelas separadas — isto reconcilia a experiência (o dev que verificou pelo
+        scanner vê o Gate reconhecer). Idempotente; devolve quantos projetos foram propagados."""
+        def _fn(cur):
+            cur.execute(
+                "UPDATE gate_projects gp "
+                "SET verified = TRUE, verified_at = NOW(), verification_method = 'scanner' "
+                "WHERE gp.account_id = %s AND gp.verified = FALSE AND EXISTS ("
+                "  SELECT 1 FROM user_sites us JOIN targets t ON t.id = us.target_id "
+                "  WHERE us.user_id = gp.account_id AND us.is_owner = TRUE "
+                "    AND t.owner_verified = TRUE AND lower(t.domain) = lower(gp.domain))",
+                (int(account_id),))
+            return cur.rowcount
+        return await asyncio.to_thread(self._run, _fn)
+
     async def delete_gate_project_by_domain(self, account_id: int, domain: str) -> int:
         """Remove o projeto de um dev por (account_id, domain) — usado na revogação de convite."""
         def _fn(cur):
@@ -6704,15 +6722,18 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
-    async def count_public_score_100_sites(self) -> int:
-        """KL-150 P2 — total REAL de sites com score 100 (para /melhores mostrar o número certo, não o
-        tamanho da lista truncada em 300). Mesmo filtro de `public_score_100_sites`, dedup por domínio."""
+    async def count_score_100_sites(self) -> int:
+        """KL-150 P2 fix — total de sites com score 100. Conta **domínios distintos** com
+        `last_scan_score = 100` (o maior score do domínio), **idêntico** ao `score_100_count` de
+        `public_platform_stats` (home/estatísticas) → todas as superfícies mostram o MESMO número.
+        Antes filtrava por `status`/`public_visible` (só perfis públicos), dando um número menor
+        (ex.: 670) que não batia com o real do sistema (ex.: 730)."""
         def _fn(cur):
             cur.execute(
-                "SELECT COUNT(DISTINCT t.domain) AS n FROM targets t "
-                "JOIN site_profile sp ON sp.target_id = t.id "
-                "WHERE t.last_scan_score = 100 AND t.status IN ('scanned', 'alerted') "
-                "  AND COALESCE(sp.public_visible, TRUE) = TRUE")
+                "SELECT COUNT(*) AS n FROM ("
+                "  SELECT DISTINCT ON (t.domain) t.last_scan_score AS score FROM targets t "
+                "  WHERE t.last_scan_score IS NOT NULL AND t.domain IS NOT NULL "
+                "  ORDER BY t.domain, t.last_scan_score DESC) d WHERE d.score = 100")
             rows = self._rows_to_dicts(cur)
             return int(rows[0]["n"]) if rows and rows[0].get("n") is not None else 0
         return await asyncio.to_thread(self._run, _fn)

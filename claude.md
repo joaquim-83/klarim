@@ -2278,6 +2278,17 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `fallback` (AbacatePay OFF = correto/KL-156), em prod abre o modal PIX; o CTA logado resolve p/
   `/dashboard/gate?upgrade=pro` (o "/criar-conta" do relato não reproduz). **+2 pytest + 2 node → 2313
   pytest · 220 test:unit · build OK · zero erro no console**. Relatório: `claude/reports/KL-150_P2_report.md`.
+  **Ajustes pós-validação (PRONTO PARA REVISÃO — NÃO deployado):** (1) **home** — `min-h-[100dvh]` movido
+  do `<main>` para o wrapper + `<main>` `flex-1` (sticky footer real): footer/pills visíveis sem scroll
+  (conteúdo natural 528px cabe em 768). (2) **igoove/verificação** — Gate-verify ≠ owner-verify do KL-99
+  (tabelas separadas); novo `store.propagate_scanner_verification(account_id)` marca o projeto Gate como
+  `verified` (method=`scanner`) quando a conta já provou posse no scanner (`user_sites.is_owner` +
+  `targets.owner_verified`), chamado no GET+POST `/gate/projects` (lazy+idempotente). (3) **container** do
+  `/dashboard/gate` `md:max-w-5xl`→`lg:max-w-7xl` (alinha ao dashboard principal). (4) **números** —
+  `count_public_score_100_sites`→`count_score_100_sites` usa a MESMA query de `public_platform_stats.
+  score_100_count` (distinct domains score 100, sem filtro de perfil/status) → /melhores, home e
+  /estatísticas batem no mesmo número. **+2 pytest → 2315 · 220 node · build OK**. Relatório:
+  `claude/reports/KL-150_P2_fixes_report.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.

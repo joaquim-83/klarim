@@ -10,7 +10,9 @@ import GatePortal from '../../components/dashboard-v2/GatePortal.jsx';
 
 <Base title="Security Gate" description="Seu portal do Security Gate — API key, projetos e runs." path="/dashboard/gate" noindex={true}>
   <Header />
-  <main class="mx-auto max-w-3xl md:max-w-5xl px-5 lg:px-8 pt-28 pb-20 sm:pt-32">
+  {/* KL-150 P2 fix (item 3) — alinha a largura ao dashboard principal (lg:max-w-7xl); antes o Gate
+      ficava preso em md:max-w-5xl (margens largas, não ocupava a tela). */}
+  <main class="mx-auto max-w-3xl md:max-w-5xl lg:max-w-7xl px-5 lg:px-8 pt-28 pb-20 sm:pt-32">
     <GatePortal client:load />
   </main>
   <Footer />
