@@ -10,6 +10,7 @@ import GateIntegrationTabs from './GateIntegrationTabs.jsx'
 import GateOnboarding from './GateOnboarding.jsx'
 import GateVendors from './GateVendors.jsx'
 import KycBanner from './KycBanner.jsx'
+import DashboardNav from './DashboardNav.jsx'                 // KL-150 P2 (item 2)
 import { SetPasswordModal } from './LevelPrompt.jsx'
 
 // KL-153 P2 — portal do dev redesenhado (resolve a Quebra 10). Status bar (score/plano/uso +
@@ -378,8 +379,80 @@ function PlanBadge({ plan, allowedCount }) {
   )
 }
 
+// ---- KL-150 P2 (item 1): verificação de domínio do projeto (o portal não tinha UI p/ isso) ---- //
+const _VERIFY_METHODS = [
+  { key: 'dns_txt', label: 'DNS TXT' },
+  { key: 'meta_tag', label: 'Meta tag' },
+  { key: 'html_file', label: 'Arquivo HTML' },
+]
+function VerifyProjectModal({ project, onClose, onVerified }) {
+  const [method, setMethod] = useState('dns_txt')
+  const [instr, setInstr] = useState(null)   // instruções do /verify/start
+  const [busy, setBusy] = useState(false)
+  const [msg, setMsg] = useState('')
+  const [err, setErr] = useState('')
+
+  async function start(m) {
+    setBusy(true); setErr(''); setMsg(''); setInstr(null)
+    try {
+      const r = await api(`/api/gate/projects/${project.id}/verify/start`, { method: 'POST', body: JSON.stringify({ method: m }) })
+      setInstr(r.instructions || null)
+    } catch (e) { setErr(e.message) } finally { setBusy(false) }
+  }
+  async function check() {
+    setBusy(true); setErr(''); setMsg('')
+    try {
+      const r = await api(`/api/gate/projects/${project.id}/verify/check`, { method: 'POST' })
+      if (r.status === 'verified') { onVerified(); return }
+      if (r.status === 'not_found') setMsg('Ainda não encontramos o desafio no domínio. Confira a configuração e a propagação, e tente de novo.')
+      else if (r.status === 'no_pending') setMsg('Gere o desafio abaixo antes de verificar.')
+      else setMsg('Não foi possível verificar. Tente novamente.')
+    } catch (e) { setErr(e.message) } finally { setBusy(false) }
+  }
+
+  const box = 'rounded-lg border border-slate-700 bg-slate-950 p-2 font-mono text-xs text-slate-200 break-all'
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal="true" aria-label="Verificar domínio">
+      <div className="w-full max-w-lg rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
+        <h3 className="text-lg font-bold text-white">Verificar domínio — {project.domain}</h3>
+        <p className="mt-1 text-sm text-slate-300">Comprove que o domínio é seu (escolha um método). Necessário para rodar scans do domínio registrado no CI/CD.</p>
+
+        <div className="mt-4 flex flex-wrap gap-2">
+          {_VERIFY_METHODS.map((m) => (
+            <button key={m.key} type="button" onClick={() => { setMethod(m.key); start(m.key) }}
+              className={`rounded-lg border px-3 py-1.5 text-sm ${method === m.key ? 'border-brand-500 bg-brand-500/10 text-brand-300' : 'border-slate-700 text-slate-300 hover:bg-slate-800'}`}>
+              {m.label}
+            </button>
+          ))}
+        </div>
+
+        {err && <p className="mt-3 text-sm text-red-400">{err}</p>}
+        {!instr && !busy && <p className="mt-4 text-sm text-slate-400">Escolha um método acima para ver as instruções.</p>}
+        {busy && !instr && <p className="mt-4 text-sm text-slate-400">Gerando desafio…</p>}
+
+        {instr && (
+          <div className="mt-4 space-y-2 text-sm text-slate-300">
+            <p className="font-semibold text-white">{instr.title}</p>
+            {instr.snippet && <code className={box}>{instr.snippet}</code>}
+            {instr.record_type && <div className={box}>Tipo: {instr.record_type} · Host: {instr.host} · Valor: {instr.value}</div>}
+            {instr.path && <div className={box}>Arquivo: {instr.path}<br />Conteúdo: {instr.content}</div>}
+            <p className="text-slate-400">{instr.help}</p>
+          </div>
+        )}
+        {msg && <p className="mt-3 text-sm text-amber-300">{msg}</p>}
+
+        <div className="mt-6 flex items-center gap-3">
+          <button type="button" onClick={check} disabled={busy || !instr} className={smBrand}>{busy ? 'Verificando…' : 'Verificar agora'}</button>
+          <button type="button" onClick={onClose} className="text-sm text-slate-400 hover:text-slate-200">Fechar</button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 function Projects({ onSelect, refreshKey }) {
   const [data, setData] = useState(null); const [err, setErr] = useState('')
+  const [verifyProj, setVerifyProj] = useState(null)
   const load = useCallback(() => api('/api/gate/projects').then(setData).catch((e) => setErr(e.message)), [])
   useEffect(() => { load() }, [load, refreshKey])
   const projects = data?.projects || []
@@ -392,12 +465,17 @@ function Projects({ onSelect, refreshKey }) {
             <li key={p.id} className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-900/40 p-3">
               <div className="min-w-0"><div className="truncate font-semibold text-white">{p.domain}</div>
                 <div className="text-xs text-slate-400">{p.verified ? `✅ Verificado (${p.verification_method || '—'})` : '⏳ Não verificado'}</div></div>
-              <button onClick={() => onSelect(p)} className="shrink-0 text-sm font-medium text-brand-400 hover:underline">Ver histórico →</button>
+              <div className="flex shrink-0 items-center gap-3">
+                {!p.verified && <button onClick={() => setVerifyProj(p)} className="text-sm font-medium text-brand-400 hover:underline">Verificar →</button>}
+                <button onClick={() => onSelect(p)} className="text-sm font-medium text-slate-300 hover:underline">Histórico →</button>
+              </div>
             </li>
           ))}
         </ul>
       )}
       {data?.plan && <PlanBadge plan={data.plan} allowedCount={(data.allowed_checks || []).length} />}
+      {verifyProj && <VerifyProjectModal project={verifyProj} onClose={() => setVerifyProj(null)}
+        onVerified={() => { setVerifyProj(null); load() }} />}
     </Section>
   )
 }
@@ -526,6 +604,8 @@ export default function GatePortal() {
 
   return (
     <div>
+      {/* KL-150 P2 (item 2) — nav para não ficar preso em /dashboard/gate */}
+      <DashboardNav accountType={status.account_type} />
       <div className="mb-6">
         <h1 className="text-2xl font-bold text-white">Security Gate</h1>
         <p className="mt-1 text-sm text-slate-300">Scan de segurança pós-deploy — 86 verificações no seu CI/CD.</p>

@@ -6704,6 +6704,19 @@ class TargetStore:
 
         return await asyncio.to_thread(self._run, _fn)
 
+    async def count_public_score_100_sites(self) -> int:
+        """KL-150 P2 — total REAL de sites com score 100 (para /melhores mostrar o número certo, não o
+        tamanho da lista truncada em 300). Mesmo filtro de `public_score_100_sites`, dedup por domínio."""
+        def _fn(cur):
+            cur.execute(
+                "SELECT COUNT(DISTINCT t.domain) AS n FROM targets t "
+                "JOIN site_profile sp ON sp.target_id = t.id "
+                "WHERE t.last_scan_score = 100 AND t.status IN ('scanned', 'alerted') "
+                "  AND COALESCE(sp.public_visible, TRUE) = TRUE")
+            rows = self._rows_to_dicts(cur)
+            return int(rows[0]["n"]) if rows and rows[0].get("n") is not None else 0
+        return await asyncio.to_thread(self._run, _fn)
+
     async def public_score_100_sites(self, sector: Optional[str] = None,
                                      limit: int = 200) -> List[Dict[str, Any]]:
         """KL-74 — sites com score perfeito (100), públicos. Opcionalmente de um setor.

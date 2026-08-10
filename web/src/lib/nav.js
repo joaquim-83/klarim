@@ -78,3 +78,14 @@ export function gatePlanCtaLabel(slug) {
 export function gateSignupRedirect(gatePlan) {
   return gatePlan ? `/dashboard/gate?upgrade=${gatePlan}` : '/dashboard/gate';
 }
+
+// KL-150 P2 (item 2) — nav do dashboard do Gate (o dev ficava preso em /dashboard/gate sem links
+// para voltar/navegar). Devolve os links do menu horizontal, com `current` marcando a página atual.
+// Conta `both` (dev + owner) ganha "Meus sites" (o /dashboard mostra os sites monitorados). Pura.
+export function gateDashboardNav(accountType) {
+  const links = [{ label: 'Dashboard', href: '/dashboard' }];
+  if (accountType === 'both') links.push({ label: 'Meus sites', href: '/dashboard' });
+  links.push({ label: 'Security Gate', href: '/dashboard/gate', current: true });
+  links.push({ label: 'Minha conta', href: '/dashboard/conta' });
+  return links;
+}

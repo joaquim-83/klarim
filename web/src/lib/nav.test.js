@@ -2,7 +2,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EMPRESA_LINKS, DEV_LINKS, DEV_DROPDOWN_LABEL, PRODUCT_CARDS, authState, dashboardMenu,
-  otherDropdowns, gatePlanCtaHref, gatePlanCtaLabel, gateSignupRedirect } from './nav.js'
+  otherDropdowns, gatePlanCtaHref, gatePlanCtaLabel, gateSignupRedirect, gateDashboardNav } from './nav.js'
 import { loggedInRedirect } from './serverAuth.js'
 
 // --- Header: dropdowns "Para empresas" / "Para devs" --- //
@@ -101,4 +101,21 @@ test('gateSignupRedirect: plan=pro → redirect inclui upgrade=pro', () => {
 test('loggedInRedirect: dev com plano Gate → portal com upgrade', () => {
   assert.equal(loggedInRedirect(true, '/dashboard', 'pro'), '/dashboard/gate?upgrade=pro')
   assert.equal(loggedInRedirect(true, '/dashboard', ''), '/dashboard/gate')
+})
+
+// --- KL-150 P2 (item 2): nav do dashboard do Gate --- //
+test('gateDashboardNav: developer → Dashboard, Security Gate (atual), Minha conta (sem Meus sites)', () => {
+  const nav = gateDashboardNav('developer')
+  const labels = nav.map((l) => l.label)
+  assert.deepEqual(labels, ['Dashboard', 'Security Gate', 'Minha conta'])
+  assert.equal(nav.find((l) => l.label === 'Security Gate').current, true)
+  assert.equal(nav.find((l) => l.label === 'Dashboard').href, '/dashboard')
+  assert.ok(!labels.includes('Meus sites'))
+})
+
+test('gateDashboardNav: both → inclui "Meus sites"', () => {
+  const labels = gateDashboardNav('both').map((l) => l.label)
+  assert.ok(labels.includes('Meus sites'))
+  assert.ok(labels.includes('Security Gate'))
+  assert.ok(labels.includes('Dashboard'))
 })

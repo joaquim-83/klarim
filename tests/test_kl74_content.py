@@ -59,6 +59,9 @@ class FakeStore:
                  "owner_verified": False}]
         return [r for r in rows if not sector or r["sector"] == sector]
 
+    async def count_public_score_100_sites(self):   # KL-150 P2 — total real (aqui = 2 linhas)
+        return 2
+
     async def public_related_sites(self, sector, exclude_domain, limit=8):
         return [{"domain": "beta.com.br", "score": 55, "semaphore": "amarelo",
                  "company_name": "Beta", "sector": sector or "tecnologia"}]

@@ -3,7 +3,8 @@ export const prerender = true;
 
 import Base from '../layouts/Base.astro';
 import Header from '../components/Header.astro';
-import ProductSplit from '../components/home/ProductSplit.astro';
+// KL-150 P2 (item 3) — removida a seção "Dois produtos, um só lugar" (ProductSplit): a separação
+// empresa × dev já está no header ("Para empresas" / "Desenvolvedor"); na home confundia.
 
 // KL-81 fix — footer MÍNIMO só na landing (sem logo/tagline/min-h pesado) — o Footer
 // compartilhado (com logo + "Segurança web para o Brasil.") segue nas demais páginas.
@@ -23,7 +24,7 @@ const footerLinks = [
 // (GET /scan?url=) é idêntica — só mudou o texto/botão.
 // KL-103 — social proof na meta (removido o "13.000+" antigo já no KL-81; aqui adiciona a escala).
 const description =
-  'Pesquise qualquer site brasileiro. 50.000+ sites analisados em 49 setores. ' +
+  'Pesquise qualquer site brasileiro. 100.000+ sites analisados em 49 setores. ' +
   'Relatório de segurança completo e gratuito em 30 segundos.';
 
 // KL-103 — 6 setores mais populosos (dados de /setores) + "+43 setores". Hardcoded (mudam
@@ -113,11 +114,11 @@ const softwareApplication = {
             Fallback ESTÁTICO no HTML (SSG) → aparece antes do JS; o script atualiza p/ o valor real.
             Cores theme-aware pelo token slate (KL-87). */}
         <div class="mt-6 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-sm tracking-wide text-slate-400">
-          <span><span data-stat="sites_analyzed" class="font-semibold text-slate-300">50.800+</span> sites analisados</span>
+          <span><span data-stat="sites_analyzed" class="font-semibold text-slate-300">100.000+</span> sites analisados</span>
           <span aria-hidden="true" class="text-slate-600">·</span>
           <span><span data-stat="sectors" class="font-semibold text-slate-300">49</span> setores</span>
           <span aria-hidden="true" class="text-slate-600">·</span>
-          <span><span data-stat="public_profiles" class="font-semibold text-slate-300">27.000+</span> perfis públicos</span>
+          <span><span data-stat="public_profiles" class="font-semibold text-slate-300">60.000+</span> perfis públicos</span>
         </div>
 
         {/* KL-103 — pills dos 6 setores mais populosos + "+43 setores". Chips clicáveis (SEO +
@@ -134,9 +135,6 @@ const softwareApplication = {
         </div>
       </div>
     </main>
-
-    {/* KL-153 P2 — separação dos dois produtos (empresa × dev), abaixo do hero (scroll-down). */}
-    <ProductSplit />
 
     {/* KL-81 fix — footer mínimo (só links + copyright), leve, para o hero centralizar. */}
     <footer class="border-t border-slate-800 bg-slate-950 px-5 py-6">

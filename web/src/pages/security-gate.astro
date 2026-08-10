@@ -15,8 +15,8 @@ const API = process.env.KLARIM_API_URL || 'http://api:8000';
 let plans = [
   { slug: 'free', name: 'Free', price_brl: 0, scans_per_day: 5, max_domains: 1, history_days: 7, checks_count: 4 },
   { slug: 'pro', name: 'Pro', price_brl: 4900, scans_per_day: 50, max_domains: 10, history_days: 90, checks_count: 9 },
-  { slug: 'team', name: 'Team', price_brl: 14900, scans_per_day: 200, max_domains: 50, history_days: 365, checks_count: 18 },
-  { slug: 'enterprise', name: 'Enterprise', price_brl: 0, scans_per_day: -1, max_domains: -1, history_days: -1, checks_count: 18, scan_third_party: true },
+  { slug: 'team', name: 'Team', price_brl: 14900, scans_per_day: 200, max_domains: 50, history_days: 365, checks_count: 19 },
+  { slug: 'enterprise', name: 'Enterprise', price_brl: 0, scans_per_day: -1, max_domains: -1, history_days: -1, checks_count: 19, scan_third_party: true },
 ];
 try {
   const res = await fetch(`${API}/gate/plans`, { signal: AbortSignal.timeout(6000) });
@@ -34,7 +34,7 @@ const priceLabel = (p) =>
 const numOrInf = (n) => (n === -1 ? '∞' : String(n));
 const historyLabel = (d) => (d === -1 ? 'Ilimitado' : `${d} dias`);
 const checksLabel = (p) =>
-  p.slug === 'enterprise' ? 'Todos + terceiros' : p.checks_count >= 18 ? 'Todos (18)' : `${p.checks_count} checks`;
+  p.slug === 'enterprise' ? 'Todos + terceiros' : p.checks_count >= 19 ? `Todos (${p.checks_count})` : `${p.checks_count} checks`;
 // KL-150 (Fix 2) — o CTA de cada plano virou ilha `GatePlanCTA` (ciente de auth): logado vai direto
 // ao portal (Free abre · Pro/Team disparam o upgrade); deslogado passa pelo cadastro developer, que
 // após o signup redireciona ao portal já com ?upgrade=. Href/label ficam em `lib/nav.js` (testável).
@@ -66,22 +66,22 @@ const SOFTWARE_JSONLD = {
   offers: { '@type': 'Offer', price: '0', priceCurrency: 'BRL' },
 };
 
+// KL-150 P2 (item 5) — snippets YAML LIMPOS (curl), sem Python raw. Header X-API-Key (o real da
+// API do Gate). `jq -e '.passed'` reprova o job quando o scan não passa (exit ≠ 0).
 const ghSnippet = `- name: Security Gate
   run: |
-    pip install httpx
-    python -c "
-    import httpx, sys
-    r = httpx.post('https://klarim.net/api/gate/scan',
-        headers={'X-API-Key': '\${{ secrets.KLARIM_API_KEY }}'},
-        json={'url': 'https://meuapp.com.br', 'fail_on': 'critical'}, timeout=120)
-    d = r.json()
-    print('Score:', d['score'], '| passed:', d['passed'])
-    sys.exit(0 if d['passed'] else 1)
-    "`;
+    curl -sf https://klarim.net/api/gate/scan \\
+      -H "X-API-Key: \${{ secrets.KLARIM_API_KEY }}" \\
+      -H "Content-Type: application/json" \\
+      -d '{"url":"https://meuapp.com.br","fail_on":"critical"}' \\
+      | jq -e '.passed'`;
 const glSnippet = `security_gate:
   script:
-    - pip install httpx
-    - python klarim_gate_cli.py scan $SITE_URL --api-key $KLARIM_API_KEY --fail-on critical`;
+    - >
+      curl -sf https://klarim.net/api/gate/scan
+      -H "X-API-Key: $KLARIM_API_KEY"
+      -H "Content-Type: application/json"
+      -d '{"url":"https://meuapp.com.br","fail_on":"critical"}' | jq -e '.passed'`;
 const curlSnippet = `curl -s https://klarim.net/api/gate/scan \\
   -H "X-API-Key: KLM_xxxx" -H "Content-Type: application/json" \\
   -d '{"url":"https://meuapp.com.br","fail_on":"critical"}' | jq .`;
@@ -123,7 +123,7 @@ const curlSnippet = `curl -s https://klarim.net/api/gate/scan \\
     <!-- O que verificamos -->
     <section class="mt-20">
       <h2 class="text-center text-2xl font-bold text-white sm:text-3xl">O que verificamos</h2>
-      <p class="mt-2 text-center text-slate-400">18 categorias · scan 100% passivo (não envia payload de ataque)</p>
+      <p class="mt-2 text-center text-slate-400">19 categorias · scan 100% passivo (não envia payload de ataque)</p>
       <div class="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
         {CATEGORIES.map(([icon, title, desc]) => (
           <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
@@ -140,16 +140,19 @@ const curlSnippet = `curl -s https://klarim.net/api/gate/scan \\
       <h2 class="text-center text-2xl font-bold text-white sm:text-3xl">Como funciona</h2>
       <div class="mt-8 grid grid-cols-1 gap-6 sm:grid-cols-3">
         <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
-          <div class="text-sm font-bold text-brand-400">1. Registre</div>
-          <p class="mt-2 text-slate-300">Crie a conta e verifique o domínio (meta tag, DNS TXT ou arquivo).</p>
+          <div class="text-2xl" aria-hidden="true">✉️</div>
+          <div class="mt-2 text-sm font-bold text-brand-400">1. Crie sua conta</div>
+          <p class="mt-2 text-slate-300">Cadastro gratuito com confirmação por e-mail. Sua API key é gerada automaticamente.</p>
         </div>
         <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
-          <div class="text-sm font-bold text-brand-400">2. Configure</div>
-          <p class="mt-2 text-slate-300">Guarde a <code class="rounded bg-slate-800 px-1 text-slate-100">KLARIM_API_KEY</code> como secret no CI/CD.</p>
+          <div class="text-2xl" aria-hidden="true">⌨️</div>
+          <div class="mt-2 text-sm font-bold text-brand-400">2. Digite a URL</div>
+          <p class="mt-2 text-slate-300">Cole a URL do seu projeto e escaneie na hora. 86 verificações de segurança em 30 segundos, sem verificar domínio.</p>
         </div>
         <div class="rounded-2xl border border-slate-800 bg-slate-900/60 p-6">
-          <div class="text-sm font-bold text-brand-400">3. Rode</div>
-          <p class="mt-2 text-slate-300">A cada deploy, 1 chamada roda os checks no servidor e reprova o job se algo grave ficou exposto.</p>
+          <div class="text-2xl" aria-hidden="true">🔁</div>
+          <div class="mt-2 text-sm font-bold text-brand-400">3. Integre no CI/CD</div>
+          <p class="mt-2 text-slate-300">Copie o snippet YAML e adicione ao seu pipeline. GitHub Actions, GitLab CI, Bitbucket — uma linha.</p>
         </div>
       </div>
       <p class="mt-6 text-center">

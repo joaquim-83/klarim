@@ -2259,6 +2259,25 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   usa `load_config("security-gate.yml")` (a MESMA config do CLI, com `/api/scan/`) → admin e CLI batem em
   **100/100**. Relatório: `claude/reports/KL-160_report.md` (+ `KL-160_fix_admin_scan_config.md`);
   `docs/SECURITY.md` §13 + `docs/DEPLOY.md` §8.
+- **KL-150 P2** — 6 pendências (site público + Gate) ✅ **PRONTO PARA REVISÃO — NÃO deployado** (validado
+  no dev). **(1 diagnóstico+fix) Verificação de domínio do Gate:** o backend estava CORRETO (`gate_projects.
+  verified` é setado por `POST /gate/projects/{id}/verify/check`; a lista o retorna; o front lê `p.verified`)
+  — **faltava a UI**: o portal não tinha botão de verificar. ⚠️ **Gate-verify ≠ site/owner-verify do KL-99**
+  (sistemas SEPARADOS, não propagam). Fix: `GatePortal.jsx` ganhou "Verificar →" + `VerifyProjectModal`
+  (DNS TXT/meta/arquivo → start mostra o desafio → check), reusando os endpoints do KL-99. **(2)** nav do
+  dashboard dev (o dev ficava preso): `DashboardNav.jsx` (menu Dashboard·Security Gate·Minha conta·Sair; +
+  "Meus sites" p/ `both`) no topo do portal, links puros em `nav.js::gateDashboardNav`. **(3)** removida a
+  seção "Dois produtos" (`ProductSplit`) da home + arquivo deletado (a separação já está no header). **(4)**
+  `/melhores` "São 300 no total" era `len(rows)` truncado em 300 → `/public/best` agora devolve `total` =
+  contagem REAL (`store.count_public_score_100_sites`, try separado p/ não zerar a vitrine) + `shown` (em
+  prod: 719 listando ≤300); fallbacks estáticos da home atualizados (os contadores já eram live via
+  `landing-stats.js`/KL-103). **(5)** landing "Como funciona" reescrita (Crie conta/Digite URL/Integre
+  CI-CD; **sem** verificação de domínio), "18 categorias"→"19" (engine tem 19 checks), rótulo `Todos (18)`→
+  dinâmico, snippets **YAML curl limpos** (X-API-Key, sem Python raw). **(6 diagnóstico — sem bug)**
+  assinatura: `GatePortal` já lê `?upgrade=` e auto-dispara `POST /account/gate/upgrade`; em dev retorna
+  `fallback` (AbacatePay OFF = correto/KL-156), em prod abre o modal PIX; o CTA logado resolve p/
+  `/dashboard/gate?upgrade=pro` (o "/criar-conta" do relato não reproduz). **+2 pytest + 2 node → 2313
+  pytest · 220 test:unit · build OK · zero erro no console**. Relatório: `claude/reports/KL-150_P2_report.md`.
 
 Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
 relatórios em `claude/reports/`.
