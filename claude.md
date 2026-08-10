@@ -2292,8 +2292,7 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   `stats.score_100_count` (MATCH). **+2 pytest → 2315 · 220 node · build OK**. Relatório:
   `claude/reports/KL-150_P2_fixes_report.md`.
 
-- **Fix painel (scan HTML raw + analytics "bots")** ✅ **PRONTO PARA REVISÃO — NÃO deployado** (validado
-  no dev). **P1 (diagnóstico+fix):** o HTML cru na "Segurança da plataforma" NÃO era evidence gravado (a
+- **Fix painel (scan HTML raw + analytics "bots")** ✅ **DEPLOYADO 10/08 (CI run #302 verde; prod: visitors_br 422 pós-filtro de UA)**. Validado no dev. **P1 (diagnóstico+fix):** o HTML cru na "Segurança da plataforma" NÃO era evidence gravado (a
   `platform_security_scans` está limpa) — era TRANSITÓRIO: uma chamada de API do painel que pega um
   **502/504** fazia o `web/src/lib/admin/adminApi.js::req()` jogar o **body HTML inteiro** do erro na
   mensagem (`Erro ${status}. ${resp.text()}`), renderizado como texto. Fix: no `!resp.ok` o `req()` só

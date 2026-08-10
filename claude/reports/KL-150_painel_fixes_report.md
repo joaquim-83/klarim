@@ -1,7 +1,7 @@
 # Fix painel admin — scan com HTML raw + analytics "inflado por bots"
 
-> **Status: PRONTO PARA REVISÃO VISUAL** — implementado e validado no `docker-compose.dev.yml`.
-> **NENHUM push/deploy foi feito.** Aguarda a validação do Cidinei.
+> **Status: DEPLOYADO EM PRODUÇÃO ✅** (10/08/2026, CI run #302 verde). Pós-deploy: site 200, `visitors_br=422`
+> (pós-filtro de UA, era 469), `bots_filtered≈1,58M` (rotulado). P1 validado no dev (504 → mensagem limpa).
 
 ## Problema 1 — HTML cru na "Segurança da plataforma" (DIAGNÓSTICO + FIX)
 
