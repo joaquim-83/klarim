@@ -16,6 +16,12 @@ import io
 import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
+
+# KL-150 fix — o painel é operado do Brasil; "hoje" é o dia-calendário de Brasília (BRT, UTC-3), não
+# o dia UTC. Antes o "hoje" usava a meia-noite UTC → incluía ~3h da noite anterior (BRT) → uma conta
+# criada às 23:28 BRT (02:28 UTC do dia seguinte) contava como "hoje", inflando as métricas do dia.
+_BRT = ZoneInfo("America/Sao_Paulo")
 
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -67,7 +73,9 @@ def resolve_period(period: str, start: Optional[str], end: Optional[str],
     elif period in _FIXED_DAYS:
         days = _FIXED_DAYS[period]
         if period == "today":
-            s = now.replace(hour=0, minute=0, second=0, microsecond=0)
+            # KL-150 fix — "hoje" = dia-calendário de BRASÍLIA (não UTC). Meia-noite BRT → instante UTC.
+            s_brt = now.astimezone(_BRT).replace(hour=0, minute=0, second=0, microsecond=0)
+            s = s_brt.astimezone(timezone.utc)
             e = s + timedelta(days=1)
         else:
             e = now

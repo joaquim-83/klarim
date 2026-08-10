@@ -8546,10 +8546,13 @@ class TargetStore:
                 f"AND (is_bot = true OR (user_agent IS NOT NULL AND user_agent ~* '{_BOT_UA_RE}'))")
             # KL-95: "Scans" e "Contas criadas" contam AÇÕES REAIS (tabelas de negócio), não
             # requests à API no access_log (que incluíam MCP/bots/testes/rate-limits).
-            # Scans MANUAIS = tabela `scans` menos o worker automático (`source='discovery'`).
+            # KL-150 fix — Scans MANUAIS = tabela `scans` menos os DOIS workers automáticos:
+            # `discovery` (novos alvos) E `rescan` (re-scan 24h). Antes só excluía `discovery` → o
+            # KPI "Scans" era dominado pelas ~100 re-scans/dia do worker (o fundador via 98, não 2).
+            # Manuais = `admin` (painel) + `public` (scanner público). NULL-safe (COALESCE).
             scans = scalar(
                 "SELECT COUNT(*) FROM scans WHERE scanned_at >= %s AND scanned_at < %s "
-                "AND source IS DISTINCT FROM 'discovery'")
+                "AND COALESCE(source, '') NOT IN ('discovery', 'rescan')")
             # Contas criadas = tabela `users` (contas REAIS), não tentativas de POST /signup.
             accounts = scalar(
                 "SELECT COUNT(*) FROM users WHERE created_at >= %s AND created_at < %s")
@@ -8750,7 +8753,9 @@ class TargetStore:
             vis = {str(r[0]): int(r[1] or 0) for r in cur.fetchall()}
             cur.execute(
                 "SELECT scanned_at::date d, COUNT(*) FROM scans "
-                "WHERE scanned_at >= %s AND scanned_at < %s AND source IS DISTINCT FROM 'discovery' "
+                # KL-150 fix — manuais = exclui os workers `discovery` E `rescan` (era só discovery).
+                "WHERE scanned_at >= %s AND scanned_at < %s "
+                "  AND COALESCE(source, '') NOT IN ('discovery', 'rescan') "
                 "GROUP BY d", p)
             sc = {str(r[0]): int(r[1]) for r in cur.fetchall()}
             cur.execute(

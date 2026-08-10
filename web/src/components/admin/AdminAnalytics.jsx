@@ -124,10 +124,31 @@ function OverviewTab({ period, includeBots, navigate, funnelSource }) {
 
   return (
     <div className="space-y-6">
+      {/* KL-150 fix — período + fuso EXPLÍCITOS (o "hoje" é o dia-calendário de Brasília, não UTC). */}
+      <PeriodBanner period={period} meta={server.data?.period} />
       <KpiGrid server={server} tracker={tracker} />
       <TrendBlock server={server} />
       <FunnelBlock server={server} emailFunnel={emailFunnel} funnelSource={funnelSource} navigate={navigate} />
     </div>
+  )
+}
+
+// KL-150 fix — deixa claro QUE período está sendo mostrado (o fundador via "hoje" achando ser o dia
+// dele; agora o "hoje" já é o dia de Brasília e o intervalo aparece aqui). `meta` = {start,end,days}.
+function fmtBrDate(iso) {
+  if (!iso) return ''
+  const [y, m, d] = iso.split('-')
+  return d && m && y ? `${d}/${m}/${y}` : iso
+}
+function PeriodBanner({ period, meta }) {
+  if (!meta) return null
+  const label = period === 'today'
+    ? `Hoje · ${fmtBrDate(meta.end)}`
+    : `Últimos ${meta.days} dias · ${fmtBrDate(meta.start)} a ${fmtBrDate(meta.end)}`
+  return (
+    <p className="text-xs text-klarim-muted">
+      📅 {label} · <span className="text-klarim-text">horário de Brasília</span>
+    </p>
   )
 }
 
@@ -141,11 +162,17 @@ function KpiGrid({ server, tracker }) {
   const sState = { loading: server.loading, error: server.error }
   const tState = { loading: tracker.loading, error: tracker.error }
   const alertClick = tm?.alert_click_rate
+  // KL-150 fix — labels/tooltips claros do QUE cada KPI conta (o fundador estranhou os números):
+  // "Scans manuais" (exclui os workers discovery+rescan), "Bots filtrados" = REQUISIÇÕES (não IPs).
   const cards = [
-    { label: 'Visitantes BR', value: sm?.visitors_br, spark: sparkFromDaily(daily, 'visitors_br'), source: 'server', state: sState },
-    { label: 'Scans', value: sm?.scans, spark: sparkFromDaily(daily, 'scans'), source: 'server', state: sState },
-    { label: 'Contas criadas', value: sm?.accounts, spark: sparkFromDaily(daily, 'accounts'), source: 'server', state: sState },
-    { label: 'Bots filtrados', value: sm?.bots_filtered, source: 'server', state: sState },
+    { label: 'Visitantes BR', value: sm?.visitors_br, spark: sparkFromDaily(daily, 'visitors_br'), source: 'server', state: sState,
+      hint: 'IPs únicos do Brasil (exclui bots por classificação e por user-agent).' },
+    { label: 'Scans manuais', value: sm?.scans, spark: sparkFromDaily(daily, 'scans'), source: 'server', state: sState,
+      hint: 'Scans iniciados por pessoas (painel + scanner público). NÃO inclui os workers automáticos discovery/re-scan.' },
+    { label: 'Contas criadas', value: sm?.accounts, spark: sparkFromDaily(daily, 'accounts'), source: 'server', state: sState,
+      hint: 'Contas na tabela users criadas no período (dia de Brasília).' },
+    { label: 'Bots filtrados', value: sm?.bots_filtered, source: 'server', state: sState,
+      hint: 'REQUISIÇÕES de bot bloqueadas (crawlers/scanners) no período — não são visitantes nem IPs únicos.' },
     { label: 'Conversão', value: sm?.server_funnel?.conversion_rates?.overall, suffix: '%', source: 'server', state: sState },
     { label: 'Clique em alertas', value: alertClick?.value, suffix: '%', changePct: alertClick?.change_pct, spark: alertClick?.sparkline || [], source: 'tracker', state: tState },
   ]
@@ -156,12 +183,14 @@ function KpiGrid({ server, tracker }) {
   )
 }
 
-function KpiCard({ label, value, suffix, spark, changePct, source, state }) {
+function KpiCard({ label, value, suffix, spark, changePct, source, state, hint }) {
   const data = spark ? spark.map((v, i) => ({ i, v: v ?? 0 })) : []
   return (
     <div className="rounded-lg border border-klarim-border bg-klarim-surface p-4">
       <div className="flex items-center justify-between gap-2">
-        <p className="text-xs text-klarim-muted">{label}</p>
+        <p className="text-xs text-klarim-muted" title={hint || undefined}>
+          {label}{hint && <span className="ml-1 cursor-help text-klarim-muted/70" aria-label={hint}>ⓘ</span>}
+        </p>
         <DataSourceBadge source={source} />
       </div>
       {state?.loading ? <div className="mt-2 h-8 animate-pulse rounded bg-klarim-border/40" />

@@ -1647,14 +1647,28 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   operational_health.py`) + KL-85/110/127/129/130 atualizados aos novos defaults. **1956 pytest passed.**
   Relatório: `claude/reports/KL-136_saude_operacional.md`.
 
-  **Fontes autoritativas de métrica (KL-95 + KL-136):** **Contas criadas** = `COUNT(*) FROM users` no período
-  (server-side, KL-95 — NÃO o funil do tracker.js, inflado por pre-fetch; server_metrics é autoritativo).
-  **Scans (Analytics/dashboard)** = `COUNT(*) FROM scans WHERE source IS DISTINCT FROM 'discovery'` (MANUAIS,
-  KL-95); **scans (`/system/status`)** = `scan_today_stats` = TODOS os scans do dia (`scanned_at >= hoje`, incl.
-  o worker discovery) — medem coisas diferentes por design (a divergência dashboard×system_status é esperada).
-  **`sent_month`** (`count_proactive_emails_this_month`, cota mensal) = PROATIVO (alert_log + rescan_log),
-  mês-**calendário UTC**; **`email_metrics.sent_week`** = `email_log`, TODOS os tipos, 7 dias móveis — no dia 1
-  do mês `sent_month` < `sent_week` é ESPERADO (fontes/janelas diferentes, NÃO bug).
+  **Fontes autoritativas de métrica (KL-95 + KL-136 + KL-150):** **Contas criadas** = `COUNT(*) FROM users` no
+  período (server-side, KL-95 — NÃO o funil do tracker.js, inflado por pre-fetch; server_metrics é autoritativo).
+  **Scans manuais (Analytics/dashboard)** = `COUNT(*) FROM scans WHERE COALESCE(source,'') NOT IN ('discovery',
+  'rescan')` (KL-150 — antes o KL-95 só excluía `discovery`, e o worker de **re-scan** ~116/dia dominava o KPI:
+  o fundador via 98-119, real 2-3; manuais = `admin` painel + `public` scanner); **scans (`/system/status`)** =
+  `scan_today_stats` = TODOS os scans do dia (`scanned_at >= hoje`, incl. discovery+rescan) — medem coisas
+  diferentes por design (a divergência dashboard×system_status é esperada). **`sent_month`**
+  (`count_proactive_emails_this_month`, cota mensal) = PROATIVO (alert_log + rescan_log), mês-**calendário UTC**;
+  **`email_metrics.sent_week`** = `email_log`, TODOS os tipos, 7 dias móveis — no dia 1 do mês `sent_month` <
+  `sent_week` é ESPERADO (fontes/janelas diferentes, NÃO bug).
+  **Analytics "Visão geral" — KL-150 (definição por KPI, período default `7d`, fuso de BRASÍLIA):** o painel é
+  operado do Brasil → **"hoje" = dia-calendário de Brasília** (BRT, UTC-3, sem horário de verão; `resolve_period
+  ('today')` calcula a meia-noite BRT e converte p/ o instante UTC dos bounds). Antes usava meia-noite **UTC** →
+  incluía ~3h da noite anterior brasileira (conta às 23:28 BRT contava como "hoje", inflava o dia: 2 vs 1 real).
+  `7d/30d/90d` = janelas móveis a partir de `now`; `custom` ≤ 90d. O response traz `period` (via `_period_meta`)
+  e o front mostra um **banner** "📅 Hoje · DD/MM/AAAA · horário de Brasília". KPIs: **Visitantes BR** =
+  `COUNT(DISTINCT ip_address)` do Brasil, `is_bot=false` **E** sem user-agent de bot (`_BOT_UA_RE`), do
+  `access_log`; **Scans manuais** = tabela `scans` menos discovery+rescan; **Contas criadas** = tabela `users`;
+  **Bots filtrados** = `COUNT(*)` de **REQUISIÇÕES** (não IPs/visitantes) com `is_bot=true` OU UA de bot — meio
+  milhão/dia é plausível (scanner público é alvo de sondagem) e está corretamente separado dos visitantes; cada
+  KPI tem **tooltip (ⓘ)** explicando o que conta e a fonte. Números validados na VM (`SHOW timezone`=UTC → bound
+  tz-aware vs coluna naive é correto).
 - **KL-137** — Simplificação RADICAL do pipeline de e-mail (reverte a complexidade acumulada nos
   KL-108..KL-136) ✅. O pipeline consumiu 10 cards e piorou (bounce oscilando, volume 4-400/dia); os
   e-mails sem link geravam ~7 visitas/semana. **(P1) Link no e-mail** (mantendo **text/plain**, NÃO

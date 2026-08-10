@@ -16,16 +16,18 @@ from discovery.store import TargetStore
 
 def test_server_metrics_scans_from_scans_table():
     src = inspect.getsource(TargetStore.al_server_metrics)
-    # "Contas criadas" = tabela users; "Scans" = tabela scans (menos o worker discovery).
+    # "Contas criadas" = tabela users; "Scans MANUAIS" = tabela scans menos os workers
+    # automáticos discovery E rescan (KL-150 fix — antes só excluía discovery).
     assert "FROM users WHERE created_at" in src
-    assert "FROM scans WHERE scanned_at" in src and "source IS DISTINCT FROM 'discovery'" in src
+    assert "FROM scans WHERE scanned_at" in src
+    assert "NOT IN ('discovery', 'rescan')" in src
     # não conta mais accounts/scans pelo endpoint do access_log
     assert "http_method = 'POST'" not in src  # a antiga contagem de POST /signup saiu
 
 
 def test_daily_series_uses_authoritative_sources():
     src = inspect.getsource(TargetStore.al_daily_series)
-    assert "FROM scans" in src and "source IS DISTINCT FROM 'discovery'" in src
+    assert "FROM scans" in src and "NOT IN ('discovery', 'rescan')" in src
     assert "FROM users" in src
 
 

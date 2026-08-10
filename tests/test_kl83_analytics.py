@@ -27,8 +27,10 @@ def test_period_fixed():
 
 
 def test_period_today_bounds():
-    pr = aa.resolve_period("today", None, None, now=NOW)
-    assert pr["start"].hour == 0 and pr["start"].date() == NOW.date()
+    # KL-150 — "hoje" = dia-calendário de Brasília (BRT, UTC-3): meia-noite BRT = 03:00 UTC.
+    pr = aa.resolve_period("today", None, None, now=NOW)   # NOW = 12:00 UTC = 09:00 BRT em 19/07
+    assert pr["start"].hour == 3 and pr["start"].date() == NOW.date()
+    assert (pr["end"] - pr["start"]).days == 1
 
 
 def test_period_custom_valid():
