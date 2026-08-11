@@ -140,12 +140,12 @@ class FakeStore:
         return any(u.get("cpf") == cpf and u["id"] != exclude_account_id for u in self.users.values())
 
     async def update_user_kyc(self, account_id, cpf, address, phone, phone_verified,
-                              kyc_completed, kyc_completed_at=None):
+                              kyc_completed, kyc_completed_at=None, address_data=None):
         u = self.users.get(int(account_id))
         if not u:
             return False
-        u.update(cpf=cpf, address=address, phone=phone, phone_verified=phone_verified,
-                 kyc_completed=kyc_completed)
+        u.update(cpf=cpf, address=address, address_data=address_data, phone=phone,
+                 phone_verified=phone_verified, kyc_completed=kyc_completed)
         if kyc_completed:
             u["kyc_completed_at"] = u.get("kyc_completed_at") or kyc_completed_at
         else:

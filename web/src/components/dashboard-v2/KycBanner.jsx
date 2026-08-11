@@ -1,5 +1,7 @@
 import { useState } from 'react'
 import { maskCPF, isValidCPF, canSubmitKyc } from '../../lib/gate/ux.js'
+import { emptyAddress } from '../../lib/gate/address.js'
+import AddressFields from './AddressFields.jsx'
 
 // KL-158 — banner de KYC CLICÁVEL (antes era texto puro, sem ação). O usuário sabia que precisava
 // completar o cadastro mas não chegava ao formulário. Agora: botão "Completar cadastro →" → modal
@@ -20,7 +22,7 @@ async function postKyc(body) {
 
 function KycModal({ onClose, onDone }) {
   const [cpf, setCpf] = useState('')
-  const [address, setAddress] = useState('')
+  const [address, setAddress] = useState(emptyAddress())   // KL-163 P2 — endereço estruturado
   const [phone, setPhone] = useState('')
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState('')
@@ -28,13 +30,13 @@ function KycModal({ onClose, onDone }) {
   async function submit() {
     setErr(''); setBusy(true)
     try {
-      const r = await postKyc({ cpf, address, phone })
+      const r = await postKyc({ cpf, address, phone })   // `address` = objeto estruturado
       if (r.kyc_completed) { onDone?.() } else {
-        setErr('Preencha CPF, endereço (≥10 caracteres) e telefone para liberar os detalhes.')
+        setErr('Preencha CPF, endereço completo e telefone para liberar os detalhes.')
       }
     } catch (e) {
       setErr(e.status === 409 ? 'Este CPF já está vinculado a outra conta.'
-        : e.status === 422 ? 'CPF inválido. Verifique os dígitos e tente novamente.'
+        : e.status === 422 ? (e.message || 'Dados inválidos. Verifique CPF, CEP e UF.')
         : e.status === 403 ? 'Confirme seu e-mail antes de completar o cadastro.'
         : (e.message || 'Não foi possível salvar. Tente novamente.'))
     } finally { setBusy(false) }
@@ -42,7 +44,7 @@ function KycModal({ onClose, onDone }) {
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal="true" aria-label="Completar cadastro">
-      <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
+      <div className="max-h-[90vh] w-full max-w-md overflow-y-auto rounded-2xl border border-slate-700 bg-slate-900 p-6 shadow-2xl">
         <h3 className="text-lg font-bold text-white">Confirme sua identidade</h3>
         <p className="mt-1 text-sm text-slate-300">
           Para proteger domínios contra uso indevido, os detalhes das verificações exigem confirmação de
@@ -56,17 +58,15 @@ function KycModal({ onClose, onDone }) {
               className="h-12 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-base text-slate-100 focus:border-brand-500 focus:outline-none" />
             {cpf && !isValidCPF(cpf) && <span className="mt-1 block text-xs text-red-400">CPF incompleto ou inválido.</span>}
           </label>
-          <label className="block">
-            <span className="mb-1 block text-sm font-medium text-slate-200">Endereço completo</span>
-            <textarea value={address} onChange={(e) => setAddress(e.target.value)} rows={2}
-              placeholder="Rua, número, bairro, cidade/UF, CEP"
-              className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-base text-slate-100 focus:border-brand-500 focus:outline-none" />
-          </label>
+          <AddressFields value={address} onChange={setAddress} />
           <label className="block">
             <span className="mb-1 block text-sm font-medium text-slate-200">Telefone</span>
             <input inputMode="tel" value={phone} onChange={(e) => setPhone(e.target.value)}
               placeholder="+55 (00) 00000-0000"
               className="h-12 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-base text-slate-100 focus:border-brand-500 focus:outline-none" />
+            <span className="mt-1 block text-xs text-slate-400">
+              Seu telefone será verificado por SMS em breve. Por enquanto, os dados são validados pelo CPF e e-mail.
+            </span>
           </label>
         </div>
         {err && <p className="mt-2 text-sm text-red-400">{err}</p>}

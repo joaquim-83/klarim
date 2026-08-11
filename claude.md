@@ -2060,6 +2060,50 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   18→19 em `test_kl141_gate_engine`/`test_kl151_gate_product`/`test_kl151_p3_portal_admin`/`test_kl151_p2_scan_cli`.
   **2238 pytest passed.** Docs: `docs/ARCHITECTURE.md` §11 (diagrama de dependência Gate→scanner). Relatório:
   `claude/reports/KL-154_email_security_gate.md`.
+- **KL-163 (Prompt 1/2)** — PDF de UM run do Security Gate (o dev exporta o resultado do scan) ✅ (validado no
+  `docker-compose.dev.yml`; **SEM deploy** — aguarda revisão visual do dono). **Endpoint** `GET /gate/runs/{id}/
+  report` (`api/gate.py`): auth **API key OU sessão** (`_resolve_gate_account`); busca o run SEM filtro de conta
+  para distinguir **404** (inexistente) de **403** (outra conta); **403 se a conta não tem KYC** ("Complete seu
+  cadastro para gerar relatórios"); devolve `application/pdf` `attachment` (`klarim-gate-{domínio}-{AAAA-MM-DD}.pdf`)
+  + audit `run_report`. **Módulo NOVO `reporter/gate_run_report.py`** (padrão testável do repo, separado do
+  `gate_report.py` de FORNECEDORES): `build_gate_run_context` PURO (dict do run → contexto, sem I/O/relógio — data
+  e CPF injetados) · `build_gate_run_report_html` PURO (Jinja bare + `html.escape` no builder) · `generate_gate_run_
+  report_pdf` async (WeasyPrint em thread). Template PT-BR/A4: cabeçalho (domínio, data **Brasília**, score+cor do
+  semáforo, resultado Passou/Reprovou, plano, **CPF do dev SEMPRE mascarado**) + resumo (contagens + falhas
+  críticas/altas destacadas) + tabela por categoria (reusa `_CATEGORY_LABELS` do formatter → sem drift; cada check
+  com ícone/nome humanizado/severidade/status e, no FAIL, a recomendação = `detail`) + rodapé paginado
+  (`@bottom-center counter(page)/counter(pages)`). Caso **score 100** → caixa verde "Nenhum problema encontrado.
+  Todas as N verificações passaram." **`mask_cpf`** (`api/validators.py`): `529.982.247-25`→`***.***.247-25` (só o
+  3º grupo + DV; malformado→`***.***.***-**`). Frontend: `reportButton(kyc)` PURO (`web/src/lib/gate/ux.js`) +
+  componente `ReportButton` no `GatePortal.jsx` — **sem KYC → mensagem de bloqueio (não botão)**; com KYC → download
+  via blob. Botão no **RunDetail** (histórico) e no **ScanResultCard** (após KYC). O `/gate/runs/{id}/pdf`
+  (vendor-style, KL-152) fica **intacto** (compat). **A engine de scan NÃO foi tocada** (consome só os `results`
+  persistidos). **+16 backend** (`test_kl163_gate_report.py`: endpoint 200/401/403-outra-conta/403-sem-KYC/404 +
+  builder/HTML + `mask_cpf` + render real `%PDF-`) **+4 node** (`reportButton`). Docs: `docs/API.md`. Relatório:
+  `claude/reports/KL-163_P1_report.md`.
+- **KL-163 (Prompt 2/2)** — endereço ESTRUTURADO no KYC (CEP + ViaCEP) + polish ✅ (validado no
+  `docker-compose.dev.yml`; **SEM deploy** — aguarda revisão visual do dono). **Schema:** `users.address_data
+  JSONB` (`{cep,street,number,complement?,neighborhood,city,state}`); a coluna `address` TEXT **não é
+  removida** (legado — contas antigas com texto livre seguem válidas; leitura prefere `address_data`).
+  `update_user_kyc` grava um dos dois (estruturado → JSONB, limpa o TEXT; legado → TEXT, limpa o JSONB);
+  `get_account_gate_fields` retorna `address_data`. **`POST /account/kyc`** (`api/gate.py`): `KYCBody.address`
+  aceita **objeto OU string** (`Union[str,dict]`); objeto → `_validate_and_normalize_address` (CEP normalizado
+  `00000-000`, UF ∈ 27 UFs, campos obrigatórios cep/street/number/neighborhood/city/state, `complement` opcional
+  → **422** se inválido); string → legado (≥10 chars). `_kyc_complete` aceita os dois via `_address_ok` (dict
+  completo OU string ≥10). **PDF** (`reporter/gate_run_report.py`): cabeçalho ganha **cidade/UF** abaixo do CPF
+  (`build_gate_run_context(city_state=…)`; o endpoint deriva de `address_data` via `_city_state_from_address`) —
+  **NUNCA** rua/número (só contexto). **Frontend:** `web/src/lib/gate/address.js` (PURO: `maskCep`/`isValidCep`/
+  `parseViaCepResponse`/`isAddressComplete`/`UF_LIST` 27/`emptyAddress`) + `dashboard-v2/AddressFields.jsx`
+  (campos estruturados + **ViaCEP** auto-preenche rua/bairro/cidade/UF ao digitar o CEP, **debounce 500ms**,
+  loading, "CEP não encontrado" se erro, fallback manual se o ViaCEP cair — nunca bloqueia; validação de
+  campo obrigatório na borda ao `blur`) usado no **`KycBanner`** (modal do resultado) E no **`GateOnboarding`**
+  (wizard step 4). `canSubmitKyc` (ux.js) aceita endereço objeto. Telefone com nota **"verificação por SMS em
+  breve"** no modal + **"(não verificado)"** no admin (`GatePlansPage` + `list_gate_dev_accounts` expõe phone).
+  **CSP:** `frontend/nginx/security_headers.conf` libera `https://viacep.com.br` em `connect-src` (dev.conf não
+  tem CSP → dev funciona; `nginx -t` validado). **A engine de scan e o rate limiting NÃO foram tocados.** **+12
+  backend** (`test_kl163_p2_address.py`: objeto→JSONB, string→TEXT, CEP/UF/campo inválido→422, `_kyc_complete`
+  dict/legado/vazio, `_validate_and_normalize_address`, `_city_state_from_address`, PDF cidade/UF) **+13 node**
+  (`address.test.js` + canSubmitKyc objeto). Docs: `docs/API.md`. Relatório: `claude/reports/KL-163_P2_report.md`.
 
 - **KL-153 (Prompt 1/2)** — backend da UX do Security Gate: KYC progressivo + rate limiting 3 camadas +
   scan avulso + resultado filtrado por KYC + upgrade + status ✅. **Adaptações ao codebase real** (o card

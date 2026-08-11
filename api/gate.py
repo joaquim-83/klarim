@@ -17,12 +17,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import json
 import logging
 import os
+import re
 import secrets
 import time
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -48,12 +50,68 @@ _SUPPORT_EMAIL = "suporte@klarim.net"   # KL-156 — fallback quando o pagamento
 _GATE_UPGRADE_ATTEMPTS: dict = {}
 
 
+# KL-163 P2 — endereço ESTRUTURADO. As 27 UFs (26 estados + DF) e o formato de CEP.
+_UF_SET = frozenset(
+    "AC AL AP AM BA CE DF ES GO MA MT MS MG PA PB PR PE PI RJ RN RS RO RR SC SP SE TO".split())
+_ADDRESS_REQUIRED = ("cep", "street", "number", "neighborhood", "city", "state")
+
+
+def _address_ok(address) -> bool:
+    """True se o endereço está completo o bastante para o KYC. KL-163 P2: um DICT (estruturado) exige
+    todos os campos obrigatórios preenchidos; uma STRING (legado, texto livre) exige ≥10 chars."""
+    if isinstance(address, dict):
+        return all(str(address.get(f) or "").strip() for f in _ADDRESS_REQUIRED)
+    return bool(address and len(str(address).strip()) >= 10)
+
+
+def _validate_and_normalize_address(addr: dict) -> dict:
+    """Valida o endereço estruturado e normaliza (CEP `00000-000`, UF maiúscula). Levanta 422 em
+    campo obrigatório ausente / CEP inválido / UF inválida. `complement` é opcional."""
+    out: Dict[str, str] = {}
+    for f in _ADDRESS_REQUIRED:
+        v = str(addr.get(f) or "").strip()
+        if not v:
+            raise HTTPException(status_code=422,
+                                detail=f"Campo de endereço obrigatório ausente: {f}.")
+        out[f] = v[:200]
+    cep_digits = re.sub(r"\D", "", out["cep"])
+    if len(cep_digits) != 8:
+        raise HTTPException(status_code=422, detail="CEP inválido. Use o formato 00000-000.")
+    out["cep"] = f"{cep_digits[:5]}-{cep_digits[5:]}"
+    uf = out["state"].upper()
+    if uf not in _UF_SET:
+        raise HTTPException(status_code=422, detail="UF inválida.")
+    out["state"] = uf
+    comp = str(addr.get("complement") or "").strip()
+    if comp:
+        out["complement"] = comp[:200]
+    return out
+
+
+def _city_state_from_address(address_data) -> Optional[str]:
+    """`address_data` (JSONB → dict, ou string JSON) → `'Cidade/UF'` para o cabeçalho do PDF (KL-163
+    P2). NUNCA devolve rua/número (o PDF só mostra cidade/UF como contexto). None se ausente."""
+    if isinstance(address_data, str):
+        try:
+            address_data = json.loads(address_data)
+        except (ValueError, TypeError):
+            return None
+    if not isinstance(address_data, dict):
+        return None
+    city = str(address_data.get("city") or "").strip()
+    state = str(address_data.get("state") or "").strip()
+    if city and state:
+        return f"{city}/{state}"
+    return city or None
+
+
 def _kyc_complete(cpf, address, phone, email_confirmed) -> bool:
-    """KL-156 — `kyc_completed` = CPF válido + endereço (≥10 chars) + telefone + **e-mail
-    CONFIRMADO**. O `email_confirmed` é a ÚNICA verificação de identidade REAL (código no signup);
-    `phone_verified` é placeholder p/ SMS futuro e NÃO gateia mais. Defesa-em-profundidade: o
-    endpoint já devolve 403 sem e-mail confirmado, mas a condição também o exige."""
-    return bool(cpf and address and len(str(address)) >= 10 and phone and email_confirmed)
+    """KL-156 — `kyc_completed` = CPF válido + endereço + telefone + **e-mail CONFIRMADO**. O
+    `email_confirmed` é a ÚNICA verificação de identidade REAL (código no signup); `phone_verified`
+    é placeholder p/ SMS futuro e NÃO gateia mais. Defesa-em-profundidade: o endpoint já devolve 403
+    sem e-mail confirmado, mas a condição também o exige. KL-163 P2: o endereço pode ser um DICT
+    estruturado (`address_data`) ou uma STRING legada (≥10 chars) — ver `_address_ok`."""
+    return bool(cpf and _address_ok(address) and phone and email_confirmed)
 
 # Lista canônica dos checks do Gate (para o enforcement `["all"]`).
 ALL_CHECK_NAMES: List[str] = list(_ENGINE_ORDER)
@@ -623,15 +681,20 @@ async def gate_status(request: Request) -> dict:
 
 class KYCBody(BaseModel):
     cpf: str
-    address: Optional[str] = None
+    # KL-163 P2: `address` aceita um OBJETO estruturado (preferido) OU uma string (legado).
+    address: Optional[Union[str, Dict[str, Any]]] = None
     phone: Optional[str] = None
 
 
 @router.post("/account/kyc")
 async def account_kyc(body: KYCBody, request: Request) -> dict:
-    """KL-153/KL-156 — KYC progressivo. Exige sessão + e-mail confirmado. `kyc_completed` vira TRUE
-    só quando CPF válido + endereço (≥10 chars) + telefone + **e-mail confirmado** (KL-156 — o
-    e-mail é a verificação de identidade REAL; `phone_verified` é placeholder de SMS e não gateia)."""
+    """KL-153/KL-156/KL-163 P2 — KYC progressivo. Exige sessão + e-mail confirmado. `kyc_completed`
+    vira TRUE só com CPF válido + endereço + telefone + **e-mail confirmado** (KL-156 — o e-mail é a
+    verificação de identidade REAL; `phone_verified` é placeholder de SMS e não gateia).
+
+    KL-163 P2: `address` pode ser um OBJETO estruturado `{cep, street, number, complement,
+    neighborhood, city, state}` (gravado em `address_data` JSONB, com validação de CEP/UF) OU uma
+    STRING legada de texto livre (gravada em `address` TEXT — backward compat)."""
     user = await auth_users.require_user(request)
     store = get_target_store()
     fields = await store.get_account_gate_fields(user["id"]) or {}
@@ -646,14 +709,23 @@ async def account_kyc(body: KYCBody, request: Request) -> dict:
     if await store.is_cpf_taken(cpf, exclude_account_id=user["id"]):
         raise HTTPException(status_code=409, detail="Este CPF já está vinculado a outra conta.")
 
-    address = (body.address or "").strip()
+    # Endereço: OBJETO → valida+normaliza → address_data; STRING → legado (address TEXT).
+    address_text: Optional[str] = None
+    address_data: Optional[dict] = None
+    if isinstance(body.address, dict):
+        address_data = _validate_and_normalize_address(body.address)   # 422 se inválido
+    elif isinstance(body.address, str):
+        address_text = body.address.strip() or None
+
     phone = (body.phone or "").strip()
     # KL-156: exige e-mail confirmado (defesa-em-profundidade — o endpoint já 403 acima).
-    kyc_completed = _kyc_complete(cpf, address, phone, fields.get("email_confirmed"))
-    phone_verified = bool(phone)
-    await store.update_user_kyc(user["id"], cpf=cpf, address=(address or None),
-                               phone=(phone or None), phone_verified=phone_verified,
-                               kyc_completed=kyc_completed, kyc_completed_at=_now())
+    kyc_completed = _kyc_complete(cpf, address_data or address_text, phone,
+                                  fields.get("email_confirmed"))
+    phone_verified = bool(phone)   # placeholder: SMS futuro. Hoje o e-mail é a verificação real.
+    await store.update_user_kyc(user["id"], cpf=cpf, address=address_text,
+                               address_data=address_data, phone=(phone or None),
+                               phone_verified=phone_verified, kyc_completed=kyc_completed,
+                               kyc_completed_at=_now())
     await log_gate_audit(user["id"], "kyc_completed" if kyc_completed else "kyc_updated", request,
                          detail={"kyc_completed": kyc_completed}, cpf=cpf)
     updated = await store.get_account_gate_fields(user["id"]) or {}
@@ -1445,6 +1517,46 @@ async def gate_run_pdf(run_id: int, request: Request) -> Response:
         cnpj=prof.get("company_cnpj"), generated_at=_now().strftime("%d/%m/%Y %H:%M UTC"))
     pdf = await generate_vendor_report_pdf(context)
     return _pdf_response(pdf, f"klarim-{domain}.pdf")
+
+
+@router.get("/gate/runs/{run_id}/report")
+async def gate_run_report(run_id: int, request: Request) -> Response:
+    """KL-163 — exporta UM run como PDF detalhado (cabeçalho + todas as categorias com cada check +
+    resumo + rodapé paginado). Auth: API key OU sessão (o dev gera pelo dashboard ou via CLI).
+
+    Validação: run inexistente → 404; run de OUTRA conta → 403; conta sem KYC → 403 (o relatório é
+    um benefício da conta verificada). O CPF do desenvolvedor entra SEMPRE mascarado
+    (`mask_cpf`) — o valor completo nunca vai para um documento compartilhável."""
+    from api.validators import mask_cpf
+    from reporter.gate_run_report import (build_gate_run_context, fmt_scan_date,
+                                          generate_gate_run_report_pdf, report_filename)
+    ctx = await _resolve_gate_account(request)
+    account_id = ctx["account_id"]
+    store = get_target_store()
+    # Busca SEM filtro de conta para distinguir 404 (não existe) de 403 (é de outra conta).
+    run = await store.get_gate_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run não encontrado.")
+    if run.get("account_id") != account_id:
+        raise HTTPException(status_code=403, detail="Este run não pertence à sua conta.")
+    acct = await store.get_account_gate_fields(account_id) or {}
+    if not acct.get("kyc_completed"):
+        raise HTTPException(status_code=403,
+                            detail="Complete seu cadastro para gerar relatórios.")
+    plan = await get_effective_gate_plan(account_id) or {}
+    cpf_masked = mask_cpf(acct["cpf"]) if acct.get("cpf") else None
+    # KL-163 P2: só cidade/UF (contexto), NUNCA o endereço completo, e SÓ do endereço estruturado
+    # (o legado em texto livre não é confiável). O CPF entra mascarado.
+    city_state = _city_state_from_address(acct.get("address_data"))
+    context = build_gate_run_context(run, cpf_masked=cpf_masked, plan_name=plan.get("name"),
+                                     generated_at=fmt_scan_date(_now()), city_state=city_state)
+    pdf = await generate_gate_run_report_pdf(context)
+    domain = _extract_domain(run.get("url") or "")
+    await log_gate_audit(account_id, "run_report", request, key_id=ctx.get("key_id"),
+                         domain=domain, detail={"run_id": run_id})
+    filename = report_filename(domain, run.get("created_at"))
+    return Response(content=pdf, media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 # --------------------------------------------------------------------------- #

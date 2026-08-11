@@ -4,7 +4,7 @@ import { planProgress, DEFAULT_URL } from '../../lib/gate/snippets.js'
 import {
   normalizeUrl, categorySummary, kycBannerVisible, usageText, rateLimitMessage,
   formatCountdown, shouldShowWizard, planDetails, canUpgrade, groupChecksByCategory, planName,
-  errDetail,
+  errDetail, reportButton,
 } from '../../lib/gate/ux.js'
 import GateIntegrationTabs from './GateIntegrationTabs.jsx'
 import GateOnboarding from './GateOnboarding.jsx'
@@ -299,6 +299,10 @@ function ScanResultCard({ res, onKycDone }) {
       {kycBannerVisible(res.access_level) && (
         <KycBanner message={res.kyc_message} onCompleted={onKycDone} />
       )}
+      {/* KL-163: com KYC (access_level=complete) o dev exporta o relatório PDF do run. */}
+      {res.run_id && res.access_level === 'complete' && (
+        <ReportButton runId={res.run_id} kycCompleted domain={String(res.url || '').replace(/^https?:\/\//, '').replace(/\/.*$/, '')} />
+      )}
     </div>
   )
 }
@@ -480,8 +484,43 @@ function Projects({ onSelect, refreshKey }) {
   )
 }
 
+// ---- Exportar relatório PDF (KL-163) ---- //
+// Sem KYC → mensagem de bloqueio (não botão). Com KYC → baixa o PDF via blob (o endpoint devolve
+// application/pdf com Content-Disposition attachment). Loading enquanto o PDF é gerado (alguns
+// segundos). 403 → o backend também gateia por KYC (defesa-em-profundidade).
+function ReportButton({ runId, kycCompleted, domain }) {
+  const [busy, setBusy] = useState(false)
+  const [err, setErr] = useState('')
+  const btn = reportButton(kycCompleted)
+  if (!btn.show) {
+    return <p className="mt-3 text-xs text-slate-400">🔒 {btn.message} <a href="/dashboard/gate" className="font-medium text-brand-400 hover:underline">Complete o cadastro</a></p>
+  }
+  async function download() {
+    setBusy(true); setErr('')
+    try {
+      const r = await fetch(`/api/gate/runs/${runId}/report`, { credentials: 'include' })
+      if (!r.ok) {
+        const data = await r.json().catch(() => ({}))
+        throw new Error(errDetail(data, r.status))
+      }
+      const blob = await r.blob()
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url; a.download = `klarim-gate-${(domain || 'site').replace(/[^a-z0-9.-]/gi, '-')}.pdf`
+      document.body.appendChild(a); a.click(); a.remove()
+      setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } catch (e) { setErr(e.message) } finally { setBusy(false) }
+  }
+  return (
+    <div className="mt-3">
+      <button onClick={download} disabled={busy} className={smOutline}>{busy ? 'Gerando PDF…' : btn.label}</button>
+      {err && <p className="mt-1 text-xs text-red-400">{err}</p>}
+    </div>
+  )
+}
+
 // ---- Runs ---- //
-function RunDetail({ runId }) {
+function RunDetail({ runId, kycCompleted }) {
   const [run, setRun] = useState(null); const [err, setErr] = useState('')
   useEffect(() => { api(`/api/gate/runs/${runId}`).then((r) => setRun(r.run)).catch((e) => setErr(e.message)) }, [runId])
   if (err) return <p className="text-sm text-red-400">{err}</p>
@@ -495,11 +534,12 @@ function RunDetail({ runId }) {
       {(run.checks_blocked || []).length > 0 && (
         <div className="mt-3 rounded-md bg-slate-800/60 p-2 text-sm text-slate-300">🔒 {run.checks_blocked.length} checks bloqueados no seu plano:{' '}{run.checks_blocked.slice(0, 5).join(', ')}{run.checks_blocked.length > 5 ? '…' : ''}{' '}<a href="/security-gate#planos" className="font-medium text-brand-400">Fazer upgrade →</a></div>
       )}
+      <ReportButton runId={runId} kycCompleted={kycCompleted} domain={String(run.url || '').replace(/^https?:\/\//, '').replace(/\/.*$/, '')} />
     </div>
   )
 }
 
-function Runs({ project, onBack }) {
+function Runs({ project, onBack, kycCompleted }) {
   const [runs, setRuns] = useState(null); const [err, setErr] = useState(''); const [openRun, setOpenRun] = useState(null)
   useEffect(() => { api(`/api/gate/runs?project_id=${project.id}`).then((r) => setRuns(r.runs)).catch((e) => setErr(e.message)) }, [project.id])
   return (
@@ -517,7 +557,7 @@ function Runs({ project, onBack }) {
                   <td>{r.passed ? '✅ PASS' : '❌ FAIL'}</td>
                   <td><button onClick={() => setOpenRun(openRun === r.id ? null : r.id)} className="text-brand-400">{openRun === r.id ? 'fechar' : 'ver'}</button></td>
                 </tr>
-                {openRun === r.id && <tr><td colSpan={4}><RunDetail runId={r.id} /></td></tr>}
+                {openRun === r.id && <tr><td colSpan={4}><RunDetail runId={r.id} kycCompleted={kycCompleted} /></td></tr>}
               </Fragment>
             ))}
           </tbody>
@@ -623,7 +663,7 @@ export default function GatePortal() {
           </Section>
 
           <ApiKeyCard />
-          {selected ? <Runs project={selected} onBack={() => setSelected(null)} /> : <Projects onSelect={setSelected} refreshKey={refreshKey} />}
+          {selected ? <Runs project={selected} onBack={() => setSelected(null)} kycCompleted={!!status.kyc_completed} /> : <Projects onSelect={setSelected} refreshKey={refreshKey} />}
           <GateVendors />
 
           <Section title="⚙️ Integração no CI/CD" right={<a href="/docs/gate/github-actions" className="text-sm font-medium text-brand-400 hover:underline">Ver documentação →</a>}>

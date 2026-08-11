@@ -6,6 +6,7 @@ import {
   kycBannerVisible, showGateBridge, wizardNext, shouldShowWizard, formatCountdown, rateLimitMessage,
   usageText, upgradeTarget, ctaState, ctaLabel, signupBody, planName, planDetails, canUpgrade,
   canSubmitKyc, errDetail, showGateDashboardSection, isPureDeveloper, gateOnboardingSteps,
+  reportButton, REPORT_KYC_MESSAGE,
 } from './ux.js'
 
 const VALID_CPF = '529.982.247-25'
@@ -149,6 +150,15 @@ test('canSubmitKyc: CPF válido + endereço ≥10 + telefone', () => {
   assert.equal(canSubmitKyc('529.982.247-25', 'Rua Exemplo 123 Centro', ''), false)        // sem telefone
 })
 
+// KL-163 P2 — canSubmitKyc aceita endereço como OBJETO estruturado (isAddressComplete).
+test('canSubmitKyc: endereço como objeto estruturado', () => {
+  const addr = { cep: '80010-000', street: 'Rua XV', number: '123', complement: '',
+    neighborhood: 'Centro', city: 'Curitiba', state: 'PR' }
+  assert.equal(canSubmitKyc('529.982.247-25', addr, '11999'), true)
+  assert.equal(canSubmitKyc('529.982.247-25', { ...addr, number: '' }, '11999'), false)  // incompleto
+  assert.equal(canSubmitKyc('529.982.247-25', { ...addr, cep: '123' }, '11999'), false)  // CEP inválido
+})
+
 // --- KL-159: coerção do detail de erro para STRING (nunca objeto) --- //
 test('errDetail: string, objeto {error} e ausente', () => {
   assert.equal(errDetail({ detail: 'Você já está no plano Pro.' }, 409), 'Você já está no plano Pro.')
@@ -213,4 +223,22 @@ test('gateOnboardingSteps: robusto a status ausente', () => {
   assert.equal(steps.find((s) => s.key === 'account').done, true)
   assert.equal(steps.find((s) => s.key === 'scan').done, false)
   assert.equal(steps.find((s) => s.key === 'cicd').done, false)
+})
+
+// KL-163 — botão "Exportar relatório" (behaviors #10/#11 do card).
+test('reportButton: com KYC → mostra o botão', () => {
+  const b = reportButton(true)
+  assert.equal(b.show, true)
+  assert.equal(b.label, '📄 Exportar relatório')
+  assert.equal(b.message, null)
+})
+
+test('reportButton: sem KYC → mensagem de bloqueio (não botão)', () => {
+  for (const v of [false, undefined, null]) {
+    const b = reportButton(v)
+    assert.equal(b.show, false)
+    assert.equal(b.label, null)
+    assert.equal(b.message, REPORT_KYC_MESSAGE)
+    assert.match(b.message, /cadastro/i)
+  }
 })

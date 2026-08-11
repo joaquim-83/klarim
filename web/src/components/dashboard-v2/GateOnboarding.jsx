@@ -1,9 +1,11 @@
 import { useEffect, useState } from 'react'
 import { card, brandBtn } from './shared.js'
 import {
-  normalizeUrl, maskCPF, isValidCPF, categorySummary, groupChecksByCategory, wizardNext,
+  normalizeUrl, maskCPF, isValidCPF, categorySummary, groupChecksByCategory, wizardNext, canSubmitKyc,
 } from '../../lib/gate/ux.js'
+import { emptyAddress } from '../../lib/gate/address.js'
 import GateIntegrationTabs from './GateIntegrationTabs.jsx'
+import AddressFields from './AddressFields.jsx'
 
 // KL-153 P2 — wizard SCAN-FIRST (6 steps): 1 URL → 2 scanning → 3 resumo → 4 KYC → 5 completo →
 // 6 CI/CD. Consome o scan AVULSO (`POST /api/gate/scan` sem project_id, cookie de sessão) e o KYC
@@ -63,7 +65,7 @@ export default function GateOnboarding({ onDone, onSkip, kycCompleted = false })
   const [busy, setBusy] = useState(false)
   // KYC
   const [cpf, setCpf] = useState('')
-  const [address, setAddress] = useState('')
+  const [address, setAddress] = useState(emptyAddress())   // KL-163 P2 — endereço estruturado
   const [phone, setPhone] = useState('')
   const [fullKey, setFullKey] = useState('')
 
@@ -97,7 +99,7 @@ export default function GateOnboarding({ onDone, onSkip, kycCompleted = false })
       await loadFullRun()   // step 5 com o resultado completo
     } catch (e) {
       setErr(e.status === 409 ? 'Este CPF já está vinculado a outra conta.'
-        : e.status === 422 ? 'CPF inválido. Verifique os dígitos e tente novamente.'
+        : e.status === 422 ? (e.message || 'Dados inválidos. Verifique CPF, CEP e UF.')
         : e.message)
     } finally { setBusy(false) }
   }
@@ -181,22 +183,20 @@ export default function GateOnboarding({ onDone, onSkip, kycCompleted = false })
               className="h-12 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-base text-slate-100 focus:border-brand-500 focus:outline-none" />
             {cpf && !isValidCPF(cpf) && <span className="mt-1 block text-xs text-red-400">CPF incompleto ou inválido.</span>}
           </label>
-          <label className="block">
-            <span className="mb-1 block text-sm font-medium text-slate-200">Endereço completo</span>
-            <textarea value={address} onChange={(e) => setAddress(e.target.value)} rows={2}
-              placeholder="Rua, número, bairro, cidade/UF, CEP"
-              className="w-full rounded-lg border border-slate-700 bg-slate-900 px-3 py-2 text-base text-slate-100 focus:border-brand-500 focus:outline-none" />
-          </label>
+          <AddressFields value={address} onChange={setAddress} />
           <label className="block">
             <span className="mb-1 block text-sm font-medium text-slate-200">Telefone</span>
             <input inputMode="tel" value={phone} onChange={(e) => setPhone(e.target.value)}
               placeholder="+55 (00) 00000-0000"
               className="h-12 w-full rounded-lg border border-slate-700 bg-slate-900 px-3 text-base text-slate-100 focus:border-brand-500 focus:outline-none" />
+            <span className="mt-1 block text-xs text-slate-400">
+              Seu telefone será verificado por SMS em breve. Por enquanto, os dados são validados pelo CPF e e-mail.
+            </span>
           </label>
         </div>
         {err && <p className="mt-2 text-sm text-red-400">{err}</p>}
         <div className="mt-5 flex flex-wrap items-center gap-3">
-          <button type="button" onClick={submitKyc} disabled={busy || !isValidCPF(cpf)} className={brandBtn}>
+          <button type="button" onClick={submitKyc} disabled={busy || !canSubmitKyc(cpf, address, phone)} className={brandBtn}>
             {busy ? 'Confirmando…' : 'Confirmar'}
           </button>
           <button type="button" onClick={skipKyc} className="text-sm text-slate-400 hover:text-slate-200">Pular por agora →</button>

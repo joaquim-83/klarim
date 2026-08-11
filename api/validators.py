@@ -37,3 +37,17 @@ def validate_cpf(cpf: str) -> str:
     if _cpf_check_digit(raw[:10]) != int(raw[10]):
         raise ValueError("CPF inválido (2º dígito verificador).")
     return f"{raw[:3]}.{raw[3:6]}.{raw[6:9]}-{raw[9:]}"
+
+
+def mask_cpf(cpf: str) -> str:
+    """Mascara um CPF para exibição em DOCUMENTOS compartilháveis (KL-163).
+
+    `"529.982.247-25"` → `"***.***.247-25"` — só o 3º grupo e os dígitos verificadores ficam
+    visíveis; os 6 primeiros dígitos são ocultos. O CPF completo NUNCA vai para um PDF/relatório
+    (só para o audit log). Aceita com ou sem formatação. Se não tiver 11 dígitos, mascara tudo
+    (`"***.***.***-**"`) — nunca vaza um valor parcial de um CPF malformado.
+    """
+    raw = re.sub(r"\D", "", cpf or "")
+    if len(raw) != 11:
+        return "***.***.***-**"
+    return f"***.***.{raw[6:9]}-{raw[9:]}"

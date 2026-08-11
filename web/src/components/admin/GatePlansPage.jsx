@@ -122,12 +122,17 @@ function AccountsTable() {
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead><tr className="text-left text-slate-400">
-              <th className="py-1">Email</th><th>Plano</th><th>Scans hoje</th><th>Projetos</th><th>Key</th><th>Atribuir</th>
+              <th className="py-1">Email</th><th>Telefone</th><th>Plano</th><th>Scans hoje</th><th>Projetos</th><th>Key</th><th>Atribuir</th>
             </tr></thead>
             <tbody>
               {accounts.map((a) => (
                 <tr key={a.id} className="border-t border-slate-800 text-slate-200">
                   <td className="py-1.5">{a.email}</td>
+                  <td className="text-xs">
+                    {a.phone
+                      ? <span title="Verificação por SMS será implementada em breve">{a.phone} <span className="text-amber-400">(não verificado)</span></span>
+                      : <span className="text-slate-500">—</span>}
+                  </td>
                   <td><Badge>{a.plan_slug || '—'}</Badge></td>
                   <td>{a.scans_today}</td>
                   <td>{a.project_count}</td>

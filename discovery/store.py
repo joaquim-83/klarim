@@ -1065,7 +1065,11 @@ CREATE INDEX IF NOT EXISTS idx_gate_vendor_scans_vendor
 -- KYC (CPF + endereço + telefone) libera o resultado COMPLETO e é gravado no audit (rastreio por
 -- CPF). `phone` já existe (perfil dev, KL-151). `cpf` guardado FORMATADO (000.000.000-00), único.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS cpf VARCHAR(14);
+-- `address` TEXT: legado (KL-153). KL-163 P2: endereço agora é ESTRUTURADO em `address_data` (JSONB:
+-- cep/street/number/complement/neighborhood/city/state). A coluna TEXT NÃO é removida (backward
+-- compat: contas antigas com texto livre seguem válidas); leitura prefere `address_data` e cai no TEXT.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS address TEXT;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS address_data JSONB;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_verified BOOLEAN DEFAULT FALSE;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS kyc_completed BOOLEAN DEFAULT FALSE;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS kyc_completed_at TIMESTAMPTZ;
@@ -4752,7 +4756,7 @@ class TargetStore:
         def _fn(cur):
             cur.execute(
                 "SELECT u.id, u.email, u.account_type, u.gate_plan_id, u.gate_trial_ends_at, "
-                "  u.company_cnpj, "  # KL-151 P4 — Enterprise
+                "  u.company_cnpj, u.phone, u.phone_verified, "  # KL-151 P4 — Enterprise; KL-163 P2 — telefone
                 "  gp.slug AS plan_slug, gp.name AS plan_name, "
                 "  (SELECT COUNT(*) FROM gate_projects p WHERE p.account_id = u.id) AS project_count, "
                 "  (SELECT COUNT(*) FROM gate_runs r WHERE r.account_id = u.id "
@@ -5007,7 +5011,7 @@ class TargetStore:
             cur.execute(
                 "SELECT id, email, account_type, gate_plan_id, gate_trial_started_at, "
                 "  gate_trial_ends_at, email_confirmed, kyc_completed, kyc_completed_at, "
-                "  suspended, cpf, address, phone, phone_verified "
+                "  suspended, cpf, address, address_data, phone, phone_verified "
                 "FROM users WHERE id = %s", (int(account_id),))
             rows = self._rows_to_dicts(cur)
             return rows[0] if rows else None
@@ -5030,16 +5034,22 @@ class TargetStore:
 
     async def update_user_kyc(self, account_id: int, cpf: Optional[str], address: Optional[str],
                               phone: Optional[str], phone_verified: bool,
-                              kyc_completed: bool, kyc_completed_at=None) -> bool:
+                              kyc_completed: bool, kyc_completed_at=None,
+                              address_data: Optional[Dict[str, Any]] = None) -> bool:
         """Grava os campos de KYC. `kyc_completed_at` só é setado (COALESCE) na PRIMEIRA vez que o
-        KYC fica completo — não é sobrescrito em edições posteriores."""
+        KYC fica completo — não é sobrescrito em edições posteriores.
+
+        KL-163 P2: `address_data` (endereço ESTRUTURADO) vai para o JSONB; `address` (TEXT) segue
+        para o formato legado de texto livre. O endpoint envia UM dos dois. Ao gravar o estruturado,
+        limpa o TEXT legado (evita divergência); ao gravar o legado, limpa o JSONB."""
+        addr_json = json.dumps(address_data) if address_data is not None else None
         def _fn(cur):
             cur.execute(
-                "UPDATE users SET cpf = %s, address = %s, phone = %s, phone_verified = %s, "
-                "  kyc_completed = %s, "
+                "UPDATE users SET cpf = %s, address = %s, address_data = %s, phone = %s, "
+                "  phone_verified = %s, kyc_completed = %s, "
                 "  kyc_completed_at = CASE WHEN %s THEN COALESCE(kyc_completed_at, %s) ELSE NULL END "
                 "WHERE id = %s",
-                (cpf, address, phone, bool(phone_verified), bool(kyc_completed),
+                (cpf, address, addr_json, phone, bool(phone_verified), bool(kyc_completed),
                  bool(kyc_completed), kyc_completed_at, int(account_id)))
             return cur.rowcount > 0
 

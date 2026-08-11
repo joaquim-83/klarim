@@ -2,6 +2,8 @@
 // CPF (máscara + validação client-side), agregação do resultado por KYC, wizard, rate limit,
 // upgrade e estado do CTA. Os componentes React consomem estas funções; sem DOM/React aqui.
 
+import { isAddressComplete } from './address.js';   // KL-163 P2 — endereço estruturado
+
 // ---- URL ---- //
 // Normaliza o input do dev (aceita `example.com`, `http://localhost:3000`, `https://x.com`).
 export function normalizeUrl(input) {
@@ -167,10 +169,14 @@ export function canUpgrade(slug) {
   return upgradeTarget(slug) !== null;
 }
 
-// KL-158 — o botão "Confirmar" do KYC habilita com CPF válido + endereço (≥10) + telefone (a
-// validação final é no backend, que também exige e-mail confirmado — KL-156).
+// KL-158 — o botão "Confirmar" do KYC habilita com CPF válido + endereço + telefone (a validação
+// final é no backend, que também exige e-mail confirmado — KL-156). KL-163 P2: `address` pode ser
+// um OBJETO estruturado (`isAddressComplete`) OU uma string legada (≥10 chars).
 export function canSubmitKyc(cpf, address, phone) {
-  return isValidCPF(cpf) && (address || '').trim().length >= 10 && !!(phone || '').trim();
+  const addrOk = (address && typeof address === 'object')
+    ? isAddressComplete(address)
+    : (address || '').trim().length >= 10;
+  return isValidCPF(cpf) && addrOk && !!(phone || '').trim();
 }
 
 // KL-159 — coage o `detail` de um erro da API para STRING. O backend às vezes devolve um OBJETO
@@ -228,6 +234,16 @@ export function gateOnboardingSteps(status, runsCount, verifiedProjects) {
     { key: 'cicd', label: 'Integrar no CI/CD (verifique um domínio)', done: verified > 0 },
     { key: 'upgrade', label: 'Fazer upgrade para Pro', done: plan !== 'free' },
   ];
+}
+
+// KL-163 — estado do botão "Exportar relatório" (PDF do run). O relatório só é gerado com KYC
+// completo (regra do card); sem KYC, mostra a mensagem de bloqueio em vez do botão. Puro/testável.
+export const REPORT_KYC_MESSAGE = 'Complete seu cadastro para gerar relatórios.';
+
+export function reportButton(kycCompleted) {
+  return kycCompleted === true
+    ? { show: true, label: '📄 Exportar relatório', message: null }
+    : { show: false, label: null, message: REPORT_KYC_MESSAGE };
 }
 
 // Corpo do POST /account/signup do fluxo dev (inclui `source=security-gate`).
