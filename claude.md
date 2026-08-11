@@ -2060,8 +2060,8 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   18→19 em `test_kl141_gate_engine`/`test_kl151_gate_product`/`test_kl151_p3_portal_admin`/`test_kl151_p2_scan_cli`.
   **2238 pytest passed.** Docs: `docs/ARCHITECTURE.md` §11 (diagrama de dependência Gate→scanner). Relatório:
   `claude/reports/KL-154_email_security_gate.md`.
-- **KL-163 (Prompt 1/2)** — PDF de UM run do Security Gate (o dev exporta o resultado do scan) ✅ (validado no
-  `docker-compose.dev.yml`; **SEM deploy** — aguarda revisão visual do dono). **Endpoint** `GET /gate/runs/{id}/
+- **KL-163 (Prompt 1/2)** — PDF de UM run do Security Gate (o dev exporta o resultado do scan) ✅ **DEPLOYADO
+  11/08/2026 (run #31512717649 verde, com o P2)** — pós-deploy na VM OK: endpoint sem auth → 401. **Endpoint** `GET /gate/runs/{id}/
   report` (`api/gate.py`): auth **API key OU sessão** (`_resolve_gate_account`); busca o run SEM filtro de conta
   para distinguir **404** (inexistente) de **403** (outra conta); **403 se a conta não tem KYC** ("Complete seu
   cadastro para gerar relatórios"); devolve `application/pdf` `attachment` (`klarim-gate-{domínio}-{AAAA-MM-DD}.pdf`)
@@ -2081,8 +2081,9 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   #
   persistidos). **+16 backend** (`test_kl163_gate_report.py`: endpoint 200/401/403-outra-conta/403-sem-KYC/404 +
   builder/HTML + `mask_cpf` + render real `%PDF-`) **+4 node** (`reportButton`). Docs: `docs/API.md`. Relatório:
   `claude/reports/KL-163_P1_report.md`.
-- **KL-163 (Prompt 2/2)** — endereço ESTRUTURADO no KYC (CEP + ViaCEP) + polish ✅ (validado no
-  `docker-compose.dev.yml`; **SEM deploy** — aguarda revisão visual do dono). **Schema:** `users.address_data
+- **KL-163 (Prompt 2/2)** — endereço ESTRUTURADO no KYC (CEP + ViaCEP) + polish ✅ **DEPLOYADO 11/08/2026 (run
+  #31512717649 verde)** — pós-deploy na VM OK: coluna `address_data jsonb` presente em `users`; CSP com
+  `https://viacep.com.br` em `connect-src`; 7/7 containers up (db/redis preservados). **Schema:** `users.address_data
   JSONB` (`{cep,street,number,complement?,neighborhood,city,state}`); a coluna `address` TEXT **não é
   removida** (legado — contas antigas com texto livre seguem válidas; leitura prefere `address_data`).
   `update_user_kyc` grava um dos dois (estruturado → JSONB, limpa o TEXT; legado → TEXT, limpa o JSONB);
