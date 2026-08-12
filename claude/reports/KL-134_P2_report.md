@@ -71,4 +71,23 @@ os 5 resultados renderizaram corretamente. Usuário real não encontra isso.
 `min-h-[44px]`, `grid-cols-1 sm:grid-cols-2`, inputs `text-base`/`h-12`) — mesmos tokens já validados
 mobile no resto do site (KL-80/87). Não foi feito screenshot dedicado a 375px nesta sessão.
 
-## Não fiz deploy. Prompt final — validação visual pelo dono.
+## Deploy (autorizado pelo dono) — 2026-08-12 ✅
+
+Commit `6b49e51` → push `main` (`1e23363..6b49e51`). CI/CD **run #31652293384 — success**.
+Gates locais pré-push: pytest **2378 passed**/1 skipped · test:unit **246** · build OK.
+
+| Job (GitHub Actions) | Resultado |
+|---|---|
+| Test | ✓ |
+| Build web (Astro) | ✓ |
+| Nginx config check (`nginx -t` http + https render) | ✓ (allowlist `ferramentas` válida) |
+| Deploy to GCP VM (SSH) | ✓ 3m47s |
+| Security Gate (live, pós-deploy) | ✓ 25s |
+
+**Verificações pós-deploy em https://klarim.net:**
+- `GET /api/tools/stats` → **200** (`total_sites 116049`, `wordpress_pct 20.2`, `privacy.scanned 19846` — agregados ao vivo batem com os números de referência).
+- `GET /api/tools/ssl?url=klarim.net` → **200**, `valid:true`, grade **A**, Google Trust Services, TLSv1.3.
+- `GET /api/tools/headers?url=klarim.net` → **200**, `6/7`. · `GET /api/tools/email?domain=klarim.net` → **200**, `4/4` (SPF/DKIM/DMARC/MX pass).
+- `GET /ferramentas/` → **200** · `GET /ferramentas/verificar-ssl` → **200** · `/ferramentas/teste-lgpd` renderiza o H1 "Teste de Conformidade LGPD" + **FAQPage** JSON-LD (allowlist nginx OK, sem SPA fallback).
+
+Nenhum step falhou. Deploy concluído e verificado. Registro em `claude/DEPLOY_HISTORY.md`.

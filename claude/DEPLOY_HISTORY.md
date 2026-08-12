@@ -23,6 +23,7 @@
 | 2026-08-10 | KL-150 P2 ajustes | CI run #300 | flush `public:best`+`public:stats` no Redis; /melhores=730 |
 | 2026-08-10 | Fix painel (HTML raw + analytics bots) | CI run #302 | visitors_br 422 pós-filtro de UA |
 | 2026-08-11 | KL-163 P1+P2 (PDF de run + endereço KYC) | run #31512717649 | coluna `address_data jsonb`; CSP libera `viacep.com.br`; 7/7 containers |
+| 2026-08-12 | KL-134 P1+P2 (micro-ferramentas SEO) | run #31652293384 (commit `6b49e51`) | Test·Build·Nginx·Deploy(3m47s)·Security Gate todos verdes. Pós-deploy: `/api/tools/{stats,ssl,headers,email}` 200 + corretos (ssl grade A, email 4/4, stats total_sites 116049); `/ferramentas/` + `/ferramentas/verificar-ssl` 200; LGPD page H1 + FAQPage JSON-LD servidos (allowlist nginx OK) |
 
 ## Pendentes de deploy / validação do dono (à data da compactação)
 - **KL-99** (conta sem senha + 3 níveis + verificação de domínio) — validado local, deploy pendente.
