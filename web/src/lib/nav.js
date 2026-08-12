@@ -6,6 +6,7 @@
 export const EMPRESA_LINKS = [
   { href: '/#scan', label: 'Verificar meu site' },
   { href: '/#para-empresas', label: 'Monitoramento' },
+  { href: '/ferramentas', label: 'Ferramentas' },   // KL-134 — micro-ferramentas SEO
   { href: '/setores', label: 'Setores' },
   { href: '/planos', label: 'Planos empresa' },
 ];

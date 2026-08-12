@@ -1,57 +1,45 @@
 # Klarim — Guia do Agente CLI
 
-> **Leia este arquivo antes de tocar no código.** É o onboarding obrigatório de
-> qualquer agente Claude que trabalhe no Klarim. Se algo aqui conflitar com um
-> pedido, **pare e pergunte** antes de prosseguir.
+> **Leia antes de tocar no código.** Onboarding obrigatório de qualquer agente Claude no
+> Klarim. Se algo aqui conflitar com um pedido, **pare e pergunte** antes de prosseguir.
 
-**Klarim** — *"O alarme que toca antes do ataque."* Scanner **passivo** de
-segurança web para **PMEs brasileiras** (hotéis, clínicas, escolas, e-commerces,
-contabilidades…) que têm sistema web exposto e não têm equipe de segurança.
-Plataforma **freemium** com modelo "Guardião Digital": descobre alvos, roda checks
-comprováveis sem invasão, calcula um **score 0–100 + semáforo 🔴🟡🟢**, gera perfis
-públicos e monitora silenciosamente — só alerta o dono quando algo importa.
+**Klarim** — *"O alarme que toca antes do ataque."* Scanner **passivo** de segurança web
+para **PMEs brasileiras** (hotéis, clínicas, escolas, e-commerces, contabilidades…) sem
+equipe de segurança. Plataforma **freemium** "Guardião Digital": descobre alvos, roda checks
+comprováveis sem invasão, calcula **score 0–100 + semáforo 🔴🟡🟢**, gera perfis públicos e
+monitora silenciosamente — só alerta o dono quando algo importa.
 
-> **📚 Documentação detalhada** (este arquivo é só o guia enxuto de instruções):
+> **📚 Documentação detalhada** (este arquivo é o guia enxuto de instruções):
 > - `docs/ARCHITECTURE.md` — arquitetura, containers, fluxo de dados
-> - `docs/API.md` — todos os endpoints + tools MCP
+> - `docs/API.md` — todos os endpoints + tools MCP (request/response completos)
 > - `docs/DEPLOY.md` — deploy, CI/CD e **todas as variáveis de ambiente**
 > - `docs/SECURITY.md` — políticas de segurança e postura de scanning
-> - `docs/HISTORY.md` — histórico íntegro das 50 entregas (o antigo claude.md)
-> - `claude/reports/KL-xxx_*.md` — relatório de cada tarefa
-> - `klarim_mvp_spec.md` — especificação de produto (fonte da verdade)
+> - `docs/LGPD.md` — ROPA (registro de tratamento) + DPO
+> - `docs/HISTORY.md` — histórico íntegro das entregas · `claude/DEPLOY_HISTORY.md` — log de deploys
+> - `claude/reports/KL-xxx_*.md` — relatório de cada tarefa · `klarim_mvp_spec.md` — spec do produto
 
 ---
 
 ## 1. Links e acesso
 
-- **Produção:** https://klarim.net · **Admin:** https://klarim.net/painel (KL-106: `painel.klarim.net`
-  agora **redireciona 301** ao domínio principal — servia um build Vite antigo; o admin é Astro em `/painel`)
-- **Repo:** https://github.com/joaquim-83/klarim.git
-- **Jira (board KL):** https://igoove.atlassian.net/jira/software/c/projects/KL/boards/265/backlog
-- **VM GCP:** `klarim-prod` (**e2-standard-4**, 4 vCPU/16GB, disco **200GB pd-ssd**) · zona
-  `us-central1-a` · projeto `project-b08050df-fa4e-49ac-919` · deploy em `/opt/klarim` ·
-  **IP estático `34.135.194.208`** (reserva `klarim-static-ip`). Migração KL-77 Fase 1
-  (2026-07-19). CI/CD deploya por instance-name (secret `GCP_INSTANCE_NAME=klarim-prod`).
-  A VM antiga `instance-20260706-112125` (e2-medium, IP efêmero 35.238.72.10) fica em
-  standby 24h como fallback (reverter DNS no Cloudflare para 35.238.72.10 + reiniciar os
-  workers dela). **OS Login está DESABILITADO** (o SSH do CI usa injeção de chave por metadata).
+- **Produção:** https://klarim.net · **Admin:** https://klarim.net/painel (Astro). `painel.klarim.net` → 301 ao domínio principal.
+- **Repo:** https://github.com/joaquim-83/klarim.git · **Jira (board KL):** https://igoove.atlassian.net/jira/software/c/projects/KL/boards/265/backlog
+- **VM GCP:** `klarim-prod` · zona `us-central1-a` · projeto `project-b08050df-fa4e-49ac-919` · deploy em `/opt/klarim` · IP estático `34.135.194.208`. Detalhes de infra/fallback em `claude/DEPLOY_HISTORY.md`.
 - **E-mail operacional:** klarimscan@gmail.com
+- O `.env` de produção vive **apenas na VM** (`/opt/klarim/.env`), nunca no git.
 
 ```bash
-gcloud compute ssh --zone "us-central1-a" "klarim-prod" \
-  --project "project-b08050df-fa4e-49ac-919"
+gcloud compute ssh --zone "us-central1-a" "klarim-prod" --project "project-b08050df-fa4e-49ac-919"
 ```
-
-O `.env` de produção vive **apenas na VM** (`/opt/klarim/.env`), nunca no git.
 
 ---
 
 ## 2. Stack
 
-Python 3.12 / **FastAPI** + **PostgreSQL 16** + **Redis** + **Astro 7** (SSR, Node
-standalone) + **React** (islands) + **Tailwind v4** (CSS-first, sem config) +
-**Nginx** (front único de TLS) + **Docker Compose** + **WeasyPrint** (PDF) +
-**Resend** (e-mail) + **AbacatePay** (PIX) + **OpenAI GPT-4o mini** (enriquecimento).
+Python 3.12 / **FastAPI** + **PostgreSQL 16** + **Redis** + **Astro 7** (SSR, Node standalone) +
+**React** (islands) + **Tailwind v4** (CSS-first, sem config) + **Nginx** (front único de TLS) +
+**Docker Compose** + **WeasyPrint** (PDF) + **Resend** (e-mail) + **AbacatePay** (PIX) +
+**OpenAI GPT-4o mini** (enriquecimento).
 
 ---
 
@@ -59,2324 +47,318 @@ standalone) + **React** (islands) + **Tailwind v4** (CSS-first, sem config) +
 
 ### Processo
 - **Claude Code CLI é o executor; Claude chat é o planejador.**
-- Todo pedido precisa de um card **`KL-xxx`** no Jira (exceto ajustes mínimos: typo,
-  formatação). Jira transition "Done" = ID **41**.
-- **Commits e código em inglês; comentários podem ser PT-BR.** Formato do commit:
-  `tipo(KL-xxx): descrição`.
-- **Cada tarefa gera um relatório PT-BR em `claude/reports/KL-xxx_<slug>.md`** e
-  **atualiza a documentação afetada** (este arquivo, `docs/`, `README`, spec).
-- **Rode `pytest` antes de concluir.** A tarefa **não está pronta até o deploy estar
-  verde** (push + GitHub Actions test+deploy 100% green).
+- Todo pedido precisa de um card **`KL-xxx`** no Jira (exceto ajustes mínimos: typo, formatação). Jira transition "Done" = ID **41**.
+- **Commits e código em inglês; comentários podem ser PT-BR.** Formato: `tipo(KL-xxx): descrição`.
+- **Cada tarefa gera um relatório PT-BR em `claude/reports/KL-xxx_<slug>.md`** e atualiza a documentação afetada.
+- **Rode `pytest` + `npm run test:unit` antes de concluir.** A tarefa não está pronta até o **deploy estar verde** (push + GitHub Actions test+deploy 100% green).
 
 ### Scanner — só varredura passiva (Security Rating, NÃO pentest)
-- ✅ **Faz:** `GET`/`HEAD` a URLs públicas, leitura de headers, certificados SSL
-  públicos, DNS público, arquivos servidos sem autenticação.
-- ❌ **NUNCA:** payloads de injeção (SQLi/XSS), brute-force, área autenticada,
-  exploração de vulnerabilidade, extração de dados.
-- **Timeout 10s/request; rate limit 1 req/s por domínio** (centralizado em
-  `checks/base.py` — não reimplemente). **User-Agent identifica o Klarim
-  honestamente** — não se passa por navegador, não se esconde.
+- ✅ **Faz:** `GET`/`HEAD` a URLs públicas, headers, certificados SSL públicos, DNS público, arquivos servidos sem autenticação.
+- ❌ **NUNCA:** payloads de injeção (SQLi/XSS), brute-force, área autenticada, exploração de vulnerabilidade, extração de dados.
+- **Timeout 10s/request; rate limit 1 req/s por domínio** (centralizado em `checks/base.py` — não reimplemente). **User-Agent identifica o Klarim honestamente** — não se passa por navegador.
 
-### Segurança (regra de 2026-07-15 — inviolável)
+### Segurança (regra inviolável de 2026-07-15)
 - **Toda implementação ou fix inclui revisão de segurança.**
-- **Nenhum endpoint, formulário ou fluxo de dados pode ficar sem proteção**
-  (auth, validação, rate limit, sanitização).
-- Empresas de **cibersegurança estão entre os alvos** e interagem ativamente com a
-  plataforma — assuma que tudo será sondado. Detalhes em `docs/SECURITY.md`.
+- **Nenhum endpoint, formulário ou fluxo de dados sem proteção** (auth, validação, rate limit, sanitização).
+- Empresas de **cibersegurança estão entre os alvos** e sondam a plataforma ativamente — assuma que tudo será testado. Detalhes em `docs/SECURITY.md`.
 
 ### Dados
-- **Regra de ouro:** o **AI enrichment NUNCA sobrescreve** dado extraído por regex,
-  nem classificação `manual`/`ai`; só preenche campo **vazio**. `source='receita'`
-  (CNAE oficial) nunca é sobrescrito pela IA.
-- Quando **`scoring.py` ou um check muda**, **flush `scan:*` no Redis** da VM após o
-  deploy (senão semáforos velhos servem por até 1h).
-- **Não use `DATABASE_URL`** — a senha em base64 contém `/`. Use as `POSTGRES_*`
-  individuais.
+- **Regra de ouro:** o **AI enrichment NUNCA sobrescreve** dado extraído por regex nem classificação `manual`/`ai`; só preenche campo **vazio**. `source='receita'` (CNAE oficial) nunca é sobrescrito pela IA.
+- Quando **`scoring.py` ou um check muda**, **flush `scan:*` no Redis** da VM após o deploy (senão semáforos velhos servem por até 1h).
+- **Não use `DATABASE_URL`** — a senha em base64 contém `/`. Use as `POSTGRES_*` individuais.
 - **`contact_email`, `cnpj`, `whatsapp` NUNCA são expostos** na API/perfil público.
 
 ### Frontend (padrão Astro, KL-51)
-- Ilhas admin: **`client:only="react"`** (não `client:load`). `AdminShell` é wrapper
-  interno (prop `active`), não ilha-em-slot.
-- **`<a href>`** em vez de `Link`/`NavLink`; **`window.location`** em vez de
-  `useNavigate`. **Zero `react-router-dom`** no código migrado.
+- Ilhas admin: **`client:only="react"`** (não `client:load`). `AdminShell` = wrapper interno (prop `active`).
+- **`<a href>`** em vez de `Link`/`NavLink`; **`window.location`** em vez de `useNavigate`. **Zero `react-router-dom`** no código migrado.
 - **`parseUTC`** para timestamps naive do Postgres (adicionar `Z` antes de `new Date`).
-- **CSP relaxada no `/painel`** (decisão KL-51: `script-src 'unsafe-inline'`, painel é
-  noindex/operator-only). O **público** usa CSP estrita (scripts inline por hash SHA-256).
-  **Ao adicionar/alterar um script inline público, recompute o hash e atualize
-  `frontend/nginx/security_headers.conf`** (hoje: 3 do Astro + 1 anti-FOUC de tema do KL-87; o hash
-  do init do GA4/gtag do KL-92 P4 ficou **ocioso** após o KL-135 — inofensivo, não removido). **KL-92
-  P4:** o Cloudflare Web Analytics (`static.cloudflareinsights.com/beacon.min.js`) foi **removido** —
-  era o único script externo SEM SRI (travava o score 100) — e trocado por **Google Analytics 4**
-  (`G-7WPZN66JTB`): loader `www.googletagmanager.com` no `script-src`; `connect-src`/`img-src` liberam
-  `*.google-analytics.com`. O check 13 (SRI) ganhou uma **allowlist de CDN dinâmico**
-  (`SRI_ALLOWLIST_DOMAINS`: googletagmanager/google-analytics/cloudflareinsights) — esses não contam
-  como FAIL (SRI inviável em bundle que o provedor atualiza sem aviso) → `klarim.net` volta a 100.
-- **Consentimento de cookies (KL-135, LGPD):** o GA4 é **opt-in** — NUNCA carrega sem consentimento.
-  O `Base.astro` NÃO tem mais o GA4 no `<head>` (era incondicional/opt-out); quem injeta o `gtag.js` é
-  o **`web/public/cookie-consent.js`** (externo, CSP `'self'`), só se o cookie `klarim_consent` for
-  `all`/`analytics`. Banner `CookieBanner.astro` (1ª visita) grava a escolha (`Path=/; SameSite=Lax;
-  Max-Age=1a; Secure`). Página `/cookies` + `/privacidade` §5/§8 atualizadas; rodapé tem "Preferências
-  de cookies" (`data-cc="reopen"` → `window.klarimReopenConsent`). **Ao adicionar um `.js` público
-  novo, some ao allowlist do nginx** (`cookie-consent\.js` já lá) + `?v=N`.
-- **Tema light/dark (KL-87):** **light é o padrão**. Mecanismo: os tokens `--color-slate-*` e
-  `--color-white` do Tailwind são **sobrescritos por tema** em `web/src/styles/global.css`
-  (`:root`=light com a escala slate INVERTIDA; `[data-theme='dark']`=defaults). Como todo
-  utilitário resolve `var(--color-slate-…)`, as páginas viram theme-aware **sem migrar classe**.
-  Botões usam `text-[var(--accent-text)]` (escuro constante sobre laranja); QR PIX `bg-[#ffffff]`.
-  Anti-FOUC inline no `<head>` (hash na CSP) + toggle `public/theme.js` (externo) no Header.
-  **Admin (`/painel`) força `data-theme=dark`** (sem toggle). Verde/amarelo/vermelho e o laranja
-  da marca (`#ff6b35`) são constantes nos 2 temas.
-- **Responsivo (KL-80, 68% mobile):** alvos de toque **≥44px** (`min-h-[44px]`/`py-3`; links-texto
-  pequenos → `inline-flex min-h-[44px] items-center px-1`); **inputs `text-base`** (16px, nunca
-  `text-sm` — evita zoom iOS) + `h-12`; botões `w-full sm:w-auto` (empilham no mobile); **nada de
-  largura fixa que estoure 375px** (dropdowns `w-full sm:w-64`); grades `grid-cols-1` → `md:`/`lg:`;
-  `active:scale-95`/`[0.98]` p/ feedback tátil. Breakpoints Tailwind padrão (sm640/md768/lg1024/xl1280).
-- **Container das páginas públicas (KL-89):** o `<main>` de toda página pública puxa a largura de
-  **`web/src/lib/layout.js`** — **não** invente `max-w` por página. Conteúdo (listagens/scan/perfil)
-  → `PAGE_CONTAINER` (expande até `lg:max-w-7xl`); formulário → `FORM_CONTAINER` (`max-w-md`); texto
-  corrido → `PROSE_CONTAINER` (`max-w-3xl`, via `Page.astro`). Tailwind escaneia `.js`, então as
-  classes literais dessas constantes entram no build mesmo interpoladas (`class={PAGE_CONTAINER}`).
-- **Resultado do scan (KL-89):** desktop e mobile entregam o **mesmo conteúdo/nível** — a
-  visibilidade deriva do `access_level` (KL-82), **nunca** do dispositivo (`web/src/lib/scanView.js
-  ::viewFlags`, puro/testável). Linguagem adapta pela **origem**: alerta (`alert_session`) → "Seu
-  site" + CTA só senha (e-mail HMAC mascarado); orgânico → "Este site. E o seu?". O CTA de conta
-  some para quem já tem conta. LGPD é o único bloco restrito a acesso completo.
-
-### E-mail (reputação)
-- **Mapa de remetentes (após KL-101 — `klarim.net` 100% transacional, zero cold):**
-  | Remetente | Domínio | Tipo |
-  |---|---|---|
-  | `klarim@klarim.net` (`RESEND_FROM`) | klarim.net | Transacional (confirmação, boas-vindas, boletim, vigília, magic link) |
-  | `scan@alertas.klarim.net` / `scan@aviso.klarim.net` (`ALERT_SENDER_EMAILS`) | alertas./aviso.klarim.net | Cold alert (rotação KL-91) |
-  | `notifica@perfil.klarim.net` (`PROFILE_VIEW_FROM_EMAIL`) | perfil.klarim.net | Aviso "perfil consultado" (KL-101) |
-- **Profile_view (KL-101):** o aviso "perfil consultado" era o ÚLTIMO cold saindo por `klarim.net`
-  (~15k/sem, via `_proactive_from`) — contaminava o domínio transacional. Agora sai por
-  `notifica@perfil.klarim.net` (subdomínio dedicado, `_profile_view_from`; **NÃO rotaciona** com
-  os cold alerts — este volume destruiria o warmup deles a 100/dia), **texto puro SEM links**
-  (`build_profile_view_text(domain)`), opt-out por resposta (mailto). **Dedup por dono: 1/dia**
-  (`notify_owner:{email}` no Redis) + a dedup por domínio/24h já existente + **teto diário de
-  warmup** `PROFILE_VIEW_DAILY_LIMIT` (200, editável no painel; contador `profileview:daily:{date}`).
-  ⚠️ `perfil.klarim.net` precisa estar **verificado no Resend** antes do deploy (senão os envios
-  falham). `bulletin` segue em `_proactive_from` (`alerta@klarim.net`) — a quem tem conta/opt-in.
-- **Alertas cold (KL-91 → KL-137 → KL-138):** o alerta a quem NÃO tem conta usa o **módulo cold**
-  (`notifier/cold_alert.py` + `alert_worker`): **texto puro (text/plain, NUNCA HTML)** com **UM
-  link CURTO** — **KL-138:** `klarim.net/a/{target_id}` (`cold_alert.report_link(target_id)`), que a
-  API redireciona 302 p/ `/site/{domain}` e registra o clique server-side (`email_clicks`); substituiu
-  o link direto com UTM do KL-137 (que reverteu o 'sem links' do KL-91). 3 variantes informativa/
-  setorial/educativa, opt-out **por resposta** ("responda com remover"), e
-  **rotação round-robin** entre 2 subdomínios verificados no Resend — `alertas.klarim.net`
-  e `aviso.klarim.net` (`ALERT_SENDER_EMAILS`). O `klarim.net` fica **exclusivo do
-  transacional** (isolamento de reputação; `load_senders` descarta `klarim.net` cru). Envio
-  **individual** (não batch) com **cooldown 30-60s** (`ALERT_SEND_INTERVAL_MIN/MAX`) e
-  **limite diário POR remetente** (`ALERT_SENDER_DAILY_LIMIT`, warmup: 100→250→500→750;
-  editável no painel). **Circuit breaker por remetente (calibrado 24/07; KL-108 26/07):** **HARD
-  bounce** > 5% (`ALERT_SENDER_MAX_BOUNCE_RATE`, default 5, editável no `.env`/painel) com **amostra
-  ≥100** (`ALERT_SENDER_BOUNCE_MIN_SAMPLE`, era 20 — pausava remetente em warmup por 3-4 bounces
-  aleatórios; ex.: aviso.klarim.net pausado com 34 envios) sobre **janela móvel de 7 dias**
-  (`email_health_by_domain(days=7)` — bounces antigos saem do cálculo, o remetente se recupera após
-  corrigir a lista) → remetente **pausado** no ciclo (o outro continua). **KL-108 (fix):** só o **hard
-  bounce** (permanente) pausa; o **soft bounce** (transitório: caixa cheia, servidor fora,
-  `delivery_delayed`) é medido/logado mas NUNCA pausa. Antes `email_health_by_domain` somava hard+soft
-  num `bounce_rate` único → em 26/07 os 3 senders passaram de 5% pelo COMBINADO e foram pausados
-  simultaneamente (zero cold alerts, backlog 2.683; fix emergencial `ALERT_SENDER_MAX_BOUNCE_RATE=12`
-  no `.env`, depois removido). Ex. da distorção: perfil.klarim.net 1,33% hard + 5,61% soft = 6,94%
-  combinado (quase pausado injustamente). Agora `email_health_by_domain` devolve `hard_bounced`/
-  `soft_bounced` separados; `bounce_rate`=hard-only (é o que `flag_high_bounce` usa) e
-  `soft_bounce_rate`=informativo. O safety net GLOBAL do KL-24
-  (`_check_bounce_health`, all-time, 8%) usa a query SEPARADA `email_health()` (que já contava só
-  `status='bounced'` hard) com `ALERT_BOUNCE_MIN_SAMPLE`=20 (amostra separada) — inalterado.
-  Métricas por domínio em `get_email_health.by_domain` (all-time, com hard/soft separados) +
-  `email_log.from_domain`/`template_variant`. Motivação: o
-  `alerta@klarim.net` (cold + urgência + links) caía no spam. **`send_alert_for_target`
-  (disparo manual) usa o mesmo formato** (1º remetente). Os builders antigos com link
-  (`build_alert_text`, alert-access HMAC do KL-82 S3) **ficam no código** mas o ciclo
-  automático NÃO os usa (revertível).
-- ⚠️ **REGRA DE ENVIO ATUAL (KL-145 — Reoon FORA do fluxo de envio):** `is_safe_to_send(email,
-  redis, store)` é **3 filtros LOCAIS**: (1) sintaxe válida, (2) domínio tem MX, (3) não está na
-  blocklist. **Tudo que passa nos 3 → ENVIA** — o status de verificação Reoon (`unknown`/`catch_all`/
-  `safe`/…) e o `email_verified`/`email_verify_status` **NÃO decidem mais** o envio. O Reoon
-  classificava ~97% dos servidores BR como `unknown` e a regra binária por-status do KL-137 travava
-  o volume em 2-8/ciclo; a **blocklist aprendente** (cada bounce, via webhook Resend, entra na
-  `email_blocklist`) faz o trabalho de aprender quem não recebe. **O lead_score NÃO decide envio — só
-  ORDENA a fila.** `_verify_and_filter` (alert worker) aplica os 3 filtros; stats do ciclo:
-  `eligible/valid_syntax/has_mx/not_blocklisted/blocked_syntax/blocked_mx/blocked_blocklist/errors`.
-  Removidos do fluxo de envio: partição sendable/unverified, cap de verificação, chamada à API Reoon,
-  `_reoon_balance`, `EMAIL_VERIFY_MAX_PER_CYCLE`/`EMAIL_VERIFY_ENABLED`, e os filtros de
-  `email_verify_status`/`email_verify_source` do `_ALERT_ELIGIBLE_WHERE` (KL-128/130). O MX (filtro 2)
-  respeita `ALERT_VALIDATE_MX` (cache Redis 24h/domínio em prod; off em dev/testes). **O Reoon
-  (`verify_reoon`/`verify_local`/cache) FICA no `email_verifier`** só como enriquecimento em
-  background (scripts + saldo no `/system/status`) — NUNCA no alert worker. Toda a regra binária por-
-  status (KL-137) e os gates/trust dos KL-122..KL-136 ABAIXO são **históricos** — a regra viva é esta.
-- **(HISTÓRICO — KL-137, superado pelo KL-145) Regra binária por status:** `is_safe_to_send` era
-  **BINÁRIA** (só `safe`/`valid`/`role` enviavam; catch_all/unknown/inbox_full/block-statuses não).
-  Dependia da verificação Reoon Power e travava o volume; o KL-145 a substituiu pelos 3 filtros locais.
-- **Verificação de deliverability PRÉ-envio (KL-110 — `notifier/email_verifier.py`):** o circuit
-  breaker (KL-108) é REATIVO (pausa DEPOIS do bounce); a verificação é PREVENTIVA — checa se a caixa
-  existe ANTES de enviar. **Camada 0 (local, custo zero):** sintaxe (email-validator, fallback regex),
-  descartáveis (reusa `api.disposable_emails`), MX (dnspython, cache Redis 24h por domínio) e flag
-  role-based (reusa `ROLE_BASED_PREFIXES`). Roda na **extração** (`discovery/contact.py::_is_junk`
-  descarta domínio descartável → nunca vira `contact_email`; o MX já era validado no `extract_email`).
-  **Camada 1 (API Reoon, `REOON_API_KEY`):** modo `power` verifica INBOX existe + catch-all + disabled
-  + inbox_full + spamtrap; semáforo de **5 chamadas simultâneas**; fallback fail-open (API fora →
-  `unknown`, nunca bloqueia). O **alert worker** (`_verify_and_filter`, após o lead scoring, antes do
-  envio) blocklista+descarta `invalid`/`disabled`/`disposable`/`spamtrap` e aplica `is_safe_to_send`.
-  **KL-128 (regra DEFINITIVA): `unknown` NUNCA envia** — o gate de score NÃO filtra `unknown` (no BR =
-  servidor sem SMTP-check, bounce ~5-8%); o KL-127 tentou `unknown`→gate e o bounce voltou a **>10%**.
-  **`catch_all`/`inbox_full`** seguem o gate (`> ALERT_UNSAFE_SCORE_GATE`, default **20**); `safe`/`valid`/
-  `role` sempre enviam. **KL-128 no parse:** `parse_reoon_response` rebaixa **`safe`/`valid` + `is_catch_all`
-  → `catch_all`** (num servidor catch-all o "safe" do Reoon não é confiável). **KL-129 (prioriza os NOVOS):**
-  o cap de verificação (`EMAIL_VERIFY_MAX_PER_CYCLE`=**200**, era 120) era consumido pelos já-verificados do
-  cache (unknown barrado) → 0 vaga p/ os `email_verified=false` → o pipeline girava em falso (0 sent, 0 API).
-  Agora `_verify_and_filter` **particiona ANTES**: **sendable** (já-verificado aprovado → envia direto, sem
-  re-tocar a API) · **blocked_known** (já-verificado barrado → descarta SEM consumir vaga) · **unverified**
-  (`email_verified=false`/status vazio/TTL expirado → **prioridade** no subset `unverified[:cap]` → verifica
-  via Power NESTE ciclo; excedente = `deferred`, próximo ciclo). **Domínio confiável (KL-129):** um `unknown`
-  fresco cujo domínio de DESTINATÁRIO teve envio 'sent' sem bounce nas últimas 48h (`store.
-  trusted_recipient_domains`) é rebaixado a `catch_all` (passa a valer o gate) — recupera volume (mega-hosts
-  BR retornam unknown no SMTP-check). Kill-switch `ALERT_TRUST_DOMAIN_DOWNGRADE=false` (lido a cada ciclo). O
-  canário ativo (envio 1 + recheck 24h + blocklist por domínio) fica p/ card futuro. **KL-130 — status
-  TERMINAIS fora do pool de elegíveis:** a partição só prioriza DENTRO do batch buscado; mas o
-  `_ALERT_ELIGIBLE_WHERE` (`get_eligible_targets_for_alert`, ordenado por `last_scan_at ASC`) trazia 173
-  `unknown`+`power` velhos que **entupiam o fetch** (200) e starvavam 3.247 e-mails NOVOS (0 API, 0 sent, 10
-  alertas/dia). Fix: o WHERE **exclui** `unknown`+`power` (irrecuperável — o Power não confirmou a caixa) e os
-  block-statuses (defesa-em-profundidade). ⚠️ **NULL-safe (COALESCE):** `NULL = 'unknown'` vira NULL e o
-  `AND NOT(...)` excluiria os não-verificados (status NULL) — o `COALESCE(...,'')` evita (validado no Postgres
-  da VM: 3.444→3.272 elegíveis, 0 unknown+power, 3.247 novos preservados). Além disso, um alvo verificado como
-  `unknown` via Power é marcado **`sem_contato`** (`_verify_one`, sai do pool de vez, NÃO blocklist) +
-  limpeza retroativa `scripts/retire_unknown_power.py` (`store.retire_unknown_power_targets`). Log de partição
-  `[alert] KL-130 partição: …`. **Sem verificação → não
-  envia** (`fallback` de infra não persiste nem envia). **Modo degradado sem `REOON_API_KEY`** (dev/fallback):
-  já-verificados seguem o gate, não verificados passam (MX já validado na extração). **Log estruturado por
-  e-mail** (mascarado, LGPD):
-  `[alert] c***@x → status=… source=… score=… gate=… → SENT|BLOCKED|SKIPPED_GATE|SKIPPED_UNVERIFIED`
-  (`docker logs klarim-discovery-1`). Campo **`targets.email_verify_source`** (`power`/`quick`/`bulk`/
-  `local`) registra COMO foi verificado. Cache Redis por **SHA-256** do
-  e-mail (60d definitivo / 7d transitório) + cache de domínio catch-all (7d). Campos em `targets`:
-  `email_verified`/`email_verify_status`/`email_verified_at`/`email_is_role_based`/`email_verify_source`.
-  Lead scoring (KL-85) penaliza `catch_all` -10, `unknown` -5, `role` -15 (sem dobrar o prefixo). Stats:
-  `get_email_verification_stats` (MCP) + `GET /system/email-verification-stats` (`by_status` + **`by_source`**
-  + saldo Reoon). Limpeza do backlog: `scripts/cleanup_email_backlog.py` (Fase 0 local → `source=local` +
-  Fase 1 bulk Reoon → `source=bulk`).
-- **`_proactive_from` (`alerta@klarim.net`, `ALERT_FROM_EMAIL`):** após o KL-101, resta só o
-  **bulletin** proativo (a quem tem conta/opt-in). O profile_view saiu daqui (→ perfil.klarim.net);
-  o cold alert saiu no KL-91 (→ alertas./aviso.). **2026-07-20:** migrado de `klarimscan.com` →
-  `klarim.net`. Lido do env a cada envio; troca do `.env` vale ao **recriar o container**.
-- **Transacionais:** `klarim@klarim.net` (`RESEND_FROM`). **2026-07-21:** MIGRADO de
-  `seguranca@klarim.net` → `klarim@klarim.net` — a palavra "seguranca" é keyword de phishing e,
-  com domínio aged, elevava o spam score (a confirmação de conta caía no spam). `_mailer()` lê
-  `RESEND_FROM` a cada envio → a troca do `.env` vale ao **recriar o container**. Reply-To
-  (`scan@`) e o proativo (`alerta@`) **não mudam**.
-- **Proativo respeita a blocklist; transacional pode ignorá-la mas SEMPRE registra**
-  (todo e-mail passa por `KlarimMailer._send` → `email_log`).
-- **Bounce transitório = `soft_bounced` (fix 24/07):** o webhook `/webhooks/resend` marcava só bounce
-  PERMANENTE (`bounced` + descarta alvo + blocklist) e **ignorava** os transitórios (`transient`/`soft`/
-  `temporary`/`delivery_delayed`) com um mero `print` → o evento sumia (gap de contadores 78 Resend vs
-  25 DB). Agora o transitório é **rastreado como `soft_bounced`** no `email_log` (o operador vê; o
-  circuit breaker conta) **sem descartar o alvo nem blocklist**. `email_log.status` é texto livre (sem
-  CHECK) → não precisa migração. Ambos os ramos logam se o `email_id` do Resend não casa com
-  `email_log.email_id` (diagnostica update silencioso). Os contadores da página Alertas ("Hoje"/etc.)
-  agora contam **tentativas** (sent+bounced+soft_bounced+complained, `blocked` não), com breakdown
-  `{key}_sent`/`{key}_bounced` (`_email_stats_fn`) — o card mostrava 289 escondendo 22 bounces; agora
-  311 com "22 bounced ⚠️" no `StatCard`. Health check do Resend não chama mais `GET /domains` (401 com
-  key send-only) — HEAD ao host sem auth (`check_resend`).
-- **E-mails proativos (alerta + "perfil consultado") = TEXTO PURO** (`text`, sem
-  `html`) — menos cara de marketing, cai menos no spam; CTA → perfil público
-  `/site/{domain}` com UTM. Builders em `notifier/email_client.py`
-  (`build_alert_text`/`build_profile_view_text`); os templates HTML ficam só como
-  referência. Linguagem freemium, sem menção a preço/pagamento/relatório.
-- **Cold (KL-102) levam `List-Unsubscribe` = mailto (opt-out por resposta) + https one-click**
-  (`/remover?token=`, RFC 8058, `build_cold_unsubscribe_headers`) — os 3 senders cold (alertas./
-  aviso./perfil.), NUNCA o transacional. Token HMAC (`generate/verify_unsubscribe_token`, propósito
-  `unsubscribe`, SEM expiração, codifica email+domínio+remetente). `POST/GET /remover` marca o alvo
-  `unsubscribed` + blocklist + evento `email_log` (`type=unsubscribe`, `from_domain`=sender, target_id
-  → setor via join). Rate limit 10/min/IP **só p/ tokens inválidos** (o one-click válido do Gmail vem
-  de IP compartilhado — nunca bloquear opt-out legítimo). nginx roteia `/remover` → FastAPI.
-- **Proativos levam `List-Unsubscribe` + `List-Unsubscribe-Post` (one-click RFC 8058,
-  `list_unsubscribe_headers`)** — alerta/profile_view/evolution. O `GET/POST /unsubscribe`
-  aceita params **opcionais** (ausentes → HTML "Link incompleto", nunca 422 JSON) e trata
-  o POST one-click; a validação HMAC constant-time é inalterada. Todos os workers que
-  e-mailam o `contact_email` (alert/rescan/profile-view) já filtram `status='unsubscribed'`.
+- **CSP:** `/painel` = relaxada (`script-src 'unsafe-inline'`, noindex/operator-only). **Público = CSP estrita** (scripts inline por hash SHA-256). **Ao add/alterar script inline público, recompute o hash em `frontend/nginx/security_headers.conf`.** Check 13 (SRI) tem allowlist de CDN dinâmico (`SRI_ALLOWLIST_DOMAINS`: googletagmanager/google-analytics/cloudflareinsights) → não contam FAIL.
+- **Novo `.js` público (`web/public/*.js`) exige 2 passos** (senão não é servido): (1) adicionar o nome ao **allowlist do nginx** (`http.conf` + `https.conf.template`, regex de paths proxiados ao `astro`); (2) referenciar com **`?v=N`** e **bump a cada alteração** (senão o Cloudflare cacheia o HTML de erro por 4h). ⚠️ Não requisite a URL `?v=N` antes do fix estar no ar.
+- **Cookies (KL-135, LGPD):** GA4 é **opt-in** — quem injeta o `gtag.js` é o `web/public/cookie-consent.js` (externo, CSP `'self'`), só se o cookie `klarim_consent` for `all`/`analytics`. Banner `CookieBanner.astro`; página `/cookies`; rodapé "Preferências de cookies" (`data-cc="reopen"`).
+- **Tema light/dark (KL-87): light é o padrão.** Os tokens `--color-slate-*`/`--color-white` do Tailwind são **sobrescritos por tema** em `web/src/styles/global.css` (`:root`=light com a escala slate **INVERTIDA**; `[data-theme='dark']`=defaults) → páginas viram theme-aware **sem migrar classe**. ⚠️ **NÃO escreva componentes light-first** (`text-slate-900`/`bg-white`) — no light eles invertem e somem; use os tokens de `dashboard-v2/shared.js` ou o padrão do `/planos` (headings `text-white`, cards `bg-slate-900/60`). Botões laranja usam `text-[var(--accent-text)]` (contraste constante). Admin (`/painel`) força `data-theme=dark`. Anti-FOUC inline (hash na CSP) + toggle `public/theme.js`.
+- **Responsivo (KL-80, 68% mobile):** toque **≥44px** (`min-h-[44px]`/`py-3`); **inputs `text-base`** (16px, nunca `text-sm` — evita zoom iOS) + `h-12`; botões `w-full sm:w-auto`; nada de largura fixa que estoure 375px; grades `grid-cols-1`→`md:`/`lg:`.
+- **Container das páginas públicas (KL-89):** o `<main>` puxa a largura de **`web/src/lib/layout.js`** — **não invente `max-w` por página**. `PAGE_CONTAINER` (conteúdo, até `lg:max-w-7xl`) · `FORM_CONTAINER` (`max-w-md`) · `PROSE_CONTAINER` (`max-w-3xl`, via `Page.astro`). Tailwind escaneia `.js` → as classes literais das constantes entram no build.
+- **Auth nas páginas Astro:** cookie **`klarim_session` HttpOnly** (o JS do cliente NÃO lê o valor). `src/middleware.js` valida server-side (`GET /account/me` Bearer) **só para `/dashboard/*`**; `header.js` + ilhas React fazem fetch client-side. **Cache importa:** páginas CDN-cacheadas (`max-age`, ex. `/security-gate`) detectam auth no CLIENTE (ilha, 1º paint = link anônimo → re-decide); `/cadastrar`/`/entrar` são `no-store` → SSR confiável (`web/src/lib/serverAuth.js`: `fetchSessionUser`/`loggedInRedirect`).
 
 ---
 
-## 4. Arquitetura (resumo)
+## 4. E-mail (reputação)
 
-Detalhe completo em `docs/ARCHITECTURE.md`.
+### Mapa de remetentes (`klarim.net` = 100% transacional, zero cold)
+| Remetente | Domínio | Tipo |
+|---|---|---|
+| `klarim@klarim.net` (`RESEND_FROM`) | klarim.net | Transacional (confirmação, boas-vindas, boletim, vigília, magic link, KYC/gate, LGPD*) |
+| `scan@alertas.klarim.net` / `scan@aviso.klarim.net` (`ALERT_SENDER_EMAILS`) | alertas./aviso. | Cold alert (rotação round-robin) |
+| `notifica@perfil.klarim.net` (`PROFILE_VIEW_FROM_EMAIL`) | perfil. | Aviso "perfil consultado" |
+| `alerta@klarim.net` (`ALERT_FROM_EMAIL`, `_proactive_from`) | klarim.net | Bulletin proativo (a quem tem conta/opt-in) |
+| `privacidade@klarim.net` (`LGPD_FROM_EMAIL`) | klarim.net | Confirmação de solicitação LGPD |
+
+*Transacional migrou de `seguranca@` → `klarim@` (a palavra "seguranca" é keyword de phishing). Os `_from` são lidos do env a cada envio → troca do `.env` vale ao **recriar o container**.
+
+### Regra de envio ATUAL (KL-145 — Reoon FORA do fluxo de envio)
+`is_safe_to_send(email, redis, store)` = **3 filtros LOCAIS**: (1) sintaxe válida, (2) domínio tem MX (cache Redis 24h, respeita `ALERT_VALIDATE_MX`, **fail-open**), (3) não está na blocklist. **Tudo que passa → ENVIA.** O status Reoon (`unknown`/`catch_all`/`safe`/…) e `email_verified` **NÃO decidem envio**. A **blocklist aprendente** (cada bounce, via webhook Resend → `email_blocklist`) aprende quem não recebe. **O lead_score NÃO decide envio — só ORDENA a fila.** `_verify_and_filter` (alert worker) aplica os 3 filtros; stats do ciclo: `eligible/valid_syntax/has_mx/not_blocklisted/blocked_*/errors`. O Reoon fica no `email_verifier` (`verify_reoon`/`verify_local`/cache) só como **enriquecimento em background** (scripts `cleanup_email_backlog.py` + saldo no `/system/status`) — NUNCA no alert worker. Toda a regra binária por-status e os gates/trust dos KL-108..KL-137 são **históricos**.
+
+### Cold alerts (a quem NÃO tem conta)
+- Módulo `notifier/cold_alert.py` + `alert_worker`. **Texto puro (text/plain, NUNCA HTML)** com **UM link CURTO** `klarim.net/a/{target_id}` (`report_link`) → API redireciona 302 p/ `/site/{domain}` e registra o clique server-side (`email_clicks`, IP mascarado /24). Sem UTM.
+- 3 variantes (informativa/setorial/educativa); opt-out **por resposta** ("responda com remover") + `List-Unsubscribe` (mailto + https one-click `/remover?token=`, RFC 8058).
+- **Rotação round-robin** entre `alertas.klarim.net` e `aviso.klarim.net` (`load_senders` descarta `klarim.net` cru). Envio **individual** com **cooldown 30-60s** (`ALERT_SEND_INTERVAL_MIN/MAX`) + **limite diário POR remetente** (`ALERT_SENDER_DAILY_LIMIT`, warmup 100→750; editável no painel).
+- **Circuit breaker por remetente:** só **HARD bounce** > 5% (`ALERT_SENDER_MAX_BOUNCE_RATE`) com amostra ≥100 (`ALERT_SENDER_BOUNCE_MIN_SAMPLE`) sobre janela móvel de 7 dias (`email_health_by_domain(days=7)`) → remetente **pausado** no ciclo (o outro continua). **Soft bounce** (transitório: caixa cheia, `delivery_delayed`) é medido/logado como `soft_bounced` mas **NUNCA pausa**. `email_health_by_domain` devolve `hard_bounced`/`soft_bounced` separados; `bounce_rate`=hard-only. Safety net GLOBAL do KL-24 (`_check_bounce_health`→`email_health()`, all-time 8%) é query separada, inalterada.
+
+### Profile_view ("perfil consultado")
+- Remetente dedicado `notifica@perfil.klarim.net` (`_profile_view_from`; **não rotaciona** com os cold alerts — o volume destruiria o warmup deles). **Texto puro SEM links** (`build_profile_view_text(domain, target_id)` → link curto `/a/{id}`), opt-out por resposta.
+- Volume: dedup por dono **1/dia** (`notify_owner:{email}` Redis) + dedup por domínio/24h + teto diário `PROFILE_VIEW_DAILY_LIMIT` (editável no painel).
+- Gatilho: nasce do **evento `profile_view` HUMANO-verificado** (`track.js`→`/api/events`→`_profile_view_notify`), **não** do SSR (KL-64: o SSR gerava ~7k e-mails/dia de bots).
+
+### Lead scoring (só ORDENA a fila — `discovery/alert_scoring.py::calculate_alert_score`, PURO)
+Sinais: +30 e-mail no domínio · +10 corporativo · +20/+10/+5 por faixa de score (50-85/40-49/>85) · **tipo de e-mail** (`_email_type_factor`): pessoal **+15** · genérico neutro 0 · medium-bounce (`atendimento`/`sac`) -5 · high-bounce (`contato`) -10 · -10 descartado/score<40 · -40 domínio com bounce (só domínio próprio/corporativo; provedores gmail/outlook NÃO penalizam). Grava `targets.alert_quality_score` para TODOS (NUNCA impede scan/envio). O `run_cycle` ordena por score DESC (pessoais antes de genéricos → a blocklist aprende com os genéricos antes de mandar muito).
+
+### Outras regras de e-mail
+- **Bounce webhook `/webhooks/resend`:** permanente → `bounced` + descarta alvo + blocklist; transitório → `soft_bounced` (rastreia, não descarta). `email_log.status` é texto livre.
+- **Proativo respeita a blocklist; transacional pode ignorá-la mas SEMPRE registra** (todo e-mail passa por `KlarimMailer._send` → `email_log`).
+- **Cold** levam `List-Unsubscribe` (mailto + https one-click); **proativos** levam `List-Unsubscribe` + `List-Unsubscribe-Post` (RFC 8058). Token HMAC `generate/verify_unsubscribe_token` (SEM expiração). `POST/GET /remover` e `/unsubscribe` → marca `unsubscribed` + blocklist + evento. Rate limit 10/min/IP **só p/ tokens inválidos** (one-click válido do Gmail vem de IP compartilhado). nginx roteia `/remover` → FastAPI.
+- Workers que e-mailam `contact_email` (alert/rescan/profile-view) filtram `status='unsubscribed'`.
+
+---
+
+## 5. Arquitetura (resumo — detalhe em `docs/ARCHITECTURE.md`)
 
 ### Containers (Docker Compose)
-`postgres` · `redis` · `api` (FastAPI, `127.0.0.1:8000`) · `worker` (scan worker) ·
-`discovery` (Discovery + Alert + Rescan + Vigília via `asyncio.gather`) · `astro`
-(Astro SSR, `:4321`) · `web` (Nginx, portas 80/443 — **único público**).
+`postgres` · `redis` · `api` (FastAPI, `127.0.0.1:8000`) · `worker` (scan worker) · `discovery` (Discovery + Alert + Rescan + Vigília + VendorMonitor via `asyncio.gather`) · `astro` (SSR, `:4321`) · `web` (Nginx, 80/443 — **único público**). `api`/`worker`/`discovery` = **mesma imagem** (`build: .`).
 
 ### Nginx — front único de TLS/segurança
-Serve o build **Astro** (rotas públicas), o build **Vite** em `/painel*`, faz proxy
-`/api` e `/mcp` (com **resolver dinâmico** — `set $var` + `resolver 127.0.0.11` para
-re-resolver o IP do container), TLS Let's Encrypt (self-healing http↔https),
-subdomínios `painel.` e `mta-sts.`, bloqueia paths sensíveis e aplica os security
-headers com `always`. ⚠️ Um `add_header` num `location` **quebra a herança** dos
-headers do `server` — **repita os headers de segurança** ao adicionar um `location`.
-Valide com `nginx -t` (há job de CI); config inválida **derruba o site**.
+Serve o build Astro (rotas públicas), o build Vite em `/painel*`, proxy `/api` e `/mcp` (**resolver dinâmico** — `set $var` + `resolver 127.0.0.11`), TLS Let's Encrypt (self-healing http↔https), subdomínios `painel.`/`mta-sts.`. ⚠️ Um `add_header` num `location` **quebra a herança** dos headers do `server` — **repita os security headers** ao adicionar um `location`. Valide com `nginx -t` (job de CI); config inválida **derruba o site**. A CI monta cada config isolada → `nginx -t` roda por arquivo.
+- **Rate limiting (KL-160):** zonas no topo de cada conf (`general 30r/s`, `api 10r/s`, `scan 2r/s`, `limit_req_status 429`). ⚠️ **Chave = `CF-Connecting-IP`** (via `map`), NUNCA `$binary_remote_addr` (atrás do CF seria a edge). Assets/MCP/SSE/OAuth sem limite.
+- **Bloqueio de IP direto** (só HTTPS): `ssl_reject_handshake on` no 443 default_server + `return 444` no 80 default_server (o bloco klarim.net perdeu o `default_server`; CF manda SNI=klarim.net).
+- **Paths de exploit → 404** antes do fallback SPA (`.env`/`.git`/`wp-config`/`phpmyadmin`/`adminer`/`swagger`/`graphql`/`_debug`/`xmlrpc`/…). Um path fora do allowlist cai no SPA (200+HTML) → o scanner intensifica; por isso o bloqueio explícito.
+- Roteamento sem strip de prefixo (como `/remover`): `/a/{id}`, `/lgpd/request`*, `/sitemap*.xml`, `/blog/rss.xml`. (*`/api/lgpd/request` vai pelo `/api/`.)
 
 ### Scanner
-- **Gate de acessibilidade (KL-94):** ANTES dos 48 checks, `run_scan` confere se o site é
-  acessível (`scanner/runner.py::_accessibility_gate`) — um domínio inexistente/offline NÃO pode
-  receber score (os checks Tipo B dariam PASS falsos). (1) DNS resolve A/AAAA? NXDOMAIN →
-  `domain_not_found`; timeout/erro → `dns_error`. (2) HTTP responde? QUALQUER resposta (200/301/
-  403/503) = acessível → segue (SSL inválido NÃO aborta: `verify=False`, o check_ssl marca FAIL);
-  falha de conexão → `unreachable`. Aborta com `ScanReport.status` != `ok` (score=None, results=[]).
-  A API (`/scan/result`, `/scan/summary`) devolve **200** com `{status, error_detail, score:null,
-  checks:[]}` (domínio válido, só inacessível — o front mostra o card certo). **Persistência:** só
-  cacheia (Redis) scan `ok`; `unreachable` é gravado no Postgres (`scans.status`, score NULL) p/
-  analytics de disponibilidade (KL-57); `domain_not_found`/`dns_error` NÃO são salvos.
-- **Auditoria dos checks Tipo B (KL-94):** todo check que verifica a AUSÊNCIA de algo ruim usa
-  `base.content_guard(resp, NAME, sev)` → **INCONCLUSO** (nunca PASS falso) se o servidor deu **5xx**
-  ou o corpo é **vazio/mínimo** (<100 chars); `except` de conexão já retornava INCONCLUSO. Os checks
-  multi-sonda (20/dirlist/sensitive/sourcemaps) contam respostas: **zero respostas → INCONCLUSO**
-  (um arquivo ausente num site acessível segue PASS legítimo). Checks Tipo A (presença de proteção:
-  SPF/HSTS/CSP/DNSSEC/… — ausência = FAIL) NÃO mudam.
-- **Runner paralelizado** (`asyncio.gather` + `Semaphore(SCAN_MAX_CONCURRENCY=12)`);
-  seguro porque o rate limit de `base.fetch` é **por-domínio** (1 req/s preservado).
-- **48 checks passivos** = **15 grátis (ORDER≤15)** + **33 pagos** (OWASP/CWE/LGPD,
-  CVE via Retire.js, TLS profundo, DNS, content analysis). Cada check é uma coroutine
-  descoberta dinamicamente (ver §6).
-- **8 indicadores de privacidade** (KL-44 P5, `scanner/privacy_checks.py`) rodam num
-  **único GET próprio** e geram um `privacy_score` **0–8 SEPARADO** do score de segurança
-  (nunca se combinam) — diagnóstico técnico, **não** conformidade LGPD (disclaimer
-  obrigatório em toda superfície). São indicadores, não `check_*.py` (não entram nos 48).
+- **Gate de acessibilidade (KL-94)** ANTES dos 48 checks (`scanner/runner.py::_accessibility_gate`): DNS resolve? (NXDOMAIN→`domain_not_found`; erro→`dns_error`) → HTTP responde? (qualquer 2xx/3xx/4xx/5xx = acessível; SSL inválido NÃO aborta, `verify=False`; falha de conexão→`unreachable`). Aborta com `ScanReport.status`≠`ok` (score=None). A API devolve **200** com `{status, error_detail, score:null, checks:[]}`. Persistência: só cacheia scan `ok`; `unreachable`→Postgres (score NULL, analytics); `domain_not_found`/`dns_error` não salvos.
+- **Auditoria checks Tipo B (ausência de algo ruim):** `base.content_guard(resp, NAME, sev)` → INCONCLUSO (nunca PASS falso) se 5xx ou corpo vazio/mínimo (<100 chars). Multi-sonda contam respostas: zero respostas → INCONCLUSO. Checks Tipo A (presença de proteção: SPF/HSTS/CSP/DNSSEC — ausência=FAIL) não mudam.
+- **Runner paralelizado** (`asyncio.gather` + `Semaphore(SCAN_MAX_CONCURRENCY=12)`); seguro porque o rate limit de `base.fetch` é **por-domínio** (1 req/s).
+- **48 checks passivos** = **15 grátis (ORDER≤15)** + 33 pagos (OWASP/CWE/LGPD, CVE via Retire.js, TLS profundo, DNS, content). Cada check é coroutine descoberta dinamicamente (§7). Cache por tier (`scan:free:*`/`scan:full:*`, ambos casam `scan:*`) com fallback no banco.
+- **8 indicadores de privacidade** (`scanner/privacy_checks.py`) num único GET próprio → `privacy_score` **0–8 SEPARADO** do score de segurança — diagnóstico técnico, **não** conformidade LGPD (disclaimer obrigatório). Não entram nos 48.
 - **Semáforo:** 🟢 score **≥90 E zero FAIL Alta/Crítica** · 🟡 ≥50 · 🔴 <50.
-- Cache por tier no Redis (`scan:free:*` / `scan:full:*`, ambos casam `scan:*`) com
-  fallback no banco.
 
-### Workers
-- **Discovery** — CT log poller (`ct_poller.py`), ciclo 30 min; enfileira **todo site
-  acessível** (scan desacoplado do e-mail, KL-60).
-- **Alert** — batch 50, ciclo 30 min, remetente `alerta@klarim.net` (ex-klarimscan.com, 2026-07-20),
-  teto pela cota mensal / `ALERT_DAILY_LIMIT`; kill-switch `STOP_ALERTS` + `worker_control`.
-- **Rescan** — ciclo 24 h, alvos ≥30 dias.
-- **Vigília** (KL-44 P2/P4) — ciclo 6 h, 8 tipos: **core** (SSL, domínio, score,
-  e-mail, reputação) + **avançadas P4** (`changes` integridade do site, `phishing`
-  typosquat via CT logs) no ciclo 6 h; **`uptime`** roda num **loop curto próprio**
-  (5 min, reagenda pelo intervalo do plano: Pro 30 min · Agency 5 min). Enforcement por
-  plano; **começa pausada** (dono ativa via MCP). O discovery detecta typosquat sobre
-  todo o buffer de CT logs (`is_typosquat`) → grava `typosquat_alerts` (event-driven).
-- **Bulletin** (KL-44 P3) — ciclo 1 h, envia às `BULLETIN_HOUR_UTC` (13h) o boletim por
-  frequência do plano (free=mensal · pro=semanal · agency=diário útil); plain text via
-  `alerta@klarim.net` (proativo), + laudo técnico ao técnico vinculado via `klarim@klarim.net`.
-- **Trial** (KL-44 P6) — ciclo 1 h, **age 1x/dia** às `TRIAL_HOUR_UTC` (6h): avisa 7d/1d
-  antes e, no vencimento, faz **downgrade silencioso para Free** (desativa vigílias, dados
-  preservados) + e-mail. Flag `TRIAL_EXPIRATION_ENABLED`. (Também há expiração *lazy* na
-  leitura de `plans.get_subscription`.)
-- **Scan worker** — consome a fila Redis, `WORKER_MAX_SCANS_PER_HOUR` (**KL-77: 200 na
-  VM**), enriquece perfil + IA inline (~US$0,001/site) e **arquiva o response bruto no GCS**
-  (KL-77 Fase 2, ver abaixo). **KL-94 (complemento):** trata o `ScanReport.status` do gate
-  (`_persist_scan_report`, testável): `ok` → salva + **zera** `gate_fail_count`; `unreachable` →
-  grava `scans.status='unreachable'` (score NULL, analytics) + conta falha; `domain_not_found` →
-  conta falha (não salva); `dns_error` → transitório (no-op). **Retry backoff** por falha de gate
-  (`targets.gate_fail_count`/`gate_next_retry`): 1ª +7d, 2ª +30d, 3ª **descarta** — MAS só se o alvo
-  NUNCA teve score (`last_scan_score IS NULL`); um site que já teve score é **preservado** (nunca
-  descartado, `last_scan_score` intacto — a `update_scan_result` só roda no `ok`). O worker **pula**
-  o alvo enquanto `gate_next_retry` está no futuro (`gate_retry_pending`). O **alert worker exclui**
-  inacessíveis (`gate_fail_count>0` / `last_scan_score IS NULL` no `_ALERT_ELIGIBLE_WHERE`) — a
-  vigília (KL-44 P2) cobre uptime. Estimado: 30-50% dos ~3.000 alvos/dia falham o gate (certs CT sem
-  site) → ~1.500 scans/dia a menos, fila drena mais rápido, scores mais confiáveis.
-- Heartbeat no Redis (TTL 600s) + watchdog `os._exit(1)` + `restart:unless-stopped`.
-- **Backfill de enriquecimento (cron root, 2026-07-20)** — o discovery cria ~2.500 alvos/dia e o
-  enrich inline do scan worker não acompanha (backlog ~16,7k sem perfil). `scripts/enrich_all.py`
-  roda por **cron root na VM: batch 2.000, 6×/dia (a cada 4h — `0,4,8,12,16,20`)** ≈ 12.000/dia,
-  guardado por `flock -n /tmp/klarim_enrich.lock` (sem overlap), no container `api`, log em
-  `/var/log/klarim_enrich.log`. Custo ~US$12/dia OpenAI enquanto durar o backlog — **monitorar
-  CPU/RAM**; sob pressão, baixar o batch p/ 1.500. Reclassificação retroativa de setores em §9 (KL-84).
+### Workers (heartbeat Redis TTL 600s + watchdog `os._exit(1)` + `restart:unless-stopped`)
+- **Discovery** — CT log poller (`ct_poller.py`), ciclo 30 min; enfileira todo site acessível (scan desacoplado do e-mail). Detecta typosquat sobre o buffer de CT logs → `typosquat_alerts`. Registra subdomínios de domínio-raiz já na base (`site_subdomains`, nunca escaneados).
+- **Alert** — ciclo 30 min. Elegibilidade ordena `(e-mail casa domínio) DESC, last_scan_at ASC`; busca `ALERT_FETCH_CAP` (200), envia até `send_cap`, ordenado por score DESC. Kill-switch `STOP_ALERTS` + `worker_control`. Exclui inacessíveis (`gate_fail_count>0`/`last_scan_score IS NULL`).
+- **Rescan** — ciclo 24 h, alvos ≥30 dias (`RESCAN_AGE_DAYS`).
+- **Vigília** (KL-44 P2/P4) — ciclo 6 h, 8 tipos: core (ssl/domain/score/email/reputation) + avançadas (`changes`, `phishing`/typosquat). `uptime` num loop curto próprio (5 min, reagenda pelo plano: Pro 30min · Agency 5min). Enforcement por plano.
+- **Bulletin** (KL-44 P3) — ciclo 1 h, às `BULLETIN_HOUR_UTC` (13h): free=mensal · pro=semanal · agency=diário útil; plain text via `alerta@klarim.net` + laudo técnico ao técnico vinculado via `klarim@klarim.net`.
+- **Trial** (KL-44 P6) — ciclo 1 h, age 1x/dia às `TRIAL_HOUR_UTC` (6h): avisa 7d/1d antes + downgrade silencioso p/ Free no vencimento. Cleanup de contas não-confirmadas/passwordless inativas. Flag `TRIAL_EXPIRATION_ENABLED`.
+- **VendorMonitor** (KL-152) — 1x/dia, re-scan de fornecedores Gate vencidos + alerta ao Enterprise se score cair.
+- **Scan worker** — consome `klarim:scan_queue`, `WORKER_MAX_SCANS_PER_HOUR` (200 na VM, editável ao vivo), enriquece perfil + IA inline (~US$0,001/site) + arquiva response bruto no GCS. Trata `ScanReport.status`: `ok`→salva+zera `gate_fail_count`; `unreachable`→grava+conta falha; `domain_not_found`→conta falha. **Retry backoff** por falha de gate (`gate_fail_count`/`gate_next_retry`: +7d/+30d/descarta) — MAS só descarta se `last_scan_score IS NULL` (site com score é preservado).
+- **Backfill de enriquecimento (cron root):** `scripts/enrich_all.py` batch 2.000, 6×/dia (a cada 4h), `flock -n /tmp/klarim_enrich.lock`, container `api`, log `/var/log/klarim_enrich.log`. Custo ~US$12/dia OpenAI enquanto durar o backlog — monitorar CPU/RAM.
 
-### Arquivamento de responses brutos (KL-77 Fase 2)
-Cada scan comprime (gzip) o **response bruto** já em memória do enrich (headers, html,
-dns, ssl, status, tempo — **sem request extra**) e sobe para `gs://klarim-raw/YYYY/MM/DD/
-{scan_id}.json.gz` (bucket Nearline, privado). Dado que o Postgres descarta e o KL-75 vai
-reprocessar. **Fire-and-forget:** `scanner/gcs_archive.py` (client lazy, upload em thread);
-`GCS_ENABLED=false` = bypass; erro é logado e engolido — **o scan nunca trava**. Captura:
-`enrich_profile(..., capture_raw=True)` devolve o response ao worker (SSL vem do cache do
-`tls_analyzer`); o caminho público passa `capture_raw=False` (nada muda). Contadores no
-Redis (`klarim:gcs:*`, TTL 48h) → MCP `get_gcs_archive_stats` / `GET /admin/gcs-archive/stats`.
+### GCS archive (KL-77 F2) · tech detect (KL-75) · access log (KL-92)
+- **GCS:** cada scan comprime (gzip) o response bruto já em memória do enrich (headers/html/dns/ssl/status, **sem request extra**) → `gs://klarim-raw/YYYY/MM/DD/{scan_id}.json.gz` (Nearline privado). Fire-and-forget (`scanner/gcs_archive.py`, `GCS_ENABLED=false`=bypass; erro logado/engolido). Contadores `klarim:gcs:*` → MCP `get_gcs_archive_stats`.
+- **Tech detect:** do mesmo response bruto, `scanner/tech_detector.py::detect_tech_stack` (pura) extrai tecnografia (~50 scripts, headers, meta, DNS TXT, SSL) + `site_type` + `site_status`. `persist_tech_detection` grava (resiliente) em `site_tech_stack` (batch idempotente), `targets.email_provider`/`related_domains`/`site_type`, `site_status_log`, `company_name` só-se-vazio. Público = `GET /public/tech-summary/{domain}`.
+- **Access log (fonte de verdade das métricas de visitante):** tabela **`access_log`** (IP INET, país, endpoint, status, user_id, domain_queried, is_bot/bot_reason, `source` middleware|nginx). Duas fontes disjuntas: **`api/access_log_middleware.py`** (OUTERMOST, `/api`+`/mcp`, com user_id + retroatividade) + **`api/nginx_log_parser.py`** (páginas Astro não-`/api`, lê o access_log do Nginx incrementalmente). Classificação em **`api/bot_classifier.py`** (PURO: IP próprio→autenticado→datacenter→crawler UA→rate>50/h→pré-fetch de e-mail [CIDRs Gmail/Outlook + >20 domínios distintos/h]). **Retroatividade:** uma `HUMAN_ACTION` marca não-bot todos os registros do IP no dia. **LGPD:** IP retido 90d, depois `anonymize_old_access_logs` trunca IPv4→/24 e IPv6→/48; nos responses o IP volta mascarado (completo só no banco). ⚠️ o Nginx faz `rewrite ^/api/(.*)$ /$1` → o middleware vê paths SEM `/api`.
 
-### Detecção de tech stack (KL-75 Prompt 1)
-Do MESMO response bruto (após o enrich, antes do GCS), `scanner/tech_detector.py::
-detect_tech_stack` (função pura) extrai tecnografia — parse em memória, **sem request extra**.
-`scanner/main.py::persist_tech_detection` grava (resiliente) em `site_tech_stack` (batch,
-idempotente), `targets.email_provider`/`related_domains`, `site_status_log`, e `company_name`
-só-se-vazio. Público = badges `GET /public/tech-summary/{domain}`; detalhado = admin/MCP. Ver §9 KL-75.
-
-### Access log server-side (KL-92) — fonte de verdade das métricas de visitante
-O tracker.js (client-side) infla visitantes ~5x (pre-fetch de e-mail executa JS no browser do
-bot). A verdade é do **servidor**, que vê o IP real. `api/access_log_middleware.py` é um
-middleware HTTP (OUTERMOST — enxerga até 401) que grava CADA request não-estático na tabela
-**`access_log`** com o IP REAL (`CF-Connecting-IP`), país (`CF-IPCountry`), user_id (JWT) e a
-classificação bot/humano do **`api/bot_classifier.py`** (função PURA: IP próprio → autenticado →
-datacenter → crawler UA → rate >50/h → padrão de pré-fetch). **Fire-and-forget:** captura
-síncrona barata → `_spawn(_process_access)` (classifica + contador Redis `access_rate:{ip}` TTL
-1h + enfileira) → **buffer + flush em batch** a cada 5s (`log_access_batch`). Erro nunca atrasa/
-quebra o response; Redis fora → classificação de rate/pre-fetch pula (fail-open). **Retroatividade:**
-uma AÇÃO HUMANA (scan/signup/login/PDF/evento, `HUMAN_ACTIONS`) marca como não-bot todos os
-registros daquele IP no dia (`mark_ip_human_today`) — corrige o dev/cliente atrás de datacenter.
-**LGPD:** IP retido 90d; depois o loop diário `anonymize_old_access_logs` trunca o último octeto
-(`set_masklen(...,24)`). Nos responses da API o IP volta MASCARADO (1 octeto em ip-behavior, 2 em
-ip-detail); o completo fica só no banco. Endpoints admin `/admin/analytics/{server-metrics,
-ip-behavior,ip-detail}` + MCP `get_server_metrics`/`get_ip_behavior`/`get_ip_detail`. O tracker.js
-CONTINUA para eventos de interação (scan_started etc.). Prompt 2: queries de comportamento +
-dashboard usando o access_log como fonte primária. Ver §9 KL-92.
-
-### Planos (KL-44 P1) — freemium
-`PAYWALL_ENABLED` (default **`false`**): todo scan autorizado vê os **48 checks** com
-detalhe; PDF sempre gratuito. Assinatura define o **monitoramento**:
-- **Free** — 1 site, boletim mensal + **as 5 vigílias core ATIVAS** (ssl/domain/score/email/
-  reputation — KL-106; uptime é Pro, changes/phishing são Agency).
+### Planos (freemium) — `PAYWALL_ENABLED` default `false`
+Todo scan autorizado vê os **48 checks**; PDF sempre gratuito. Assinatura define o **monitoramento**:
+- **Free** — 1 site, boletim mensal + **5 vigílias core ATIVAS** (ssl/domain/score/email/reputation; uptime=Pro, changes/phishing=Agency).
 - **Pro** — R$ 19/mês (R$ 99/ano), 5 sites, semanal, vigílias.
 - **Agency** — R$ 49/mês, 15 sites, diário, vigílias avançadas.
-- **Reverse trial 30 dias** no signup (Pro automático; `?plan=agency` no signup começa
-  trial Agency). **Upgrade self-service** via PIX (KL-44 P6): `POST /account/upgrade` →
-  cobrança AbacatePay transparente (QR), webhook idempotente ativa o plano; `/account/
-  downgrade` imediato. **Trial expira → downgrade silencioso p/ Free** (worker `trial`).
-
-R$ 19 avulso (KL-27) só existe se o site **não** passou nos 48 e quer re-verificar.
+- **Reverse trial 30 dias** no signup (Pro; `?plan=agency`→trial Agency). **Upgrade self-service via PIX** (`POST /account/upgrade`→AbacatePay transparente, webhook idempotente; `subscription_payments`, separada de `payments`). **NUNCA guarda dado de cartão/PIX** — só o id da cobrança. Trial expira → downgrade silencioso.
 
 ### MCP Server
-SSE + **OAuth 2.1 + PKCE** (KL-63) + **token estático** (`MCP_API_KEY`) como fallback.
-**~49 tools** (leitura + escrita) — wrapper fino sobre a API/store, auth própria
-(fail-closed), não passa pelo JWT admin.
+SSE + **OAuth 2.1 + PKCE** + token estático (`MCP_API_KEY`) como fallback. **~80 tools** (leitura + escrita) — wrapper fino sobre a API/store, auth própria (fail-closed). ⚠️ o token é propagado no evento `endpoint` (`&token=`), senão os POSTs do `/messages/` chegam sem auth (401). Tool nova → reconectar o MCP pós-deploy p/ aparecer.
 
-### Integrações
-Resend (2 domínios), AbacatePay (PIX), OpenAI (GPT-4o mini), APIs públicas de leitura
-(crt.sh, HIBP, Google Safe Browsing, IBGE CNAE, BrasilAPI/ReceitaWS, RDAP) — todas
-best-effort/fail-open (degradam para INCONCLUSO, nunca derrubam o scan).
-
-**Google Safe Browsing API ativa (KL-59, `check_29` funcional):** `GOOGLE_SAFE_BROWSING_KEY`
-configurada no `.env` da VM (2026-07-18) — `check_29_safe_browsing` retorna PASS/FAIL em vez de
-INCONCLUSO. A key vive só no `.env` (gitignored), nunca no código. Scans em cache anteriores
-seguem INCONCLUSO até o rescan; scans novos já pontuam o check.
+### Integrações (todas best-effort/fail-open → degradam para INCONCLUSO, nunca derrubam o scan)
+Resend (5 remetentes), AbacatePay (PIX), OpenAI (GPT-4o mini), Reoon (verificação de e-mail — background), APIs públicas de leitura (crt.sh, HIBP, **Google Safe Browsing** `GOOGLE_SAFE_BROWSING_KEY` ativa → check_29 PASS/FAIL, IBGE CNAE, BrasilAPI/ReceitaWS, RDAP, ViaCEP). Keys só no `.env` (gitignored).
 
 ---
 
-## 5. Estrutura de diretórios
+## 6. Estrutura de diretórios
 
 ```
-api/          → FastAPI: main.py (endpoints), auth_users.py, plans.py, vigilias.py,
-                lead_scoring.py, oauth.py (MCP), health_checks.py, admin_analytics.py,
-                access_log_middleware.py + bot_classifier.py (KL-92)
-discovery/    → Workers + store.py (TargetStore, todo o schema Postgres):
-                worker.py, alert_worker.py, rescan_worker.py, vigilia_worker.py,
-                ct_poller.py, classifier.py, contact.py, sector_taxonomy.py, cnae.py
-scanner/      → Engine: main.py (worker+CLI), runner.py, scoring.py, profiler.py,
-                ai_enrichment.py, enrichment.py, tls_analyzer.py, cve_db.py,
-                checks/ (check_*.py descobertos dinamicamente + classifications.py)
-reporter/     → PDF WeasyPrint: generator.py, risk_messages.py, templates/
-notifier/     → KlarimMailer (email_client.py) + templates/ (table-based)
+api/          → FastAPI: main.py, auth_users.py, plans.py, vigilias.py, dashboard.py,
+                lead_scoring.py, oauth.py, health_checks.py, admin_analytics.py, admin_sectors.py,
+                gate.py, gate_rate_limiter.py, validators.py, target_intelligence.py,
+                vigilia_details.py, access_log_middleware.py, bot_classifier.py, nginx_log_parser.py
+discovery/    → Workers + store.py (TargetStore, TODO o schema Postgres): worker.py, alert_worker.py,
+                rescan_worker.py, vigilia_worker.py, vendor_monitor_worker.py, ct_poller.py,
+                classifier.py, contact.py, alert_scoring.py, sector_*.py, subdomains.py, cnae.py
+scanner/      → Engine: main.py (worker+CLI), runner.py, scoring.py, profiler.py, ai_enrichment.py,
+                enrichment.py, tls_analyzer.py, tech_detector.py, gcs_archive.py, privacy_checks.py,
+                cve_db.py, checks/ (check_*.py dinâmicos + classifications.py)
+security_gate/→ Produto Gate (portável): engine.py, models.py, config.py, utils.py, vendor.py,
+                checks/ (exposure, credentials, headers, ssl, api_security, email_security, cors,
+                cookies, dns_security, tls_ciphers, … + scanner_adapter.py), formatters/
+reporter/     → PDF WeasyPrint: generator.py, risk_messages.py, gate_report.py, gate_run_report.py, templates/
+notifier/     → KlarimMailer (email_client.py), cold_alert.py, email_verifier.py, templates/
 payments/     → AbacatePay PIX: abacatepay.py, models.py, store.py
 mcp_server/   → MCP SSE + OAuth: _base.py, server.py, auth.py, oauth.py, tools/
-web/          → Astro 7 (site público + rotas do painel proxiadas)
+web/          → Astro 7 (site público + rotas do painel proxiadas) — src/lib/* (lógica pura testável)
 frontend/     → build Vite (/painel admin) + config Nginx (nginx/*.conf) + assets
-scripts/      → seeds, backfills, enrich_all.py, enqueue_unscanned.py
+scripts/      → seeds, backfills, enrich_all.py, security_gate.py (CLI), klarim_gate_cli.py
 tests/        → pytest (offline por default; rede atrás de KLARIM_ONLINE=1)
-claude/reports/ → relatório de cada tarefa (KL-xxx)
-docs/         → ARCHITECTURE / API / DEPLOY / SECURITY / HISTORY
+docs/         → ARCHITECTURE / API / DEPLOY / SECURITY / LGPD / HISTORY · claude/reports/ (KL-xxx)
 ```
 
 ---
 
-## 6. Convenções de código
+## 7. Convenções de código
 
-- **`async`/`await`** para toda I/O. **Type hints** em assinaturas públicas.
-  **Docstrings** no que não for trivial (o que o check verifica e o que é PASS/FAIL).
-- **Migrations idempotentes** (`CREATE TABLE IF NOT EXISTS`, `ALTER … ADD COLUMN IF
-  NOT EXISTS`) dentro do `ensure_schema` de `discovery/store.py` — **sem Alembic**.
-- **Auth:** endpoints admin sob os prefixos protegidos (`/targets`, `/scans`,
-  `/alerts`, `/rescans`, `/email`, `/payments`, `/config`, `/leads`, `/admin`…) →
-  **JWT admin Bearer** (`typ=admin`). Endpoints de usuário sob **`/account/*`** →
-  **JWT usuário no cookie** (`typ=user`). Os dois JWT usam o mesmo `JWT_SECRET` mas o
-  `typ` **nunca é ignorado**.
+- **`async`/`await`** para toda I/O. **Type hints** em assinaturas públicas. **Docstrings** no que não for trivial.
+- **Migrations idempotentes** (`CREATE TABLE IF NOT EXISTS`, `ALTER … ADD COLUMN IF NOT EXISTS`) dentro do `ensure_schema` de `discovery/store.py` — **sem Alembic**. A API cria o schema no boot (lifespan). ⚠️ Índice que referencia coluna adicionada por `ALTER` deve vir **depois** do ALTER (senão banco fresco falha).
+- **Auth:** endpoints admin sob prefixos protegidos (`/targets`, `/scans`, `/alerts`, `/rescans`, `/email`, `/payments`, `/config`, `/leads`, `/admin`…) → **JWT admin Bearer** (`typ=admin`). Usuário sob **`/account/*`** → **JWT usuário no cookie** (`typ=user`). Gate: `/gate/*` → API key (`X-API-Key`); `/account/gate/*` → JWT sessão (alguns dual-auth). Mesmo `JWT_SECRET`, mas `typ` **nunca é ignorado**.
 - **Rate limit via Redis** (`_redis_allow`) com fallback in-memory.
-- **Config editável:** `admin_settings` (banco) **>** `os.environ` (.env) **>**
-  default, via `get_setting(key, default)` — **fail-open** (erro de banco nunca pausa
-  worker). Ver KL-44 (§49 do HISTORY).
-- **Fire-and-forget** (`_spawn`) para operações não-críticas (ingest, lead, e-mail
-  em background) — nunca bloqueiam nem derrubam o chamador.
-- **Testes offline** (sem rede/Postgres) com `FakeStore`.
+- **Config editável:** `admin_settings` (banco) **>** `os.environ` (.env) **>** default, via `get_setting(key, default)` — **fail-open** (erro de banco nunca pausa worker).
+- **Fire-and-forget** (`_spawn`) para operações não-críticas (ingest, lead, e-mail em background).
+- **Testes offline** (sem rede/Postgres) com `FakeStore`. Frontend: **`node --test`** sobre lógica PURA de `web/src/lib/*.js` (não Vitest). ⚠️ `store.*` novo em endpoint compartilhado → stub no `FakeStore` (senão todo teste 500).
+- **Padrão testável:** agregação BRUTA (SQL) no `store.py`; derivação PURA (cálculo/shape) em módulo separado → orquestrador fino no `main.py`. Valide SQL novo contra o Postgres 16 da VM.
 
 ### Como adicionar um check ao scanner
-1. Crie `scanner/checks/check_<slug>.py` com as constantes de módulo `ORDER` (int —
-   **≤15 é grátis**, >15 é pago), `CHECK_ID` (str), `NAME` (str) e a coroutine
-   `async def check(url: str) -> CheckResult`. Descoberta é automática
-   (`discover_checks()`) — **não existe lista hardcoded**.
-2. Retorne `PASS`/`FAIL`/`INCONCLUSO` (INCONCLUSO é neutro no score; nunca finja PASS).
-   Severidade: `CRITICA`/`ALTA`/`MEDIA`/`BAIXA`.
-3. Acrescente a entrada em **`scanner/checks/classifications.py`** (OWASP/CWE/LGPD — o
-   teste `test_every_check_is_mapped` falha se faltar) e em **`RISK_MESSAGES`**
-   (`reporter/risk_messages.py`) + **`ACCESSIBLE`/`TECHNICAL`** (`reporter/generator.py`).
-4. **Flush `scan:*` no Redis** após o deploy (novo check muda scores).
-- Reutilize `checks/base.fetch` (helper HTTP + rate limiter); nunca reinvente.
+1. `scanner/checks/check_<slug>.py` com `ORDER` (int, **≤15 grátis**), `CHECK_ID`, `NAME` e `async def check(url) -> CheckResult`. Descoberta automática (`discover_checks()`, sem lista hardcoded).
+2. Retorne `PASS`/`FAIL`/`INCONCLUSO` (INCONCLUSO neutro; nunca finja PASS). Severidade `CRITICA`/`ALTA`/`MEDIA`/`BAIXA`.
+3. Entrada em `scanner/checks/classifications.py` (OWASP/CWE/LGPD — `test_every_check_is_mapped` falha se faltar) + `RISK_MESSAGES` (`reporter/risk_messages.py`) + `ACCESSIBLE`/`TECHNICAL` (`reporter/generator.py`).
+4. **Flush `scan:*` no Redis** após o deploy. Reutilize `checks/base.fetch` (nunca reinvente o rate limiter).
 
 ### Como rodar
 ```bash
 python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
 python -m scanner.main https://www.example.com [--json|--pdf]   # scan pela CLI
+python scripts/security_gate.py https://klarim.net              # Security Gate CLI
 docker-compose up --build                                        # stack completa
 pytest                                                           # offline
 KLARIM_ONLINE=1 pytest tests/test_checks.py                      # inclui scan real
+npm run test:unit --prefix web                                   # frontend (node --test)
 ```
 
-### Desenvolvimento local (KL-90 P0) — testar antes de subir
-Stack Docker **isolada da produção** para desenvolver frontend + API localmente (o
-sistema nunca rodava local — era deploy direto). **Não faz deploy/push/CI; nenhum
-e-mail/pagamento real sai** (`DRY_RUN_EMAIL=true`, Resend/AbacatePay/GCS off). Guia
-completo em **`docs/DEV.md`**.
+### Desenvolvimento local (KL-90 P0) — `docs/DEV.md`
+Stack Docker isolada da produção; **não faz deploy/push/CI; nenhum e-mail/pagamento real** (`DRY_RUN_EMAIL=true`, Resend/AbacatePay/GCS off).
 ```bash
-docker compose -f docker-compose.dev.yml up --build                    # sobe db/redis/api/astro/web
-docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev   # dados de teste
+docker compose -f docker-compose.dev.yml up --build
+docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev
 ```
-- **Arquivos** (todos gitignored/ignorados p/ prod): `docker-compose.dev.yml` (db :5433,
-  redis :6380, api hot-reload `--reload`, astro `npm run dev` :4321, web Nginx :3000 — **sem
-  workers**), `.env.dev` (`.env.*` já no `.gitignore`), `frontend/nginx/dev.conf` (HTTP puro,
-  sem SSL/CSP/rate limit), `scripts/seed_dev.py`. A produção segue em `docker-compose.yml` +
-  `frontend/nginx/{http.conf,https.conf.template}` — os `*dev*` **nunca** vão para a VM.
-- **Acesso:** browser http://localhost:3000 (Nginx) · Astro http://localhost:4321 · API
-  http://localhost:8000 (`/docs` liga com `KLARIM_DEV_MODE=true`) · Postgres :5433 · Redis :6380.
-- **A API cria o schema no boot** (`ensure_schema` no lifespan) — é o único container que "migra".
-- **Seed** (idempotente): 3 users (`dono@exemplo.com.br`/`dev123456` = 5 sites Pro trial ·
-  `tecnico@agencia.com.br` · `novo@teste.com.br` não-confirmado), 5 sites (score 20–100), 50 scans
-  (histórico + 48 checks no mais recente), 10 vigílias, perfis públicos + fillers p/ benchmark.
-  Riscos derivam dos checks FAIL (KL-20); `loja-exemplo` (score 42) falha SPF/HSTS/CSP com fix
-  por plataforma. `scripts/seed_dev.py` recusa rodar fora de dev (guard `KLARIM_DEV_MODE`/host).
+- Arquivos (gitignored/nunca vão p/ VM): `docker-compose.dev.yml` (db :5433, redis :6380, api `--reload`, astro `npm run dev` :4321, web Nginx :3000, **sem workers**), `.env.dev`, `frontend/nginx/dev.conf` (HTTP puro, sem SSL/CSP/rate limit), `scripts/seed_dev.py` (guard `KLARIM_DEV_MODE`).
+- Acesso: browser :3000 · Astro :4321 · API :8000 (`/docs` com `KLARIM_DEV_MODE=true`) · Postgres :5433 · Redis :6380.
+- Seed idempotente: users (`dono@exemplo.com.br`/`dev123456`, `tecnico@agencia.com.br`, `nivel1@teste.com`, `dono3@teste.com`/`dev123456`), 5 sites (score 20–100), 50 scans, vigílias, perfis.
+- ⚠️ Astro entra em crash-loop no restart pelo lock `web/.astro/dev.json` → o `command` do serviço faz `rm -f .astro/dev.json` no boot. Dev server pode ter scan incompleto do Tailwind p/ classes novas (reiniciar resolve; o build de prod gera tudo).
 
 ---
 
-## 7. Estado atual (atualizado em 2026-07-20)
+## 8. Estado atual (atualizado 2026-08-12)
 
-- Alvos: ~25.400 · Scans: ~8.100 · Perfis públicos: ~7.200
-- **Backlog drain (2026-07-20, KL-75+KL-84):** ~16,7k alvos sem enriquecimento + 48% em `outro`.
-  Enrich acelerado por cron (batch 2.000, 6×/dia — §4). Reclassificação retroativa dos ~2,2k `outro`
-  com descrição rodando (`reclassify_sectors.py --scope outro`, ~26% saem de `outro`, preserva
-  `manual`/`receita`). Backfill de tech stack do GCS **pendente de grant `objectViewer`** no bucket.
-- Contas: 8 (6 orgânicas) · Leads: 39
-- Score do próprio `klarim.net`: **100/100**
-- Testes: **2065 passed** (backend pytest; KL-141 completo — P4 CI/notificação +11) + **142 node --test** (frontend `test:unit`)
-- Páginas públicas: `/metodologia` (KL-100) · descadastro `/remover` (KL-102) · landing com social proof ao vivo (KL-103)
-  · MCP tools: **61+** (KL-75: +3 tecnografia · KL-92: +3 access log server-side)
-- **Níveis de conta (KL-99):** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado
-  por domínio); contas legadas → 2. Conta sem senha: Fluxo C (link do alerta) / Fluxo D (signup-inline)
-  / `/cadastrar` só e-mail. **Não deployado** (aguarda validação do dono).
-- Workers: **5/5 ativos** (discovery, alert, scan, vigília, rescan)
-- Planos: 8 contas Pro trial · Vigílias: 35 (30 ok, 5 error)
-- E-mail: **alertas cold com rotação (KL-91)** — `alertas.klarim.net`/`aviso.klarim.net`, texto puro
-  sem links, cooldown 30-60s, limite/remetente (warmup 100/dia). Transacional segue em `klarim@klarim.net`
-- Scan rate: **200/h** (KL-77 Fase 3) · Responses brutos arquivados no GCS `gs://klarim-raw` (KL-77 Fase 2)
-- Tech stack detectado por scan (KL-75 P1): `site_tech_stack` + `site_status_log` + `targets.email_provider`
+- Alvos ~25.400 · Scans ~8.100 · Perfis públicos ~7.200 · Sites score 100 ~730.
+- Score do próprio `klarim.net`: **100/100** (Gate: 90/100 full, só rate_limit HIGH).
+- Testes: **~2317 pytest** + **~221 node --test** (`npm run test:unit`).
+- Workers: **5/5 ativos** (discovery, alert, scan, vigília, rescan) + VendorMonitor.
+- Scan rate 200/h · responses brutos no GCS `gs://klarim-raw`.
+- E-mail: cold com rotação `alertas./aviso.klarim.net`, regra de envio = 3 filtros locais (KL-145), blocklist aprendente.
+- MCP tools: **~80**. Analytics admin: aba "Visão geral" **desativada** (ver §9); 1ª aba = "Comportamento".
+- Security Gate: produto vivo (§9). Blog, LGPD (`/lgpd`), sitemap dinâmico ativos.
 
 > **Atualize este bloco a cada tarefa** que mude números relevantes.
 
 ---
 
-## 8. Gotchas (evitam retrabalho)
+## 9. Subsistemas atuais (estado vigente — não histórico)
 
-- **Alert worker cold: os melhores leads primeiro + fetch desacoplado do send (fix livelock 2026-07-23).**
-  A elegibilidade ordena `(e-mail casa o domínio do site) DESC, last_scan_at ASC` — senão a frente
-  (mais antiga) é e-mail genérico não-matching (score 15 < threshold 20) que entope a fila e manda 0
-  (os leads bons — e-mail no domínio, score 45-60 — ficam no fundo). O ciclo busca `ALERT_FETCH_CAP`
-  (200) candidatos e envia até o `send_cap` (throttle+cooldown+cotas), ordenados por score DESC. Cada
-  skip por baixa qualidade LOGA o motivo (`[alert] skip lead …` + sinais, e-mail mascarado). O `-15`
-  de prefixo role-based (`contato@`) NÃO foi mexido (os domain-match passam mesmo assim).
-- **Deploy = api+discovery+worker rodam `ensure_schema` CONCORRENTE → risco de DeadlockDetected**
-  (ALTER/CREATE INDEX disputam `AccessExclusiveLock`). O `ensure_schema` **retenta** erro
-  transitório de DDL (`_is_transient_ddl`, 6× backoff); o scan worker **não** zera mais o `store`
-  se falhar (bug 2026-07-23: `store=None` permanente → escaneava sem persistir até restart — o
-  `print` do score fica FORA do `if store is not None`, mascarando). Fila do scan = **`klarim:scan_queue`**
-  (não `scan_queue`); persistência real se vê em `targets.last_scan_at`/tabela `scans`, não só no log.
-- **CSP estrita do `klarim.net` bloqueia islands Astro** ("Astro is not defined") →
-  o `/painel` usa CSP relaxada; ilhas admin são `client:only="react"`.
-- **`parseUTC`:** timestamps do Postgres são naive — adicione `Z` antes de `new Date`.
-- **SPA fallback do Vite** serve `200` para paths desconhecidos (não é o arquivo real).
-- **Arquivo `.js` público novo (`web/public/*.js`) NÃO é servido em produção sem 2 passos** (KL-90
-  fix, 2026-07-22): (1) o `web` (nginx) tem um **allowlist explícito** de paths proxiados ao `astro`
-  (`https.conf.template`/`http.conf`, regex `…|track\.js|theme\.js|header\.js|planos-auth\.js`); um
-  arquivo fora da lista cai no `location / { try_files $uri /index.html }` (root do Vite) → serve o
-  **index.html do Vite (text/html)** → com `nosniff`, o browser **bloqueia o script**. **Adicione o
-  nome do arquivo ao allowlist.** (2) Referencie com **`?v=N`** (como `theme.js?v=2`) e **bump a cada
-  alteração** — senão o Cloudflare cacheia o HTML de erro por 4h. ⚠️ **Não requisite a URL `?v=N`
-  antes do fix estar no ar** (o CF cacheia o erro naquela chave → precisa de outra versão).
-- **Docker build na VM `e2-small` (2 vCPU, ~4GB) leva 10–50 min** — lento **≠**
-  travado. Confira idade dos containers via SSH (build-then-recreate mantém o site no ar).
-- **Recharts só na Overview** (island `client:only`) — não pesa no bundle público.
-- **`LeadShared.jsx`:** `CLASS_META`/`ClassBadge` extraídos de `Leads.jsx` p/ evitar
-  import circular.
-- **Inbox:** corpo de e-mail externo renderiza em `<iframe sandbox="">` + `srcDoc` —
-  **NUNCA** `dangerouslySetInnerHTML` (evita stored-XSS roubando o JWT do operador).
-- **MCP SSE:** o token é propagado no evento `endpoint` (`&token=`), senão os POSTs do
-  `/messages/` chegam sem auth (401).
-- **`FakeStore`:** ao adicionar um `store.*` novo num endpoint compartilhado, stub o
-  método no `FakeStore` (senão todo teste 500); atualize `test_mcp_server` p/ tool nova.
-- **504 no `/scan/summary`:** o scan roda inline; site lento pode passar do
-  `proxy_read_timeout` (180s) — o resultado ainda **cacheia**, então a retentativa pega
-  o cache quente. Enriquecimento roda em **background** (fora do caminho síncrono).
-- **"Escanear" no painel = síncrono** (`POST /targets/{id}/scan?sync=1`): reusa
-  `get_or_scan` (escaneia+cacheia+persiste `source='admin'`) e devolve `score`/`semaphore`
-  na hora. Sem `sync` o endpoint só **enfileira** (o botão antigo mostrava "enfileirado"
-  sem resultado visível — daí a impressão de "não funciona").
+### Fontes autoritativas de métrica (KL-95 / KL-136 / KL-150) — CRÍTICO
+- **Contas criadas** = `COUNT(*) FROM users` no período (server-side; NÃO o funil do tracker.js, inflado por pre-fetch).
+- **Scans manuais (Analytics/dashboard)** = `COUNT(*) FROM scans WHERE COALESCE(source,'') NOT IN ('discovery','rescan')` (só `admin`+`public`; o re-scan ~116/dia dominava o KPI).
+- **Scans (`/system/status`)** = `scan_today_stats` = TODOS os scans do dia (incl. discovery+rescan). A divergência dashboard×system_status é **esperada por design**.
+- **`sent_month`** (`count_proactive_emails_this_month`, cota mensal) = PROATIVO (alert_log+rescan_log), mês-**calendário UTC**. **`email_metrics.sent_week`** = `email_log`, todos os tipos, 7 dias móveis. No dia 1 do mês `sent_month < sent_week` é ESPERADO.
+- **Analytics "Visão geral" (KL-150):** período default `7d`, **fuso de BRASÍLIA** (BRT UTC-3; `resolve_period('today')` = meia-noite BRT → instante UTC). **Visitantes BR** = `COUNT(DISTINCT ip_address)` do Brasil, `is_bot=false` **E** sem UA de bot (`_BOT_UA_RE`, tira `Klarim Security Gate`/`KlarimScanner`/wp-scanners); **Bots filtrados** = COUNT de **REQUISIÇÕES** `is_bot=true` OU UA de bot (meio milhão/dia é plausível). Cada KPI tem tooltip (ⓘ).
+- **⚠️ Aba "Visão geral" DESATIVADA (10/08):** os KPIs de visitante do `access_log` divergem do GA4 e as queries de `al_server_metrics` são pesadas (deixavam o painel lento). Comentada (não deletada) em `web/src/components/admin/AdminAnalytics.jsx`; 1ª aba = "Comportamento" (só `ip-behavior`; os blocos que chamavam `server-metrics` também comentados). Backend intacto. Reativar quando a fonte for a **API do GA4**.
+
+### Scan público — resultado por nível de acesso (KL-82/89)
+- `GET /scan/result` escaneia anônimo e devolve payload **filtrado server-side** (`api/main.py::_filter_scan_result`) por `access_level`: `anonymous` < `unconfirmed` < `confirmed`/`alert_session`. **Regra vigente (mostrar valor antes de pedir conta):** score/semáforo, compartilhar+PDF, benchmark, **TODOS os riscos** (linguagem de negócio), categorias e checks por nome/status são **abertos em TODO nível**; **evidência técnica** só no acesso completo; **LGPD só na conta `confirmed`**. Flags puras em `web/src/lib/scanView.js::viewFlags` — derivam SÓ do nível, **nunca** do dispositivo (desktop==mobile).
+- **Resultado instantâneo (P0):** serve scan <24h existente (Redis OU banco) SEM re-escanear (`get_recent_only`, `max_age=1440min`); `refresh=1` força novo. Cai no lookup FREE (15 checks) se não houver FULL → `partial=True` no payload. Rate limit anônimo **5/h + 20/dia por IP** só conta scans REAIS (cache é grátis).
+- Rate limit em `/scan/result` NÃO é client-controlável (nível vem só da sessão via `_access_level`).
+
+### Conta / níveis / conversão
+- **`users.account_level`** (KL-99): 1 sem senha · 2 com senha · 3 dono verificado por domínio (eixo distinto do `access_level`). `password_hash` nullable; `users.source` (`signup`|`hmac`|`inline`|`security-gate`). `@require_level(n)` gateia (403 `insufficient_level`).
+- Fluxos sem senha: link do alerta (`GET /alert-access` → sessão view-only 24h/7d; `POST /account/monitor-from-alert` cria conta no consentimento) · `POST /account/signup-inline` (ativa monitoramento na hora, KL-105) · `/cadastrar` só e-mail · **magic link** (`POST /account/magic-link`). Verificação de domínio 2→3: `POST /account/sites/{id}/verify/{start,check}` (meta_tag/html_file/dns_txt; anti-SSRF: fetch usa domínio de `targets`, corpo nunca volta ao usuário).
+- **Dashboard v2** (`web/src/components/dashboard-v2/`, `/dashboard`): 1 fetch `GET /account/dashboard-summary?site_id=` (lógica em `api/dashboard.py`, `build_*` PURAS + `asyncio.gather`). Ramifica por `account_type` (developer PURO → só seção Gate; both → Gate + sites; owner → normal). Modo técnico (`_build_technician_view`): `site_id` de cliente exige `technician_link` ativo (senão 404), 48 checks + evidência, `owner_email` mascarado. `contact_email`/cnpj/whatsapp nunca no payload.
+
+### Owner management (KL-97/98) — `_owned_site` (auth + `_require_level` + `get_user_site`)
+- `GET/PUT /account/sites/{id}/monitoring` — liga/desliga vigílias por-tipo (plan-gated, 403 `requires_plan`). `GET/PUT /account/notification-preferences` (`users.bulletin_frequency`/`bulletin_hour`/`notify_*`; frequência efetiva = override do user > plano).
+- `PUT /account/sites/{id}/profile` — dono edita 15 campos (`_sanitize_owner_profile`, valida CNPJ/telefone/URL → 422). **Preservação contra IA:** `merge_ai_into_profile` pula `owner_edited_fields`; upsert com CASE por-campo. `PUT .../visibility` (landing on/off). **Selo:** `GET/PUT .../seal` (badge/footer/floating); público `GET /seal/{domain}` + `web/public/seal/widget.js`.
+- **Vigílias expansíveis (KL-123):** `GET .../vigilias/{tipo}/details` + `POST .../phishing/dismiss/{alert_id}` + `POST .../{tipo}/acknowledge`. Derivação pura em `api/vigilia_details.py` (`build_<tipo>`); linguagem acessível (sem OWASP/CWE raw).
+
+### Admin — alvos, analytics, intelligence
+- **Filtros de alvos (KL-104 P2):** `GET /targets` com 15 filtros combinando AND (100% parametrizados) via `TargetStore._target_filters` (compartilhado com `count_targets_filtered`); `GET /targets/tech-list`. Front: `web/src/lib/admin/alvosFilters.js` (URL⇄estado) + `AlvosFilters.jsx`.
+- **Visão 360° (KL-104 P3):** `GET /admin/targets/{id}/intelligence` (monitoramento/funil/visitantes/timeline) — agregações `ti_*` no store, montagem PURA em `api/target_intelligence.py`, degradação graciosa (`_try`/`_safe_section`), timeline com cursor. IP sempre mascarado /24.
+- **Analytics (KL-83/92/95):** módulo `api/admin_analytics.py`, 8+ endpoints `/admin/analytics/*` (períodos today/7d/30d/90d/custom, cache Redis, rate 30/min). `access_log` = fonte primária; `site_events`/tracker.js = complemento das interações. Deep-linking `DomainLink` (domínio → `/painel/alvos/{id}`).
+- **Segurança da plataforma (KL-160):** `POST /admin/security-scan` (assíncrono, cooldown 5min, usa `load_config("security-gate.yml")` = mesma config do CLI) → tabela **`platform_security_scans`** (dedicada). `PlatformSecurityCard.jsx` na página Sistema. ⚠️ o `adminApi.js::req()` no `!resp.ok` só extrai o `detail` do JSON — nunca joga o body HTML de erro na mensagem.
+
+### Conteúdo público / SEO
+- **Conteúdo navegável (KL-74):** `/public/{sectors,sector/{slug},top-fails,related,best,stats}` (só `public_visible`; nunca `contact_email`; rate 30/min/IP; cache 1–24h). Páginas Astro `/setores`, `/setor/{slug}`, `/melhores`, `/estatisticas`. `/public/best` devolve `total` real (`count_score_100_sites`, mesma query de `stats.score_100_count`). ⚠️ pós-mudança de contadores: **flush `public:best`+`public:stats`** no Redis.
+- **Landing (KL-81/103):** buscador minimalista ("Pesquise qualquer site"), stats bar ao vivo (`web/public/landing-stats.js`), 6 pills de setor, dual-card empresa×dev.
+- **Taxonomia de setores (KL-84):** tabela `sectors` (status official/proposed/approved/rejected/merged), IA propõe, admin cura em `/painel/setores`. Público filtra por status. `scripts/reclassify_sectors.py`.
+- **Sitemap dinâmico (KL-131):** FastAPI serve `/sitemap.xml` (sitemapindex) + `/sitemap-{static,sectors,profiles-N,blog}.xml` (≤10k perfis/página, cache Redis 1h). Nginx roteia `/sitemap*.xml` → FastAPI. `robots.txt` bloqueia `/dashboard/`, `/api/account/`, `/webhooks/`, `/remover`.
+- **SEO perfis (KL-132):** `web/src/lib/seo.js` (`profileTitle`/`profileDescription`/`formatDomainName`). JSON-LD Organization+WebSite+BreadcrumbList; setor = CollectionPage. **NÃO** re-adicionar Review em WebSite (Search Console reprovou).
+- **Blog (KL-133):** tabela `blog_posts` (slug/markdown/status), público `GET /blog/posts`, `/blog/posts/{slug}`, `/blog/rss.xml`; admin `POST/PUT/DELETE /admin/blog/posts`; 5 MCP tools. Astro `/blog` + `/blog/{slug}` com `web/src/lib/blog.js::renderMarkdown` (**marked + sanitize-html**, strip de `<script>`/`on*=`). Nginx: `blog` na allowlist + `/blog/rss.xml` → FastAPI.
+- **Micro-ferramentas SEO (KL-134, `api/tools.py`):** 5 tools públicas de aquisição (sem auth) que reusam checks existentes e devolvem JSON PT-BR simplificado: `GET /api/tools/{ssl,headers,lgpd,tech,email,stats}`. SSL→`tls_analyzer.get_tls_info`; headers→`base.fetch` (7 headers); lgpd→`privacy_checks.scan_privacy` (8 indicadores reais); tech→`tech_detector.detect_tech_stack`; email→`dns_util`+seletores DKIM (SPF/DKIM/DMARC/MX, recebe `domain=`). Rate limit **10/min/IP** (`tools:rl:{ip}`, fail-open, 429+Retry-After); timeout 15s→504; `/tools/stats` cacheado 24h (`tools:stats`) de `dashboard_summary`/`privacy_indicator_stats`/`get_tech_adoption`. Builders puros/testáveis; **nenhum check alterado** (só chamados). **P2 (frontend) ✅:** 5 landing pages SEO em `/ferramentas/{verificar-ssl,verificar-headers,teste-lgpd,detectar-tecnologias,verificar-email}` + índice `/ferramentas` — casca única `layouts/ToolLayout.astro` (Base+Header+nav-entre-ferramentas+ilha+FAQ+Footer), ilha React `components/tools/ToolPage.jsx` (`client:load`, input→fetch→resultado inline + CTA ao scanner completo `/scan?url=`) + `Results.jsx` (5 renderizadores) + `ToolCta.jsx`. Lógica pura em `web/src/lib/tools.js` (`TOOLS`/`buildToolUrl`/`parseToolError`/`formatScore`/`FAQS`). **FAQPage JSON-LD** + accordion `<details>` (CSP-safe) por página. "Ferramentas" no dropdown "Para empresas" (`nav.js EMPRESA_LINKS`) + Footer. ⚠️ `ferramentas` na allowlist nginx (http.conf + https.conf.template).
+- **Metodologia/transparência:** `/metodologia` (KL-100), descadastro `/remover` (KL-102).
+
+### LGPD (KL-161) — canal de direitos / DSAR
+- Página `/lgpd` + ilha `LGPDForm.jsx` (lê `?tipo=`). **`POST /lgpd/request`** (público, sem conta): valida tipo∈{acesso,correcao,exclusao,portabilidade,revogacao,outra} + e-mail + nome + descrição≥10; **CPF opcional** (inválido→warning, não bloqueia); rate limit 3/e-mail/dia; grava em **`lgpd_requests`** (UUID=protocolo; pending→in_progress→resolved/denied) + 2 e-mails (titular via `privacidade@klarim.net` texto puro **até 15 dias úteis** + operador `klarimscan@gmail.com`, `LGPD_ADMIN_EMAIL`). Anti-enumeração. DPO em `/privacidade` §1. ROPA em `docs/LGPD.md`. Rodapé "Seus direitos (LGPD)"; perfil "Remover meus dados" → `/lgpd?tipo=exclusao`.
+
+### Security Gate — produto para devs externos (módulo `security_gate/`, portável)
+Scanner de EXPOSIÇÃO/config pós-deploy (**passivo — GET/HEAD/DNS/handshake TLS; NÃO envia payload de ataque; não é DAST**). Reusa checks do scanner via `scanner_adapter.py` (importa, não move/altera o scanner nem toca o scan público).
+- **Engine** `engine.py::run_all(url, timeout, checks, config, spa_fingerprint)` — headers anti-cache em todo request, UA honesto; check que estoura vira ERROR isolado. `models.py`: `GateReport` score 100 − penalidades (CRIT-20/HIGH-10/MED-5/LOW-2); `passed` = sem FAIL crítico (= exit code do CI).
+- **19 checks** em `checks/`: exposure, credentials (valor NUNCA logado/armazenado — só tipo+localização+severidade), headers, ssl, api_security, email_security (SPF/DKIM/DMARC via scanner), cors, cookies, redirect, rate_limit (rajada **concorrente**), error_disclosure, https_redirect, jwt_analysis (só decodifica), form_security, dns_security (DNSSEC+CAA), dependencies, tls_ciphers, subdomain (takeover), infrastructure_urls (Cloud Run/Heroku/localhost/IP privado). Relatório em camadas **Surface** (server+DNS) vs **Deep** (exposição+código).
+- **SPA fallback (KL-147/160):** probe de controle (HEAD path aleatório) → captura fingerprint (ETag OU Content-Type+Content-Length OU **Last-Modified** — Cloudflare remove ETag); checks spa-aware (exposure/api) comparam cada 200 → mesmo fingerprint = fallback (PASS), diferente = exposição (FAIL). Evita falsos positivos massivos.
+- **CLI/config:** `scripts/security_gate.py` + `scripts/klarim_gate_cli.py` (standalone, só `httpx`); `security-gate.yml` (config da Klarim, testa `/api/scan/` no rate_limit). **CI:** job `security-gate` no `deploy.yml` (`needs:[deploy]`, roda contra klarim.net LIVE, **não bloqueia** — o site já subiu; falha → e-mail via `scripts/security_gate_notify.py`, operador decide rollback).
+
+#### Produto (conta dev) — schema, auth, planos, KYC, rate limit
+- **Conta única:** `users.account_type` (owner|developer|both). Schema: `gate_plans`, `gate_api_keys` (**só SHA-256 + prefixo `KLM_xxxx`**, nunca em claro; `grace_expires_at` p/ rotação 1h), `gate_projects` (só escaneia se `verified`), `gate_runs`, `gate_invites`, `gate_vendors`, `gate_vendor_scans`, `gate_audit_log` (toda ação, NUNCA o valor da key), + colunas KYC em `users` (`cpf`, `address`/`address_data` JSONB, `phone`, `phone_verified`, `kyc_completed`, `suspended`, `company_cnpj`/`contract_url`/`enterprise_notes`).
+- **Planos:** Free (4 checks, 5 scans/h) · Pro (9, 50/h) · Team (18/`["all"]`, 200/h) · Enterprise (all, ∞). Plano **efetivo** = trial > associado > Free. **Default = Free SEM trial** (KL-158). Seed idempotente (`ON CONFLICT DO NOTHING`) → contas Pro pré-existentes precisam de check novo via admin de planos.
+- **KYC progressivo:** `POST /account/kyc` — CPF (`api/validators.py::validate_cpf`, módulo 11) + endereço **estruturado** (CEP/ViaCEP, `address_data` JSONB `{cep,street,number,complement?,neighborhood,city,state}`, UF∈27) + telefone. `kyc_completed` = CPF válido + endereço + telefone + **`email_confirmed`** (a única verificação real; `phone_verified` = SMS futuro). Sem KYC → scan devolve `basic` (score+categorias, sem detalhes); com KYC → `complete`. CPF **sempre mascarado** em log/PDF/admin.
+- **Rate limiting (`api/gate_rate_limiter.py`, Redis, fail-open):** (1) IP 10/h · (2) conta/h por plano · (3) domínio **por-conta** (Free 30min · Pro 5min · Team/Ent 0 = skip; key `gate:rl:domain:{account_id}:{domain}`) · (4) intervalo entre domínios diferentes · (5) rpm por key (free 10/pro 30/team 60/ent 120). **Abuso:** >20 domínios distintos/24h → conta **suspended** (audit); `suspended`→403 em `/gate/scan`.
+- **Endpoints:** `POST /gate/register` (cria dev + key 1× + trial), `POST /gate/scan` (roda no servidor; projeto verificado exigido exceto plano `scan_third_party`), `GET /gate/runs[/{id}]`, `GET /gate/runs/{id}/report` (PDF, exige KYC), `POST /account/gate/{activate,regenerate-key,upgrade,kyc}`, `GET /account/gate/status`, convites `POST /account/gate/invite` + `/gate/invite/{token}/accept`, verificação `POST /gate/projects/{id}/verify/{start,check}`. Admin `/admin/gate/{plans,accounts,audit}`. **Gate-verify ≠ owner-verify do KL-99** (tabelas separadas); propagação lazy via `propagate_scanner_verification` (conta que já provou posse no scanner → projeto Gate `verified` method=`scanner`).
+- **Enterprise (KL-152):** due diligence de fornecedores (`gate_vendors`/`gate_vendor_scans`), scan de terceiro **redige** paths/credenciais (só categoria+severidade+contagens), PDF comparativo (`reporter/gate_report.py`, base64 Redis TTL 1h), VendorMonitor worker. CNPJ obrigatório.
+- **Frontend:** landing `/security-gate` (SSR, tabela de planos ao vivo via `GET /gate/plans` público, Schema.org SoftwareApplication) · portal `/dashboard/gate` (`GatePortal.jsx`: status, novo scan, KYC banner, API key, projetos, histórico, upgrade PIX) · docs públicas `/docs/gate/{github-actions,gitlab-ci,bitbucket,jenkins,manual,api,troubleshooting}` (Astro `.md` + `DocsLayout.astro` + `web/public/docs-copy.js`) · admin `/painel/gate-plans`. Onboarding wizard scan-first. Lógica pura em `web/src/lib/gate/*.js` (`ux.js`, `snippets.js`, `address.js`, `nav.js`, `docsNav.js`).
 
 ---
 
-## 9. Referência rápida de cards
+## 10. Gotchas (evitam retrabalho)
 
-- **KL-44** — Guardião Digital (P1 planos ✅, P2 vigílias ✅, **P3 boletim+técnico+laudo ✅**,
-  **P4 vigílias avançadas ✅**, P5–P6 pendentes). P3: bulletin worker (free=mensal/pro=semanal/
-  agency=diário, 13h UTC), laudo compartilhável `/laudo/{code}` (público, TTL 30d, sem PII),
-  técnico vinculado (`role=technician`, e-mail do dono mascarado), templates plain text,
-  Reply-To scan@. P4: uptime (loop 5 min, 3 falhas→alerta, anti-spam 1/h, recovery),
-  changes (snapshot leve, alerta em mudança significativa), phishing/typosquat (CT logs +
-  `is_typosquat`, `typosquat_alerts`), config `BULLETIN_ENABLED`/`BULLETIN_HOUR_UTC` no painel.
-  **P5 ✅**: 8 indicadores técnicos de privacidade (`scanner/privacy_checks.py`, score 0–8
-  separado + disclaimer, NUNCA "conformidade"/"certificado"); selo "Monitorado por Klarim"
-  (`GET /seal/{domain}` + `web/public/seal/widget.js` sem tracking, só dono verificado);
-  benchmark setorial rico (`/benchmark/{sector}`|`/all` com mediana + distribuição anônima,
-  cache 24h); `/admin/privacy-stats` + MCP `get_privacy_stats`.
-  **P6 ✅** (fecha o KL-44): checkout PIX self-service (`/account/upgrade` transparente +
-  webhook idempotente que ativa o plano; `subscription_payments` — separada de `payments`),
-  `/account/downgrade`, worker `trial` (avisos 7d/1d + downgrade silencioso p/ Free às
-  `TRIAL_HOUR_UTC`), página pública `/planos`, UX de plano no dashboard (`PlanSection`:
-  trial/upgrade QR/downgrade/histórico + `?upgrade=`/`?upgraded=1`), signup `?plan=`,
-  `/payments/subscription-stats` + MCP `get_subscription_payment_stats`. **NUNCA guarda
-  dado de cartão/PIX** — só o id da cobrança
-- **KL-51** — Plataforma Astro (fases 1–5 ✅)
-- **KL-52** — site_profile visível internamente ✅ (MCP `get_site_profile` + `get_target` já
-  anexam o perfil; `GET /targets/{id}` inclui `profile`/`classifications`/`owner`; painel:
-  seção "Perfil comercial" no detalhe do alvo (`AlvoDetalhePage`) + botão "Editar perfil"
-  (`ProfileEditModal`). `contact_email` NUNCA no response — o perfil vem de `site_profile`)
-- **KL-61** — Gestão de Leads / PQL ✅ · **KL-62** — email_log unificado ✅
-- **KL-63** — MCP OAuth 2.1 ✅ · **KL-65** — SEO/Schema.org ✅ · **KL-66** — contato nos perfis ✅
-- **KL-68** — Reivindicação de site + verificação de propriedade em tiers ✅ (auto por
-  e-mail == contact_email; código 6 díg. ao contact_email; domain guard bloqueia
-  monitorar domínio público/institucional; `contact_email` nunca exposto — só `email_hint`)
-- **KL-69** — Gestão de usuários unificada ✅ (`/painel/usuarios` funde Clientes+Assinantes;
-  admin remove site / desativa / reativa conta, com notificação; `is_active` bloqueia login;
-  clean-blocked-sites notifica; termos de uso c/ domínios elegíveis; **gestão de plano no
-  detalhe do usuário** — dropdown Free/Pro/Agency + estender trial + resetar free, via
-  `PATCH /admin/subscriptions/{id}/plan|trial` (`account_id==users.id`; `change_plan` já
-  ajusta vigílias e status))
-- **KL-67** — Qualidade do profiler ✅ (validadores puros de telefone/DDD, redes sociais,
-  endereço e descrição/idioma em `scanner/profiler.py::apply_quality_filters`; flag
-  `low_confidence_fields`; edição admin de contatos; `POST /admin/revalidate-profiles`;
-  **Reply-To=scan@klarim.net** em TODO e-mail via `_send`/`_send_batch`)
-- **KL-71** — Fixes propriedade/técnico/landing ✅ (Tier 1 **auto_domain**: domínio do e-mail
-  == domínio do site, exceto `PUBLIC_EMAIL_PROVIDERS`, first-come; convite de técnico
-  garante laudo válido — escaneia se preciso — e valida conflito de papel (422 auto-convite/
-  dono-como-técnico/já-vinculado); CTA público some com dono verificado; dashboard mostra
-  `has_other_owner` + badge de técnico + link "Perfil público" + remover site self-service
-  (`DELETE /account/sites/{id}` revoga posse + desativa vigílias); painel Usuários com coluna
-  Perfil (owner/technician/both))
-- **KL-74** — Arquitetura de conteúdo navegável ✅ (transforma os perfis-ilha em ecossistema
-  mobile-first que conduz ao scanner). **5 endpoints públicos** `/public/{sectors,sector/{slug},
-  top-fails,related,best,stats}` (só sites `public_visible`; nunca `contact_email`; rate limit
-  30/min/IP real, SSR interno isento; cache Redis 1–24h). **4 páginas Astro SSR**: `/setores`
-  (índice + ItemList), `/setor/{slug}` (benchmark + ranking paginado + top fails + score-100 +
-  Breadcrumb/ItemList), `/melhores` (vitrine score 100 por setor), `/estatisticas` (contadores
-  estáticos — CSP proíbe script inline não-hasheado). Navegação contextual no perfil
-  (`/site/{domain}`): breadcrumb + `BreadcrumbList`, **posição no ranking** do setor, seção
-  "Outros sites do setor" (cross-linking via `/public/related`, SSR). `ScanCTA.astro`
-  reutilizável (input+botão empilham no mobile, inline em `sm:`, alturas ≥48px). Rotas na
-  allowlist Nginx (`setores|setor|melhores|estatisticas`) + sitemap (`/setor/{slug}` por setor)
-  + footer (Setores/Melhores/Estatísticas). **Mobile-first** (68% do tráfego): 375px primeiro,
-  toque ≥44px, sem hover-only, body ≥16px.
-- **KL-20** — Mensagens de risco dinâmicas por falha e setor ✅ (estende `reporter/risk_messages.py`
-  — base de 48 checks já existia — com dimensão **setorial** (`SECTOR_RISK_MESSAGES`/`MACRO_RISK_MESSAGES`/
-  `CHECK_SECTOR_RISK`, lookup slug>macro>default), `build_risk_summary`/`build_benchmark_line` (puras;
-  benchmark do KL-74 vem do chamador). Integra: e-mail de alerta (riscos setorizados + benchmark +
-  **CTA duplo** perfil+`/setor/{slug}`), boletim (linha de negócio na ação prioritária), PDF exec/téc
-  (`sector` opcional em `generate_*_pdf`), dashboard (`/account/sites/{id}` → `risk_summary`/`benchmark`
-  + seção "Riscos para o seu negócio" no `SiteDetail`). Linguagem de negócio, sem multa, plain text, máx 3)
-- **KL-81** — Redesign da landing como buscador ✅ (`index.astro` minimalista: hero
-  "**Pesquise qualquer site.** / Descubra em 30 segundos." + input com lupa + botão "Pesquisar →"
-  + "Relatório completo. 100% gratuito.", centralizado verticalmente `flex min-h-screen flex-col`
-  → hero + footer apenas; removidas Como funciona/checks/benchmark/Para quem. Posicionamento:
-  buscador de segurança "pesquise qualquer site", não "seu site é seguro?". Busca segue `GET /scan?url=`)
-- **KL-82** — Confiança progressiva (Slice 1 ✅ de 4): scan **result-first** sem gate de e-mail
-  (o antigo email+código de 6 díg. matava 97% da conversão). `GET /scan/result` escaneia anônimo e
-  devolve o payload **filtrado server-side** por **nível de acesso** — `anonymous` (score+barras por
-  categoria sem números+1 risco; benchmark/checks travados) < `unconfirmed` (benchmark+2 riscos+
-  nomes dos checks sem evidência+PDF travado) < `confirmed`/`alert_session` (tudo). NUNCA vaza
-  evidência aos níveis baixos (corte no backend, não blur). Rate limit anônimo **5/h + 20/dia por
-  IP** (conta logada ilimitada); scan ≠ monitoramento (KL-78). Migração `users.email_confirmed`
-  (`link`/`hmac`/`code`; sem DEFAULT → backfill idempotente `WHERE IS NULL`). Front: `ScanFlow.jsx`
-  result-first + `ScanResultDetail.jsx` (`client:load`, CSP-safe: accordion `<details>`, blur CSS,
-  share `<a>`/JS-ilha); fluxo de código KL-25 fica **dormente** (fallback). Linguagem neutra pública
-  ("Este site", não "Seu site").
-  **Slice 2 ✅** (+ KL-85 P2/P3): signup **sem código** — e-mail+senha → conta na hora
-  (`email_confirmed=false`) + e-mail de boas-vindas com **link** (JWT-HMAC 30d, `typ=confirm`,
-  idempotente). **Anti pre-fetch (2026-07-21):** o e-mail linka a **página** `/confirmado?token=`
-  (não a API); a confirmação é **POST-only** (`POST /account/confirm`, o clique "Confirmar meu
-  e-mail" num `<form method=POST>`) → o pre-fetch dos servidores de e-mail (GET) renderiza só o
-  botão, **nunca confirma**; o POST confirma + redireciona p/ `/confirmado?status=ok|already|invalid`
-  (feedback claro, sem token na URL). `/confirmar?token=` (legado) só redireciona p/ `/confirmado?
-  token=` (não chama a API). `GET /account/confirm` (JSON) fica só por compat. `POST /account/resend-
-  confirmation` (3/h/conta), banner no dashboard p/ conta não confirmada. Se o e-mail já foi
-  verificado no scan (KL-25) nasce confirmada.
-  **KL-85:** blocklist de descartáveis (`api/disposable_emails.py`, só no signup) + rate limit
-  **3/h & 5/dia por IP** (via `CF-Connecting-IP`). Welcome = transacional `klarim@klarim.net`
-  (NÃO o `alerta@` de warmup — regra de isolamento). Cleanup diário no `trial` worker
-  (`delete_unconfirmed_inactive_accounts`: não-confirmada +30d, sem site e sem re-login; FK CASCADE).
-  **Slice 3 ✅** (fecha o KL-82 — Fluxo 2 do alerta): o CTA do e-mail de alerta vira link HMAC
-  `/api/alert-access?token=` (`notifier.email_client.build_alert_access_link`, contrato testado
-  com `api.main._verify_alert_access_token` — mesmo segredo/esquema). O clique cria uma **sessão
-  temporária** (cookie `klarim_alert`, JWT-HMAC 24h, `typ=alert_session`, **escopada a 1 site**)
-  → resultado COMPLETO daquele site sem conta; `/scan/result` valida o escopo (outro domínio →
-  cai p/ anonymous, nunca vaza checks). `POST /account/signup-from-alert` cria conta **só com
-  senha** (e-mail do cookie, `email_confirmed=true` `source='hmac'`, vincula+auto-verifica Tier 1);
-  e-mail já com conta → `{existing_account}`. Tabela `alert_sessions` (funil: created/converted),
-  `contact_email` nunca em claro (só hint mascarado). Frontend: `AlertSignup` no `ScanResultDetail`.
-- **KL-86** — Redesign do dashboard (6 blocos de valor, zero espaço vazio) ✅. **1 request**
-  `GET /account/dashboard-summary` agrega tudo do site **primário** (1º monitorado): saúde
-  (score+tendência±2+rank no setor), riscos KL-20 (top 3), checklist priorizado
-  (`_build_checklist`: e-mail não confirmado/score caiu/vigília com erro/SSL≤30d/perfil
-  incompleto/corrigir top-risco/compartilhar; "Tudo em dia 👏" quando sem urgência),
-  evolução (score_history dos scans → `ScoreChart` SVG), 6 categorias (`_dashboard_categories`
-  reusa `_build_categories`), plano + perfil. Reusa build_risk_summary/sector_benchmark/
-  get_sector_position — **nenhuma feature nova, só exposição**. `contact_email` nunca no payload.
-  Frontend `Dashboard.jsx` reescrito: grid 2/3+1/3 no desktop com **placement explícito**
-  (`lg:col-start`/`lg:row-start`) → mobile empilha na ordem saúde→checklist→riscos→categorias→
-  evolução→plano (checklist sobe). Bloco 6 = `PlanSection` reusado. Onboarding do perfil
-  (`PUT /account/profile-confirm`, dono edita company_name/phone → `edited_by_admin`). Linguagem
-  "Pesquisar" (não "Verificar"), "Olá, {empresa}". Sem site → buscador + checklist reduzido.
-- **KL-89** — Fix de conversão (Prompt 1 de 2 — layout, primeira tela, linguagem) ✅. Tudo
-  frontend; reaproveita os 4 níveis do KL-82 (backend inalterado). **(1) Container expandido**:
-  `web/src/lib/layout.js` centraliza a largura das páginas públicas (fim dos `max-w` ad-hoc por
-  página). `PAGE_CONTAINER` (`max-w-2xl md:max-w-5xl lg:max-w-7xl mx-auto px-4/6/8`) em
-  scan/perfil/setores/setor/melhores/estatisticas/planos; `FORM_CONTAINER` (max-w-md) em
-  cadastrar/entrar/recuperar/contato; `PROSE_CONTAINER` (max-w-3xl, via `Page.astro`) em
-  termos/privacidade/sobre. `index` (hero KL-81) e `confirmar` seguem centralizados estreitos
-  **de propósito**. **(2) Desktop == mobile**: a "tabela de visibilidade" virou flags puras em
-  **`web/src/lib/scanView.js`** (`viewFlags`) — derivam SÓ do nível, NUNCA do dispositivo; acabou
-  o "desktop mostra tudo / mobile esconde". **Tabela de visibilidade FINAL (correção urgente —
-  mostrar VALOR antes de pedir conta):** só **LGPD** tem cadeado (e só p/ quem não é conta
-  confirmada). Score/semáforo, compartilhar+PDF, **benchmark**, **TODOS os riscos** (linguagem de
-  negócio = o que converte), barras de categoria e **checks detalhados** são abertos em TODO nível;
-  a **evidência técnica** dos checks só no acesso completo (`confirmed`/`alert_session`); **LGPD só
-  na conta `confirmed`** (anônimo, não-confirmado E o visitante do link do alerta veem só o título
-  🔒). O corte é server-side (`api/main.py::_filter_scan_result`): quem não pode ver
-  evidência/LGPD nunca recebe o dado. Segurança: nome+PASS/FAIL de check é padrão de scanner
-  passivo público (SSL Labs/Observatory) e coerente com "pesquise qualquer site" (KL-81); só a
-  evidência exploit-útil e a LGPD ficam gated. **(3) Primeira tela reorganizada** (`ScanResultDetail.jsx`): score+semáforo → frase
-  contextual → **compartilhar + PDF na MESMA linha** (WhatsApp/LinkedIn/Copiar/📄PDF) → **CTA de
-  conta acima do fold** → riscos → benchmark → barras+checks → (abaixo) LGPD. Layout 2 colunas no `lg`
-  (relatório 2/3 + CTA `sticky` 1/3) que empilha no mobile na ordem acima (mesmo conteúdo). O CTA
-  **some** para quem já tem conta (`unconfirmed`→confirme e-mail; `confirmed`→"+monitorar"). PDF é
-  público (paywall off) → `reportUrls` monta a URL no front, disponível em TODO nível.
-  **(4) Linguagem contextual por ORIGEM** (`scoreHeadline`/`ctaCopy`/`shareLabel`): alerta
-  (`access_level=alert_session`) → "**Seu** site" + CTA **só senha** (e-mail do cookie HMAC,
-  mostrado **mascarado** `j***o@x.com` via `maskEmail`, real nunca no HTML); orgânico → "**Este**
-  site. E o seu?" + e-mail+senha (signup inline `/api/account/signup`). +26 testes `node --test`
-  (`scanView.test.js` + `layout.test.js`), ligados no `npm run test:unit` (CI).
-  **Correções pós-entrega ✅:** (1) **riscos ANTES de detalhes** no resultado (linguagem de negócio
-  primeiro); (2) **LGPD travado em desktop E mobile** p/ anonymous/unconfirmed (`showPrivacy=full`);
-  (3) **botão PDF com destaque** brand (`bg-brand-500`, `text-[var(--accent-text)]` p/ contraste
-  light/dark); (4) e-mail HMAC mascarado + só-senha idêntico em mobile e desktop (as flags derivam
-  só do nível, nunca do device); (5) **benchmark PÚBLICO** — visível sem cadeado em TODO nível
-  (`showBenchmark=true` + 1 linha no `_filter_scan_result` que inclui o agregado nacional no payload
-  anônimo; não é PII); (6) **scanner com progresso real por categoria** (`SCAN_CATEGORIES` +
-  `getCategoryStatus` puros: as 6 camadas avançam ○→⏳→✅ pelo % global, com beat de 100% antes do
-  resultado). +6 testes.
-  **Correção urgente de conversão ✅** (as correções acima tinham travado demais o resultado):
-  agora a regra é **mostrar valor antes de pedir conta**. `_filter_scan_result` reescrito — TODOS
-  os riscos + categorias com contagem + checks por nome/status vão para **todos** os níveis;
-  evidência técnica só no acesso completo; **LGPD só na conta `confirmed`** (`alert_session` = link
-  do email = 🔒). `viewFlags`: `showAllRisks=true` p/ todos, `showEvidence=full`, `showPrivacy=level
-  ==='confirmed'`, removido `categoriesMode`. `ScanResultDetail`: `RisksSection` sem gate,
-  `CategoriesSection` unificada (barras de proporção + accordion; evidência só se `showEvidence`).
-  Logado (`SiteDetail` / `/account/sites/{id}`) já entrega o relatório completo (48 checks c/
-  evidência, PDF exec+téc, benchmark setorial+ranking, evolução) — sem mudança. `/site/{domain}`
-  (KL-74) intacto (só o container mudou).
-  **P0 — resultado instantâneo ✅** (o link do alerta re-escaneava, 60s+ de espera → desistência):
-  `GET /scan/result` agora serve um scan **< 24h** já existente (cache Redis OU banco) na hora, SEM
-  re-escanear — o alerta é enviado DEPOIS do scan, o dado já existe. `get_recent_only(url, full,
-  max_age_minutes=_SCAN_RESULT_MAX_AGE_MIN=1440)` roda antes do scan; `refresh=1` (botão "Atualizar
-  análise") força scan novo (`get_or_scan`/`_safe_scan` ganham `force`). Vale p/ QUALQUER domínio
-  com scan recente (não só alerta). **⚠️ Gotcha crítico (o 1º fix falhou por isto):** o scan POR
-  TRÁS DO ALERTA é o do **worker de discovery**, que grava só o tier **FREE (15 checks)**
-  (`scanner/main.py`: `full = source not in ("discovery","public")`). Exigir `full=True` no lookup
-  fazia `_tier_ok(15>=48)` reprovar → **re-escaneava sempre**. Fix: `/scan/result` tenta o FULL e,
-  se não houver, **cai no lookup FREE** (`get_recent_only(full=False)`) e serve o scan de 15 mesmo
-  assim — instantâneo > completo; o "Atualizar" pega os 48. (URL casa: worker grava `https://{domain}`,
-  alerta manda `https://{domain}`.) **2º gotcha:** servir o scan free pelo builder padrava os 33
-  pagos como INCONCLUSO (tela parecia quebrada: "DNS 0/7"). `_full_scan_result` agora inclui **só os
-  checks que rodaram** (15 free / 48 full) + `partial=True` no free → front mostra "Análise rápida ·
-  Ver análise completa (48) →". O **rate limit anônimo (5/h + 20/dia) só conta scans REAIS** —
-  servir do cache é grátis. Payload ganha `from_cache`; front mostra "Última análise: {data} ·
-  Atualizar análise →" (ação secundária no `ScoreHero`). **P1 — scanner não trava em 94% ✅:**
-  `ProgressStep` já mostra as 6 categorias avançando (○→⏳→✅, KL-89 fix 6); passados ~25s aparece
-  um aviso de que as últimas verificações consultam serviços externos (reputação/Safe Browsing) e
-  podem demorar — some a impressão de "travou". (Resultado parcial via SSE fica p/ o KL-90.)
-- **KL-83** — Redesign do Analytics admin (Prompt 1 de 2) ✅. Módulo dedicado
-  **`api/admin_analytics.py`** (não toca o analytics antigo do KL-21): **8 endpoints**
-  `/admin/analytics/{metrics,trend,funnel,events,sessions,pages,journeys,funnel-by-sector}`,
-  admin-only (prefixo `/admin` → middleware JWT), período `today/7d/30d/90d/custom`
-  (≤90d, sem futuro), rate limit 30/min/IP, cache Redis 5 min (events/sessions não cacheiam).
-  **Arquitetura testável:** agregações BRUTAS (SQL) em `discovery/store.py` (`aa_*`,
-  parametrizadas); **derivação PURA** (%, sparkline, conversão inter-etapa, normalização de
-  jornada, bounce/next_page) no módulo → 34 testes unitários (validação de período, cálculos,
-  shape, paginação, cache; SQL validado na VM). 3 índices novos em `site_events`. Front:
-  `AdminAnalytics.jsx` (abas #overview/#events completas + #pages/#journeys "Em breve"):
-  6 cards KPI+sparkline (Recharts), gráfico de tendência, funil por campanha com gargalo;
-  stream de eventos com filtros combináveis + contadores + toggle "por sessão" + export CSV.
-  2 MCP tools (`get_analytics_metrics` sem sparkline, `get_analytics_funnel`).
-  **Prompt 2 ✅** (fecha o KL-83): abas **Páginas** (tabela ordenável 7-col, busca debounce,
-  agrupar-por-tipo colapsável, Δ colorido, click→`#events?path=`) e **Jornadas** (top-10
-  caminhos com breadcrumbs coloridos por tipo de passo, funil por setor ordenável, drill-down de
-  sessões com "ver todas →" `#events?group=session`). Componentes extraídos
-  (`analytics/{SessionCard,SortableTable,PaginationBar}.jsx`) + lógica pura
-  (`lib/admin/analyticsUtils.js`: sort/paginate/journeyStepKind/cores/parse-hash) com **15 testes
-  `node --test`** (sem deps novas; `npm run test:unit` no CI antes do build). Navegação cruzada
-  entre abas via hash. Nenhum "Em breve" restante.
-- **KL-85** — Lead scoring de qualidade de alerta (Parte 1 ✅; Partes 2/3 já no KL-82 S2).
-  `discovery/alert_scoring.py::calculate_alert_score(target, email, domain_bounced)` — função
-  **pura** (testável) → `{score, signals}`. Sinais: +30 e-mail no domínio · +10 corporativo ·
-  +20/+10/+5 por faixa de score (50-85/40-49/>85) · +15 setor de alto clique (vazio por ora) ·
-  **fator de TIPO de e-mail (KL-146):** pessoal +15 · genérico neutro 0 · medium-bounce (`atendimento`/
-  `sac`) -5 · high-bounce (`contato`) -10 (`_email_type_factor`, SUBSTITUI a penalidade role-based -5
-  do KL-136 — ver KL-146) ·
-  `MISMATCH_FREE_PENALTY` free de terceiro (**0 desde 2026-07-20**, era -20 — PMEs BR usam gmail como
-  e-mail comercial; o -20 barrava leads legítimos) · -10 descartado/score<40
-  · -40 domínio com bounce **só p/ domínio próprio/corporativo** (2026-07-20: provedores genéricos
-  gmail/outlook/… NÃO são penalizados por bounce — um bounce em joao@gmail.com não diz nada sobre
-  maria@gmail.com; `_domain_bounced` curto-circuita free). Coluna `targets.alert_quality_score`
-  (gravada para TODOS os avaliados, mesmo filtrados;
-  NUNCA impede scan). Alert worker: `_apply_alert_scoring` grava o score + filtra abaixo do
-  threshold (`ALERT_SCORE_THRESHOLD`, default 20, editável no painel) — **fail-safe** (bug de
-  scoring mantém o alvo); bounce por domínio com cache Redis 24h; stats `skipped_low_quality`/
-  `avg_alert_score` (no `get_system_status`). Script `scripts/backfill_alert_scores.py` (batch
-  500 + histograma). Endpoint `GET /admin/analytics/alert-quality` + MCP `get_lead_scoring_stats`.
-  Admin: coluna "Alert" na lista de alvos (badge colorido) + breakdown dos sinais no detalhe.
-  24 testes backend + testes de worker/endpoint.
-- **KL-84** — Taxonomia ABERTA de setores ✅ (troca os 48 setores fixos do KL-54 por taxonomia
-  dinâmica: a IA propõe setores novos, o admin cura, o 'outro' cai). Tabela **`sectors`**
-  (slug/label/macro/status ∈ official·proposed·approved·rejected·merged/merged_into/site_count),
-  seed idempotente dos 48 oficiais no `ensure_schema` (`store.seed_sectors`, site_count via
-  GROUP BY). **`discovery/sector_synonyms.py`** resolve sinônimos ANTES da tabela (advocacia→
-  juridico, pousada→hotel…). **`discovery/sector_classification.py::process_classification`**
-  (pura, testável): resolve sinônimo → tabela (segue `merged_into`, rejeitado→'outro') → cria
-  proposta se `is_new_sector` → fallback 'outro'; slug sanitizado ([a-z0-9_], máx 50), macro
-  validada. Prompt da IA (`ai_enrichment.build_system_prompt(known)`, lista dinâmica cache 1h)
-  ganha `is_new_sector`/`sector_label`/`macro_sector_suggestion`; setor novo **preserva** o slug
-  (não vira 'outro'). **5 endpoints admin** `/admin/sectors[/{slug}/{examples,approve,merge,
-  reject}]` (`api/admin_sectors.py`, admin-only): merge/reject reclassificam sites **preservando
-  `manual`/`receita`**. Público: `/public/sectors` e `/public/sector/{slug}` filtram por status
-  (só official/approved; proposto/rejeitado/merged → 404). Script **`scripts/reclassify_sectors.py`**
-  (`--scope outro|all --dry-run --limit --batch`, ≤500 IA/h, usa a descrição JÁ extraída — sem
-  re-scan, sem tocar score/checks; roda **manual na VM**). Página admin `/painel/setores`
-  (`SetoresPage.jsx`: emergentes com aprovar/merge/rejeitar + taxonomia viva). 2 MCP tools
-  (`get_sector_stats`, `classify_target_sector`). 37 testes offline.
-- **KL-77** — Escala da VM + arquivamento de scans. **Fase 1 ✅** (VM e2-small→e2-standard-4,
-  IP estático `34.135.194.208`, CI por instance-name). **Fase 2 ✅** — arquiva o response
-  bruto de cada scan no GCS (`gs://klarim-raw/YYYY/MM/DD/{scan_id}.json.gz`, Nearline privado)
-  para o KL-75 reprocessar sem re-escanear: `scanner/gcs_archive.py` (puro + testável, client
-  lazy, upload em thread, `GCS_ENABLED=false`=bypass, fire-and-forget); captura sem request
-  extra via `enrich_profile(capture_raw=True)` (headers/html/dns já buscados + SSL do cache do
-  `tls_analyzer`); SA com `objectCreator` apenas + ADC preferível; contadores Redis
-  (`klarim:gcs:*`, TTL 48h) → MCP `get_gcs_archive_stats` + `GET /admin/gcs-archive/stats` +
-  bloco `gcs_archive` no status. **Fase 3 ✅** — scan rate 50→**200/h** (`WORKER_MAX_SCANS_PER_HOUR`,
-  editável ao vivo); rate limit por-domínio 1 req/s inalterado. 18 testes offline.
-- **KL-75** — Enriquecimento tecnográfico (**Prompt 1 ✅ + Prompt 2 ✅** — completo).
-  Extrai inteligência tecnográfica do MESMO response bruto que o KL-77 captura —
-  parse em memória, **sem request extra** (< 500ms/scan). **`scanner/tech_detector.py::
-  detect_tech_stack(headers, html, dns, ssl)`** — função PURA → `{technologies, email_provider,
-  dns_provider, related_domains, site_status, verified_platforms, company_name, schema_types}`.
-  6 grupos: headers/cookies (servidor/backend/CDN/plataforma), ~50 scripts (analytics/marketing/
-  pagamento/chat/e-commerce/CMS/segurança/social/infra), meta tags (OG/verificações/generator/RSS),
-  DNS (email_provider via MX · dns_provider via NS · plataformas via TXT), SSL (SAN→related_domains,
-  issuer→CA, organização OV/EV→company_name), status (`ativo`/`parked`/`abandonado`/`fora_do_ar`/
-  `bloqueado`/`dominio_inativo` via `classify_site_status`). Gravação em `scanner/main.py::
-  persist_tech_detection` (**resiliente** — nunca trava o scan; após enrich, antes do GCS): batch
-  INSERT em **`site_tech_stack`** (idempotente, UNIQUE `(target_id,scan_id,name)` + ON CONFLICT),
-  `targets.email_provider`/`related_domains`, `site_status_log`, e `company_name` **só se vazio**
-  (nunca sobrescreve regex/IA/manual). `enrich_profile` ganhou 1 lookup DNS TXT (só `capture_raw`);
-  `tls_analyzer` extrai `subject_o` (organização). Público = badges booleanos `GET /public/tech-
-  summary/{domain}` (30/min/IP, respeita `public_visible`); detalhado só admin (`GET /targets/{id}/
-  tech-stack`) + 3 MCP tools (`get_tech_adoption`/`get_site_tech_stack`/`get_site_status_history`).
-  Backfill `scripts/backfill_tech_stack.py` reprocessa os responses do GCS (≥2026-07-19) sem re-scan.
-  **Prompt 2 ✅:** (Grupo 7) `site_type` — classify_site_type DENTRO de detect_tech_stack (mesmo HTML,
-  sem 2ª passagem): institucional/ecommerce/saas/portal/blog/parked/abandonado, por sinais de
-  login/OAuth/pricing/API-docs/registro/footer (OAuth reusa as technologies) — prioridade parked>
-  abandonado>saas>ecommerce>portal>blog>institucional; gravado em `targets.site_type` (persist
-  reclassifica com o status autoritativo). (Grupo 8) subdomínios via CT logs: o discovery agora
-  **registra** subdomínio de domínio raiz JÁ na base em vez de descartar (`site_subdomains` +
-  `targets.subdomain_count`) — `discovery/subdomains.py` (classify_subdomain puro, `DomainCache` em
-  memória recarregado por ciclo ~1.8MB, `register_subdomain`/`process_subdomains` fail-safe, teto
-  `SUBDOMAIN_MAX_PER_CYCLE=2000`); o poller (`ct_poller.subdomain_of`) captura subdomínios num buffer
-  separado (`flush_subdomains`), o worker drena e registra no fim do ciclo. **Subdomínios NUNCA são
-  escaneados** (ético). Público ganha `site_type`+`subdomain_count`; admin/MCP ganham a lista
-  (`get_site_subdomains`) — CT log é público mas a lista é premium. 100 testes offline (51+49).
-  **Dados p/ KL-57:** market share de tech/site_type por setor, correlação stack×score, sites
-  parked/abandonados, staging exposto, SaaS com score baixo (risco LGPD).
-- **KL-64** — Analytics correto (filtro de bots + fix do funil de e-mails + export CSV) ✅.
-  **Causa raiz comum:** pre-fetch de servidores de e-mail (Gmail/Outlook, Chrome real, a Cloudflare
-  não marca como bot) crawleando os links dos alertas e os perfis inflava tudo. **(1) E-mails
-  profile_view (~7.000/dia!):** o `/site/[domain].astro` disparava `POST /notify/profile-view` NO SSR
-  a cada render → todo bot que abria um perfil gerava e-mail ao dono (a query do funil já filtrava por
-  período — o VOLUME é que era bot). Fix: o gatilho saiu do SSR → nasce do **evento `profile_view`
-  HUMANO-verificado** (`track.js` → `/api/events` → `_profile_view_notify`). Bots não interagem → não
-  geram e-mail. **(2) Filtro is_human:** `track.js` reescrito — NÃO dispara `page_view` no load;
-  espera **interação real** (scroll/click/mousemove/touchstart/keydown), aí dispara com
-  `verified_human:true` (eventos de AÇÃO disparam na hora com o flag). **2026-07-20: removido o
-  fallback de 5s** (`?v=65`) — pre-fetches de e-mail ficam 5+s renderizando e passavam (inflavam
-  visitantes ~5x: 603 interno vs 101 Cloudflare); agora SÓ interação conta, sem exceção. Coluna `site_events.is_human`
-  (NULL=histórico preservado) + índice parcial; `verified_human`→`log_event(is_human)`; filtro
-  **`(is_human=TRUE OR is_human IS NULL)` DEFAULT em TODAS as queries de site_events** dos 8 endpoints
-  (`aa_*`) + 2 MCP tools; `include_bots=true` desliga (debug); toggle no admin. `users`/`alert_log`/
-  `email_log` NÃO levam o filtro. **(3) Export CSV** `/admin/analytics/events/export` — server-side,
-  `StreamingResponse`, cursor `fetchmany(1000)`, mesmos filtros + is_human, teto **10k** (+`X-Truncated`
-  + linha de aviso), anti CSV-injection, admin-only; front usa `adminDownload` (Bearer+blob). 26 testes
-  (19 backend + 7 tracker via `vm`). **Gotcha:** a data de análise do funil já era correta — o card
-  supunha bug de período; o real era o volume de e-mail bot.
-- **KL-92** — Tracking server-side por IP (Prompt 1 ✅ + 2 ✅ + 3 ✅ + 4 ✅). A defesa client-side do KL-64 depende
-  de código que roda no browser do bot — insuficiente. A fonte de verdade das métricas de visitante
-  passa a ser o **servidor**. Tabela **`access_log`** (IP INET, país, endpoint, método, status,
-  domain_queried, user_id, UA, referrer, response_time, is_bot/bot_reason) + 6 índices, no
-  `ensure_schema`. **`api/access_log_middleware.py`** (middleware HTTP OUTERMOST, registrado após o
-  auth → enxerga 401): ignora assets (`should_log`), extrai IP real (`CF-Connecting-IP`)/país
-  (`CF-IPCountry`)/user_id (JWT)/domínio (`/site/{d}`, `/scan?url=`, ou `request.state.domain_queried`);
-  **fire-and-forget** — captura barata → `_spawn(_process_access)` (classifica + INCR Redis
-  `access_rate:{ip}` TTL 1h + enfileira) → **buffer + flush batch 5s** (`log_access_batch`). Erro
-  jamais atrasa/quebra o response (tudo em try/except fora do caminho síncrono); Redis fora → rate/
-  pré-fetch pulam (fail-open). **`api/bot_classifier.py`** (PURO): `classify_bot` na ordem IP próprio
-  (34.135.194.208 nunca é bot) → **usuário autenticado** (logou = humano) → **datacenter** (~30 CIDRs
-  AWS/GCP/Azure/DO/Hetzner, sem lookup) → **crawler UA** → **rate >50/h** sem conta → **padrão de
-  pré-fetch** (US + `/site/*` sem navegação). **Retroatividade:** uma `HUMAN_ACTION` (scan/signup/
-  login/PDF/evento) chama `mark_ip_human_today` → marca não-bot todos os registros do IP no dia
-  (corrige dev/cliente atrás de nuvem). **LGPD:** IP retido 90d, depois `anonymize_old_access_logs`
-  (loop diário) trunca o último octeto; nos responses o IP volta **mascarado** (1 octeto ip-behavior,
-  2 ip-detail), completo só no banco. 3 endpoints admin `/admin/analytics/{server-metrics,ip-behavior,
-  ip-detail}` (agregações `al_*` no store, derivação pura no módulo, cache 5min, rate 30/min) + 3 MCP
-  (`get_server_metrics`/`get_ip_behavior`/`get_ip_detail`). O tracker.js **continua** para eventos de
-  interação. **Gotcha:** o Nginx faz `rewrite ^/api/(.*)$ /$1` → o middleware vê paths SEM `/api`
-  (`/scan/result`, `/events`); `HUMAN_ACTIONS` e a extração de domínio usam os paths já sem prefixo.
-  **Prompt 2 ✅** (comportamento + migração do dashboard): 6 store methods novos — `al_server_funnel`
-  (funil server-side visitante→perfil→scan→conta→PDF), `al_top_domains`, `al_daily_series` (tendência),
-  `al_hourly_heatmap` (7×24), `al_pre_signup_journeys` + `al_retention` (D1/D3/D7). ⚠️ **Jornada/retenção
-  são chaveadas por IP, NÃO por user_id:** no POST /signup a conta ainda não tem cookie → `user_id` é
-  NULL; o user_id é recolhido das requests PÓS-signup. `server-metrics` ganhou `server_funnel`+
-  `top_domains`+`daily_series`+`hourly_heatmap`; `ip-behavior` ganhou `pre_signup_journey`+
-  `typical_journey`+`post_signup_retention` (cache 10min — self-JOIN é mais pesado). Derivações PURAS no
-  módulo (`assemble_server_funnel`/`_daily_series`/`_retention`/`_pre_signup_journeys`/`_hourly_heatmap`).
-  **Dashboard** (`web/src/components/admin/AdminAnalytics.jsx`): a aba **Visão geral** usa `server-metrics`
-  como **fonte primária** dos KPIs (Visitantes BR/Scans/Contas/Bots filtrados/Conversão via IP real, não
-  o tracker inflado; Clique-em-alertas fica do tracker), com **fontes independentes** (server-metrics +
-  metrics + funnel em `useAsync` separados — uma falhar não zera a outra), **tendência** do `daily_series`,
-  **toggle de funil email/server** (estado no hash `#overview?funnel=server`) e **badge de fonte**
-  `📡 server`/`📱 tracker` por card. Nova aba **Comportamento**: top domínios, visitantes multi-site,
-  jornada pré-signup (típica + exemplos), retenção D1/D3/D7 e mapa de calor 7×24. Lógica pura em
-  `web/src/lib/admin/analyticsUtils.js` (`dailySeriesToTrend`/`serverFunnelStages`/`retentionBars`/
-  `heatColor`/`DATA_SOURCE`). **Testes:** +22 offline (11 backend derivações/endpoints + 11 `node --test`).
-  `get_server_metrics` MCP omite `hourly_distribution`/`daily_series`/`hourly_heatmap`; `get_ip_behavior`
-  omite a lista detalhada de jornadas (economia de tokens). access_log é a **fonte primária**;
-  site_events/tracker.js segue como **complemento** das interações frontend (as duas coexistem).
-  **Prompt 3 ✅** (fix bloqueador + cobertura completa): **P0** — `al_hourly_heatmap` usava `hour` (palavra-chave
-  do Postgres) como alias sem aspas → **syntax error → 500 no server-metrics** (5/6 cards quebrados); fix
-  `AS hr` + **GROUP BY POSICIONAL** (`1, 2`). **P1 (gap de cobertura)** — o middleware FastAPI só vê o tráfego
-  da API (~12%); as páginas Astro (landing, `/scan`, `/site/*`, `/setor/*`) passam pelo Nginx **direto** ao
-  container Astro sem tocar no FastAPI → visitantes subcontados (~12 vs ~100 reais). Solução **hybrid** (o
-  Nginx vê 100%): **`api/nginx_log_parser.py`** lê incrementalmente o access_log do Nginx e insere na MESMA
-  tabela `access_log`. O middleware **continua** cobrindo `/api`+`/mcp` (com `user_id` + retroatividade); o
-  parser cobre **só** páginas não-`/api`/`/mcp` → conjuntos **disjuntos, zero duplicata**. Coluna
-  `access_log.source` (`middleware`|`nginx`). Nginx ganhou `log_format klarim` +
-  `access_log /var/log/klarim/access.log` (contexto http via `frontend/nginx/log_format.conf` → conf.d; os
-  **server blocks ficam intactos** → CI `nginx -t` segue verde; o stdout p/ docker logs continua). Volume
-  `klarim-nginx-logs` compartilha o log web(rw)→api(rw). Parser: regex do `log_format`, **pula assets +
-  `/api` + `/mcp`**, extrai domínio (reusa `extract_domain`), classifica com **`classify_bot_simple`**
-  (sem rate/endpoint: IP próprio→datacenter→crawler→**US=`prefetch_likely`**; a retroatividade do middleware
-  corrige), `source='nginx'`. Leitura **incremental** (offset+inode p/ rotação); ao passar de 50MB **trunca**
-  (seguro: Nginx abre logs em `O_APPEND`). Loop 30s no lifespan; fail-safe. **⚠️ Não desliguei o middleware**
-  (o card sugeria) — mantê-lo preserva `user_id`+retroatividade para o funil (`/scan/result`,`/account/signup`
-  são `/api`); o parser pular `/api` já evita duplicata. **+27 testes** (parse_line puro, classify_simple,
-  parser incremental/rotação/truncação, guardas do fix P0). SQL validado contra Postgres 16 real + `nginx -t`
-  local (HTTP+HTTPS) + contrato log_format↔regex validado end-to-end.
-  **Prompt 4 ✅** (fecha o KL-92 — 5 pendências): (1) **Cloudflare Web Analytics → GA4** (o
-  `beacon.min.js` era o único script externo sem SRI → travava o score 100): removido do
-  `Base.astro` + CSP; GA4 `G-7WPZN66JTB` no `<head>` (loader `googletagmanager.com` + init inline
-  hasheado); check 13 (SRI) com **allowlist de CDN dinâmico** → klarim.net volta a 100. (2)
-  **Pre-fetch de e-mail** no `bot_classifier`: `_EMAIL_PREFETCH_CIDRS` (66.102/66.249/40.9x/104.47
-  Gmail/Outlook/EOP) + regra **>20 domínios distintos/h** (set Redis `access_domains:{ip}`) →
-  `email_prefetch` (antes de datacenter; em `classify_bot` e `classify_bot_simple`). (3) **Parser
-  Nginx** já entregue no Prompt 3 (40k linhas capturadas em prod; visitors_br 26→56, pega `/`,
-  `/site/*`, `/setor/*`) — mantido o hybrid (não desliguei o middleware: sem duplicata + preserva
-  user_id/retroatividade). (4) **LGPD IPv6**: `anonymize_old_access_logs` trunca IPv4→/24 **e
-  IPv6→/48** (>90d). (5) **Tendência com zeros** já entregue no Prompt 2 (`assemble_daily_series`
-  densifica os dias). +16 testes. GA4-hash e IPv6-SQL validados; CSP via `nginx -t` local.
-- **KL-93** — Hardening de endpoints públicos expostos sem auth ✅. Varredura de segurança achou o
-  **`POST /payment/create` criando cobrança PIX REAL** sem nenhuma proteção. **Fixes:** (P0)
-  `/payment/create` agora exige **e-mail** (422), **rate limit 3/h por IP** (429, via `_redis_allow`),
-  e **domínio existente na base + com scan** (`_domain_scanned` checa `last_scan_at`/`last_scan_score`
-  → 404) — validações rodam ANTES do demo/cobrança. Script `scripts/cleanup_phantom_payments.py`
-  (idempotente, apaga por charge_id via `store.delete`) remove as 2 cobranças fantasma do teste.
-  (P1) `/notify/profile-view` → rate limit 1/h por (IP,domínio); `/monitoring/offer` → RL 10→3/h + 404
-  se o domínio não existe (já tinha authz + score-100); **`/monitoring/sites` → agora exige JWT admin**
-  (401; era "público" mas só páginas Vite legadas o usavam — a vitrine migrou p/ Astro/KL-74);
-  `/report/{executive,technical}` → rate limit **5/h por IP** compartilhado (`report_dl`, cada chamada
-  dispara `_safe_scan` full, caro). **Decisão (mantida KL-89):** `/scan/result` **NÃO** foi alterado —
-  não existe param `tier` client-controlável (o nível vem só da sessão via `_access_level`; a filtragem
-  `_filter_scan_result` é server-side/autoritativa). Downgrade p/ 15 checks reverteria a correção de
-  conversão do KL-89 (mostrar valor antes de pedir conta) — o "bypass" do card não existe. +16 testes
-  (com/sem auth, rate limit, domínio inexistente). Política por endpoint em `docs/SECURITY.md`.
-- **KL-95** — Corrige 4 divergências de métricas do dashboard Analytics (contavam requests à API em
-  vez de ações reais) ✅. **Definição das métricas (fonte autoritativa, não o access_log):**
-  **"Contas criadas"** = `COUNT(*) FROM users` no período (não POST /signup, que incluía tentativas/
-  rate-limits); **"Scans"** = `COUNT(*) FROM scans WHERE source IS DISTINCT FROM 'discovery'` (scans
-  MANUAIS — exclui o worker automático e o ruído de MCP/bots do access_log). Aplicado em
-  `al_server_metrics` (KPIs) e `al_daily_series` (tendência — cada métrica da sua tabela: visitantes
-  do access_log, scans de `scans`, contas de `users`). **Reclassificação retroativa** de pre-fetch de
-  e-mail (o classificador do KL-92 P4 só marca IPs novos): `store.reclassify_prefetch_bots(ranges)`
-  (`UPDATE … is_bot=true WHERE is_bot=false AND ip_address <<= ANY(ranges::cidr[])`, idempotente) via
-  `scripts/reclassify_prefetch_bots.py` (one-off) **e no boot da API** (`_reclassify_prefetch_bots_bg`,
-  pega ranges recém-adicionados). **Jornada pré-signup** exclui polling/admin no SQL
-  (`_JOURNEY_EXCLUDE`: `/admin/%`,`/painel/%`,`/mcp/%`,`/account/me`,`/events`,`/health` — some o
-  `/admin/inbox/unread-count`) + **dedup de passos consecutivos** iguais na derivação (10x o mesmo
-  path → 1). +7 testes; SQL (`<<= ANY(::cidr[])`, scans/users) validado contra Postgres 16.
-- **KL-90** — Dashboard v2 (**P0 dev local ✅**, **P1 endpoint ✅**, **P2 frontend ✅**, **iteração de UX ✅**,
-  **P3 swap → produção ✅**). **P3 (2026-07-22, commit `6bbf1d2`, CI 4/4 verde):** o v2 assumiu
-  **`/dashboard`** (`index.astro` monta `DashboardV2`; o antigo `account/Dashboard.jsx` foi removido;
-  `SiteDetail` mantido). **`/dashboard/v2` → 301 `/dashboard`** via `middleware.js` (antes da auth).
-  Header global (avatar+busca) já em todas as páginas públicas. Validado em prod: públicas 200, health ok,
-  redirect 301, dashboard-summary 401 sem auth, **zero erro/CSP no console**, **workers 4/4 alive**,
-  **score klarim.net=100 🟢**. Sem flush Redis (o dashboard-summary não é cacheado). Scripts externos
-  `header.js`/`planos-auth.js` (CSP `script-src 'self'`, sem hash inline). **Iteração de UX (2026-07-22, 9 itens, tudo em `/dashboard/v2` + Header/Planos/Conta):**
-  (1) **Header global logado** — avatar + dropdown (nome/e-mail, Meu dashboard, Minha conta, Sair) +
-  **busca persistente**; a lógica saiu do `<script>` inline (era 1 dos 5 hashes da CSP) p/ **externo
-  `web/public/header.js`** (coberto por `script-src 'self'`, sem hash). (2) `AddSiteModal` (`POST
-  /account/sites`). (3) **`MonitoredSitesPanel`** fixo/sticky (fim do dropdown) + histórico de
-  pesquisados (`/account/scan-history`). (4) **`ScoreCard` consolidado** — score+status+ações+perfil
-  público+landing+**Vincular Técnico** (`TechnicianModal`→`/account/technician/invite`); StatusPanel
-  removido. (5) **`MonitoringSection`** — status das vigílias (`/account/vigilias`) + o-que-monitoramos
-  (derivado, honesto: `/account/vigilias` é read-only → sem toggle-save, liga ao plano) + boletim.
-  (6) **`Collapsible`** — Riscos/Checklist recolhidos por padrão. (7) **Planos logado** (`planos.astro`
-  + externo `web/public/planos-auth.js`): banner do plano atual + "✓ Seu plano" + upgrade/downgrade/
-  atual. (8) **Conta** `max-w-2xl`→`max-w-4xl` (o resto de `AccountSettings` já existia; lista-de-
-  sites/notificações/export deferidos). (9) **`ExploreSection`** (setor/ranking/estatísticas/melhores).
-  Layout novo do `DashboardV2`: painel de sites à esquerda (`lg:flex`+`lg:w-72`/`lg:flex-1`) + conteúdo
-  à direita. "Meu dashboard" aponta p/ `/dashboard/v2` (volta a `/dashboard` no swap). Validado no
-  navegador (temas, zero erro) + build + test:unit 96. **Ajustes visuais pós-validação:** gráfico de
-  evolução com **eixo Y auto-escalado** ao intervalo (sem espaço vazio) + altura compacta; `ExploreSection`
-  removida do dashboard (fica no repo p/ voltar depois); card do score com só **"Ver landing page"** (o
-  "Ver perfil público" era redundante). **Correção de regressões (v2 = superset da produção):** a produção
-  vive em 2 páginas (`/dashboard` Dashboard.jsx + `/dashboard/site/[id]` SiteDetail.jsx) e o v2 tinha
-  perdido features do site-detail. Restauradas **reusando os componentes de produção**: `PlanSection`
-  (checkout PIX/QR + countdown + downgrade + histórico) e `TechnicianSection` (convite/revogar/**laudo**
-  `/laudo/{code}`+WhatsApp) — este último no modal "Vincular Técnico"; + novos `SealSection` (selo
-  `/seal/widget.js`, gated por plano), `TechnicianClients` (role=technician → "Sites dos meus clientes" +
-  badge), `ConfirmEmailBanner`; **remover site** (✕ no painel → `DELETE /account/sites`), aviso
-  `has_other_owner` no add. **Affordance:** `Collapsible` com chevron que rotaciona + "expandir/recolher" +
-  hover; Riscos abre por padrão com o 1º risco expandido. **Não portadas** (dependem do backend
-  `dashboard-summary` expor mais dados; ficam no site-detail): indicadores de privacidade LGPD, 48 checks
-  com evidência, ownership verification. **P2:** Dashboard v2 em **`/dashboard/v2`** (`web/src/pages/dashboard/v2.astro`), rota
-  SEPARADA que coexiste com `/dashboard` (o antigo, **não modificado**; o swap é o P3). ⚠️ O prompt
-  dizia `/painel/dashboard-v2`, mas o dashboard do USUÁRIO vive em `/dashboard/*` (auth por cookie de
-  usuário via `src/middleware.js`); `/painel/*` é o painel do OPERADOR (admin) — como o endpoint é
-  user-auth, a página tem que ficar sob `/dashboard/`. 10 componentes React em
-  `web/src/components/dashboard-v2/` (+ `shared.js` tokens/helpers, `FixInline.jsx`): `DashboardV2`
-  (orquestrador: 1 fetch, seletor de site, skeleton, erro+retry, banners offline/score-100, toast,
-  scan+re-fetch), `SiteSelector`, `ScoreCard` (anel do semáforo + tendência PT + benchmark),
-  `StatusPanel` (riscos/SSL/online + PDF/Compartilhar/Escanear), `CategoryBar` (6 pills → checks
-  expandem), `RisksList` (accordion KL-20 por severidade → "Como corrigir"), `FixInline` (abas
-  WordPress/Nginx/Apache, auto-seleciona pelo `site_type`), `Checklist`, `ScoreHistory` (**gráfico
-  SVG, não recharts** — CSP estrita do público bloqueia libs que injetam estilo; mesma escolha do
-  KL-86), `PlanCard`, `EmptyDashboard`. Progressive disclosure em 3 camadas + F-pattern; tema
-  claro/escuro via utilitários theme-aware (KL-87) + `text-[var(--accent-text)]` nos botões laranja;
-  `client:load` (padrão do dashboard atual). PDF=`/api/report/executive?url=`; Escanear=`/scan/result?
-  refresh=1`. Validado no navegador (troca de site, accordion, temas, zero erro no console) + `npm run
-  build` + `test:unit` 96. **Gotcha do dev (P2):** o Astro entra em crash-loop no restart por causa do
-  lock `web/.astro/dev.json` (bind mount sobrevive ao restart) → o `command` do serviço `astro` agora
-  faz `rm -f .astro/dev.json` no boot. E o dev server pode ter **scan incompleto do Tailwind** para
-  classes NOVAS de arquivos recém-criados (reiniciar resolve; o build de produção gera tudo). **P0:**
-  stack Docker local (`docker-compose.dev.yml` + `.env.dev` + `frontend/nginx/
-  dev.conf` + `scripts/seed_dev.py`), detalhes na §6 e em `docs/DEV.md`. **P1 — `GET /account/
-  dashboard-summary?site_id={id}`** reescrito para a shape v2 (SUBSTITUI o payload do KL-86; o
-  front antigo `web/src/components/account/Dashboard.jsx` será reescrito no P2). Toda a lógica
-  vive em **`api/dashboard.py`** (funções `build_*` PURAS/testáveis + orquestrador
-  `build_dashboard_summary` com queries em paralelo via `asyncio.gather` → ~50ms). O handler em
-  `api/main.py` virou uma casca fina que delega. Response: `sites[]` (todos, p/ o seletor) +
-  `selected_site_id` (`?site_id=` ou primário = 1º; site de outro usuário → **404**) + `site`
-  (score/semáforo/trend PT subindo·caindo·estavel·primeiro/next_scan/is_online/site_type/
-  ssl_days) + `benchmark` (rank + média setorial, fallback global) + `risks[]` (FAIL em
-  linguagem de negócio KL-20, ordenados por severidade, com **`fix_inline` {wordpress,nginx,
-  apache}**) + `categories[]` (6 grupos fixos: tls/headers/supply/dns/content/osint com passed/
-  total/status + checks aninhados com evidence/risk_message/fix_inline) + `score_history` +
-  `checklist` (derivado dos FAIL alta/crítica + perfil/selo/compartilhar, máx 5) + `plan`
-  (features v2) + `monitoring` (vigílias/boletim/selo/técnico) + `profile`. **`fix_inline` é um
-  mapa CANÔNICO por nº de check em `api/dashboard.py::FIX_INLINE`** (~25 checks; produção, não
-  depende do seed) — `title`/`description`/`risk_message` vêm do `RISK_MESSAGES` (KL-20). Sem
-  site → payload reduzido (`has_site:false` + plano + checklist add_site/confirm_email).
-  `contact_email`/cnpj/whatsapp NUNCA no payload. Helpers KL-86 (`_dashboard_categories`/
-  `_build_checklist`/`_score_trend`/`_vigilia_summary`/`_new_user_checklist`) ficam órfãos (não
-  removidos — cleanup futuro); testes do endpoint migraram p/ `tests/test_kl90_dashboard_summary.py`
-  (20) + `tests/test_kl86_dashboard.py` reduzido aos 7 testes de helper puro.
-  **Fix login+técnico (2026-07-22, commits `1d8730f`…`c0e4531`):** persistência do login no header
-  (o allowlist do Nginx não proxyava `/header.js`/`/planos-auth.js` p/ o Astro → SPA fallback servia
-  HTML → o browser bloqueava o script; fix no allowlist + `?v=3` — a `?v=2` foi envenenada por ter
-  sido testada antes do deploy). **Experiência do técnico (2026-07-22):** o "Ver →" da lista "Sites
-  dos meus clientes" abre o **dashboard técnico** do site do cliente (não o perfil público). Backend:
-  `build_dashboard_summary` ganhou ramo **modo técnico** (`api/dashboard.py::_build_technician_view`)
-  — quando `site_id` não é site próprio, exige um `technician_link` **ativo** deste técnico (senão
-  **404**, nunca 500/vaza) e devolve a resposta técnica completa (48 checks com **evidência**
-  primária + `fix_inline` por plataforma + PDF técnico + benchmark + riscos + histórico + vigílias do
-  dono **read-only**), `technician_mode:true`, `owner_email` **mascarado** (`_mask_email`),
-  **sem** plan/checklist/conta do dono. Toggle "Receber alertas deste site":
-  `PUT /account/technician/notifications` + coluna `technician_links.receive_alerts` (default true);
-  a vigília (`_emit_alert`) faz **CC best-effort** aos técnicos que optaram
-  (`get_alert_technicians_for_domain`, só e-mail do técnico). Frontend:
-  `TechnicianView.jsx` (banner "🔧 Visualizando como técnico · {domain} · Dono: {mascarado}" +
-  "← Voltar"), `CategoryBar technical` (evidência primária), `ScoreCard technician` (PDF técnico, sem
-  Compartilhar/Vincular), `TechnicianClients` → `/dashboard?site_id={id}`. **Gotcha:** o mount do
-  `DashboardV2` lia sempre `load(null)` (ignorava `?site_id=`) → o deep-link caía no dashboard do
-  próprio técnico; fix: `initialSiteId` da URL → `load(initialSiteId || null)` (owner sem param
-  inalterado). +2 testes (`test_technician_mode`, `…_unlinked_404`); relatório em
-  `claude/reports/KL-90_experiencia_tecnico_dashboard.md`.
-- **KL-99** — Conta sem senha + 3 níveis de confiança + verificação de domínio ✅ (validado local;
-  **deploy pendente de validação do dono**). Elimina a fricção do `/cadastrar` (convertia 1,1%).
-  **Modelo:** `users.account_level` (1 sem senha · 2 com senha · 3 dono verificado por controle de
-  domínio), eixo **distinto** do `access_level` do KL-82. Backfill: **toda conta existente → 2**
-  (`ADD COLUMN … DEFAULT 2`). `password_hash` **nullable**; `users.source` (`signup`|`hmac`|`inline`).
-  **Fluxo C (`GET /alert-access`):** o clique no link HMAC dá só uma **sessão de visualização**
-  (`alert_session`, view-only, 24h) — **NÃO** cria conta nem loga (fix 2ª rodada). A conta nasce no
-  **consentimento**: `POST /account/monitor-from-alert` ("Sim, monitorar") cria conta SEM senha
-  (nível 1, `source=hmac`, confirmada) + vincula site + ativa vigílias + loga; e-mail já com conta →
-  `{existing_account}`. `MonitorConsent.jsx` (`mode="alert"` cria · `mode="account"` = logado add site).
-  **Magic link** (conta sem senha volta / esqueceu senha): `POST /account/magic-link` (TTL 1h) +
-  `GET /account/magic-access` → sessão → `/dashboard`; botão "Enviar link de acesso" no `/entrar`.
-  **Fluxo D (`POST /account/signup-inline {email,domain}`):** conta nível 1 (`source=inline`, não
-  confirmada) + domínio vinculado como site PENDENTE (sem vigília) + e-mail de confirmação; 3/h/IP;
-  `{status:confirmation_sent|already_exists}`. A **confirmação do e-mail ATIVA o monitoramento**
-  (`_activate_monitoring_on_confirm`) e **loga** a conta sem senha → dashboard (senão ficaria presa:
-  não há senha p/ o `/entrar`). `InlineSignup.jsx`. **`POST /account/signup`** com senha opcional
-  (sem senha → nível 1). **`/cadastrar`** virou 1 campo (só e-mail). **`POST /account/set-password`**
-  (1→2; 400 se já tem senha, 422 se não conferem). **`@require_level(n)`** (`_require_level`, 403
-  `{error:insufficient_level, required_level, current_level}`) gateia: nível ≥2 em `PUT /account/me`,
-  `DELETE /account/sites/{id}`, `technician/invite`, `upgrade`; nível ≥3 em `profile-confirm`.
-  **Verificação de domínio (2→3):** `POST /account/sites/{id}/verify/{start,check}` (meta_tag/
-  html_file/dns_txt; token `token_urlsafe(32)`; check 10/h/IP) → `mark_site_verified` + `account_
-  level=3` + `targets.owner_verified`. **Estende** a tabela `ownership_verifications` do KL-68
-  (colunas `token`/`domain`; TTL 7d no INSERT — o fluxo de código do KL-68 fica intacto). **Anti-SSRF:**
-  o fetch usa o domínio de `targets` (não input cru) e o corpo nunca volta ao usuário (só o match).
-  **Cleanup:** `delete_unconfirmed_passwordless_accounts` no `trial_worker` (nível 1 + sem senha +
-  não confirmada + >30d + sem re-login — o site PENDENTE do Fluxo D a isentava da limpeza do KL-82).
-  **Frontend:** `web/src/components/scan/{InlineSignup,MonitorConsent}.jsx` (2 variantes por SESSÃO,
-  não por dispositivo; `ctaCopy`/`AccountCTA` removidos), `dashboard-v2/LevelPrompt.jsx`
-  (`useLevelGate` intercepta a ação e re-executa após o modal + `SetPasswordModal`/`VerifyDomainModal`/
-  `LevelBadge`). **Testes:** +27 backend (`test_kl99_levels.py`) + 98 `node --test`. **Seed dev:**
-  `nivel1@teste.com` (sem senha) · `dono3@teste.com`/`dev123456` (dono verificado nível 3). Relatório:
-  `claude/reports/KL-99_conta_sem_senha_niveis.md`. **TTL do `alert_access` = 7 dias**
-  (`_ALERT_ACCESS_TTL` em `notifier/email_client.py` + `api/main.py`, em sincronia). **2ª rodada
-  (fix crítico):** o link do alerta NÃO cria conta (só sessão view-only) — a conta nasce no
-  consentimento (`monitor-from-alert`); + magic link para conta sem senha voltar; + layout do
-  resultado em 2 colunas (score compacto + CTA acima do fold).
-- **KL-91** — Módulo de e-mail cold com rotação de subdomínios ✅ (validado local; **deploy
-  pendente de validação do dono**). Corrige os alertas caindo no spam (urgência + links
-  trackáveis + domínio único). **`notifier/cold_alert.py`** (PURO/testável): 3 variantes de
-  **texto puro SEM links** (1 informativa · 2 setorial com média · 3 educativa; acentuação PT-BR
-  correta — texto sem acento parece MAIS spam), opt-out **por resposta** (header
-  `List-Unsubscribe: <mailto:scan@klarim.net?subject=remover>`, SEM One-Click — inválido com
-  mailto), `choose_variant` (com setor→1/2/3, sem→1/3), `load_senders`/`pick_sender`
-  (round-robin pelo de menor volume; guard descarta `klarim.net` cru — isolamento), `flag_high_bounce`
-  (circuit breaker: bounce >5% amostra ≥20 → pausa o remetente). **Rotação** entre
-  `alertas.klarim.net` + `aviso.klarim.net` (`ALERT_SENDER_EMAILS`, verificados no Resend);
-  `klarim.net` fica **exclusivo do transacional**. `alert_worker.run_cycle` reescrito de **batch →
-  envio individual** com **cooldown 30-60s** (`ALERT_SEND_INTERVAL_MIN/MAX`, 0 em dev/testes) +
-  **limite diário por remetente** (`ALERT_SENDER_DAILY_LIMIT`, warmup 100→750; editável no painel)
-  + deadline de ciclo (não estoura o intervalo). `KlarimMailer.send_cold_alert` (texto puro,
-  from rotacionado, log com `template_variant`+`from_domain`); **`DRY_RUN_EMAIL`** curto-circuita
-  `_send_sync` (dev simula sem Resend, grava email_log). Schema: `email_log.template_variant`.
-  Store: `count_alerts_sent_today_by_domain`, `email_health_by_domain`. `/system/email-health`
-  (+ MCP `get_email_health`) ganham **`by_domain`** (sent/delivered/bounced/bounce_rate/status por
-  remetente). `send_alert_for_target` (disparo manual) usa o mesmo formato cold (1º remetente).
-  **Opt-out por resposta = manual por ora** (Opção A: respostas caem no inbox `scan@klarim.net`,
-  operador põe na blocklist). Threshold do lead scoring (KL-85) **não** foi mexido (gerido à parte).
-  Builders antigos (`build_alert_text` + alert-access HMAC KL-82 S3) **ficam no código** (o ciclo
-  não os usa; revertível). +33 testes (`test_kl91_cold_alert.py` +24; `test_alert_worker.py`
-  reescrito p/ envio individual). Relatório: `claude/reports/KL-91_modulo_email_rotacao.md`.
+- **`ensure_schema` CONCORRENTE no deploy** (api+discovery+worker) → risco de `DeadlockDetected` (ALTER/CREATE INDEX disputam `AccessExclusiveLock`). O `ensure_schema` **retenta** erro transitório de DDL (`_is_transient_ddl`, 6× backoff). Fila do scan = **`klarim:scan_queue`** (não `scan_queue`); persistência real em `targets.last_scan_at`/tabela `scans`, não só no log.
+- **NUNCA editar arquivo via `docker exec`** (causou divergência de containers no incidente KL-127). `api`/`worker`/`discovery` = mesma imagem; deploy com `--force-recreate` garante uniformidade. Validação pós-deploy: `diff`/md5 dos módulos entre containers = vazio.
+- **NULL-safe em WHERE de status:** `NULL = 'x'` vira NULL e um `AND NOT(...)` excluiria as linhas de status NULL — use `COALESCE(col,'')` (validar contagem antes/depois no Postgres da VM).
+- **CSP estrita bloqueia islands Astro** ("Astro is not defined") → `/painel` usa CSP relaxada; ilhas admin `client:only="react"`. **Recharts só na Overview admin** (island `client:only`; público usa SVG puro — CSP bloqueia libs que injetam estilo).
+- **`parseUTC`:** timestamps do Postgres são naive — adicione `Z` antes de `new Date`.
+- **SPA fallback** (Vite `/painel` e Astro público) serve `200`+HTML p/ paths desconhecidos → um `.js` público fora do allowlist do nginx vira HTML (bloqueado por `nosniff`). Ver §3 Frontend.
+- **Docker build na VM leva minutos** — lento ≠ travado. Confira idade dos containers via SSH (build-then-recreate mantém o site no ar).
+- **`LeadShared.jsx`:** `CLASS_META`/`ClassBadge` extraídos de `Leads.jsx` (evita import circular).
+- **Inbox:** corpo de e-mail externo em `<iframe sandbox="">` + `srcDoc` — **NUNCA** `dangerouslySetInnerHTML` (stored-XSS roubaria o JWT do operador).
+- **504 no `/scan/summary`:** scan roda inline; site lento pode passar do `proxy_read_timeout` (180s) — o resultado ainda cacheia, a retentativa pega o cache quente.
+- **"Escanear" no painel = síncrono** (`POST /targets/{id}/scan?sync=1`, reusa `get_or_scan`, `source='admin'`). Sem `sync` só enfileira.
+- **CI travado sem deploy:** o job `deploy` tem `needs:[test,…]` — se o `test` falha (ex.: testes desatualizados após mudar uma regra), o deploy NUNCA roda e a VM fica atrás. Alinhe os testes ao mudar comportamento.
 
-- **KL-96** — Desativar alerta antigo + corrigir contadores ✅. **Itens 1–2 já estavam resolvidos
-  pelo KL-91:** o `run_cycle` só envia por `send_cold_alert` (subdomínios cold; nenhum `send_alert`/
-  `_proactive_from`), e o webhook do Resend já bota todo bounce na blocklist (0 fora). A premissa
-  "785/dia de alerta antigo via alerta@klarim.net" era **`profile_view`** (769/dia, 0,7% bounce), não
-  alertas — os 8 alertas de hoje pelo path antigo foram ANTES do deploy KL-91. **Itens 3–6 (fonte única
-  = email_log):** havia 3 fontes p/ "alertas enviados" (alert_log/email_log/count_proactive) divergindo.
-  `store.alert_stats` reescrito de **alert_log → email_log** (`email_type IN ('alert','alert_score100')`,
-  dia-calendário) — alinha a página Alertas com o funil do Analytics (que já usava email_log) e o
-  Sistema (`/system/status` usa o mesmo `alert_stats`). `aa_metrics_raw.alerts_sent` + `analytics_funnel`
-  (MCP get_funnel) também migrados p/ email_log. **Abas:** "Alertas enviados" ganhou coluna **REMETENTE**
-  (`email_log.from_domain` via LEFT JOIN por email_id; badge verde p/ cold `alertas.`/`aviso.`, cinza
-  p/ antigo); "Consultas de perfil" ganhou **contadores próprios** (`profile_view_stats` +
-  `GET /alerts/profile-view-stats`). §6 "Contas criadas" já vinha de `users` (KL-95) — só verificado.
-  +5 testes (`test_kl96_counters.py`); SQL validado no Postgres 16 da VM. **Recomendação (próximo card):**
-  isolar `profile_view` (~15k/sem cold no domínio transacional `klarim.net`) num subdomínio próprio +
-  validação MX — é o risco de reputação real (não dá p/ usar `alertas.`/`aviso.`: quebraria o warmup).
+---
 
-- **KL-101** — Isolar profile_view no subdomínio `perfil.klarim.net` ✅ (código pronto + testado;
-  **deploy PENDENTE de o dono verificar `perfil.klarim.net` no Resend** — senão os envios falham).
-  O aviso "perfil consultado" era o último cold saindo por `klarim.net` (~15k/sem, `_proactive_from`).
-  Agora: remetente dedicado `notifica@perfil.klarim.net` (`_profile_view_from`, `PROFILE_VIEW_FROM_
-  EMAIL`; **não rotaciona** com os cold alerts do KL-91), `build_profile_view_text(domain)` **texto
-  puro SEM links** + opt-out por resposta (mailto, como o KL-91), `email_log.from_domain=perfil.klarim.net`.
-  **Volume:** dedup por dono **1/dia** (`notify_owner:{email}` Redis) + dedup por domínio/24h (já
-  existia) + **teto diário de warmup** `PROFILE_VIEW_DAILY_LIMIT=200` (editável no painel, contador
-  `profileview:daily:{date}`). `klarim.net` fica **100% transacional**. +8 testes
-  (`test_kl101_profile_view.py`). Relatório: `claude/reports/KL-101_isolar_profile_view.md`.
+## 11. Índice de cards (traço rápido — detalhe em `claude/reports/KL-xxx_*.md` e `docs/HISTORY.md`)
 
-- **KL-100** — Página pública `/metodologia` ✅. Transparência da varredura passiva: 6 seções (o que
-  faz / o que NÃO faz / base legal [Art. 154-A CP, Marco Civil, LGPD Art. 7 IX, links planalto.gov.br
-  em nova aba] / dados consultados / direitos do dono / identificação do scanner). Astro SSG
-  (`web/src/pages/metodologia.astro` + `Page.astro`), link no `Footer.astro` (todas as páginas),
-  no `sitemap.xml.js` e na allowlist do nginx (`metodologia` em http.conf + https.conf.template).
-  Linha "Saiba mais sobre nossa metodologia: klarim.net/metodologia" (texto, não link) no rodapé dos
-  4 templates cold (3 variantes de alerta + profile_view).
-- **KL-102** — List-Unsubscribe (RFC 8058) + `/remover` ✅. Testes de deliverability (10/10) apontavam
-  ausência do header `List-Unsubscribe` nos senders cold (Gmail/Yahoo exigem p/ >5k/dia). Agora os 3
-  senders cold (não o transacional) levam `List-Unsubscribe: <mailto:scan@klarim.net?subject=remover>,
-  <https://klarim.net/remover?token=...>` + `List-Unsubscribe-Post: One-Click`. Token HMAC em
-  `notifier/email_client.py` (`generate/verify_unsubscribe_token`, propósito `unsubscribe` — não colide
-  com o alert_session do KL-82; SEM expiração; base64url(json).hmac). `POST/GET /remover` (FastAPI,
-  roteado pelo nginx): marca `unsubscribed` + blocklist + evento `email_log`; GET = página de
-  confirmação; POST = form OU one-click do Gmail. **Segurança:** HMAC constant-time, anti-enumeração
-  (nunca revela se email/domínio existe; token inválido → 200/400 genérico), rate limit 10/min/IP só
-  nos tokens INVÁLIDOS (o one-click válido nunca é bloqueado). Opt-out por resposta ("remover") segue
-  em paralelo. +14 testes. Relatórios: `claude/reports/KL-100_metodologia.md`, `KL-102_list_unsubscribe.md`.
+- **KL-20** riscos dinâmicos por falha/setor · **KL-24** safety net global de bounce · **KL-25/27** fluxo de código/avulso (dormentes)
+- **KL-44** Guardião Digital (P1 planos · P2 vigílias · P3 boletim+laudo · P4 vigílias avançadas · P5 privacidade+selo+benchmark · P6 checkout PIX+trial worker) ✅
+- **KL-51** plataforma Astro · **KL-52** site_profile interno · **KL-54→KL-84** taxonomia de setores aberta
+- **KL-57** analytics de disponibilidade/eventos · **KL-59** Google Safe Browsing ativo · **KL-60** scan desacoplado do e-mail
+- **KL-61** leads/PQL · **KL-62** email_log unificado · **KL-63** MCP OAuth 2.1 · **KL-64** analytics anti-bot · **KL-65** SEO/Schema · **KL-66** contato nos perfis
+- **KL-67** qualidade do profiler · **KL-68/71** reivindicação + verificação de propriedade (tiers, auto_domain) · **KL-69** gestão de usuários · **KL-70** agência→técnico
+- **KL-74** conteúdo navegável · **KL-75** tecnografia (tech_detector, site_type, subdomínios) · **KL-77** VM e2-standard-4 + GCS archive + scan 200/h
+- **KL-78** scan≠monitoramento · **KL-80** responsivo mobile-first · **KL-81** landing buscador · **KL-82** confiança progressiva (níveis de acesso) · **KL-83** analytics admin
+- **KL-84** setores dinâmicos · **KL-85** lead scoring de qualidade · **KL-86/90** dashboard v2 · **KL-87** tema light/dark · **KL-89** fix de conversão (layout/visibilidade)
+- **KL-91** rotação de senders cold · **KL-92** access log server-side (fonte de verdade) · **KL-93** hardening de endpoints públicos · **KL-94** gate de acessibilidade + auditoria Tipo B
+- **KL-95** métricas corretas (fontes autoritativas) · **KL-96** desativa alerta antigo + contadores · **KL-97/98** gestão do dono (monitoramento/perfil/selo) · **KL-99** conta sem senha + 3 níveis
+- **KL-100** /metodologia · **KL-101** isolar profile_view (perfil.klarim.net) · **KL-102** List-Unsubscribe + /remover · **KL-103** landing social proof · **KL-104** deep-linking + filtros de alvos + visão 360°
+- **KL-105** conversão scan (signup-inline ativa monitoramento) · **KL-106** vigílias core no Free + painel.→301 · **KL-107** segurança (IDOR/aviso ao dono) · **KL-108** circuit breaker hard vs soft
+- **KL-110** verificação Reoon pré-envio (hoje background) · **KL-122** gate de score configurável · **KL-123** vigílias expansíveis · **KL-124** deploy `--force-recreate` + rollback
+- **KL-125/127/128/129/130/136/137** evolução do pipeline de e-mail (**superados pelo KL-145** — regra viva em §4) · **KL-131** sitemap dinâmico · **KL-132** SEO programático · **KL-133** blog
+- **KL-138** hardening (redirect curto /a/{id}, blocos de exploit) · **KL-141** Security Gate engine (P1-P4) · **KL-145** desacopla Reoon (3 filtros locais) · **KL-146** priorizar e-mails pessoais
+- **KL-147** Gate SPA fingerprint · **KL-149** +13 checks do Gate · **KL-150** navegação/UX + Analytics fuso Brasília + aba Visão geral desativada · **KL-151** Gate produto (KYC/planos/API keys/enterprise, P1-P4)
+- **KL-152** Gate onboarding + docs + enterprise workflow · **KL-153** Gate KYC progressivo + rate limit 3 camadas + separa públicos empresa×dev · **KL-154** Gate importa SPF/DKIM/DMARC
+- **KL-155** domain rate limit por plano · **KL-156→KL-159** fixes Gate (dropdowns, KYC email_confirmed, upgrade PIX, plano visível, default Free, auth-state) · **KL-160** nginx rate limit + Gate SPA fix + admin security scan
+- **KL-161** conformidade LGPD (/lgpd, DPO, ROPA) · **KL-163** PDF de run do Gate + endereço estruturado KYC · **KL-26** cobertura de testes transversais
+- **KL-134** micro-ferramentas SEO ✅ (P1 backend: 5 tools públicas `/api/tools/*` + rate limiter + stats; P2 frontend: `/ferramentas/*` landing pages + nav + FAQ Schema.org)
 
-- **KL-103** — Landing: social proof (números ao vivo) + pills de setores acima do fold ✅. Nota:
-  a remoção das seções abaixo do fold e do texto "13.000+" já fora feita no **KL-81** (o "estado
-  atual" do card era um snapshot antigo). Feito: (1) **`/public/stats` estendido** com 3 contadores
-  agregados (`sites_analyzed` = targets status≠'discovered'; `sectors` = distinct sector≠'outro';
-  `public_profiles` = site_profile public_visible) — `store.public_landing_counts`, mesmo cache Redis
-  1h + rate limit 30/min do KL-74; **só números, sem PII**. (2) **Stats bar** na landing (fallback
-  ESTÁTICO no HTML SSG + `web/public/landing-stats.js` atualiza ao vivo; formata pt-BR, arredonda >1000
-  p/ centena inferior + "+"). (3) **6 pills de setor** (`/setor/{slug}`) + "+43 setores" → `/setores`;
-  clique rastreado (`sector_pill_click` em `_KNOWN_EVENTS`). (4) **meta/og/twitter** com a escala
-  ("50.000+ sites analisados em 49 setores"). `landing-stats.js` na allowlist do nginx (`?v=1`).
-  **Decisão:** script vanilla externo (não React island) — SSG-friendly (número no HTML antes do JS),
-  CSP-safe, ~1KB (a landing não tinha bundle JS). +4 testes. Relatório: `claude/reports/KL-103_landing_social_proof.md`.
+Histórico completo em **`docs/HISTORY.md`**; deploys em **`claude/DEPLOY_HISTORY.md`**; relatórios em `claude/reports/`.
 
-- **KL-104 P1** — Deep linking entre páginas do admin ✅ (Parte 1 de 3). Componente reutilizável
-  **`DomainLink`** (`ui.jsx`): um domínio/URL em tabela do admin vira `<a href="/painel/alvos/{id}">`
-  (sem `targetId` → texto puro, nunca link quebrado). Aplicado em **Scans** (`s.target_id`), **Alertas
-  enviados** (`a.target_id`), **Consultas de perfil** (+ mantém link "perfil ↗" público), **Analytics/
-  Eventos** e **Sites monitorados** (Clientes + Usuários, `s.target_id`). Detalhe do alvo
-  (`AlvoDetalhePage`) ganhou **links de saída** (nova aba): "Ver perfil público" (`klarim.net/site/
-  {domain}`, só se `profile.public_visible`) e "Ver último scan" (`klarim.net/scan?url={domain}`, só se
-  `last_scan_at`). Backend: `target_id` adicionado aos responses de `analytics_events` + `aa_events`
-  (site_events já tinha a coluna). **Não coberto (nota):** Leads (lista é por e-mail, sem domínio) e
-  Comportamento/IPs (access_log → join com targets; a Parte 3 cobre o comportamento por-alvo).
-  Frontend-only + 2 campos `target_id`. +2 testes. Relatório: `claude/reports/KL-104_p1_deep_linking.md`.
-- **KL-104 P2** — Filtros avançados na página Alvos ✅ (Parte 2 de 3). 10 filtros novos + os 5
-  antigos, todos combinando com **AND** e **100% parametrizados** (zero injeção; valor fora do
-  dicionário é descartado). O coração é **`TargetStore._target_filters(f)`** (staticmethod PURA)
-  → `(where, params)`, compartilhado por `list_targets(**filters)` **e** `count_targets_filtered`
-  (a contagem bate com a lista). Filtros: `score` (faixas + `sem`), `semaphore` (derivado do score),
-  `lead_score` (`alert_quality_score`), `has_email`/`monitored`/`owner_verified`/`has_ai_profile`
-  (bool **3-estados**: sim/não/todos — `monitored` via `EXISTS user_sites`, `has_ai_profile` via
-  `EXISTS site_profile.description`), `site_type`/`tech` (CSV → `= ANY(%s)`; `tech` via EXISTS lazy
-  no `site_tech_stack`), `last_scan` (`hoje`/`7d`/`30d`/`nunca`). **`GET /targets`** ganhou os params
-  + response `total` (filtrado) + `total_all` (geral, cache Redis 1h); **`GET /targets/tech-list`**
-  (top-20 tecnologias p/ o dropdown, cache 1h) fica ANTES de `/targets/{id}`. 3 índices parciais
-  (last_scan_score/last_scan_at/owner_verified). Frontend: lógica pura em
-  **`web/src/lib/admin/alvosFilters.js`** (URL⇄estado⇄params, testável), UI em
-  **`AlvosFilters.jsx`** (linha 1 fixa + linha 2 colapsável + barra "N de X" + "Limpar filtros";
-  toggles 3-estados, multi-select via `<details>` CSP-safe). `AlvosPage` sincroniza os 15 filtros
-  com a **URL** (`replaceState`, deep-link/bookmark), debounce 300ms, paginação pelo `total`, e
-  registra **`admin_filter_used`** (KL-57, sem PII — só os nomes dos filtros). Perf validada em
-  prod: filtro combinado em **11ms** (<2s p/ 50k). +11 backend + 9 `node --test`. Relatório:
-  `claude/reports/KL-104_p2_filtros_avancados.md`.
-- **KL-104 P3** — Visão 360° do alvo ✅ (Parte 3 de 3, **fecha o card**). **`GET /admin/targets/{id}/
-  intelligence`** (JWT admin) junta numa chamada o que exigia 4-5 páginas: **4 seções isoladas**
-  (monitoramento · funil · visitantes · timeline). Agregações brutas (SQL) em `discovery/store.py`
-  (`ti_*`, 1 conexão por método → falha isolada); **montagem PURA** em **`api/target_intelligence.py`**
-  (funil, classificação de fonte de tráfego, mascaramento de IP, merge/paginação da timeline) +
-  orquestrador com **degradação graciosa** (`_try` engole erro de sub-query → `null`; `_safe_section`
-  → `{error}`; tabela ausente nunca derruba). **Monitoramento:** monitors (`user_sites`→`users`,
-  e-mail é dado admin), vigílias (por `site_domain`), dono verificado (`owner_verified`+
-  `ownership_verifications`), técnico (`technician_links`). **Funil:** 6 etapas derivadas de
-  timestamps reais (discovered/scanned/alerted/account_created/monitoring/paid — paid via
-  `payments.target_url`), e-mails enviados+summary (`email_log`), lead score (`alert_quality_score`).
-  **Visitantes:** consultas/IPs únicos + top IPs **mascarados /24** (`mask_ip(ip,3)`, LGPD KL-92 — IP
-  completo NUNCA sai) + cross-site (outros domínios do mesmo IP, 1 query batch `ANY(::inet[])`, com
-  `target_id` p/ DomainLink) + fontes de tráfego (por `referrer`). **Timeline:** UNION lógico em
-  Python de scans/alertas/perfil-consultado(`endpoint LIKE '/site/%'`)/status/descoberta, ordem DESC,
-  **cursor** (`before`+`has_more`/`next_cursor`); `email_log.sent_at` (TIMESTAMPTZ) normalizado via
-  `AT TIME ZONE 'UTC'` p/ não misturar naive/aware no merge. 2 índices `access_log(domain_queried,
-  created_at)`/`(ip_address,created_at)`. Frontend: `TargetIntelligence.jsx` (4 `<details>` CSP-safe,
-  funil visual laranja/cinza-tracejado, "Carregar mais" por cursor, cross-site = DomainLinks) montado
-  no topo do `AlvoDetalhePage`. Os 8 padrões SQL validados no Postgres 16 da VM. +18 backend. Relatório:
-  `claude/reports/KL-104_p3_visao_360.md`.
-- **KL-105** — Frontend de conversão do resultado do scan (Fluxo D) ✅. **Mudança-chave:** o
-  **`POST /account/signup-inline`** deixou de exigir confirmação de e-mail (que matava a conversão,
-  lição KL-89) — agora **ativa o monitoramento na hora** (vincula site + vigílias + posse Tier 1,
-  igual ao `monitor-from-alert`) e **loga** (cookie), retornando `{status: monitoring_active}` (+cookie)
-  ou `{status: already_exists}` (o front dispara um **magic link** automático). O welcome valida o
-  endereço: um bounce cai na blocklist → alertas futuros suprimidos (protege a reputação sem bloquear
-  a conversão). Rate limit **5/min & 30/dia por IP** (era 3/h). Novo **`GET /account/monitoring-status
-  ?domain=`** (auth **opcional**, 30/min/IP) → `{logged_in, monitoring, user_email?}` — o CTA do
-  logado usa p/ escolher entre "adicionar ao monitoramento" (estado C) e "você já monitora" (estado B).
-  Frontend (o layout 2 colunas + InlineSignup/MonitorConsent já vinham do KL-99): `InlineSignup.jsx`
-  reescrito — sucesso inline "Monitoramento ativado!" (sem redirect), `already_exists` → dispara magic
-  link + "enviamos um link de acesso", botão desabilitado até e-mail válido (`isValidEmail`), CTA
-  `border-2 border-brand-500`, texto legal (Termos/Privacidade), 4 eventos KL-57 (`inline_signup_shown/
-  click/success/existing`). `MonitorConsent.jsx` (account mode) busca `monitoring-status` → estado B.
-  O `/entrar` já tinha magic link (KL-99). +6 backend (`test_kl99_levels.py`) + 1 `node --test`
-  (`isValidEmail`). **Consideração de segurança (documentada):** ativar monitoramento sem confirmação
-  é um trade-off de consentimento — mitigado pela validação por bounce; follow-up possível: gatear o
-  1º alerta em `email_confirmed`. Relatório: `claude/reports/KL-105_conversao_scan.md`.
-- **KL-97 + KL-98** — Gestão do dono no dashboard (monitoramento/notificações + perfil público/selo) ✅.
-  Compartilham `user_sites`/`vigilias`/`site_profile` + auth. **Ownership em TODO endpoint** (`_owned_site`:
-  auth + `_require_level` + `get_user_site`; nível ≥1 p/ monitoramento, **nível 3 + `is_owner`** p/ perfil/selo).
-  **KL-97:** `GET/PUT /account/sites/{id}/monitoring` — liga/desliga vigílias por-tipo (`set_vigilia_enabled`,
-  cria se não existe, threshold do score no `last_data` JSONB), **plan-gated** (toggle fora do plano → 403
-  `requires_plan`; `_VIGILIA_MIN_PLAN`); `list_site_vigilias` traz TODAS (habilitadas ou não).
-  `GET/PUT /account/notification-preferences` — novas colunas em `users` (`bulletin_frequency` NULL=plano ·
-  `bulletin_hour` · `notify_vigilia/bulletin/news`); `list_users_due_bulletin` reescrito p/ **frequência
-  EFETIVA** (override do user > plano; `off`/`notify_bulletin=false` não recebem; `immediate`→daily).
-  **KL-98:** `PUT /account/sites/{id}/profile` — dono edita 15 campos + tags; `_sanitize_owner_profile`
-  (strip HTML via `_sanitize_str`, limites, valida CNPJ/telefone/URL → 422); `update_site_profile_fields(...,
-  actor='owner')` marca `edited_by_owner` + acumula `owner_edited_fields` (dedup via `ARRAY(SELECT DISTINCT
-  unnest(...))`). **Preservação contra a IA:** `merge_ai_into_profile` pula `owner_edited_fields` E o
-  `upsert_site_profile._upd` ganhou CASE por-campo (`'col' = ANY(owner_edited_fields)`) — o dono, mesmo
-  limpando um campo, não é sobrescrito. `PUT /account/sites/{id}/visibility` (dono liga/desliga a landing).
-  **Selo:** colunas `site_profile.seal_enabled`/`seal_style`; `GET/PUT /account/sites/{id}/seal` (variantes
-  badge/footer/floating com `embed_code`); o público `GET /seal/{domain}` devolve `enabled`/`style`/`verified`
-  e o `web/public/seal/widget.js` ganhou `data-style` (footer=barra, floating=fixed) + esconde se `enabled=false`.
-  4 eventos KL-57 (`vigilia_toggled`/`bulletin_frequency_changed`/`profile_edited`/`seal_configured`).
-  Frontend: `MonitoringConfig.jsx` (modal: toggles + threshold + notif) e `ProfileEditor.jsx` (form + preview
-  ao vivo + selo + visibilidade), abertos por "⚙️ Configurar"/"✏️ Editar perfil" na `MonitoringSection`.
-  +18 backend (`test_kl97_98_owner.py`); SQL (array-dedup/jsonb_set/eff_freq) validado no Postgres 16 da VM.
-  Relatório: `claude/reports/KL-97_98_gestao_dono.md`.
-- **Fix ProfileEditor + vigílias default + KL-106** ✅. **(1) ProfileEditor** (regressão KL-98): os
-  campos não pré-preenchiam (o `initial` do dashboard era parcial) → agora faz `GET /account/sites/{id}`
-  no mount e popula do `profile`; modal alargada (`Modal` ganhou `size="xl"`=max-w-3xl) + grid
-  `md:grid-cols-2` (2 colunas desktop, empilha no mobile). **(2) Vigílias ativas por padrão:** a raiz
-  era uma **corrida** — `_create_account_record` criava o trial Pro via `_spawn` (fire-and-forget), mas
-  `_create_site_vigilias` rodava logo depois e `_vigilia_allowed_types` lia a assinatura antes dela
-  existir → fallback 'free' (sem vigílias) → **5 users ficaram sem vigília nenhuma**. Fix: (a) o trial
-  agora é **awaited** (não `_spawn`) no `_create_account_record`; (b) o plano **Free passa a incluir as
-  5 vigílias core** (`UPDATE plans` idempotente — o seed é `ON CONFLICT DO NOTHING`) → mesmo na corrida,
-  o fallback free já habilita as 5; (c) `_VIGILIA_MIN_PLAN` reduzido a `{uptime:pro, changes/phishing:
-  agency}`; (d) `scripts/backfill_vigilias.py` (idempotente) cria as faltantes + reativa as desligadas,
-  respeitando o plano. **(3) KL-106:** `ScoreCard` "Ver landing page →" apontava para `https://{domain}`
-  (site real do cliente) → corrigido p/ o **perfil Klarim** (`profileUrl`=/site/{domain}) + link separado
-  "Visitar site ↗" p/ o site real (nova aba, noreferrer); `painel.klarim.net` → **301** ao domínio
-  principal (o bloco nginx que servia o build Vite antigo virou redirect; `nginx -t` valida na CI). +1
-  backend. Relatório: `claude/reports/fix_profileeditor_vigilias_kl106.md`.
-- **KL-107** — Segurança (auditoria 24/07: 10 testes IDOR/escalação passaram; 2 achados) ✅.
-  **Achado 1 (IDOR):** `POST /account/sites/{id}/verify/check` devolvia `200 {no_pending}` para site de
-  OUTRO usuário (permitia enumerar quais têm verificação pendente) — era o único `/account/sites/{id}/*`
-  sem ownership check. Fix: `get_user_site` no início → **404** (igual aos demais; `verify/start` já
-  tinha). **Achado 2 (Opção B — permitir + avisar):** `POST /account/sites` deixa um terceiro monitorar
-  (is_owner=false) um site com dono verificado — o modelo agência→técnico (KL-70) depende disso, então
-  não se bloqueia; mas o **dono é avisado**. `store.get_site_owner(target_id)` (is_owner+verified_at) →
-  se houver dono ≠ quem adicionou, `_notify_owner_site_added` (fire-and-forget, nunca derruba o add):
-  e-mail **transacional** `klarim@klarim.net` (`send_owner_site_added`, TEXTO PURO, informativo, **sem
-  link de ação**), `email_type='owner_notification'`, **dedup 1/dia/target** (Redis). Só vaza o e-mail
-  de quem adicionou (nunca id/plano). Evento KL-57 `owner_notification_sent` (`_KNOWN_EVENTS`; a
-  contagem real vem do email_log). +9 backend. Relatório: `claude/reports/KL-107_seguranca.md`;
-  achados em `docs/SECURITY.md`.
-- **KL-108** — Circuit breaker separa HARD de SOFT bounce ✅. Em 26/07 os 3 senders cold passaram de
-  5% pelo bounce rate COMBINADO (hard+soft) e foram pausados juntos → **zero cold alerts, backlog
-  2.683** (fix emergencial `ALERT_SENDER_MAX_BOUNCE_RATE=12` no `.env`, depois removido). Soft bounces
-  são transitórios (caixa cheia, `delivery_delayed`) e não deviam pausar. **Fix:**
-  `store.email_health_by_domain` agora conta `hard_bounced` (`status='bounced'`) e `soft_bounced`
-  (`status='soft_bounced'`) em FILTERs **separados**; `bounce_rate`=**hard-only** (é o que
-  `cold_alert.flag_high_bounce` usa p/ pausar), `soft_bounce_rate`=informativo, `bounced` (=hard+soft)
-  mantido por compat. `flag_high_bounce` lê `hard_bounced` e **loga hard/soft separados por remetente**
-  (`[alert] sender {dom}: hard=X% soft=Y% … → PAUSED|ok`). Ex.: perfil.klarim.net 1,33% hard + 5,61%
-  soft = 6,94% combinado → com hard-only fica **ATIVO** (antes pausava injustamente). `get_email_health`
-  MCP/`/system/email-health` propagam os campos separados. O safety net GLOBAL do KL-24
-  (`_check_bounce_health`→`email_health()`, all-time 8%) tem query **própria** que já contava só hard —
-  inalterado. +10 testes offline (`test_kl108_hard_soft_bounce.py` +6, `test_kl91_cold_alert.py` +4).
-  **Pós-deploy manual na VM:** remover `ALERT_SENDER_MAX_BOUNCE_RATE=12` do `.env` (default 5% hard-only
-  já mantém perfil ativo e pausa alertas/aviso). Relatório: `claude/reports/KL-108_hard_soft_bounce.md`.
-- **KL-110** — Verificação de e-mail pré-envio (local + API Reoon) ✅. Ataca a CAUSA do bounce (6-8%
-  hard): e-mails ruins entravam na fila sem validar deliverability; o KL-108 só reagia depois.
-  **`notifier/email_verifier.py`** (fail-open, testável): **Camada 0 local** (`verify_local`: sintaxe
-  via email-validator c/ fallback regex · descartáveis reusando `api.disposable_emails` · MX via
-  dnspython c/ cache Redis 24h/domínio · flag role-based) + **Camada 1 Reoon** (`verify_reoon`/
-  `verify_api`: modo `quick`/`power`, semáforo 5, fallback `unknown`). `verify_email` = pipeline
-  cache→C0→C1 (cache SHA-256 do e-mail, 60d/7d; cache de domínio catch-all). `is_safe_to_send`
-  (invalid/disabled/disposable/spamtrap→nunca; **`unknown`→nunca [KL-128]**; catch_all/inbox_full→só
-  score>`ALERT_UNSAFE_SCORE_GATE` [default 20, KL-122]; safe/valid/
-  role→sim). Integrações: (1) **extração** (`discovery/contact.py::_is_junk` descarta descartável — o
-  MX já era filtrado no `extract_email`); (2) **alert worker** (`_verify_and_filter`, após lead
-  scoring/antes do envio: verifica ≤`EMAIL_VERIFY_MAX_PER_CYCLE`=60/ciclo os melhores leads,
-  blocklista+descarta os ruins, `is_safe_to_send` gate; **no-op sem `REOON_API_KEY`**); (3) **lead
-  scoring** (KL-85: catch_all -10, unknown -5, role -15 sem dobrar prefixo). 4 colunas em `targets`
-  (email_verified/email_verify_status/email_verified_at/email_is_role_based). `GET /system/email-
-  verification-stats` + MCP `get_email_verification_stats` (+ saldo Reoon). Limpeza retroativa:
-  `scripts/cleanup_email_backlog.py` (Fase 0 local custo-zero + Fase 1 bulk Reoon, `--dry-run`/
-  `--local-only`/`--api-limit`). **+41 testes.** Segurança: `REOON_API_KEY` só no `.env` (nunca em
-  log/frontend), cache por hash SHA-256, semáforo 5, fail-open. **Deploy:** a verificação Power ativa
-  só quando o dono configurar `REOON_API_KEY` na VM; rodar então o cleanup e, após bounce hard <5% em
-  7d, remover o `ALERT_SENDER_MAX_BOUNCE_RATE` emergencial. Relatório: `claude/reports/KL-110_email_verification.md`.
-
-- **KL-26** — Cobertura de testes transversais (cross-módulo, **zero mudança em código de produção**) ✅.
-  6 conjuntos, **+100 backend + 12 frontend**: **`tests/test_e2e_flows.py`** (fluxos e2e — dono
-  verificado→perfil→selo, técnico monitora sem editar, unsubscribe completo→blocklist→worker pula,
-  prontidão de cold alert, ciclo de pagamento PIX); **`tests/test_multi_tenant.py`** (IDOR bidirecional
-  em todos os `/account/sites/{id}/*` → 404, escalação vertical user→/admin → 401, vazamento de dados,
-  mass assignment `extra='ignore'`); **`tests/test_score_regression.py`** (score/semáforo determinístico
-  via `compute_score` + fixtures de `CheckResult`; guarda de mudança de peso/threshold — alerta
-  intencional); **`tests/test_scanner_edge_cases.py`** (timeout/redirect/conn-error→INCONCLUSO,
-  `content_guard`, gate de acessibilidade KL-94, parser robusto, 1 check ruim não derruba o scan);
-  **`tests/test_email_pipeline.py`** (circuit breaker hard/soft KL-108, verificação→decisão KL-110,
-  List-Unsubscribe KL-102, rotação KL-91, bounce webhook→blocklist→`_validate_batch`);
-  **`web/src/lib/scanView.test.js`** (+12: edge cases de `viewFlags`/`scoreHeadline`/`getCategoryStatus`
-  + mapeamento dos 3 estados do CTA). **Achado (não-bug):** o `conftest` não resetava
-  `_account_cfg_hits` (`_cfg_rate_limit`, 10/60s/user) → 429 espúrio entre testes que reusam o
-  mesmo user_id (latente, exposto pelos transversais); corrigido no `conftest` (test-infra). **Nota:**
-  o frontend do KL-26 estende `web/src/lib/scanView.test.js` (o caminho `web/src/__tests__/` da spec não
-  existe); sector-pills/stats-bar do KL-103 são DOM-only (`landing-stats.js`, sem função pura) — não
-  testáveis em `node --test`. Relatório: `claude/reports/KL-26_cobertura_testes.md`.
-- **KL-122** — Gate de envio `unknown`/`catch_all` configurável + configs operacionais documentadas ✅.
-  Commita o patch aplicado direto em produção em 27/07/2026: o gate de `is_safe_to_send` para status de
-  deliverability INCERTA (`unknown`/`catch_all`/`inbox_full`) caiu de `lead_score>50` (KL-110) → **>20**.
-  O 50 bloqueava ~3.895 e-mails elegíveis (2.757 `unknown` + 1.138 `catch_all`), muitos de provedores BR
-  legítimos (Locaweb/Hostinger/UOL) que não respondem ao SMTP check da Reoon. Agora **configurável por
-  env** `ALERT_UNSAFE_SCORE_GATE` (default 20, lido a cada chamada → ajuste sem deploy; fail-safe p/ valor
-  inválido). `safe/invalid/disabled/disposable/spamtrap/role` **inalterados** (só o branch incerto mudou).
-  `docs/DEPLOY.md` ganhou a seção "Valores operacionais atuais" (ALERT_DAILY_LIMIT=500, ALERT_SENDER_DAILY_
-  LIMIT=500, ALERT_SENDER_MAX_BOUNCE_RATE=10, ALERT_UNSAFE_SCORE_GATE=20, PROFILE_VIEW_DAILY_LIMIT=500 — o
-  que faz / onde é lido / default / quando ajustar). Testes do KL-110 atualizados p/ o novo default (>20,
-  não >=) + env var. Relatório: `claude/reports/KL-122_gate_configuravel.md`.
-- **KL-123** — Vigílias expandíveis: card clicável com dados contextuais, ações e orientação ✅. Os cards
-  de vigília (`MonitoringSection.jsx`) mostravam só label + status; agora **expandem** com o detalhe que
-  antes só existia no e-mail de alerta. **3 endpoints** (nível ≥1 + posse via `_owned_site`):
-  `GET /account/sites/{id}/vigilias/{tipo}/details` (tipo inválido → 404), `POST .../phishing/dismiss/
-  {alert_id}` ("não é ameaça" → `typosquat_alerts.dismissed=true`, escopado por id+target+user → 404 se
-  não é da conta), `POST .../{tipo}/acknowledge` (grava `acknowledged_at` no `last_data` → some o badge).
-  **Arquitetura testável:** derivação PURA em **`api/vigilia_details.py`** (`build_<tipo>` por tipo →
-  `{status,summary,data,guidance,actions,pending_count}`, reusa `check_num`/`norm_status`+`RISK_MESSAGES`);
-  o orquestrador `_build_vigilia_details` em `api/main.py` faz as queries (reusa `last_data` da vigília +
-  `get_recent_scans_with_checks` + `get_site_typosquat_alerts` + `get_site_profile.certificate_authority`).
-  **Dados por tipo:** ssl (issuer/validade/dias), domain (expiração), score (delta + **checks que mudaram**
-  PASS↔FAIL entre 2 scans + `score_history`), email (SPF/DKIM/DMARC acessível), reputation (blacklists),
-  uptime (código/tempo/falhas), changes (snapshot), phishing (lista de `typosquat_alerts` com ação por
-  domínio). **Linguagem acessível** (regra do card): NADA de OWASP/CWE/header raw — orientação prática.
-  4 store methods novos (`get_site_typosquat_alerts`/`dismiss_typosquat_alert`/`get_site_vigilia_alerts`/
-  `acknowledge_vigilia`; SQL espelha padrões já validados: FILTER, `jsonb_set`+`to_jsonb`). O `status` do
-  SSL/domínio **espelha o worker de vigília** (crítico SSL só ≤1 dia) p/ o detalhe não "virar vermelho" ao
-  expandir um card amarelo. Front: **`web/src/components/dashboard-v2/VigiliaDetail.jsx`** (lazy-load no 1º
-  expand, cacheia no state, badge de `pending_count`, dismiss **otimista** sem reload, acknowledge, mobile
-  ≥44px, CSS spinner) + lógica pura **`web/src/lib/vigiliaDetail.js`** (`statusMeta`/`showBadge`/`applyDismiss`/
-  `emailStateLabel`, 7 testes `node --test`). KL-57: eventos `vigilia_expand`/`vigilia_dismiss`/
-  `vigilia_action_click` no `_KNOWN_EVENTS`. **+20 backend + 7 node**. Relatório:
-  `claude/reports/KL-123_vigilias_expansiveis.md`.
-- **KL-124** — CI/CD: `--force-recreate` (escopado) + rollback automático no `deploy/deploy.sh` ✅.
-  O `up -d` sem `--force-recreate` só recria containers cuja **imagem** mudou; o layer cache do Docker
-  (COPY . . com checksums iguais) podia não detectar mudança em `.py` e manter o container antigo
-  rodando código velho (incidente do KL-123: código novo na VM confirmado por `git log`, containers
-  antigos — precisou de `--force-recreate` manual). **Fix:** (1) o recreate agora é `docker compose up
-  -d --force-recreate --no-deps api astro web worker discovery` (precedido de um `up -d --remove-orphans`
-  que garante db/redis no ar) — **escopado aos 5 apps** para NÃO reiniciar postgres/redis a cada deploy
-  (decisão do dono: preserva "zero downtime na camada de dados"; a spec pedia `--force-recreate` cru, que
-  recriaria TUDO incl. db/redis). (2) **Rollback automático:** guarda `PREV_COMMIT=$(git rev-parse HEAD)`
-  antes do pull; se o health check (API `/health` ou Astro `/`) falhar, `git checkout $PREV_COMMIT` +
-  rebuild + recreate dos apps + `exit 1` (função `rollback()`). Após rollback o repo fica em **HEAD
-  destacado** no PREV_COMMIT — o próximo deploy de CI reavança (`git pull --ff-only`) quando o fix chegar.
-  (3) Log final `Deploy OK: commit <sha> em <ts>`. `deploy.sh` continua válido p/ deploy manual
-  (`sudo bash deploy/deploy.sh`). `docs/DEPLOY.md` §2/§3 atualizados. **Validação do pipeline (4 jobs +
-  --force-recreate nos logs + health) = pendente de push.** Relatório: `claude/reports/KL-124_deploy_force_recreate_rollback.md`.
-- **KL-125** — Reverificação Power dos `unknown` + `email_verify_source` + bloqueio definitivo ✅.
-  55 de 86 bounces (64%) em 3 dias vieram de e-mails `unknown` da **Bulk API** (menos precisa p/
-  servidores BR — reverificados via Power, muitos são `disabled`). O gate do KL-122 (`unknown` envia se
-  score>20) tratava `unknown` como "incerto mas talvez válido"; na prática `unknown` = alto risco de
-  bounce. **Fix:** (1) `is_safe_to_send` — **`unknown` NUNCA envia** (independente do score); só
-  `catch_all`/`inbox_full` seguem o gate por score (separados do `unknown`). (2) Coluna
-  `targets.email_verify_source` (`power`/`quick`/`bulk`/`local`) registra a precisão da fonte;
-  `update_target_email_verification` ganhou `source` (COALESCE — não sobrescreve com NULL). (3)
-  `_verify_and_filter` reescrito: **Regra 1** — `unknown` de fonte não-power é **reverificado via Power**
-  (resolveu→usa; block→blocklist+descarta; `unknown` 2×→não envia, NÃO blocklist, grava `source=power`);
-  **Regra 2** — `unknown`/`source=power` → skip (não regasta crédito); **Regra 3** — demais status seguem
-  o fluxo (fresh→cache, senão Power). Resultado `fallback` (Reoon fora) NÃO é persistido (não condena o
-  alvo → retry). `unknown` além do teto de verificação é pulado (volta ao topo e é reverificado). Sem
-  `REOON_API_KEY` a reverificação é no-op, mas um `unknown` conhecido ainda não é enviado. (4) Cleanup:
-  Fase 0 → `source=local`, Fase 1 → `source=bulk`. (5) Stats ganham `by_source`. (6) KL-57: contadores de
-  conversão `reverified_safe`/`reverified_blocked`/`reverified_unknown` no log/stats do ciclo (calibra a
-  confiança na Bulk). **`safe`/`catch_all`/`role`/`invalid`/`disabled`/`disposable`/`spamtrap` inalterados.**
-  **+8 backend** (`test_kl125_unknown_reverify.py`) + testes do KL-110/pipeline atualizados. **Fix
-  emergencial 28/07 (já aplicado na VM):** 3.703 unknowns resetados + cache limpo; o worker reverifica via
-  Power. Relatório: `claude/reports/KL-125_unknown_reverify.md`. **⚠️ SUPERADO pelo KL-127** — a premissa
-  "unknown=ruim, bloquear" estava errada p/ o mercado BR e zerou os alertas; o KL-127 volta o `unknown` ao
-  gate de score e remove a reverificação/Regra 2 (código simplificado).
-- **KL-127** — Solução DEFINITIVA do pipeline de verificação de e-mail ✅. O pipeline de alertas travou
-  **4×** desde o KL-110; a regra do KL-125 (`unknown` NUNCA envia) matou 100% dos alertas — `unknown` no
-  mercado BR = "servidor não respondeu ao SMTP check" (Locaweb/Hostinger/UOL/Titan), **incerto e não ruim**
-  (dados: Power safe/role **0%** bounce, catch_all 2,9%, unknown ~5-8% — mas bloquear tudo = zero alertas).
-  Patches manuais nos containers (`if False`/`# DESABILITADO`) tinham divergido `api` de `discovery`. **Fix
-  (zero código morto):** (1) `is_safe_to_send` — regra ÚNICA: safe/valid/role→envia; block-statuses→nunca;
-  **`unknown`/`catch_all`/`inbox_full`→gate `> ALERT_UNSAFE_SCORE_GATE`** (default 20). (2) `_verify_and_filter`
-  reescrito e SIMPLIFICADO: removidas a Regra 2 (unknown/power skip), a reverificação de `unknown` e o
-  "unknown 2× → drop" do KL-125 — decisão única (fresco→cache, senão Power; block→blocklist+descarta; senão
-  gate). `rest_kept` = já-verificados (`email_verified`, status não-vazio; `unknown` permitido). **Sem
-  verificação → não envia**; `fallback` de infra não persiste nem envia; modo degradado sem key (já-verif
-  gated, não-verif passa). (3) **Log estruturado por e-mail** (`logging`, mascarado): `status=… source=…
-  score=… gate=… → SENT|BLOCKED|SKIPPED_GATE|SKIPPED_UNVERIFIED`. (4) `tests/test_kl127_pipeline_integration.py`
-  (+7: mix de 200 → 170 enviados, tudo-unknown-score>20 → 200, tudo-unknown-score<20 → 0, 100 safe+100 disabled
-  → 100, boundary `>20`, sem-verificação não envia, **guard anti `if False`**); testes KL-110/pipeline
-  atualizados p/ o gate; `test_kl125_unknown_reverify.py` removido. (5) Docker: `api`/`worker`/`discovery`
-  usam a MESMA imagem (`build: .`) → o deploy com `--force-recreate` (KL-124) garante código uniforme;
-  **nunca** editar arquivo via `docker exec` (causou o incidente) — doc em `docs/ARCHITECTURE.md`. **Validação
-  pós-deploy:** `diff` de `alert_worker.py`/`email_verifier.py` entre containers = **vazio**; `grep -c "if
-  False"` = 0; alertas voltam a sair (sent_today cresce); log mostra a decisão por e-mail. Relatório:
-  `claude/reports/KL-127_pipeline_definitivo.md`. **⚠️ Ajustado pelo KL-128** (o `unknown`→gate do KL-127
-  fez o bounce voltar a >10%).
-- **KL-128** — Regra DEFINITIVA de validação de e-mail + fix do deploy que não propagou ✅. **(A) Causa do
-  deploy travado:** os commits `49e5286` (bloquear `unknown`) + `e1a8626` (rebaixar safe+catch_all) foram
-  pushados a `origin/main`, mas o **job `test` do CI falhou** — o código mudou p/ `unknown`=blocked mas os
-  testes do KL-127 ainda esperavam `unknown`=gate → o job `deploy` (`needs: [test,…]`) nunca rodou → a VM
-  ficou 2 commits atrás (KL-127 `94aec55`). **(B) Regra definitiva:** `is_safe_to_send` — **`unknown` NUNCA
-  envia** (o gate de score não filtra `unknown`, que no BR é servidor sem SMTP-check → bounce ~5-8%, subiu a
-  >10% no KL-127); `catch_all`/`inbox_full` seguem o gate (`>20`); safe/valid/role sempre. **`parse_reoon_
-  response` rebaixa `safe`/`valid` + `is_catch_all` → `catch_all`** (num servidor catch-all o "safe" do Reoon
-  não é confiável — ataca o bounce na origem). O worker: `unknown` barrado tanto no subset quanto no **`rest`**
-  (agora aplica o mesmo gate pelo cache — antes o rest deixava `unknown` verificado passar); `_is_fresh` exige
-  **status não-vazio** (verificado-sem-status não vira `safe` fantasma). **(C) Fix:** docstrings/comentários
-  atualizados (eram do KL-127), **zero código morto** (`grep "if False"`=0, guard de teste), testes alinhados
-  (`unknown`→False; +3 `parse_reoon` demote; +6 casos parametrizados de `_verify_and_filter`). **1889 pytest
-  passed.** Validação pós-deploy: `diff`/md5 de `email_verifier.py`+`alert_worker.py` entre containers = vazio;
-  `is_safe_to_send(unknown,100)` → `False`. Relatório: `claude/reports/KL-128_regra_definitiva_email.md`.
-- **KL-129** — Prioriza a verificação dos NOVOS no subset + filtra unknowns + canário por domínio ✅.
-  **Bug (alertas parados 3+h):** o cap de verificação (120/ciclo) era consumido pelos e-mails **já
-  verificados** do cache (unknown/catch_all barrados pelo gate KL-128) → **0 vaga** p/ os `email_verified=
-  false` → pipeline girava em falso (`eligible 200, from_cache 120, skipped_gate 120, sent 0, verified 0`).
-  **Fix (`discovery/alert_worker.py::_verify_and_filter` reescrito):** particiona ANTES de montar o subset —
-  **sendable** (já-verificado aprovado → envia direto, sem re-API) · **blocked_known** (já-verificado barrado
-  → descarta **sem consumir vaga**) · **unverified** (`email_verified=false`/status vazio/TTL expirado →
-  **prioridade** no `subset=unverified[:cap]` → Power NESTE ciclo; excedente `deferred`). Removido o conceito
-  de `rest`. **Cap 120→200** (`EMAIL_VERIFY_MAX_PER_CYCLE`, default 200, editável ao vivo no painel via
-  `_reload_settings`). **Domínio confiável (item 4, parcial):** `store.trusted_recipient_domains(domains,48h)`
-  (envio 'sent'/'delivered' sem bounce/complaint em 48h, domínio de destinatário via `split_part(to_email)`);
-  um `unknown` fresco de domínio confiável é rebaixado a `catch_all` (passa a valer o gate) — recupera volume
-  dos mega-hosts BR (Locaweb/Hostinger retornam unknown no SMTP-check). Kill-switch
-  `ALERT_TRUST_DOMAIN_DOWNGRADE=false` (lido a cada ciclo). **Canário ativo** (envio 1 + recheck 24h +
-  blocklist por domínio + coluna `email_log.is_canary`) **deferido** p/ card futuro (permitido pelo card).
-  Novas stats: `blocked_known`/`deferred`/`trust_downgraded`; log de ciclo `[alert] verify KL-129: …`. **+10
-  backend** (`test_kl129_subset_priority.py`: prioridade dos novos, unknown não consome vaga, novo verificado
-  e enviado no mesmo ciclo, 0 API se tudo unknown, deferimento, trust↓/gate, cap por env) + testes KL-127/128
-  ajustados às novas stats. SQL validado no Postgres 16 da VM. **1899 pytest passed.** `docs/DEPLOY.md`
-  atualizado. Relatório: `claude/reports/KL-129_prioriza_novos_subset.md`.
-- **KL-130** — Exclui status TERMINAIS do pool de elegíveis + destrava 3.247 e-mails novos ✅. Mesmo com a
-  partição do KL-129, o log dava `verified: 0 (API)`: o `get_eligible_targets_for_alert` (fetch 200, ordenado
-  por `last_scan_at ASC`) trazia **173 `unknown`+`power`** velhos que enchiam o batch → a partição não via os
-  NOVOS (3.247 `email_verified=false` presos; ex.: `bengazzi2012@hotmail.com`, target 70444, 0 alertas). A
-  API Reoon E a key estavam OK — o bug era a QUERY. **Fix:** (1) `_ALERT_ELIGIBLE_WHERE` **exclui**
-  `unknown`+`power` + block-statuses. ⚠️ **NULL-safe com `COALESCE(...,'')`** — sem ele o `NULL='unknown'` vira
-  NULL e o `AND NOT(...)` excluía os 3.247 não-verificados (status NULL); **o 1º draft caiu de 3.444→92
-  elegíveis** e foi pego validando no Postgres da VM (após COALESCE: 3.444→3.272, 0 unknown+power, bengazzi
-  passa). (2) alvo verificado `unknown` via Power → **`sem_contato`** (`_verify_one`, sai do pool; NÃO
-  blocklist) + `store.retire_unknown_power_targets` + `scripts/retire_unknown_power.py` (limpeza retroativa dos
-  173). (3) log de partição `[alert] KL-130 partição: N sendable, N blocked_known, N unverified …` +
-  contador `retired_unknown`. **Investigação (item 3):** a partição do KL-129 estava correta — o `verified:0`
-  era 100% causado pela query. **+5 backend** (`test_kl130_exclude_terminals.py`: WHERE NULL-safe, worker
-  aposenta unknown+power, safe/disabled não aposentam, método de retire). SQL validado no Postgres 16 da VM.
-  **1904 pytest passed.** Relatório: `claude/reports/KL-130_exclui_terminais_pool.md`.
-- **KL-131** — Sitemap dinâmico (index + sub-sitemaps) p/ 43k+ perfis, servido pelo FastAPI ✅. O sitemap
-  Astro era um **único urlset** (33.232 URLs, SSR pesado por request, `Cache-Control` DUPLICADO — 3600 do
-  Astro + 300 do nginx) e o `sitemap-index.xml`/`sitemap-0.xml` caíam no fallback SPA (HTML). Agora o
-  **FastAPI** serve: `GET /sitemap.xml` (**sitemapindex** → static + sectors + N páginas de perfis, N =
-  ceil(total/10k)), `/sitemap-static.xml`, `/sitemap-sectors.xml` (`/setor/{slug}`, exclui 'outro'),
-  `/sitemap-profiles-{page}.xml` (≤10k perfis, `ORDER BY domain` p/ paginação estável por OFFSET). Cache
-  **Redis 1h** (`sitemap:index`/`:sectors`/`:profiles:N`; não cacheia vazio), `Content-Type application/xml`,
-  **UM só `Cache-Control`** (no nginx). Store: `count_visible_profiles` + `get_visible_profiles_for_sitemap`
-  (mesma elegibilidade do `list_public_profile_domains`). **Nginx:** nova `location ~ ^/sitemap[...]\.xml$`
-  → FastAPI **sem strip de prefixo** (como `/remover`) em http.conf + https.conf.template; `sitemap\.xml`
-  **removido** da allowlist Astro; `web/src/pages/sitemap.xml.js` **deletado**. `robots.txt` ganhou
-  `/dashboard/`, `/api/account/`, `/webhooks/`, `/remover`. `nginx -t` OK (http + https renderizado). **+7
-  backend.** Relatório: `claude/reports/KL-131_132_sitemap_seo.md`.
-- **KL-132** — SEO programático dos perfis (títulos, meta, Schema.org, internal linking) ✅. **`web/src/lib/
-  seo.js`** (puro/testável): `profileTitle` → "**{empresa} é seguro? Score {score}/100 | Klarim**" (≤60,
-  trunca o nome; capta buscas de reputação), `profileDescription` → score + **semáforo em texto**
-  (Excelente/Atenção/Crítico) + "**48 pontos**" (≤155), `formatDomainName` (`lotusforme.com.br`→`Lotusforme`).
-  Usados em `site/[domain].astro` (`fullTitleOverride`/`description`). **JSON-LD:** mantém Organization +
-  WebSite (site-wide, Base.astro) + BreadcrumbList; **NÃO re-adiciona o Review em WebSite** (o Search Console
-  reprovou em 17/07 — decisão do dono); páginas de setor ganham **`CollectionPage`** (tipo válido). **Internal
-  linking** ("Outros sites do setor", KL-74) e **canonical** (Base.astro, `path`) já existiam. **+8 node**
-  (`seo.test.js`). ⚠️ Validar no **Rich Results Test** pós-deploy. Relatório: `claude/reports/KL-131_132_sitemap_seo.md`.
-- **KL-133** — Blog editorial (conteúdo no banco, publicação via MCP) ✅. Captura busca informacional
-  ("meu site é seguro?") com o dado proprietário de 74k sites. **INFRA apenas** (o card pede 1 draft de
-  teste, não artigos). **Tabela `blog_posts`** (`ensure_schema`): slug único, title/subtitle/content
-  (markdown)/meta_description/og_image/category/tags[]/status(draft/published/archived)/author/
-  data_snapshot(JSONB)/reading_time_min/published_at. Helpers puros `_blog_slugify` (sem acento, [a-z0-9-])
-  + `_blog_reading_time` (ceil(palavras/200)). **Store:** create/update (publicar seta `published_at`;
-  mudar conteúdo recalcula reading_time)/archive/get_by_id/get_by_slug(published_only)/list_published/
-  list_all. **API** (`api/main.py`): público `GET /blog/posts` (paginado, sem corpo), `GET /blog/posts/{slug}`
-  (404 se draft), `GET /blog/rss.xml` (RSS 2.0, 20 últimos); admin (JWT via prefixo `/admin`)
-  `POST/PUT/DELETE /admin/blog/posts` (+`GET` lista) — rate limit 30/min público, 10/min admin.
-  **`/sitemap-blog.xml`** no sitemapindex (KL-131). **MCP:** `mcp_server/tools/blog.py` (5 tools:
-  create/update/list/get/archive; registradas no `__init__`) — **reconectar o MCP** pós-deploy p/ aparecerem.
-  **Frontend Astro SSR:** `/blog` (listagem paginada) + `/blog/{slug}` (artigo com `web/src/lib/blog.js::
-  renderMarkdown` = **marked + sanitize-html**, allowlist estrita → strip de `<script>`/`<iframe>`/`on*=`/
-  `javascript:`; Schema.org **Article**, OG article, CTA de scan, sidebar por categoria, breadcrumb,
-  canonical). **Nginx:** `blog` na allowlist Astro (http+https) + `location = /blog/rss.xml` → FastAPI
-  (exato, vence a regex; `/blog/{slug}` vai ao Astro). Deps novas: `marked` + `sanitize-html` (SSR).
-  Draft de teste: `scripts/seed_blog_draft.py` (idempotente, NÃO publica). **+14 backend + 10 node**;
-  `nginx -t` OK, build OK. Relatório: `claude/reports/KL-133_blog.md`.
-- **KL-136** — Saúde operacional do pipeline de alerta (funil travado: 200 elegíveis → 4 enviados,
-  bounce 14%) ✅. **6 fixes:** **(1 P0) Lead scoring role penalty -15 → -5** (`discovery/alert_scoring.py`,
-  env `ALERT_ROLE_PENALTY`, lido a cada chamada): no BR `contato@`/`vendas@`/`sac@` é o e-mail PADRÃO de
-  PME, NÃO baixa qualidade — o -15 barrava a maioria dos leads action-zone (`contato@`: +10 corp +20
-  action -15 = 15 < threshold 20 → rejeitado; com -5 = 25 > 20 → passa). Vale p/ os DOIS sinais de caixa
-  de função (`role_based_prefix` por prefixo + `email_role_account` do status `role` da Reoon) via
-  `_role_penalty()` — MESMA penalidade, nunca DOBRAM (o 2º só entra se o prefixo não penalizou; sem
-  duplicação). **(2 P0) Gate SEPARADO por status** (`notifier/email_verifier.py::is_safe_to_send`): o
-  `catch_all` ganhou gate PRÓPRIO `ALERT_CATCH_ALL_SCORE_GATE` (default **30**, `>`) — servidor catch-all
-  aceita tudo no SMTP mas a caixa pode não existir → respondia por ~37% dos bounces; o gate 20 herdado do
-  `inbox_full` era permissivo demais. `inbox_full` segue `ALERT_UNSAFE_SCORE_GATE` (20). `unknown` continua
-  SEMPRE bloqueado (KL-128); safe/valid/role sempre enviam. **(3 P1) Breakdown de `blocked_known`**
-  (`discovery/alert_worker.py`): coleta o status EFETIVO de cada já-barrado e loga
-  `[alert] blocked_known breakdown: {catch_all: N, disabled: M, …}` (revela o que polui o fetch). A query
-  `_ALERT_ELIGIBLE_WHERE` já exclui todos os terminais (unknown+power, disabled/invalid/disposable/spamtrap);
-  a partição do KL-129 já filtra `blocked_known` ANTES do subset (não consomem vaga de verificação) —
-  confirmado, sem regressão. **(4 P0) Fail-safe de saldo Reoon** (`email_verifier` + `alert_worker` +
-  `api/main.py`): se `REOON_API_KEY` existe mas o saldo está ESGOTADO (0/negativo), o worker NÃO verifica
-  novas caixas — **defere TODAS as não-verificadas** (`cap=0`) em vez do fail-open do KL-110 que enviava
-  SEM verificar (causa dos 12 bounces "sem verificação"). Saldo `None` (ilegível) = fail-open (não bloqueia);
-  só consulta o saldo se há caixas novas a verificar (cache Redis 1h `reoon:balance`, compartilhada API↔worker).
-  `GET /system/status` ganhou bloco **`email_verification`** (`reoon_balance` + `reoon_balance_warning`
-  [<1000 OU None] + `unverified_count` + `verified/deferred_last_cycle` + `reoon_exhausted`). **Nota (não-bug):**
-  `by_source` só mostra `power` porque os 16k unverified têm `email_verify_source=NULL` (campo do KL-125 nunca
-  backfilled) — ausência de backfill, não bug. **(5 P1) Diagnóstico de re-scan** (`store.rescan_diagnostics`
-  + `rescan_worker`): quando o ciclo acha `eligible: 0`, loga o funil `engajados → com_email → elegíveis →
-  recentes_demais` (revela se o problema é a janela `RESCAN_AGE_DAYS`=30 ou o pool). Critério real de
-  elegibilidade (documentado): `status IN ('scanned','alerted') AND contact_email IS NOT NULL AND last_scan_at
-  < NOW() - N days`. **(6 P2) Divergências de métrica:** `count_proactive_emails_this_month` com boundary
-  explicitamente **UTC** (`date_trunc('month', NOW() AT TIME ZONE 'UTC')` — as colunas `sent_at`/`rescanned_at`
-  são `TIMESTAMP` naive-UTC). Fontes autoritativas documentadas abaixo. **+23 testes** (`test_kl136_
-  operational_health.py`) + KL-85/110/127/129/130 atualizados aos novos defaults. **1956 pytest passed.**
-  Relatório: `claude/reports/KL-136_saude_operacional.md`.
-
-  **Fontes autoritativas de métrica (KL-95 + KL-136 + KL-150):** **Contas criadas** = `COUNT(*) FROM users` no
-  período (server-side, KL-95 — NÃO o funil do tracker.js, inflado por pre-fetch; server_metrics é autoritativo).
-  **Scans manuais (Analytics/dashboard)** = `COUNT(*) FROM scans WHERE COALESCE(source,'') NOT IN ('discovery',
-  'rescan')` (KL-150 — antes o KL-95 só excluía `discovery`, e o worker de **re-scan** ~116/dia dominava o KPI:
-  o fundador via 98-119, real 2-3; manuais = `admin` painel + `public` scanner); **scans (`/system/status`)** =
-  `scan_today_stats` = TODOS os scans do dia (`scanned_at >= hoje`, incl. discovery+rescan) — medem coisas
-  diferentes por design (a divergência dashboard×system_status é esperada). **`sent_month`**
-  (`count_proactive_emails_this_month`, cota mensal) = PROATIVO (alert_log + rescan_log), mês-**calendário UTC**;
-  **`email_metrics.sent_week`** = `email_log`, TODOS os tipos, 7 dias móveis — no dia 1 do mês `sent_month` <
-  `sent_week` é ESPERADO (fontes/janelas diferentes, NÃO bug).
-  **Analytics "Visão geral" — KL-150 (definição por KPI, período default `7d`, fuso de BRASÍLIA):** o painel é
-  operado do Brasil → **"hoje" = dia-calendário de Brasília** (BRT, UTC-3, sem horário de verão; `resolve_period
-  ('today')` calcula a meia-noite BRT e converte p/ o instante UTC dos bounds). Antes usava meia-noite **UTC** →
-  incluía ~3h da noite anterior brasileira (conta às 23:28 BRT contava como "hoje", inflava o dia: 2 vs 1 real).
-  `7d/30d/90d` = janelas móveis a partir de `now`; `custom` ≤ 90d. O response traz `period` (via `_period_meta`)
-  e o front mostra um **banner** "📅 Hoje · DD/MM/AAAA · horário de Brasília". KPIs: **Visitantes BR** =
-  `COUNT(DISTINCT ip_address)` do Brasil, `is_bot=false` **E** sem user-agent de bot (`_BOT_UA_RE`), do
-  `access_log`; **Scans manuais** = tabela `scans` menos discovery+rescan; **Contas criadas** = tabela `users`;
-  **Bots filtrados** = `COUNT(*)` de **REQUISIÇÕES** (não IPs/visitantes) com `is_bot=true` OU UA de bot — meio
-  milhão/dia é plausível (scanner público é alvo de sondagem) e está corretamente separado dos visitantes; cada
-  KPI tem **tooltip (ⓘ)** explicando o que conta e a fonte. Números validados na VM (`SHOW timezone`=UTC → bound
-  tz-aware vs coluna naive é correto).
-  **Aba "Visão geral" DESATIVADA (KL-150, 10/08):** apesar dos fixes de fuso/rescan acima, os KPIs de visitante
-  do `access_log` continuam **divergindo do GA4** (GA4=4 vs painel=357) e as queries de `al_server_metrics` são
-  **pesadas** (deixavam TODO o painel lento). A aba "Visão geral" foi **comentada** (não deletada) em
-  `web/src/components/admin/AdminAnalytics.jsx` (entrada em `TABS` + render do `OverviewTab`); a 1ª aba passou a
-  ser **"Comportamento"** (`parseTabHash` cai no 1º `TAB_KEYS`; bookmark `#overview` também). Como a aba
-  "Comportamento" **também** chamava `server-metrics` (blocos "Domínios mais consultados" + "Mapa de calor"),
-  esses 2 blocos + a chamada `aaServerMetrics` foram **comentados** nela — a aba segue só com `ip-behavior`
-  (multi-site/jornada/retenção). Assim NENHUMA chamada a `server-metrics`/`analytics-metrics` ocorre no load.
-  **Backend intacto:** `get_server_metrics`/`get_analytics_metrics` (endpoints + MCP) seguem para consultas
-  pontuais. Reativar tudo (descomentar) quando a fonte for a **API do GA4**. `OverviewTab`/`KpiGrid`/`Tendência`/
-  `TopDomainsBlock`/`HeatmapBlock` continuam definidos no arquivo. Relatório: `claude/reports/KL-150_remove_visaogeral_report.md`.
-- **KL-137** — Simplificação RADICAL do pipeline de e-mail (reverte a complexidade acumulada nos
-  KL-108..KL-136) ✅. O pipeline consumiu 10 cards e piorou (bounce oscilando, volume 4-400/dia); os
-  e-mails sem link geravam ~7 visitas/semana. **(P1) Link no e-mail** (mantendo **text/plain**, NÃO
-  HTML — decisão 02/08): as 3 variantes cold (`notifier/cold_alert.py::report_link`/`_report_link_block`)
-  e o `profile_view` (`email_client.build_profile_view_text`) ganham UM link ao perfil do site
-  (`klarim.net/site/{domain}?utm_source=alerta|profile_view&utm_medium=email`, só `source`+`medium`).
-  **(P2) `is_safe_to_send` BINÁRIA** (`notifier/email_verifier.py`): `status in SENDABLE_STATUSES`
-  (`{safe,valid,role}`) → envia; **todo o resto NÃO** (catch_all/unknown/inbox_full/block). `lead_score`
-  fica na assinatura por compat mas é **ignorado**. **(P3) Lead scoring só ORDENA** (`alert_scoring.py`
-  + `alert_worker._apply_alert_scoring`): removido o filtro por threshold (`skipped_low_quality`) — todo
-  e-mail sendable é enviado, o score define só a ORDEM (maior primeiro; excedente do cap → próximo ciclo).
-  Removidas as penalidades de deliverability (`catch_all` -10, `unknown` -5); mantida a de `role` (-5,
-  `ALERT_ROLE_PENALTY`) e a de bounce-domínio (-40). **(P4) Limpeza:** removidos `_unsafe_score_gate`/
-  `_catch_all_gate` (+ `ALERT_UNSAFE_SCORE_GATE`/`ALERT_CATCH_ALL_SCORE_GATE`), `trusted_recipient_domains`
-  + trust-downgrade (`ALERT_TRUST_DOMAIN_DOWNGRADE`), `ALERT_SCORE_THRESHOLD`, o "aposentar unknown→
-  sem_contato" em ciclo, e os counters `skipped_low_quality`/`skipped_gate`/`blocked_known`/
-  `trust_downgraded`/`retired_unknown`. **`_verify_and_filter` reescrito** (~50 linhas de condicionais →
-  regra binária): particiona frescos (`from_cache`) vs não-verificados → verifica via Power até o cap
-  (`EMAIL_VERIFY_MAX_PER_CYCLE`; excedente `deferred`) → aplica a regra binária → `sendable`/`blocked`.
-  **MANTIDOS:** circuit breaker hard-bounce (KL-108), verificação Reoon Power (decisão binária), blocklist
-  (invalid/disabled/disposable/spamtrap), List-Unsubscribe (KL-102), rotação de senders (KL-91), cache de
-  verificação, fail-safe de saldo Reoon (KL-136: saldo 0 → defere), o SQL `_ALERT_ELIGIBLE_WHERE` (que já
-  exclui unknown+power) e `retire_unknown_power_targets` (limpeza retroativa via script). **Testes:**
-  `test_kl91`/`test_kl101`/`test_alert_plain_text` (link presente, continua text/plain), `test_kl110`/`127`/
-  `129`/`130`/`136` reescritos p/ a regra binária, `test_kl85`/`test_alert_worker` (scoring não filtra).
-  **1948 pytest passed.** **Pós-deploy:** apagar `ALERT_UNSAFE_SCORE_GATE`/`ALERT_CATCH_ALL_SCORE_GATE`/
-  `ALERT_TRUST_DOMAIN_DOWNGRADE` do `.env` da VM (ignoradas, mas confundem). Relatório:
-  `claude/reports/KL-137_simplificacao_pipeline.md`.
-- **KL-145** — Desacoplar o Reoon do envio: 3 filtros (sintaxe + MX + blocklist) ✅. O Reoon consumiu
-  10 cards e ~5.000 créditos e entregava 2-8 envios/dia (bounce 4,4%) — classificava ~97% dos servidores
-  BR como `unknown` (inútil como filtro) e a regra binária por-status do KL-137 barrava quase tudo. **A
-  decisão de envio voltou a ser LOCAL e barata:** `notifier/email_verifier.py::is_safe_to_send(email,
-  redis, store)` = **3 filtros** — (1) `_is_valid_syntax` (Camada 0, email-validator/regex), (2)
-  `_email_has_mx` (Camada 0, DNS MX com cache Redis 24h/domínio, **fail-open**: só `no_mx` definitivo
-  rejeita), (3) `_is_blocklisted` (`store.is_email_blocked`, a blocklist alimentada pelo webhook de
-  bounce). Tudo que passa nos 3 → ENVIA; o **status Reoon e `email_verified` NÃO decidem mais**.
-  `discovery/alert_worker.py::_verify_and_filter` reescrito (removidos: partição sendable/unverified,
-  cap de verificação, chamada à API no envio, `_reoon_balance`, `email_verify_max`/`email_verify_enabled`/
-  `email_verify_ttl_days`, gates de score, trust-downgrade e o `email_verified`/`email_verify_status`
-  como condição). Novo stats do ciclo: `eligible/valid_syntax/has_mx/not_blocklisted/blocked_syntax/
-  blocked_mx/blocked_blocklist/errors` (log `[alert] KL-145: N eligible → N syntax → N MX → N not
-  blocklisted → N sendable`). O MX (filtro 2) respeita `ALERT_VALIDATE_MX` (off em dev/testes; o
-  `_validate_batch` já cobre MX/blocklist com self-heal). **`_ALERT_ELIGIBLE_WHERE`** (store) perdeu os
-  filtros de `email_verify_status`/`email_verify_source` (KL-128/130) — a blocklist (tabela dedicada) faz
-  o trabalho. **`/system/status.email_verification`** agora expõe o funil `send_filter` + o saldo Reoon do
-  enriquecimento em background. **MANTIDOS:** Reoon no `email_verifier` (verify_reoon/verify_local/cache,
-  usados por `scripts/cleanup_email_backlog.py` + saldo no status — enriquecimento em background, NUNCA no
-  envio), circuit breaker hard-bounce (KL-108), blocklist + webhook de bounce, lead scoring (só ORDENA,
-  KL-137), link no e-mail (KL-137/138), List-Unsubscribe (KL-102), rotação de senders (KL-91),
-  `retire_unknown_power_targets` (limpeza retroativa via script). **Testes:** novo
-  `test_kl145_three_filters.py`; `test_kl110`/`kl130`/`email_pipeline`/`kl136`/`e2e_flows`/`alert_worker`
-  atualizados p/ os 3 filtros; `test_kl127`/`test_kl129` (subset-priority Reoon) removidos. **2028 pytest
-  passed.** Relatório: `claude/reports/KL-145_desacopla_reoon.md`.
-- **KL-146** — Priorizar e-mails pessoais sobre genéricos no lead scoring ✅. Dados de produção:
-  `contato@` gera 66% dos bounces (8,7% de taxa) vs. e-mails pessoais (3,6%). A solução NÃO é filtrar
-  (a regra de envio do KL-145 = sintaxe+MX+blocklist é **inalterada**) — é **REORDENAR**: pessoais
-  primeiro, genéricos depois (a blocklist aprende com os bounces dos genéricos antes de enviar muitos).
-  **1 arquivo:** `discovery/alert_scoring.py`. Novo **`_email_type_factor(email)`**: pessoal **+15** ·
-  genérico neutro **0** (`comercial`/`vendas`/`suporte`/`info`/… + a UNIÃO com `ROLE_BASED_PREFIXES`,
-  p/ `noreply`/`financeiro` nunca virarem +15) · medium-bounce (`atendimento`/`sac`) **-5** · high-bounce
-  (`contato`) **-10**. **SUBSTITUI** a penalidade role-based do KL-136 (`_role_penalty`/`ALERT_ROLE_PENALTY`,
-  **removidos** — não acumula). Integrado em `calculate_alert_score` (sinais `email_type_personal`/
-  `email_type_generic`/`email_type_generic_medium_bounce`/`email_type_generic_high_bounce`); um prefixo
-  que PARECE pessoal mas a Reoon confirmou `role` é rebaixado a 0 (`email_type_role_verified`, não premia
-  como pessoa). Efeito na fila (mesmo domínio/score, action_zone): `joao@` 45 > `comercial@` 30 > `contato@`
-  20 — o `_apply_alert_scoring` grava o score e o `run_cycle` ordena por score DESC. **Nada é bloqueado por
-  tipo** (`is_safe_to_send` inalterada; volume total idêntico, só a ORDEM muda). **Testes:** novo
-  `test_email_type_factor` (parametrizado) + `test_personal_ranks_above_generic_action_zone` +
-  `test_run_cycle_personal_before_generic_real_scoring`; `test_kl85`/`kl110`/`kl136` atualizados (todo
-  e-mail pessoal ganha +15). **2043 pytest passed.** Docs: `docs/DEPLOY.md` (`ALERT_ROLE_PENALTY`
-  superada). Relatório: `claude/reports/KL-146_priorizar_pessoais.md`.
-- **KL-138** — Hardening: remover exposição de endpoints + bloquear paths de exploit + redirect curto
-  nos e-mails ✅ (varredura 02/08; bots já sondam `.env`). **Fix 1 (Alta):** `GET /` (que o nginx serve
-  como `/api/`) devolvia sem auth o **mapa completo** da API (endpoints de pagamento/e-mail/webhook +
-  `scanner_version`/`payments_enabled`/`email_enabled`/`dev_mode`) → agora só `{"name":"Klarim API",
-  "status":"ok"}`. **Fix 2 (Média):** nginx bloqueia MAIS paths de exploit ANTES do fallback SPA (que
-  devolvia 200+HTML → scanner intensifica) — novo `location ~*` em `http.conf` + `https.conf.template`
-  (`wp-config|phpmyadmin|swagger|redoc|graphql|_debug|config\.(json|yml|php)|dump\.sql|database\.sql|
-  xmlrpc\.php|cgi-bin|shell|eval-stdin|vendor/phpunit|actuator|api-docs|v[23]/api-docs` → 404), complementa
-  os blocos já existentes (`.env`/`.git`/`.DS_Store`/`.htaccess`/`.htpasswd` caem em `location ~ /\.`;
-  `wp-admin`/`phpinfo`/`server-status` já cobertos). `nginx -t` validado local (http + https renderizado).
-  **Fix 3 — redirect curto `/a/{target_id}`:** `GET /a/{id}` (FastAPI, roteado pelo nginx `location ~ ^/a/`
-  sem strip, como `/remover`) valida o id (inteiro→422, inexistente/descartado→404), registra o clique
-  server-side e **302 p/ `/site/{domain}`**. **Segurança:** destino **FIXO** (o domínio vem de `targets`,
-  NÃO de parâmetro de URL → **sem open redirect**), rate limit **30/min por IP** (`_redis_allow`, anti-
-  enumeração), IP **mascarado /24** no log (LGPD, `mask_ip(ip,3)`), clique nunca derruba o redirect
-  (try/except). Tabela nova **`email_clicks`** (`target_id`/`clicked_at`/`ip_masked`, 2 índices) +
-  `store.get_target_domain`/`log_email_click`. Os 3 templates cold (`cold_alert.report_link(target_id)`
-  → `build_cold_email(..., target_id=)`) + `profile_view` (`build_profile_view_text(domain, target_id)`)
-  passaram a usar o link curto `/a/{target_id}` (**sem UTM** — o rastreio virou server-side, substitui o
-  UTM do KL-137). **+8 backend** (`test_kl138_hardening.py`) + testes de e-mail atualizados; regex do nginx
-  validado por Python (bloqueia exploit, não pega `/a/`/`/site/`/`/setores`/`/scan`/`/blog`). **1956 pytest
-  passed.** Relatório: `claude/reports/KL-138_hardening.md`; achados em `docs/SECURITY.md`.
-- **KL-141** — Security Gate: scanner de EXPOSIÇÃO/config pós-deploy (NÃO é DAST — não envia payload de
-  ataque; verifica o que ficou exposto após o deploy). Módulo **novo e SEPARADO** `security_gate/`
-  (portável, futuro pacote pip; NÃO dentro de `scanner/`). **Prompt 1/4 ✅** (de 4): engine + models +
-  checks de exposição/headers/SSL. `run_all(url, timeout, checks, deploy_ts) → GateReport`
-  (`engine.py`, só orquestra; **headers anti-cache em TODO request** + UA honesto `Klarim Security
-  Gate/1.0`; check que estoura vira ERROR isolado). `models.py`: `Result`/`GateReport` (score 100−
-  penalidades CRIT-20/HIGH-10/MED-5/LOW-2; `passed`=sem FAIL crítico → exit code do CI; counts) +
-  `Config` (semente p/ Prompt 3). **exposure.py (novo):** 11 grupos (KL-139 checks 1-3,5-12) — HEAD
-  primeiro (não baixa body — princípio KL-139), 200 no grupo → FAIL + `break`; `directory_listing` faz
-  GET limitado (2000 chars, não armazenado) p/ distinguir listagem real de fallback de SPA. **headers.py
-  + ssl.py REUSAM o scanner** (rule 2): ssl importa `scanner.tls_analyzer.get_tls_info`+`WEAK_PROTOCOLS`
-  (reuso real do handshake); headers importa o threshold `HSTS_MAX_AGE_RECOMMENDED` mas valida local (os
-  checks do scanner são coroutines acopladas ao próprio fetch — não há validador puro; o Gate usa 1
-  response). **+41 testes** (`test_kl141_gate_engine.py`); **1997 pytest passed**. ⚠️ **Falso positivo de
-  SPA:** rodando real contra `klarim.net` (score 65, passed=True, 7s) flagou `/adminer`/`/docs`/`/_profiler`
-  /`/main.js.map` — o Astro/Vite devolve 200+HTML para paths fora do blocklist do nginx (KL-138). É RUÍDO
-  (HIGH/MEDIUM, não bloqueia o `passed`, que só olha CRÍTICO); a correção adequada é o **allowlist do
-  config YAML no Prompt 3** (ou estender o 404 do nginx). Prompt 1 relatório:
-  `claude/reports/KL-141_p1_security_gate_engine.md`.
-  **Prompt 2/4 ✅ — check de credenciais** (`security_gate/checks/credentials.py`; registrado no engine
-  como `"credentials"`, no default order). **Regra inviolável:** o VALOR da credencial NUNCA é
-  armazenado/logado/transmitido — o `Result` só tem tipo+localização(arquivo:linha)+severidade (teste
-  dedicado falha se qualquer fragmento do segredo vazar no `detail`/`path`). Cobertura completa: ~50
-  patterns fixos em 7 categorias (payment/cloud/baas_database/ai_ml/auth_identity/communication/generic
-  — Stripe/AWS/Google/Azure/Supabase/Firebase/Mongo/Postgres/OpenAI/Anthropic/JWT/NextAuth/SendGrid/
-  Slack/Twilio/GitHub/GitLab/npm/private-keys/…) + **entropia** (reforço: atribuição a variável de nome
-  "de segredo" com valor entropia>4.5 e len>20 → MEDIUM; o gate de LHS-secreto evita flood em JS
-  minificado). **Fontes:** HTML + **TODOS** os `<script src>` mesma-origem (sem limite, dedup) + crawl
-  de até 9 páginas internas (10 no total); CDN de terceiro ignorado. **Anti-FP:** placeholders (YOUR_/
-  xxx/changeme/…), `<code>`/`<pre>`/doc (só em HTML), valores curtos/vazios; `pk_test_`=LOW. **Dogfooding
-  real (klarim.net): score 100, 0 findings, ~16s** (nenhum FP nos bundles minificados). **+29 testes**
-  (`test_kl141_credentials.py`); os 2 testes de engine do P1 atualizados p/ 4 checks. Relatório:
-  `claude/reports/KL-141_p2_credentials.md`.
-  **Prompt 3/4 ✅ — CLI + config YAML + API security + formatters + allowlist.** CLI executável
-  `scripts/security_gate.py <url> [--fail-on/--timeout/--checks/--config/--json/--quiet]` (exit 0 passou
-  · 1 falhou [FAIL ≥ `--fail-on`, por RANK, não string] · 2 erro). Config `security_gate/config.py`
-  (`GateConfig` + `load_config`: YAML → args da CLI; **`import yaml` lazy**, core sem dep; `pyyaml` no
-  requirements) + **`security-gate.yml`** commitado (config da Klarim). Check **API security**
-  (`api_security.py`): raiz `/api/` não lista endpoints (valida o KL-138) + `protected_endpoints`
-  respondem 401/403 (200 sem auth → FAIL CRITICAL). Formatters `terminal.py` (terminal ícones/score/
-  veredito, `--quiet` omite PASS; + `format_json`). Engine: `run_all(..., config)` passa `config` a
-  TODOS os checks (assinatura `check(client,url,config=None)`); `api` no default order. **Falsos
-  positivos de SPA resolvidos de fato:** o allowlist do card sozinho é whack-a-mole (o SPA 200 tudo);
-  a solução real é o **Content-Type guard** (novo, HEAD-only) no `check_exposure` — recurso não-HTML
-  (`.map`/`.sql`/`.json`/`.yml`/`.env`/`.config`…) que responde `text/html` = fallback de SPA → não é
-  exposição (zero falso NEGATIVO; `.php`/`.axd` de fora pois phpinfo/elmah reais são HTML) + allowlist
-  só p/ os HTML-capazes (painéis/UI/debug). **Dogfooding `python scripts/security_gate.py https://
-  klarim.net`: score 100/100 🟢, 0 findings, ~16s.** **+35 testes** (`test_kl141_cli_config.py`); engine
-  P1/P2 atualizados p/ `(client,url,config)` + 5 checks. Relatório: `claude/reports/KL-141_p3_cli_config_api.md`.
-  **Prompt 4/4 ✅ (COMPLETO) — GitHub Actions + notificação.** Job **`security-gate`** no
-  `.github/workflows/deploy.yml` (`needs:[deploy]`, `if:success()`): roda o Gate contra `klarim.net` LIVE
-  **DEPOIS** do deploy → **NÃO bloqueia** (o site já está no ar); reprovar → job vermelho (exit 1/2 via
-  `pipefail`) + e-mail, operador decide rollback (o Gate nunca reverte). `--json | tee gate-report.json`
-  vira artifact; `pip install -r requirements.txt` (o Gate importa de `scanner/` → puxa dnspython/gcs/
-  cryptography). **`scripts/security_gate_notify.py`** (e-mail Resend + webhook, `if:failure()`; fail-safe
-  sem key → só avisa; nunca vaza o valor da credencial). Badge no README. ⚠️ **`RESEND_API_KEY` NÃO é
-  secret do repo** (o deploy usa só o `.env` da VM) → o e-mail só envia quando o dono adicionar o secret;
-  não bloqueia (o notify só roda em falha). **+11 testes** (`test_kl141_notify.py`). Relatório:
-  `claude/reports/KL-141_p4_github_actions.md`. **KL-141 COMPLETO** (engine+5 checks+CLI+config+formatters+
-  CI). **KL-139** (catálogo) coberto (exposição 1-3,5-12 + credenciais 4 + headers/ssl/api) — fecha junto.
-- **KL-147** — Security Gate: detecção de SPA fallback por fingerprint (ETag / Content-Type+Content-Length) ✅.
-  O Gate gerava falsos positivos massivos em SPAs que devolvem **200+index.html para QUALQUER path**
-  (`sistema.igoove.com.br`: 0/100 com 14 findings, todos falsos exceto HSTS). O `_is_spa_fallback_nonhtml`
-  (KL-141 P3) só pegava extensões não-HTML listadas — não cobria paths **sem extensão** (`/admin`,
-  `/swagger`) nem extensões novas. **Solução — probe de controle:** ANTES dos checks, o engine
-  (`security_gate/engine.py::_detect_spa_fallback`) faz **1 HEAD** num path aleatório que certamente não
-  existe (`/_klarim_gate_probe_{uuid}`); se responde 200, captura o **fingerprint** (ETag + Content-Type +
-  Content-Length) do index.html. Os checks `exposure` e `api` (spa-aware; headers/ssl/credentials não —
-  sem paths a comparar) recebem o fingerprint e, para cada 200, `security_gate/utils.py::
-  matches_spa_fingerprint` compara: **mesmo ETag** (ou mesmo CT+CL sem ETag) → fallback → PASS; diferente →
-  exposição real → FAIL. **1 request extra por scan** (só se algum check spa-aware roda). Guard-chain do
-  exposure: allowlist (KL-141 P3) → **fingerprint (KL-147)** → Content-Type nonhtml (KL-141 P3). O
-  `api_security` marca o 200-que-casa-fallback como PASS ("fallback de SPA (não é endpoint real)").
-  **Validação real (obrigatória):** klarim.net **100/100 🟢** (nginx 404 → sem fingerprint, inalterado) ·
-  sistema.igoove.com.br **90/100 🟢** (era 0/100; agora só HSTS ausente — 14 falsos positivos eliminados) ·
-  Traka Cloud Run **63/100 🟡** (404 → sem fingerprint, inalterado; findings são headers ausentes reais).
-  **+20 testes** (`test_kl147_spa_fingerprint.py`); engine tests do KL-141 atualizados p/ a nova assinatura
-  `(client,url,config,spa_fingerprint)` dos checks spa-aware. **2063 pytest passed.** Relatório:
-  `claude/reports/KL-147_spa_fingerprint.md`.
-- **KL-149** — Security Gate: **+13 módulos de check** (14 checks lógicos) para o Gate virar ferramenta
-  séria de CI/CD ✅. Todos passivos (GET/HEAD/DNS/handshake TLS; **sem payload de ataque** — mantém o "não
-  é DAST"). Novos em `security_gate/checks/`: **cors** (reflexão de Origin, CRITICAL), **cookies**
-  (HttpOnly/Secure/SameSite nos de sessão), **redirect** (open redirect via `?redirect=`, sonda benigna),
-  **rate_limit** (mini-burst de 10 GETs → 429; roda por ÚLTIMO p/ não poluir os demais), **error_disclosure**
-  (stack trace em 404/5xx — 404 aleatório + triggers malformados BENIGNOS, **sem SQLi/XSS**, mais conservador
-  que o snippet do card), **https_redirect** (HTTP→HTTPS), **jwt_analysis** (`alg:none`/sem `exp`/PII — só
-  DECODIFICA, **nunca forja**), **form_security** (`<form action>` externo), **dns_security** (DNSSEC+CAA),
-  **dependencies** (libs JS com CVE, base LOCAL), **tls_ciphers** (RC4/DES/NULL — força TLS ≤1.2 + confere o
-  cipher NEGOCIADO, anti falso-positivo do TLS 1.3), **subdomain** (takeover por fingerprint de CNAME),
-  **infrastructure_urls** (Cloud Run/Heroku/Lambda/ngrok/localhost/IP privado/k8s no HTML+JS — nunca alerta o
-  próprio domínio). Engine (`_CHECKS`+`_DEFAULT_ORDER`, 5→**18**), `GateConfig.checks` default, `security-gate.yml`,
-  formatter (categorias) e CLI `--checks` atualizados; `_extract_js_urls`/`_origin`/`_host` movidos p/
-  `security_gate/utils.py` (compartilhados por credentials + infrastructure). Blocking (DNS/socket) via
-  `asyncio.to_thread` com helpers mockáveis. **Validação real (obrigatória):** klarim.net **90/100 🟢**
-  (Critical 0; só rate_limit HIGH — honesto) · sistema.igoove.com.br **55/100 🟡** — a **infra detecta o Cloud
-  Run `ig-backend-…southamerica-east1.run.app` + `127.0.0.1` no JS** (o achado real do card; exigiu regex
-  multi-label `[a-z0-9.-]+` p/ o formato novo do Cloud Run) · Traka Cloud Run **43/100 🔴** (headers/DNSSEC/
-  CAA/rate-limit ausentes). **Nenhum FAIL crítico falso → o job `security-gate` da CI (`--fail-on critical`)
-  segue verde.** **+38 testes** (`test_kl149_new_checks.py`, 1 PASS+1 FAIL/check); engine tests do KL-141
-  ajustados p/ 18 checks. **2101 pytest passed.** Docs: `docs/SECURITY.md` §10 (tabela dos 18 checks).
-  Relatório: `claude/reports/KL-149_novos_checks.md`.
-- **KL-151 (Prompt 1/4)** — Security Gate como PRODUTO para devs externos: **backend core** ✅. O dev
-  instala CLI, autentica por API key e roda no pipeline dele — sem clonar o repo. A conta é ÚNICA:
-  dono e dev são o mesmo `users`, distinguidos por `account_type` (owner|developer|both; um dono que usa
-  o Gate vira 'both'). **Schema (5 tabelas + 7 colunas em `users`):** `gate_plans` (Free/Pro/Team/Enterprise,
-  seed idempotente em `seed_gate_plans`; `-1`=ilimitado), `gate_api_keys` (**nunca em claro** — só o
-  SHA-256 + prefixo `KLM_xxxx`), `gate_projects` (domínio a escanear; só escaneia se `verified`), `gate_runs`
-  (histórico + contagem/dia p/ enforcement), `gate_invites` (dono→dev, token, TTL 7d). **`api/gate.py`**
-  (router): `POST /gate/register` (cria dev + API key exibida **1×** + projeto + trial Pro 14d, plano base
-  Free), `POST /account/gate/regenerate-key`, `POST /gate/projects/{id}/verify/{start,check}` (reusa o
-  desafio de domínio do KL-99 — meta_tag/dns_txt/html_file — via API key; challenge no `config` JSONB, TTL
-  7d), convite `POST /account/gate/invite` (dono nível 3 + posse VERIFICADA deste domínio) / `GET
-  /gate/invite/{token}` / `POST /gate/invite/{token}/accept` (dev logado; cria projeto `verified` method=
-  `invite`) / `DELETE /account/gate/invite/{id}` (revoga + REMOVE o projeto do dev). **Auth:** `/gate/*` =
-  API key (`X-API-Key`, `authenticate_api_key`); `/account/gate/*` = JWT de usuário. **Plano efetivo:** trial
-  Pro ativo > plano associado > Free (`get_effective_gate_plan`). **Enforcement no SERVIDOR:**
-  `enforce_scan_limit` (429 no teto de scans/dia), `enforce_domain_limit` (403 no teto de domínios),
-  `get_allowed_checks` (Free=4 checks · Pro=9 · Team/Enterprise=`["all"]`=18). ⚠️ **Fix incidental de
-  fresh-DB:** o índice `idx_targets_owner_verified` (KL-104 P2) referenciava a coluna `owner_verified`
-  ANTES do `ALTER ... ADD` (KL-99) → um banco FRESCO falhava no `ensure_schema` (o dev stack não subia do
-  zero). Movido p/ depois do ADD (idempotente; DBs existentes intactos). **Validação:** schema aplicado num
-  Postgres 16 fresco (5 tabelas + seed dos 4 planos + 7 colunas) + todas as store methods exercitadas contra
-  ele (API key, challenge JSONB, ciclo de convite, plano efetivo trial/expirado). **NÃO neste prompt:** API
-  REST de scan, CLI, frontend, admin de planos (Prompts 2-4). **+31 testes** (`test_kl151_gate_product.py`).
-  **2132 pytest passed.** Docs: `docs/API.md` (endpoints do Gate) + `docs/SECURITY.md` §11 (API key hash +
-  convite). Relatório: `claude/reports/KL-151_p1_gate_backend.md`.
-  **Prompt 2/4 ✅** — API REST de scan + CLI publicável + MCP tools. **Princípio:** o scan roda no SERVIDOR
-  (a engine do Gate); o client só envia URL + API key. **`api/gate.py`:** `POST /gate/scan` (autentica por
-  API key → valida que o domínio é um projeto REGISTRADO + VERIFICADO [exceto planos `scan_third_party`] →
-  `enforce_scan_limit` → roda `run_all` com os checks do plano → persiste em `gate_runs` → devolve score/
-  passed/results/`checks_run`/`checks_blocked`/`dashboard_url`). `passed` respeita o `fail_on` do dev
-  (`_passed_for`, não só o "crítico" da engine). `GET /gate/runs` (sumário, sem `results`) + `GET
-  /gate/runs/{id}` (detalhe com `results`, ownership check). **`enforce_scan_limit` virou contador ATÔMICO no
-  Redis** (`gate_scans:{acct}:{YYYY-MM-DD}`, INCR+TTL 24h) com **fallback** para `count_gate_runs_today`
-  (banco) se o Redis cair. **CLI** `scripts/klarim_gate_cli.py` (standalone, só depende de `httpx`): `scan`
-  (exit 0 passou · 1 reprovou · 2 erro; `--fail-on`/`--json`/`--quiet`/`--metadata`; key via `--api-key` ou
-  env `KLARIM_API_KEY`), `projects`, `runs`. **5 MCP tools** (`mcp_server/tools/gate.py`, visão admin):
-  `list_gate_projects`/`get_gate_project`/`create_gate_project`/`list_gate_runs`/`get_gate_run` (**MCP → 80
-  tools**; reconectar o MCP pós-deploy). Store: `list_gate_runs`/`get_gate_run` (account_id opcional →
-  admin), `admin_list_gate_projects`/`get_gate_project_by_id`. **Nginx:** o `location /api/` já proxia
-  `/api/gate/*` com `proxy_read_timeout 180s` (> os 120s pedidos) — nenhuma location nova (evita o footgun
-  de re-declarar headers). **NÃO neste prompt:** frontend (Prompt 3). **+19 testes** (`test_kl151_p2_scan_cli.py`),
-  store P2 validada contra Postgres 16 real. **2151 pytest passed.** Relatório:
-  `claude/reports/KL-151_p2_scan_cli.md`.
-  **Prompt 3/4 ✅** — frontend: landing `/security-gate` + portal do dev + admin de planos. **Backend novo
-  (`api/gate.py`):** `GET /gate/plans` (PÚBLICO — a landing renderiza a tabela ao vivo, então uma edição no
-  admin reflete SEM deploy), `GET /account/gate/key-info` (metadados da key, nunca o valor), **dual-auth**
-  `_resolve_gate_account` (os endpoints do portal aceitam **API key OU o cookie JWT** do dashboard),
-  **admin de planos** `GET/PUT/POST /admin/gate/plans` + `GET /admin/gate/accounts` + `POST
-  /admin/gate/accounts/{id}/plan` (JWT admin via prefixo `/admin`). Store: `create_gate_plan`/
-  `update_gate_plan` (edição sem deploy — reflete no próximo scan via plano efetivo) + `list_gate_dev_accounts`
-  (uso: plano/scans-hoje/projetos/prefixo-da-key). **Landing** `web/src/pages/security-gate.astro` (SSR, busca
-  `/gate/plans`, Base+Header+Footer, hero + 18 categorias + como-funciona + snippets CI/CD em `<details>`
-  [CSP-safe, sem JS] + tabela de planos ao vivo + badge klarim.net + **Schema.org SoftwareApplication** + OG);
-  link **"Security Gate"** no `Header.astro`; `/security-gate` no **sitemap** (`_SITEMAP_STATIC`) e nas
-  **allowlists do nginx** (http + https). **Portal do dev** `web/src/pages/dashboard/gate.astro` +
-  `dashboard-v2/GatePortal.jsx` (island `client:load`, cookie-auth: API key masc.+regenerar, projetos+novo,
-  histórico de runs+detalhe com findings, `checks_blocked` com CTA de upgrade, snippet de integração).
-  **Admin** `web/src/pages/painel/gate-plans.astro` + `admin/GatePlansPage.jsx` (lista/edita/cria planos com
-  seletor de checks + `["all"]`, tabela de contas dev + atribuição manual de plano; item no `AdminShell`);
-  métodos `gate*` no `adminApi.js`. **+16 testes** (`test_kl151_p3_portal_admin.py`); Astro build ✓,
-  `test:unit` 154 ✓, store P3 validada contra Postgres 16. **2167 pytest passed.** Relatório:
-  `claude/reports/KL-151_p3_frontend.md`. **Fix visual da landing** (pós-P3): a landing usava a escala
-  `slate` sem contar que o KL-87 a INVERTE no light → `text-slate-900` virava branco (invisível) e
-  `bg-slate-50` virava caixa fora de tom. Corrigido p/ o padrão do `/planos` (headings `text-white`,
-  texto `text-slate-300/400`, cards `border-slate-800 bg-slate-900/60`); removidos o badge do hero e a
-  nota abaixo dos planos. Verificado ao vivo (claro/escuro) via browser.
-  **Prompt 4/4 ✅ (FECHA o KL-151)** — segurança avançada + Enterprise + testes de integração. **Schema
-  (`gate_audit_log` + `gate_api_keys.grace_expires_at` + `users.company_cnpj/contract_url/enterprise_notes`).**
-  **(1) Audit log** (`api/gate.py::log_gate_audit`, fail-safe): registra CADA ação (scan/scan_blocked/
-  key_created/key_regenerated/project_created/project_verified/invite_sent/invite_accepted/invite_revoked/
-  plan_changed/enterprise_updated) com IP/UA — **NUNCA o valor da key, só o prefixo**. Leitura: `GET
-  /admin/gate/audit` (todas as contas + filtros account_id/action) · `GET /account/gate/audit` (a PRÓPRIA
-  conta, dual-auth). **(2) Rotação com grace period** — `regenerate-key` revoga a antiga com
-  `grace_expires_at=NOW()+1h` (`revoke_gate_api_keys_with_grace`); `authenticate_api_key` aceita uma key
-  revogada DENTRO do grace (CI em andamento não quebra) e devolve `grace_period_minutes`. **(3) Rate limit
-  por MINUTO por key** (`_enforce_rpm`, Redis `gate_rpm:{key}:{min}`): free 10 · pro 30 · team 60 ·
-  enterprise 120 rpm (fail-open sem Redis). **(4) Enterprise** — `company_cnpj/contract_url/enterprise_notes`
-  (`POST /admin/gate/accounts/{id}/enterprise`); scan de TERCEIRO (plano `scan_third_party`, domínio
-  não-verificado) **redige path/credencial** (`_redact_third_party` — só categoria+severidade do risco);
-  audit obrigatório com `target_domain` em todo scan (compliance). **(5) Revogação** já removia o projeto
-  do dev; agora **avisa por e-mail** (`send_gate_access_revoked`, transacional) + audit `invite_revoked`.
-  **Testes:** novo `test_kl151_integration.py` (+14: grace ok/expirado/revogado, RPM 11º→429, redação de
-  terceiro, terceiro sem Enterprise→403, CNPJ no admin, audit scan/scan_blocked/admin-filtros/dev-own-only,
-  trial efetivo); P1/P2 ajustados (grace + `insert_gate_audit`). Store P4 validada contra **Postgres 16
-  real**. **2181 pytest passed.** Docs: `docs/API.md` (audit) + `docs/SECURITY.md` (rotação/grace/enterprise/
-  redação/audit). **KL-151 COMPLETO** (P1 backend · P2 API+CLI+MCP · P3 frontend · P4 segurança/Enterprise).
-  Relatório: `claude/reports/KL-151_p4_security_enterprise.md`.
-- **Fix — ativação do Gate p/ conta EXISTENTE (user logado)** ✅. O CTA "Começar grátis" da landing
-  `/security-gate` sempre abria o registro (pedia e-mail) mesmo logado; um owner/técnico com conta não
-  tinha caminho para ativar o Gate. **`POST /account/gate/activate`** (JWT sessão, nível ≥1, `api/gate.py`):
-  idempotente (`developer`/`both` → `already_active`); senão promove `account_type` (**owner→both**), gera a
-  API key (exibida **UMA VEZ**, só se não houver ativa) e concede **trial Pro 14d** (base Free) se ainda sem
-  plano; audit `gate_activated`. **`GET /account/gate/status`** (401 se sem sessão) → `{logged_in, gate_active,
-  plan, has_key, key_prefix, dashboard_url}` p/ a landing decidir o CTA. **CTA dinâmico:** island novo
-  `web/src/components/security-gate/GateLandingCTA.jsx` (`client:load`) no hero — não logado → "Começar grátis"
-  (link `/cadastrar?type=developer`) · logado+inativo → "Ativar Security Gate" (POST activate → modal da key
-  1x → `/dashboard/gate`) · logado+ativo → "Abrir dashboard". SSR/cache-safe (1º paint = link, re-decide no
-  cliente). **`POST /gate/register`** com e-mail existente → **409 estruturado** (`_account_exists_response`:
-  `error=account_exists`+`login_url`; `activate_after_login=true` se o Gate ainda não está ativo) em vez de
-  erro genérico. **Sem SQL novo** (reusa `set_account_type`/`set_account_gate_plan`/`create_gate_api_key`/
-  `get_account_gate_fields`); key só como hash SHA-256. **+13 testes** (`test_kl151_activate.py`); suíte
-  KL-151 93 passed, `test:unit` 154. Relatório: `claude/reports/fix_ativacao_gate_conta_existente.md`.
-- **KL-152 (Prompt 1/3)** — Fix visual do dashboard Gate + onboarding wizard ✅. **(A) Fix visual do
-  `/dashboard/gate`:** a raiz do contraste fraco era o `GatePortal.jsx` escrito com classes *light-first*
-  (`text-slate-900`/`bg-white`/`bg-slate-50`) que o KL-87 **inverte** no tema claro → texto quase branco
-  sobre card claro. Reescrito com os **tokens canônicos** de `dashboard-v2/shared.js` (título `text-white`,
-  subtítulo `text-slate-300`, cards `card`) — mesmo padrão do Dashboard v2 (**não** inventou design).
-  Snippet Python raw → **abas** `GateIntegrationTabs.jsx` (GitHub/GitLab/Bitbucket/curl, CSP-safe, URL do
-  projeto pré-preenchida + Copiar via `GateCodeBlock.jsx`); inputs "Novo projeto" com **label**+placeholder
-  (`text-base` 16px, `h-12`); **badge de plano** (`PlanBadge`) com barra `9/18` + CTA "Upgrade → Team (18
-  checks)". **(B) Wizard `GateOnboarding.jsx` (5 steps):** aparece quando `gate_runs` vazio, dismissível
-  ("Pular"), reaparece até o 1º scan, some após completar (`localStorage['klarim_gate_onboarded']`). Step 1
-  escolhe CI/CD → 2 add secret (instrução por plataforma + **API key real** do `sessionStorage
-  ['klarim_gate_new_key']` gravada na ativação/regenerar; senão prefixo mascarado + "Gerar nova key") → 3
-  cola o YAML pré-preenchido → 4 deploy + **polling `runs?limit=1` 10s** → 5 pronto. **Lógica pura**
-  `web/src/lib/gate/snippets.js` (`buildSnippet`/`secretSteps`/`planProgress`, `TOTAL_CHECKS=18`; a key
-  NUNCA é embutida no YAML — só o secret `${{ secrets.KLARIM_KEY }}`/`$KLARIM_KEY`). **Sem backend/nginx
-  novo** (reusa `key-info`/`projects`/`runs`/`regenerate-key`). **+8 `node --test`** (`snippets.test.js`) →
-  `test:unit` 162; `npm run build` OK. Prompts 2-3 pendentes (webhook, convite, editor `security-gate.yml`).
-  Relatório: `claude/reports/KL-152_p1_fix_visual_onboarding.md`.
-- **KL-152 (Prompt 2/3)** — Docs de integração do Security Gate por CI/CD ✅. **7 páginas PÚBLICAS**
-  (sem login) em `/docs/gate/{github-actions,gitlab-ci,bitbucket,jenkins,manual,api,troubleshooting}` —
-  Astro **`.md`** (markdown renderizado, não HTML hardcoded) com frontmatter `layout`/`title`/
-  `description`/`slug`. **`DocsLayout.astro`** = Base+Header+**sidebar**+`<slot>`+Footer (sidebar sticky
-  no desktop, rolagem horizontal no mobile, item ativo `aria-current`; SEO + JSON-LD **TechArticle** por
-  página). Sidebar/slugs de **`web/src/lib/gate/docsNav.js`** (PURO, fonte única; +4 `node --test`).
-  Sem Shiki (`astro.config.mjs markdown.syntaxHighlight:false` — blocos simples estilizados por
-  `.docs-prose` em global.css, dark constante como o wizard; nenhum outro `.md` existe). Botão "Copiar"
-  via **`web/public/docs-copy.js`** externo (CSP `script-src 'self'`, progressive enhancement). Snippets
-  referenciam o SECRET do CI (`${{ secrets.KLARIM_KEY }}`/`$KLARIM_KEY`); `manual` usa `KLM_sua_key_aqui`.
-  Integração: **"Docs"** no Header (2 estados) + "Documentação" no Footer + "Ver documentação" da landing
-  → `/docs/gate/github-actions`; as 7 URLs no `_SITEMAP_STATIC` (KL-131); **`docs`** na allowlist de
-  conteúdo + **`docs-copy\.js`** na de JS, nos DOIS nginx (`http.conf` + `https.conf.template`, `nginx -t`
-  ✓). Contato do troubleshooting = `contato@klarim.net` (o `seguranca@` foi descontinuado). **+4
-  node + +2 pytest** (`test_kl152_docs_sitemap.py`) → `test:unit` 166; build OK. **Validado no browser**
-  (dev): 7 páginas 200, sidebar/ativo/nav interna, tabelas/código não escapado, copiar, SEO, tema claro,
-  zero erro. Prompt 3 pendente (Enterprise workflow). Relatório: `claude/reports/KL-152_p2_docs_integracao.md`.
-- **KL-152 (Prompt 3/3)** — Enterprise workflow: due diligence de fornecedores + PDF + monitoramento ✅
-  (**fecha o KL-152**). **Schema:** `gate_vendors` (name/url/domain, status pending|approved|attention|
-  rejected, approval/critical_threshold, last_scan_*, notify_vendor, monitor_enabled/interval/next_at) +
-  `gate_vendor_scans` (histórico, `results` REDIGIDOS + `summary` de contagens). **Pura**
-  `security_gate/vendor.py`: `calculate_vendor_status` (crít>máx→reprovado · score≥thr→aprovado ·
-  ≥thr-20→atenção · senão reprovado), `build_vendor_scan_payload` (serializa + **redige**
-  credenciais/exposição/api + `vendor_summary` contagens + `vendor_categories`). **Endpoints (api/gate.py,
-  todos `_require_enterprise` `scan_third_party`→403):** `POST/GET/GET{id}/PUT{id}/DELETE{id} /gate/vendors`,
-  `POST /gate/vendors/{id}/scan`, `POST /gate/vendors/report` (PDF comparativo→link 1h), `GET /gate/vendors/
-  report/{id}`, `GET /gate/runs/{id}/pdf`. Núcleo `run_vendor_scan` (engine no servidor→redige→status→
-  persiste→reprograma next_monitor→audit `vendor_scan`→notifica opt-in). **Redação:** o Enterprise vê
-  score/categorias/checks/**contagens** ("2 arquivos expostos"), NUNCA paths/credenciais/endpoints do
-  terceiro. **Notificação opt-in** (`_notify_vendor`): `contact_email` do domínio (interno, nunca exposto),
-  transacional `klarim@klarim.net` (`send_vendor_assessment`), **dedup 1/scan** (Redis NX). **Monitoramento**
-  `discovery/vendor_monitor_worker.py` (`VendorMonitorWorker` no `_run_all`, 1x/dia): re-scan dos vencidos +
-  alerta ao Enterprise se `score<threshold` (`send_vendor_score_drop`); deps injetáveis→testável. **PDF**
-  `reporter/gate_report.py` (WeasyPrint): `build_vendor_report_html` puro (CNPJ + resumo + tabela
-  comparativa + recomendação + detalhe + **disclaimer**); guardado **base64** no Redis TTL 1h (cliente
-  `decode_responses=True` → bytes crus não round-trip) + fallback in-memory. **Frontend**
-  `GateVendors.jsx` no `GatePortal` — **self-hide** p/ não-Enterprise (403); tabela+modal+detalhe redigido+
-  botão PDF. **+20 pytest** (`test_kl152_vendors.py`) → **2216 passed**; `test:unit` 166; build OK.
-  **Validado no browser** (conta Enterprise): seção só p/ Enterprise, scan real klarim.net→70🟡 Atenção,
-  detalhe com contagens (não paths), PDF válido (200/application/pdf, %PDF), zero erro. **KL-152 COMPLETO**
-  (P1 visual+onboarding · P2 docs · P3 Enterprise). Relatório: `claude/reports/KL-152_p3_enterprise_workflow.md`.
-- **KL-154** — Security Gate importa os checks de superfície SPF/DKIM/DMARC do scanner ✅. O Gate já reusava
-  o scanner parcialmente (`headers.py`→`HSTS_MAX_AGE_RECOMMENDED`, `ssl.py`→`get_tls_info`/`WEAK_PROTOCOLS`);
-  faltavam os 3 checks de e-mail (essenciais pós-deploy — o dev precisa saber se o domínio está protegido
-  contra spoofing). **Regra do card (comentário 08/08):** NÃO criar `engine/` unificado, NÃO mover/alterar o
-  scanner, NÃO tocar o scan público — o Gate **importa** do scanner (via ÚNICA). **`security_gate/checks/
-  scanner_adapter.py`** (`adapt_check_result`): traduz o `CheckResult` do scanner (PASS/FAIL/INCONCLUSO;
-  severidade PT-BR CRITICA/ALTA/MEDIA/BAIXA) para o `Result` do Gate (PASS/FAIL/ERROR; CRITICAL/HIGH/MEDIUM/
-  LOW/INFO) — por VALOR de string (desacoplado dos enums), INCONCLUSO→ERROR, `getattr` defensivo (interface
-  do scanner muda → degrada, não quebra). **`security_gate/checks/email_security.py`** (`check_email_security`):
-  roda os checks 21/22/23 do scanner (mesmo código do scan público) com **imports LAZY dentro do `try`** — se
-  o scanner sumir/mudar ou o DNS faltar, cada check vira um `Result` ERROR isolado (nunca derruba o gate); só
-  DNS TXT (passivo); categoria `surface`. Registrado no engine (`_CHECKS`+`_DEFAULT_ORDER`, 18→**19 checks**,
-  após `dns`) e no `GateConfig.checks` default + `security-gate.yml`. **Camadas do relatório:** os formatters
-  (`formatters/terminal.py`) agrupam **Surface** (servidor+DNS: headers/ssl/dns/https/surface) vs **Deep**
-  (exposição+código: o resto); o JSON ganha `summary.{surface,deep}` (pass/fail/checks). **Plano:** Pro seed
-  ganha `email_security` (Free 4 inalterado; Team/Enterprise `["all"]` já incluem — `["all"]` deriva de
-  `_DEFAULT_ORDER`). ⚠️ o seed é `ON CONFLICT DO NOTHING` → contas **Pro já existentes** precisam do check
-  adicionado via admin de planos (KL-151 P3); o CI/CLI (dogfooding) usa a config, não os planos, então já roda.
-  **Validação real (3 alvos):** klarim.net **100/100** no e-mail (SPF/DKIM/DMARC PASS) / **90/100** full
-  (só rate_limit HIGH, inalterado; Surface 15 · Deep 28) · sistema.igoove.com.br (SPF PASS, DKIM FAIL MEDIUM,
-  DMARC FAIL HIGH p=none) · Cloud Run leads-api (SPF PASS, DKIM FAIL, DMARC PASS). **Scan público inalterado**
-  (o scanner não foi tocado). **+22 backend** (`test_kl154_email_security.py`); ajustados os contadores de
-  18→19 em `test_kl141_gate_engine`/`test_kl151_gate_product`/`test_kl151_p3_portal_admin`/`test_kl151_p2_scan_cli`.
-  **2238 pytest passed.** Docs: `docs/ARCHITECTURE.md` §11 (diagrama de dependência Gate→scanner). Relatório:
-  `claude/reports/KL-154_email_security_gate.md`.
-- **KL-163 (Prompt 1/2)** — PDF de UM run do Security Gate (o dev exporta o resultado do scan) ✅ **DEPLOYADO
-  11/08/2026 (run #31512717649 verde, com o P2)** — pós-deploy na VM OK: endpoint sem auth → 401. **Endpoint** `GET /gate/runs/{id}/
-  report` (`api/gate.py`): auth **API key OU sessão** (`_resolve_gate_account`); busca o run SEM filtro de conta
-  para distinguir **404** (inexistente) de **403** (outra conta); **403 se a conta não tem KYC** ("Complete seu
-  cadastro para gerar relatórios"); devolve `application/pdf` `attachment` (`klarim-gate-{domínio}-{AAAA-MM-DD}.pdf`)
-  + audit `run_report`. **Módulo NOVO `reporter/gate_run_report.py`** (padrão testável do repo, separado do
-  `gate_report.py` de FORNECEDORES): `build_gate_run_context` PURO (dict do run → contexto, sem I/O/relógio — data
-  e CPF injetados) · `build_gate_run_report_html` PURO (Jinja bare + `html.escape` no builder) · `generate_gate_run_
-  report_pdf` async (WeasyPrint em thread). Template PT-BR/A4: cabeçalho (domínio, data **Brasília**, score+cor do
-  semáforo, resultado Passou/Reprovou, plano, **CPF do dev SEMPRE mascarado**) + resumo (contagens + falhas
-  críticas/altas destacadas) + tabela por categoria (reusa `_CATEGORY_LABELS` do formatter → sem drift; cada check
-  com ícone/nome humanizado/severidade/status e, no FAIL, a recomendação = `detail`) + rodapé paginado
-  (`@bottom-center counter(page)/counter(pages)`). Caso **score 100** → caixa verde "Nenhum problema encontrado.
-  Todas as N verificações passaram." **`mask_cpf`** (`api/validators.py`): `529.982.247-25`→`***.***.247-25` (só o
-  3º grupo + DV; malformado→`***.***.***-**`). Frontend: `reportButton(kyc)` PURO (`web/src/lib/gate/ux.js`) +
-  componente `ReportButton` no `GatePortal.jsx` — **sem KYC → mensagem de bloqueio (não botão)**; com KYC → download
-  via blob. Botão no **RunDetail** (histórico) e no **ScanResultCard** (após KYC). O `/gate/runs/{id}/pdf`
-  (vendor-style, KL-152) fica **intacto** (compat). **A engine de scan NÃO foi tocada** (consome só os `results`
-  persistidos). **+16 backend** (`test_kl163_gate_report.py`: endpoint 200/401/403-outra-conta/403-sem-KYC/404 +
-  builder/HTML + `mask_cpf` + render real `%PDF-`) **+4 node** (`reportButton`). Docs: `docs/API.md`. Relatório:
-  `claude/reports/KL-163_P1_report.md`.
-- **KL-163 (Prompt 2/2)** — endereço ESTRUTURADO no KYC (CEP + ViaCEP) + polish ✅ **DEPLOYADO 11/08/2026 (run
-  #31512717649 verde)** — pós-deploy na VM OK: coluna `address_data jsonb` presente em `users`; CSP com
-  `https://viacep.com.br` em `connect-src`; 7/7 containers up (db/redis preservados). **Schema:** `users.address_data
-  JSONB` (`{cep,street,number,complement?,neighborhood,city,state}`); a coluna `address` TEXT **não é
-  removida** (legado — contas antigas com texto livre seguem válidas; leitura prefere `address_data`).
-  `update_user_kyc` grava um dos dois (estruturado → JSONB, limpa o TEXT; legado → TEXT, limpa o JSONB);
-  `get_account_gate_fields` retorna `address_data`. **`POST /account/kyc`** (`api/gate.py`): `KYCBody.address`
-  aceita **objeto OU string** (`Union[str,dict]`); objeto → `_validate_and_normalize_address` (CEP normalizado
-  `00000-000`, UF ∈ 27 UFs, campos obrigatórios cep/street/number/neighborhood/city/state, `complement` opcional
-  → **422** se inválido); string → legado (≥10 chars). `_kyc_complete` aceita os dois via `_address_ok` (dict
-  completo OU string ≥10). **PDF** (`reporter/gate_run_report.py`): cabeçalho ganha **cidade/UF** abaixo do CPF
-  (`build_gate_run_context(city_state=…)`; o endpoint deriva de `address_data` via `_city_state_from_address`) —
-  **NUNCA** rua/número (só contexto). **Frontend:** `web/src/lib/gate/address.js` (PURO: `maskCep`/`isValidCep`/
-  `parseViaCepResponse`/`isAddressComplete`/`UF_LIST` 27/`emptyAddress`) + `dashboard-v2/AddressFields.jsx`
-  (campos estruturados + **ViaCEP** auto-preenche rua/bairro/cidade/UF ao digitar o CEP, **debounce 500ms**,
-  loading, "CEP não encontrado" se erro, fallback manual se o ViaCEP cair — nunca bloqueia; validação de
-  campo obrigatório na borda ao `blur`) usado no **`KycBanner`** (modal do resultado) E no **`GateOnboarding`**
-  (wizard step 4). `canSubmitKyc` (ux.js) aceita endereço objeto. Telefone com nota **"verificação por SMS em
-  breve"** no modal + **"(não verificado)"** no admin (`GatePlansPage` + `list_gate_dev_accounts` expõe phone).
-  **CSP:** `frontend/nginx/security_headers.conf` libera `https://viacep.com.br` em `connect-src` (dev.conf não
-  tem CSP → dev funciona; `nginx -t` validado). **A engine de scan e o rate limiting NÃO foram tocados.** **+12
-  backend** (`test_kl163_p2_address.py`: objeto→JSONB, string→TEXT, CEP/UF/campo inválido→422, `_kyc_complete`
-  dict/legado/vazio, `_validate_and_normalize_address`, `_city_state_from_address`, PDF cidade/UF) **+13 node**
-  (`address.test.js` + canSubmitKyc objeto). Docs: `docs/API.md`. Relatório: `claude/reports/KL-163_P2_report.md`.
-
-- **KL-153 (Prompt 1/2)** — backend da UX do Security Gate: KYC progressivo + rate limiting 3 camadas +
-  scan avulso + resultado filtrado por KYC + upgrade + status ✅. **Adaptações ao codebase real** (o card
-  descreve `accounts`/Alembic genéricos): tabela é **`users`**, migrations idempotentes no `_SCHEMA`/
-  `ensure_schema` (**sem Alembic**), `phone` já existia. **Schema:** ALTERs em `users` (`cpf VARCHAR(14)`
-  formatado + `idx_users_cpf` único parcial · `address` · `phone_verified` · `kyc_completed` ·
-  `kyc_completed_at` · `suspended`), 5 colunas novas em `gate_audit_log` (`cpf`/`url_scanned`/`domain`/
-  `score`/`passed`) e `gate_runs.project_id` **NULLABLE** (scan avulso). **`api/validators.py::validate_cpf`**
-  (puro): formato + 2 DVs (módulo 11), rejeita sequência repetida, NÃO consulta Receita, devolve formatado.
-  **`POST /account/kyc`** (JWT + e-mail confirmado): 422 CPF inválido · 409 CPF de outra conta · 403 sem
-  e-mail; `kyc_completed=TRUE` só com CPF+endereço(≥10)+telefone (`phone_verified`=TRUE se há telefone,
-  placeholder SMS). **`api/gate_rate_limiter.py`** (Redis, fail-open sem Redis): **(1)** IP 10/h · **(2)**
-  conta/h por plano (free 5·pro 50·team 200·ent ∞) · **(3)** 1/domínio/30min · **(4)** intervalo entre
-  domínios diferentes (free 5min·pro 1min·team/ent 0); 429 com `{limit_type, retry_after_seconds,
-  upgrade_url}`+`Retry-After`. **Abuso:** >20 domínios distintos/24h → **suspende** a conta (audit
-  `abuse_detected`); conta `suspended` → **403** em `/gate/scan`. **`POST /gate/scan` reescrito:** aceita
-  `project_id` opcional (ausente → casa por domínio OU **scan avulso** sem projeto, exige e-mail confirmado);
-  ordem suspenso→rate limit→abuso→teto diário→engine. **Resultado filtrado por KYC:** sem KYC → `basic`
-  (`score`+`categories` com contagens + `kyc_required_for_details`); com KYC → `complete` (`results`+
-  `history`+`ci_snippet`). Audit do scan grava `cpf`/`score`/`passed`. **`GET /account/gate/status`** ganhou
-  `is_developer`/`kyc_completed`/`has_api_key`/`api_key_prefix`/`has_projects`/`projects_count`/
-  `scans_used_hour`/`scans_limit_hour`/`access_level`/`suspended`/`plan_slug` (`plan` segue como NOME, backward
-  compat). **`POST /account/gate/upgrade`** (nível ≥2): PIX AbacatePay avulso mensal (recorrência = futuro),
-  plano `gate:{slug}` na `subscription_payments` → o webhook (`_confirm_subscription_payment`) ativa o
-  `gate_plan_id` (`plan_upgraded`). **`POST /account/signup` `source="security-gate"`** → conta developer +
-  API key na resposta (reusa `provision_gate_developer`). **`/account/gate/activate`** já era idempotente
-  (confirmado). **Store:** `is_cpf_taken`/`update_user_kyc`/`set_user_suspended`, `get_account_gate_fields`
-  estendido (KYC+suspensão), `insert_gate_audit` estendido. **NÃO** alterou o scanner público nem o frontend
-  (Prompt 2). **+39 testes** (`test_kl153_backend.py`); 6 FakeStores dos testes KL-151 atualizados (audit
-  kwargs, KYC fields, `list_gate_projects`, scan avulso). **2277 pytest passed.** Docs: `docs/API.md`,
-  `docs/SECURITY.md` §12. Relatório: `claude/reports/KL-153_P1_report.md`.
-- **KL-153 (Prompt 2/2)** — frontend: separa os DOIS públicos (empresa × dev) + redesenha a experiência do
-  Gate ✅ (fecha o KL-153). **Reforço:** os testes frontend são **`node --test`** (não Vitest), sobre lógica
-  PURA de `src/lib/*.js` — os 29 comportamentos do card viraram testes de função pura (padrão KL-89), os
-  componentes as consomem. **2 libs novas:** `web/src/lib/nav.js` (`EMPRESA_LINKS`/`DEV_LINKS`/`PRODUCT_CARDS`/
-  `authState`/`dashboardMenu`) e `web/src/lib/gate/ux.js` (`normalizeUrl`, `maskCPF`/`isValidCPF` [espelha o
-  backend], `categorySummary`/`groupChecksByCategory`/`showChecksDetail`, `kycBannerVisible`, `showGateBridge`,
-  `wizardNext`/`shouldShowWizard`, `formatCountdown`/`rateLimitMessage`, `usageText`/`upgradeTarget`,
-  `ctaState`/`ctaLabel`, `signupBody`). **(1) Header** (`Header.astro`+`NavDropdown.astro`): dropdown único
-  "Desenvolvedor" → **"Para empresas ▼"** (verificar/monitoramento/setores/planos) + **"Para devs ▼"**
-  (Security Gate/docs/planos dev/API), CSP-safe (`<details>`, tap/click), **hambúrguer→drawer** no mobile.
-  **(2) Home** (`home/ProductSplit.astro`+`index.astro`): dual-card abaixo do hero (empresa "Verificar meu
-  site"→`#scan` × dev "Começar grátis"→`/security-gate`), linguagem separada; hero segue 1ª tela `min-h-[100dvh]`.
-  **(3) Bridge** (`ScanResultDetail.jsx`): card `<GateBridge>` ao fim do resultado do scan público ("86 pontos
-  adicionais" → `/security-gate`), só no sucesso. **(4) Wizard SCAN-FIRST 6 steps** (`GateOnboarding.jsx`
-  reescrito): URL→`POST /gate/scan` avulso→scanning→resumo(+banner KYC)→**KYC inline** (CPF mascarado/validado
-  →`POST /account/kyc`; "pular"→step 6)→completo (do run persistido `GET /gate/runs/{id}`, **não re-escaneia**)→
-  CI/CD. Pula KYC se `kyc_completed`. **(5) Dashboard** (`GatePortal.jsx` reescrito): status bar (score+plano+
-  uso/hora + **Upgrade inline** →`POST /account/gate/upgrade`→`checkout_url`), **Novo scan** avulso (modal,
-  resultado KYC-aware+banner), API key, projetos+planos, histórico; tokens KL-87. **(6) Menu:** "🔒 Security
-  Gate" no dropdown do usuário (owner E dev); o `/dashboard/gate` **auto-ativa** o Gate p/ owner (`activate` no
-  mount). **(7)** `cadastrar.astro` lê `?type=developer`→`SignupForm` envia `source=security-gate` (via
-  `signupBody`)+redirect `/dashboard/gate`. **(8) 429:** `rateLimitMessage`+countdown por `limit_type`.
-  **NÃO** alterou backend nem scanner. Sem rota Astro nova nem `public/*.js` novo → **nginx intocado**.
-  **+21 node --test → 187 pass**; `npm run build` OK. Validado no browser (dev): home/dual-card/dropdowns/
-  security-gate/auth-guard, zero erro no console. Relatório: `claude/reports/KL-153_P2_report.md`.
-- **KL-155** — domain rate limit do Gate por plano + key por conta (carry-over do KL-153) ✅. A camada 3 do
-  `api/gate_rate_limiter.py` usava key GLOBAL `gate:rl:domain:{domain}` + TTL fixo 1800s → um CI com 2 pushes
-  do mesmo domínio em 30 min tomava 429 (e o lock de um Free bloqueava um Pro). Agora a key é **por conta**
-  `gate:rl:domain:{account_id}:{domain}` (Opção A do card) e o **TTL varia pelo plano** (`DOMAIN_TTL_BY_PLAN`):
-  **free 1800s · pro 300s · team/ent 0 = SKIP** (a camada não seta key). `check_domain(redis, account_id,
-  domain, plan_slug)`; `enforce` passa `account_id`+slug. Um Free e um Pro no mesmo domínio **não interferem**
-  (keys separadas). **NÃO** alterou frontend nem scanner. **+6 testes** (`test_kl155_domain_rl.py`, fake Redis
-  com `tick` p/ simular expiração) + `test_kl153_backend::test_domain_limit_same_domain_429` atualizado à nova
-  assinatura. **2283 pytest passed.** Docs: `docs/SECURITY.md` §12 (tabela de TTL por plano). Relatório:
-  `claude/reports/KL-155_report.md`.
-- **KL-156** — 5 fixes pós-teste manual do Security Gate (KL-153) ✅. **(1) Dropdowns do header não
-  fechavam:** classe `nav-dropdown` nos `<details>` (`NavDropdown.astro` + hambúrguer mobile) + lógica no
-  **`web/public/header.js`** (externo, CSP `'self'`, `?v=4`) — fecha ao clicar fora e fecha o OUTRO ao abrir
-  um. Lógica pura `otherDropdowns` (`nav.js`). Validado no browser (abrir devs fecha empresas; clicar fora
-  fecha tudo). **(2) KYC exige e-mail confirmado (não phone_verified):** `api/gate.py::_kyc_complete(cpf,
-  address, phone, email_confirmed)` — `kyc_completed` = CPF válido + endereço ≥10 + telefone + **email_
-  confirmed** (a única verificação REAL; `phone_verified` fica no schema p/ SMS futuro, não gateia). **(3+4)
-  Upgrade end-to-end:** o bug era o front abrir `checkout_url` (=`/dashboard/gate?upgrade=…`) → só reabria o
-  dashboard. Agora o `GatePortal.jsx` mostra um **modal PIX** (QR `br_code_base64` + copia-e-cola) + polling
-  de `/api/account/upgrade/status?charge_id=` (reusa `_confirm_subscription_payment` do prefixo `gate:`);
-  reusa o padrão do `PlanSection`. Backend: sem AbacatePay configurado → **200 `{fallback, contact_email:
-  suporte@klarim.net, message}`** (nunca 503 cru/loading silencioso). 409/429/erro → mensagem inline. **(5)
-  Plano Gate visível:** bloco "Seu plano" no `GatePortal` (plano + scans/hora + cooldown KL-155 + próximo
-  plano) + seção Security Gate no `AccountSettings.jsx` (`/dashboard/conta`). Helpers puros `planName`/
-  `planDetails`/`canUpgrade` (`ux.js`). **NÃO** alterou engine/scanner. **+3 backend + +4 node --test → 2286
-  pytest · 191 node pass · build OK.** Docs: `docs/SECURITY.md` §12. Relatório: `claude/reports/KL-156_report.md`.
-- **KL-157** — fix crítico: `/security-gate` e `/cadastrar` não detectavam sessão ativa (usuário logado
-  tratado como anônimo) ✅. **Como o auth-state é detectado nas páginas Astro:** cookie `klarim_session`
-  **HttpOnly** (o JS do cliente NÃO lê o valor); o `src/middleware.js` valida server-side (`GET /account/me`
-  com Bearer) **só para `/dashboard/*`**; o `header.js` + ilhas React fazem `fetch` client-side. **Root cause:**
-  (a) `cadastrar.astro` (SSR) nunca checava sessão → logado via o form; (b) os CTAs da seção Planos da
-  `/security-gate` são `<a>` estáticos p/ `/cadastrar?type=developer`; (c) o `GateLandingCTA` mostrava o link
-  de cadastro DURANTE o loading. **Cache importa:** `/security-gate` é CDN-cacheada (`max-age=300`) → detecção
-  ali fica no CLIENTE (ilha); `/cadastrar`+`/entrar` são `no-store` → SSR ali é confiável. **Fixes:**
-  **`web/src/lib/serverAuth.js`** (`fetchSessionUser`/`loggedInRedirect`); **`cadastrar.astro`** redireciona o
-  logado (dev→`/dashboard/gate`, senão o redirect) — catch-all confiável (no-store); **`GateLandingCTA`** mostra
-  **skeleton "Carregando…"** no loading e só "Criar conta →" após confirmar deslogado (nunca CTA de anônimo p/
-  logado); **`SignupForm`** leva `redirect=/dashboard/gate` no login do fluxo dev; a seção Gate do
-  `AccountSettings` (KL-156) já funciona. **Validado no BROWSER (dev, sessão simulada com JWT do seed sem
-  digitar senha):** logado → herói "Abrir dashboard" + `/cadastrar` redireciona + seção Gate em `/dashboard/conta`;
-  deslogado → "Criar conta" + form; zero erro no console. **+1 backend (`/account/gate/status` sem sessão →
-  401) + +1 node (`loggedInRedirect`) → 2287 pytest · 192 node pass.** **NÃO** alterou scan/engine/rate limit.
-  Relatório: `claude/reports/KL-157_report.md`.
-- **KL-158** — plano Free como default (sem trial Pro automático) + banner KYC clicável ✅. **Fix 1:** o
-  `provision_gate_developer`, o `/gate/register` e o `/account/gate/activate` setavam `set_account_gate_plan(...,
-  now, now+14d)` → o `get_effective_gate_plan` devolvia **Pro** enquanto o trial durava → todo dev nascia Pro
-  sem pagar. Agora os 3 pontos setam **Free SEM trial** (`set_account_gate_plan(..., None, None)`); `_TRIAL_DAYS`
-  removido. Novo dev: 5 scans/h · cooldown 30min/domínio · 5min entre domínios (KL-155) — Pro exige pagamento.
-  **Contas com trial LEGADO não são alteradas retroativamente** (expiram naturalmente). Rate limiting inalterado.
-  **Fix 2:** o banner de KYC no resultado do scan era **texto puro sem ação**. Novo **`KycBanner.jsx`** (reutil.):
-  botão "Completar cadastro →" → modal (CPF mascarado/validado + endereço + telefone → `POST /api/account/kyc`);
-  usado no `GatePortal::ScanResultCard`. Após o KYC, `loadFullResult` busca o run persistido (`GET /gate/runs/{id}`,
-  **não re-escaneia**) → mostra os checks detalhados, o banner some, o status re-carrega (Nível → Completo). O
-  wizard step 3→4 já era acionável (não tocado). Helper puro `canSubmitKyc` (`ux.js`). **Validado no BROWSER**
-  (dev): conta dev nova → **plano "Free"** (5 scans/h, não Pro); scan → banner clicável → modal → KYC completo
-  (CPF 529.982.247-25) → `access_level=complete`, banner some, detalhes aparecem; zero erro no console. **+1 node
-  (`canSubmitKyc`) → 2287 pytest · 193 node pass · build OK.** Relatório: `claude/reports/KL-158_report.md`.
-- **KL-159** — fluxo de pagamento do Gate quebrado (3ª vez reportado) ✅. **Diagnóstico (por etapa):**
-  (1) Backend — `POST /account/gate/upgrade` com dev **nível 1** (passwordless via `source=security-gate`,
-  KL-99) → **403 `{detail:{error:insufficient_level,required_level:2}}`** (o endpoint exige `_require_level
-  2`); com nível 2 → 200 fallback (AbacatePay OFF no dev). AbacatePay não está no dev stack. `gate_plans`
-  pro=R$49 OK. (2) Frontend dashboard — nível 2 funciona (fallback aparece); **nível 1 → 403 → "nada
-  acontece"** porque `setErr(e.data.detail)` recebia um **OBJETO** e o React quebrava ao renderizá-lo. (3)
-  Planos — CTAs "Assinar" eram `<a href="/cadastrar?type=developer">` estáticos → logado no Free →
-  `/cadastrar` → (KL-157) redireciona ao dashboard, **sem pagamento**. **Fixes:** (A) backend inalterado
-  (a regra nível≥2 fica). (B) `ux.js::errDetail` coage o `detail` p/ **string** (nunca objeto); o
-  `GatePortal` `upgrade(planSlug)` trata fallback/PIX/**403 insufficient_level → abre o `SetPasswordModal`
-  do KL-99 e re-tenta o upgrade ao definir a senha**/409/erro (nunca silêncio); lê `?upgrade=pro|team` e
-  **auto-dispara** no mount. (C) os CTAs "Assinar" (pro/team) da `security-gate.astro` → **`/dashboard/gate?
-  upgrade={slug}`**; `middleware.js` preserva o `?query` no redirect de login. **Validado no BROWSER** (dev):
-  nível 1 → "Defina uma senha" (não "nada acontece"); nível 2 `?upgrade=pro` → **auto-upgrade** → mensagem
-  com `mailto:suporte@klarim.net` (prod: modal PIX); Network mostra o POST processado; zero erro no console.
-  **+1 backend (nível 1 → 403) + 1 node (`errDetail`) → 2288 pytest · 194 node pass.** Engine/scanner/rate
-  limit **inalterados**. Relatório: `claude/reports/KL-159_report.md`.
-- **KL-150 (Prompt 1/2)** — 4 fixes funcionais de navegação/UX (site público + dashboard), **100%
-  frontend** (zero backend/engine/rate-limit) ✅ **DEPLOYADO 09/08/2026 (CI run #293 verde)**
-  (validado no `docker-compose.dev.yml`, aguarda o dono). **(Fix 1)** sobreposição avatar × dropdowns
-  (`web/public/header.js` → `?v=5`): o menu do avatar (`<div#user-menu>`) e os `<details.nav-dropdown>`
-  viraram UM conjunto — abrir um fecha os outros + o avatar; clicar fora fecha tudo (`closeDropdowns`/
-  `closeAvatar`). **(Fix 2)** CTA de plano da landing `/security-gate` ciente de auth: ilha
-  **`GatePlanCTA.jsx`** (`client:load`, consulta `/account/gate/status`) — deslogado →
-  `/cadastrar?type=developer&plan={slug}`, logado → `/dashboard/gate?upgrade={slug}` (Free abre ·
-  Enterprise → `/contato`); SSR-safe (1º paint = link de cadastro; o `/cadastrar` do KL-157 já
-  redireciona o logado). `cadastrar.astro` separa **plano Gate** (dev, pro/team → `?upgrade=`) do
-  **plano owner** (KL-44 P6, pro/agency → trial); `serverAuth.loggedInRedirect(isDev,fallback,gatePlan)`
-  + `SignupForm` (login dev carrega o `redirect` com `?upgrade=`); href/label/redirect puros em
-  `lib/nav.js` (`gatePlanCtaHref`/`gatePlanCtaLabel`/`gateSignupRedirect`). **(Fix 3)** dashboard
-  diferenciada p/ dev: `DashboardV2` busca o gate status e ramifica — **developer PURO** (`account_type=
-  'developer'`) → SÓ a seção Gate (sem "Adicione seu primeiro site"); **both** → seção Gate no TOPO +
-  sites abaixo; **owner sem Gate** → inalterado. Novo `GateDashboardSection.jsx` (card plano/scans/nível
-  + "Abrir dashboard Gate →" + checklist "Primeiros passos"); checklist puro `ux.js::gateOnboardingSteps`
-  (conta · API key · 1º scan via `/gate/runs` · **domínio VERIFICADO** p/ CI-CD via `/gate/projects`
-  contando `verified` — o cadastro cria 1 projeto não verificado, então "qualquer projeto" marcaria cedo
-  demais · upgrade). Decisão de layout pura: `showGateDashboardSection`/`isPureDeveloper`. **(Fix 4)**
-  "Para devs" simplificado: `DEV_LINKS`=1 destino (Security Gate) → no header vira LINK DIRETO (sem
-  dropdown); os antigos Documentação/Planos/API viraram acessos rápidos no hero da landing ("Planos e
-  preços · Documentação da API"). **Decisão (KL-153 preservado):** o `nav.dashboardMenu` (menu do
-  header) SEGUE mostrando "Security Gate" p/ TODOS os tipos de conta (o `/dashboard/gate` auto-ativa) —
-  o teste #3 do card ("owner sem Gate → sem seção Gate") é satisfeito na PÁGINA (via
-  `showGateDashboardSection`), não regredindo o menu. **Validação no browser** (dev): Fix 1 (3
-  combinações), Fix 2 (CTAs deslogado/logado), Fix 3 (pure dev só-Gate · both Gate+sites · owner sem
-  Gate), Fix 4 (link direto + acessos rápidos); **zero erro no console**. **+9 node → 203 test:unit ·
-  2288 pytest (sem mudança backend) · build OK.** SEO (KL-132) intacto. Relatório:
-  `claude/reports/KL-150_P1_report.md`. **AJUSTE (KL-150 + KL-161):** o Fix 4 foi **revertido** — "Para
-  devs" (link direto) voltou a ser o dropdown **"Desenvolvedor ▼"** (`nav.js::DEV_DROPDOWN_LABEL`, 1
-  sub-item Security Gate, preparado p/ crescer); `Header.astro` usa `<NavDropdown label={DEV_DROPDOWN_LABEL}>`
-  nos 2 estados + drawer. Os acessos rápidos "Planos e preços · Documentação da API" no hero da landing
-  ficam. Ver a entrada KL-161 abaixo.
-- **KL-161** — Conformidade LGPD completa (canal de direitos/DSAR, DPO, política, termos, ROPA) ✅
-  **DEPLOYADO 09/08/2026** (CI run #293 verde; `privacidade@klarim.net` confirmado como remetente no
-  Resend — `confirmation_sent:true` em prod; tabela `lgpd_requests` criada na VM). **(1) Canal
-  `/lgpd`:** página Astro + ilha `components/lgpd/LGPDForm.jsx` (tipo/nome/e-mail/CPF opcional
-  mascarado/descrição; lê `?tipo=` e pré-seleciona — o link "Remover meus dados" do perfil manda
-  `?tipo=exclusao`); lógica pura `web/src/lib/lgpd.js`. **`POST /lgpd/request`** (público, sem conta):
-  valida (tipo∈{acesso,correcao,exclusao,portabilidade,revogacao,outra}, e-mail, nome, descrição≥10),
-  **CPF opcional** (inválido→`cpf_warning`, NÃO bloqueia nem grava), **rate limit 3/e-mail/dia**
-  (`_redis_allow`), grava em **`lgpd_requests`** (UUID=protocolo; status pending→in_progress→resolved/
-  denied, no `ensure_schema`) e dispara 2 e-mails best-effort. **(2) E-mails** (`notifier/email_client.py`,
-  types `lgpd_confirmation`/`lgpd_admin`): confirmação ao titular (texto puro, protocolo, **até 15 dias
-  úteis**) + notificação ao operador (HTML, campos, Reply-To=titular). Remetente **`privacidade@klarim.net`**
-  (env `LGPD_FROM_EMAIL`; `klarim.net` já verificado no Resend → basta o alias p/ ENVIAR); operador
-  **`klarimscan@gmail.com`** (env `LGPD_ADMIN_EMAIL`). **Recebimento** em `privacidade@`: se sem MX/
-  forwarding, é só remetente e o **formulário `/lgpd` é o canal oficial** (tudo fica em `lgpd_requests`).
-  **(3) `/privacidade`:** §1 Encarregado (DPO)→`/lgpd`+`privacidade@`; §2 dados do Gate (nome/CPF/
-  endereço/telefone/API key/histórico); §5 Reoon=deliverability; §6 retenção (KYC=conta+30d · audit
-  CPF+IP+URL=2a · logs 90d) e prazo **48h→15 dias úteis**; §7 revogação + link `/lgpd`. **(4) `/termos`:**
-  nova **§9 Security Gate** (KYC, auditoria por CPF, uso indevido→suspensão, PIX, cancelamento via `/lgpd`);
-  §4 prazo 48h→15 dias úteis. **(5) Footer:** "Seus direitos (LGPD)"→`/lgpd`. **(6) Perfil `/site/{domínio}`:**
-  "Remover meus dados (LGPD)"→`/lgpd?tipo=exclusao`. **(7) ROPA** `docs/LGPD.md` (tabela de tratamento +
-  DPO + canal + notas). **(8) Nginx:** `lgpd` nas allowlists de conteúdo (`http.conf` + `https.conf.template`,
-  ao lado de `privacidade`; `/api/lgpd/request` já vai pelo proxy `/api/`). **+12 backend
-  (`test_kl161_lgpd.py`) + 8 node → 2300 pytest · 211 test:unit · build OK · `nginx -t` OK** (validado como
-  a CI). **Validação no browser:** dropdown Desenvolvedor, `/lgpd` (form+pré-seleção+submit→protocolo),
-  privacidade/termos/footer/perfil, endpoint end-to-end, **zero erro no console**. Engine/scanner/rate-limit
-  do scan e SEO (KL-132) intactos. Relatório: `claude/reports/KL-150_P1adj_KL-161_report.md`.
-- **KL-160** — Rate limiting no Nginx + fix de falsos positivos SPA do Gate + botão de varredura no
-  admin ✅ **DEPLOYADO 09/08/2026 (score 100/100 🟢 em prod)**. Validado no dev + `nginx -t` + Gate real. **(Fix A,
-  URGENTE)** `location ~* ^/(adminer|_profiler|phpMyAdmin|pma|dbadmin|sql|mysql|cpanel|webmail|roundcube|
-  squirrelmail|horde|wp-content/debug) { return 404; }` nos 2 configs — o bloco do KL-138 cobria `/admin(/|$)`
-  mas deixava `/adminer` virar SPA fallback → o Gate reportava `admin_panel_exposed` falso. **(Fix B)**
-  `security_gate` — o guard de SPA fallback do KL-147 usava ETag como comparador; o Cloudflare REMOVE o
-  ETag → falso positivo. Agora `_detect_spa_fallback` captura `last_modified` e `matches_spa_fingerprint`
-  trata **mesmo Last-Modified + Content-Type HTML = fallback** (não exposição). **Validado contra o
-  klarim.net REAL: `admin_panel_exposed`/`debug_exposed` → PASS** (correção Gate-side, não precisa do
-  nginx). **(Parte C)** rate limiting no Nginx (topo de http.conf/https.conf.template — no próprio arquivo
-  porque o `nginx -t` da CI monta cada config sozinho; só um é carregado por vez → sem zona duplicada):
-  `general 30r/s`/`api 10r/s`/`scan 2r/s` + `limit_req_status 429`. ⚠️ **Chave = CF-Connecting-IP** (IP
-  real via `map`), NUNCA `$binary_remote_addr` (atrás do CF seria a edge → 1 bucket global). Assets/MCP/
-  SSE/OAuth ficam SEM limite. **Bloqueio de IP direto** (só HTTPS): `ssl_reject_handshake on` no 443
-  default_server + `return 444` no 80 default_server; o bloco klarim.net perdeu o `default_server` (o CF
-  manda SNI=klarim.net → casa o server real; IP direto → reject). **(Parte D)** `POST /admin/security-scan`
-  (admin-only, assíncrono, cooldown 5min) roda o Gate contra klarim.net e salva em **`platform_security_
-  scans`** (tabela DEDICADA — `gate_runs` exige account_id/project_id NOT NULL de cliente); `GET .../status`
-  (polling) + `GET .../{id}` (detalhe); alerta se score<80/crítico. UI `PlatformSecurityCard.jsx` na página
-  Sistema (score+findings+botão+histórico expandível FAIL-primeiro; lógica pura em `lib/admin/securityScan.js`).
-  **DNSSEC** já resolvido (Gate real: `Dnssec Ok — zona assinada`). **+11 pytest (`test_kl160_security_scan`
-  6 + `test_kl147` +5) + 7 node → 2311 pytest · 218 test:unit · build OK · `nginx -t` OK**. Rate-limit
-  validado em nginx standalone (mesmo CF-IP → 429; CF-IPs distintos → sem throttle). Painel validado no
-  browser. **Pós-deploy:** o `rate_limit` do Gate continuava FAIL — o check era SEQUENCIAL (10 GETs) e o
-  leaky bucket do nginx refilla entre eles (RTT ≈ refill) → nunca disparava. Fix: `security_gate/checks/
-  rate_limit.py` faz a rajada **CONCORRENTE** (`asyncio.gather`, ≤10 requests) + `security-gate.yml` testa
-  `/api/scan/` (zona strict 2r/s/burst 5; `/` e `/api/` são generosos de propósito) → **score 100/100 🟢**
-  em prod. O bloqueio de IP direto (`ssl_reject_handshake` no 443 default_server) subiu sem quebrar o site.
-  **Fix (admin scan usa YAML):** o `POST /admin/security-scan` criava `GateConfig` com defaults
-  (`rate_limit_endpoints=["/","/api/"]`) → dava 90 enquanto o CLI dava 100. Agora `_run_platform_security_scan`
-  usa `load_config("security-gate.yml")` (a MESMA config do CLI, com `/api/scan/`) → admin e CLI batem em
-  **100/100**. Relatório: `claude/reports/KL-160_report.md` (+ `KL-160_fix_admin_scan_config.md`);
-  `docs/SECURITY.md` §13 + `docs/DEPLOY.md` §8.
-- **KL-150 P2** — 6 pendências (site público + Gate) ✅ **DEPLOYADO 10/08/2026 (CI run #298 verde)**. Prod:
-  `/api/public/best` total=670 (real, não 300), home sem ProductSplit, landing "Como funciona"/19 categorias OK. **(1 diagnóstico+fix) Verificação de domínio do Gate:** o backend estava CORRETO (`gate_projects.
-  verified` é setado por `POST /gate/projects/{id}/verify/check`; a lista o retorna; o front lê `p.verified`)
-  — **faltava a UI**: o portal não tinha botão de verificar. ⚠️ **Gate-verify ≠ site/owner-verify do KL-99**
-  (sistemas SEPARADOS, não propagam). Fix: `GatePortal.jsx` ganhou "Verificar →" + `VerifyProjectModal`
-  (DNS TXT/meta/arquivo → start mostra o desafio → check), reusando os endpoints do KL-99. **(2)** nav do
-  dashboard dev (o dev ficava preso): `DashboardNav.jsx` (menu Dashboard·Security Gate·Minha conta·Sair; +
-  "Meus sites" p/ `both`) no topo do portal, links puros em `nav.js::gateDashboardNav`. **(3)** removida a
-  seção "Dois produtos" (`ProductSplit`) da home + arquivo deletado (a separação já está no header). **(4)**
-  `/melhores` "São 300 no total" era `len(rows)` truncado em 300 → `/public/best` agora devolve `total` =
-  contagem REAL (`store.count_public_score_100_sites`, try separado p/ não zerar a vitrine) + `shown` (em
-  prod: 719 listando ≤300); fallbacks estáticos da home atualizados (os contadores já eram live via
-  `landing-stats.js`/KL-103). **(5)** landing "Como funciona" reescrita (Crie conta/Digite URL/Integre
-  CI-CD; **sem** verificação de domínio), "18 categorias"→"19" (engine tem 19 checks), rótulo `Todos (18)`→
-  dinâmico, snippets **YAML curl limpos** (X-API-Key, sem Python raw). **(6 diagnóstico — sem bug)**
-  assinatura: `GatePortal` já lê `?upgrade=` e auto-dispara `POST /account/gate/upgrade`; em dev retorna
-  `fallback` (AbacatePay OFF = correto/KL-156), em prod abre o modal PIX; o CTA logado resolve p/
-  `/dashboard/gate?upgrade=pro` (o "/criar-conta" do relato não reproduz). **+2 pytest + 2 node → 2313
-  pytest · 220 test:unit · build OK · zero erro no console**. Relatório: `claude/reports/KL-150_P2_report.md`.
-  **Ajustes pós-validação (DEPLOYADO 10/08, CI run #300 verde):** (1) **home** — `min-h-[100dvh]` movido
-  do `<main>` para o wrapper + `<main>` `flex-1` (sticky footer real): footer/pills visíveis sem scroll
-  (conteúdo natural 528px cabe em 768). (2) **igoove/verificação** — Gate-verify ≠ owner-verify do KL-99
-  (tabelas separadas); novo `store.propagate_scanner_verification(account_id)` marca o projeto Gate como
-  `verified` (method=`scanner`) quando a conta já provou posse no scanner (`user_sites.is_owner` +
-  `targets.owner_verified`), chamado no GET+POST `/gate/projects` (lazy+idempotente). (3) **container** do
-  `/dashboard/gate` `md:max-w-5xl`→`lg:max-w-7xl` (alinha ao dashboard principal). (4) **números** —
-  `count_public_score_100_sites`→`count_score_100_sites` usa a MESMA query de `public_platform_stats.
-  score_100_count` (distinct domains score 100, sem filtro de perfil/status) → /melhores, home e
-  /estatísticas batem no mesmo número. ⚠️ **Pós-deploy: flush do cache `public:best`+`public:stats`
-  no Redis da VM** (senão o `/public/best` servia o 670 velho por até 1h). Prod: /melhores=730=
-  `stats.score_100_count` (MATCH). **+2 pytest → 2315 · 220 node · build OK**. Relatório:
-  `claude/reports/KL-150_P2_fixes_report.md`.
-
-- **Fix painel (scan HTML raw + analytics "bots")** ✅ **DEPLOYADO 10/08 (CI run #302 verde; prod: visitors_br 422 pós-filtro de UA)**. Validado no dev. **P1 (diagnóstico+fix):** o HTML cru na "Segurança da plataforma" NÃO era evidence gravado (a
-  `platform_security_scans` está limpa) — era TRANSITÓRIO: uma chamada de API do painel que pega um
-  **502/504** fazia o `web/src/lib/admin/adminApi.js::req()` jogar o **body HTML inteiro** do erro na
-  mensagem (`Erro ${status}. ${resp.text()}`), renderizado como texto. Fix: no `!resp.ok` o `req()` só
-  extrai o `detail` do JSON; se não-JSON (página de erro) usa mensagem genérica por status — **nunca o
-  HTML**. Defesa: `clampText` (novo em `lib/admin/securityScan.js`) + `break-words` no
-  `PlatformSecurityCard`. Validado parando o `api` (504→"Serviço temporariamente indisponível", zero HTML).
-  **P2 (diagnóstico — sem bug de visitantes):** a Visão Geral JÁ usa `server-metrics` (autoritativo) e o
-  `al_server_metrics` JÁ filtra `is_bot=false` → **Visitantes BR = 469** (7d prod, plausível). O "milhões"
-  era o card **"Bots filtrados" (1,45M/7d, is_bot=true)**, corretamente rotulado. **Melhoria (o filtro de
-  UA do card):** `_BOT_UA_RE` (regex em `discovery/store.py`) tira do count de visitantes os UAs de bot que
-  escapam do classificador — incl. as NOSSAS tools (`Klarim Security Gate`/`KlarimScanner`) + wp-admin
-  scanners → 469→421. **+2 pytest + 1 node → 2317 pytest · 221 test:unit · build OK**. Relatório:
-  `claude/reports/KL-150_painel_fixes_report.md`.
-
-Histórico completo (o que/porquê de cada peça) em **`docs/HISTORY.md`** e nos
-relatórios em `claude/reports/`.
 # KL-124 pipeline test: 2026-07-28T10:19:29Z

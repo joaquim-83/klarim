@@ -8,7 +8,7 @@
     "build": "astro build",
     "preview": "astro preview",
     "start": "node ./dist/server/entry.mjs",
-    "test:unit": "node --test src/lib/admin/analyticsUtils.test.js src/lib/admin/alvosFilters.test.js src/lib/scanView.test.js src/lib/layout.test.js src/lib/track.test.js src/lib/scanTitle.test.js src/lib/vigiliaDetail.test.js src/lib/seo.test.js src/lib/blog.test.js src/lib/cookieConsent.test.js src/lib/gate/snippets.test.js src/lib/gate/docsNav.test.js src/lib/nav.test.js src/lib/gate/ux.test.js src/lib/gate/address.test.js src/lib/lgpd.test.js src/lib/admin/securityScan.test.js"
+    "test:unit": "node --test src/lib/admin/analyticsUtils.test.js src/lib/admin/alvosFilters.test.js src/lib/scanView.test.js src/lib/layout.test.js src/lib/track.test.js src/lib/scanTitle.test.js src/lib/vigiliaDetail.test.js src/lib/seo.test.js src/lib/blog.test.js src/lib/cookieConsent.test.js src/lib/gate/snippets.test.js src/lib/gate/docsNav.test.js src/lib/nav.test.js src/lib/gate/ux.test.js src/lib/gate/address.test.js src/lib/lgpd.test.js src/lib/admin/securityScan.test.js src/lib/tools.test.js"
   },
   "dependencies": {
     "@astrojs/node": "^11.0.2",

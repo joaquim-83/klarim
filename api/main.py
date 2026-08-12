@@ -9248,6 +9248,9 @@ app.include_router(_admin_sectors.router)
 from api import gate as _gate  # noqa: E402  (KL-151 — Security Gate como produto)
 app.include_router(_gate.router)
 
+from api import tools as _tools  # noqa: E402  (KL-134 — micro-ferramentas SEO públicas)
+app.include_router(_tools.router)
+
 try:
     from mcp_server.server import mcp_app
     from mcp_server.auth import MCPAuthMiddleware

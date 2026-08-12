@@ -1,0 +1,90 @@
+---
+// KL-134 P2 — casca compartilhada das 5 páginas de ferramenta: Base (SEO+JSON-LD) + Header +
+// H1 + navegação horizontal entre as ferramentas + ilha interativa (ToolPage) + FAQ (accordion
+// CSP-safe <details> + FAQPage JSON-LD) + Footer. Cada página passa só props (título, slug, etc.).
+import Base from './Base.astro';
+import Header from '../components/Header.astro';
+import Footer from '../components/Footer.astro';
+import ToolPage from '../components/tools/ToolPage.jsx';
+import { PAGE_CONTAINER } from '../lib/layout.js';
+import { TOOLS, toolBySlug, faqFor } from '../lib/tools.js';
+
+export interface Props {
+  title: string;
+  /** Título exato para a aba/OG (ex.: "… | Klarim"); default é `${title} · Klarim`. */
+  fullTitle?: string;
+  description: string;
+  path: string;
+  h1: string;
+  subtitle?: string;
+  toolSlug: string;
+}
+
+const { title, fullTitle, description, path, h1, subtitle, toolSlug } = Astro.props;
+const meta = toolBySlug(toolSlug);
+const faq = faqFor(toolSlug);
+
+// FAQPage (Schema.org) — SEO. Respostas em texto simples.
+const FAQ_JSONLD = faq.length ? {
+  '@context': 'https://schema.org',
+  '@type': 'FAQPage',
+  mainEntity: faq.map((f) => ({
+    '@type': 'Question',
+    name: f.q,
+    acceptedAnswer: { '@type': 'Answer', text: f.a },
+  })),
+} : null;
+---
+
+<Base title={title} fullTitleOverride={fullTitle} description={description} path={path} jsonLd={FAQ_JSONLD}>
+  <Header />
+  <main class={PAGE_CONTAINER}>
+    <!-- Cabeçalho -->
+    <div class="text-center">
+      <h1 class="text-3xl font-extrabold tracking-tight text-white sm:text-4xl">{h1}</h1>
+      {subtitle && <p class="mx-auto mt-3 max-w-2xl text-slate-300">{subtitle}</p>}
+    </div>
+
+    <!-- Navegação entre ferramentas (o item atual em destaque) -->
+    <nav aria-label="Ferramentas" class="mt-6 flex flex-wrap items-center justify-center gap-x-1 gap-y-2 text-sm">
+      {TOOLS.map((t, i) => (
+        <>
+          {i > 0 && <span class="text-slate-600" aria-hidden="true">·</span>}
+          <a href={t.path}
+            aria-current={t.slug === toolSlug ? 'page' : undefined}
+            class={`inline-flex min-h-[44px] items-center px-2 ${t.slug === toolSlug
+              ? 'font-bold text-brand-400 underline underline-offset-4'
+              : 'text-slate-400 hover:text-white'}`}>
+            {t.navLabel}
+          </a>
+        </>
+      ))}
+    </nav>
+
+    <!-- Ferramenta interativa -->
+    <div class="mx-auto mt-8 max-w-3xl">
+      <ToolPage client:load tool={toolSlug} />
+    </div>
+
+    <!-- Conteúdo adicional / FAQ -->
+    {faq.length > 0 && (
+      <section class="mx-auto mt-16 max-w-3xl">
+        <h2 class="text-center text-2xl font-bold text-white">Perguntas frequentes</h2>
+        <div class="mt-6 space-y-3">
+          {faq.map((f) => (
+            <details class="rounded-2xl border border-slate-800 bg-slate-900/60">
+              <summary class="cursor-pointer px-5 py-4 font-semibold text-white">{f.q}</summary>
+              <p class="px-5 pb-5 text-slate-300">{f.a}</p>
+            </details>
+          ))}
+        </div>
+      </section>
+    )}
+
+    <!-- Voltar ao índice -->
+    <p class="mt-12 text-center">
+      <a href="/ferramentas" class="text-sm font-semibold text-brand-400 hover:underline">← Todas as ferramentas gratuitas</a>
+    </p>
+  </main>
+  <Footer />
+</Base>

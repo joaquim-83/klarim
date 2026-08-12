@@ -103,6 +103,26 @@ Um middleware (`_admin_auth_mw`) protege os prefixos abaixo (`_PROTECTED_PREFIXE
 | GET | `/benchmark` · `/benchmark/{sector}` · `/benchmark/all` · `/benchmark/cnae/{division}` | KL-44 P5: médias/mediana/min/max + distribuição anônima por semáforo (setor ≥10 scans; cache 24h) |
 | GET | `/seal/{domain}` | KL-44 P5: dados do selo "Monitorado por Klarim" (score + privacidade + link; público, CORS `*`, cache 1h, 60/h/IP; `seal_type=monitored`, nunca "certificado") |
 
+## Micro-ferramentas SEO (KL-134, `api/tools.py`) — públicas, sem auth
+
+Landing pages de aquisição: cada endpoint reusa um check/analisador JÁ existente da engine
+(nunca reimplementa) e devolve JSON simplificado em PT-BR. Única proteção: **rate limit 10/min
+por IP** (`tools:rl:{ip}`, fail-open sem Redis, 429 com `Retry-After`). Timeout de **15s** por
+request externo → **504** amigável. `?url=` ausente ou inválida → **400**; site inacessível →
+**502**. As respostas trazem um bloco `context` com estatística real da base Klarim (copy).
+
+| Método | Path | Reusa | Resposta |
+|---|---|---|---|
+| GET | `/api/tools/ssl?url=` | `scanner.tls_analyzer.get_tls_info` | `{domain, valid, days_remaining, issuer, protocol, expires_at, grade, checks[], context}` (inválido → `{valid:false, error, checks[]}`) |
+| GET | `/api/tools/headers?url=` | `scanner.checks.base.fetch` | `{domain, score:"N/7", headers[{name,present,value?,importance,explanation}], context}` (7 headers de segurança) |
+| GET | `/api/tools/lgpd?url=` | `scanner.privacy_checks.scan_privacy` | `{domain, score:"N/8", grade, indicators[{name,status,explanation}], disclaimer, context}` (8 indicadores técnicos reais; grade Adequado/Parcial/Atenção/Inadequado) |
+| GET | `/api/tools/tech?url=` | `scanner.tech_detector.detect_tech_stack` | `{domain, technologies[{name,category,version?}], context}` (nomes/categorias amigáveis; vazio → `message`) |
+| GET | `/api/tools/email?domain=` | `scanner.checks.dns_util` + seletores DKIM do check 22 | `{domain, score:"N/4", records[{name,status,value?,explanation,detail?,recommendation?}]}` (SPF/DKIM/DMARC/MX; opera sobre DNS, recebe `domain=` não `url=`) |
+| GET | `/api/tools/stats` | `dashboard_summary`/`privacy_indicator_stats`/`get_tech_adoption` | agregados da base (`total_sites/profiles/scans`, `privacy{...}`, `tech{...}`, `cached_at`); cache Redis 24h (`tools:stats`) |
+
+> Nota: o tool LGPD expõe os **8** indicadores reais de `privacy_checks` (a spec citava 7 + DMARC;
+> DMARC pertence ao tool de e-mail). Nenhum dado é fabricado.
+
 ## Relatórios / PDF
 
 | Método | Path | Descrição |

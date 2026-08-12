@@ -6,12 +6,19 @@ import { EMPRESA_LINKS, DEV_LINKS, DEV_DROPDOWN_LABEL, PRODUCT_CARDS, authState,
 import { loggedInRedirect } from './serverAuth.js'
 
 // --- Header: dropdowns "Para empresas" / "Para devs" --- //
-test('EMPRESA_LINKS: 4 links, começa por "Verificar meu site"', () => {
-  assert.equal(EMPRESA_LINKS.length, 4)
+test('EMPRESA_LINKS: 5 links, começa por "Verificar meu site"', () => {
+  assert.equal(EMPRESA_LINKS.length, 5)   // KL-134 — inclui "Ferramentas"
   assert.equal(EMPRESA_LINKS[0].label, 'Verificar meu site')
   assert.equal(EMPRESA_LINKS[0].href, '/#scan')
   assert.deepEqual(EMPRESA_LINKS.map((l) => l.href),
-    ['/#scan', '/#para-empresas', '/setores', '/planos'])
+    ['/#scan', '/#para-empresas', '/ferramentas', '/setores', '/planos'])
+})
+
+// KL-134 — a entrada de Ferramentas aparece no dropdown "Para empresas".
+test('EMPRESA_LINKS inclui "Ferramentas" → /ferramentas', () => {
+  const f = EMPRESA_LINKS.find((l) => l.href === '/ferramentas')
+  assert.ok(f, 'link de Ferramentas ausente')
+  assert.equal(f.label, 'Ferramentas')
 })
 
 // KL-150 (ajuste): dropdown "Desenvolvedor ▼" com 1 sub-item (Security Gate).
