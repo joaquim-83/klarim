@@ -32,10 +32,17 @@ Nenhum teste exercita o SQL real (os testes de `privacy_indicator_stats` usam st
 Sanidade: `test_kl44_p5_privacy` + `test_kl134_tools` + `test_kl164_privacy_multipage` = **57 passed**;
 `import discovery.store` OK.
 
-## Pós-deploy
-- **Flush do cache público** na VM (só o `/api/tools/stats` cacheia; o MCP é live):
-  ```bash
-  sudo docker exec klarim-redis-1 redis-cli DEL tools:stats
-  ```
-- **Validação** (`get_privacy_stats` via MCP — não cacheado, reflete na hora):
-  `scanned` > 19.846; números dos indicadores mudam; `avg_privacy_score` pode mudar (base maior).
+## Deploy + validação — 2026-08-13 ✅
+Commit `56f0ac6` → `main`. CI/CD **run #31694104624 — success** (Test 1m54s · Build · Nginx ·
+Deploy 4m14s · Security Gate).
+
+- **MCP `get_privacy_stats`** (live, não cacheado): `scanned` **19.846 → 52.258** ✅ (descongelou);
+  `avg_privacy_score` 3.4; indicadores refletindo a base completa (ex.: `privacy_policy` fail 39.368,
+  `dsar_channel` fail 51.577). A leitura de ~52k linhas JSONB rodou sem timeout.
+- **Flush do cache público** na VM: `sudo docker exec klarim-redis-1 redis-cli DEL tools:stats` → `1`
+  (chave removida).
+- **`/api/tools/stats`** (após flush, recomputou): `privacy.scanned` **19.846 → 52.260** ✅;
+  `privacy_policy_fail_pct` 74,5→**75,3**; `dsar_fail_pct` 99,1→**98,7**; `dpo_fail_pct` 77,4→**77,6**;
+  `cached_at` novo.
+
+Nenhum passo falhou.
