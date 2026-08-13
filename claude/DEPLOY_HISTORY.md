@@ -24,6 +24,7 @@
 | 2026-08-10 | Fix painel (HTML raw + analytics bots) | CI run #302 | visitors_br 422 pós-filtro de UA |
 | 2026-08-11 | KL-163 P1+P2 (PDF de run + endereço KYC) | run #31512717649 | coluna `address_data jsonb`; CSP libera `viacep.com.br`; 7/7 containers |
 | 2026-08-12 | KL-134 P1+P2 (micro-ferramentas SEO) | run #31652293384 (commit `6b49e51`) | Test·Build·Nginx·Deploy(3m47s)·Security Gate todos verdes. Pós-deploy: `/api/tools/{stats,ssl,headers,email}` 200 + corretos (ssl grade A, email 4/4, stats total_sites 116049); `/ferramentas/` + `/ferramentas/verificar-ssl` 200; LGPD page H1 + FAQPage JSON-LD servidos (allowlist nginx OK) |
+| 2026-08-12 | KL-164 (fix checks LGPD: DSAR/DPO multi-página + X-XSS informativo) | run #31654464519 (commit `154bd9e`) | Todos os jobs verdes. Pós-deploy: LGPD `klarim.net` **8/8 "Adequado"** (DSAR/DPO em `/privacidade`); Headers **6/6** (X-XSS `informational`); `example.com` **3/8** DSAR/DPO FAIL (not pass-always). Cache `scan:*` NÃO flushado — o tool LGPD é live; o `privacy_score` de scans cacheados auto-expira em ≤1h |
 
 ## Pendentes de deploy / validação do dono (à data da compactação)
 - **KL-99** (conta sem senha + 3 níveis + verificação de domínio) — validado local, deploy pendente.

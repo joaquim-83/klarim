@@ -64,3 +64,10 @@ neutro) + `HeadersResult` renderiza o header informativo com status `info` (não
 - `scanner/privacy_checks.py` (multi-página), `api/tools.py` (X-XSS informativo),
   `web/src/lib/tools.js` (`statusMeta` info), `web/src/components/tools/Results.jsx` (render info),
   `tests/test_kl164_privacy_multipage.py` (novo), `tests/test_kl134_tools.py`, `web/src/lib/tools.test.js`.
+
+## Deploy — 2026-08-12 ✅
+Commit `154bd9e` → `main`. CI/CD **run #31654464519 — success** (Test 1m49s · Build · Nginx ·
+Deploy 3m47s · Security Gate). Pós-deploy em `https://klarim.net`: LGPD `klarim.net` **8/8
+"Adequado"** (DSAR/DPO encontrados em `/privacidade`); Headers **6/6** (X-XSS `informational`);
+`example.com` **3/8** com DSAR/DPO **FAIL** (não virou pass-always). **Sem flush `scan:*`** — o tool
+LGPD roda live (não cacheia); o `privacy_score` de scans completos cacheados auto-expira em ≤1h (TTL).
