@@ -6471,10 +6471,15 @@ class TargetStore:
         scan de cada alvo (inteligência comercial: quais indicadores mais falham). Lê
         `checks_json->'privacy'`. Best-effort (ignora scans sem o bloco privacy)."""
         def _fn(cur):
+            # Sem LIMIT: um `LIMIT` sem `ORDER BY` retorna sempre o MESMO subconjunto (ordem de
+            # heap) → os números congelavam enquanto novos scans entravam. A janela de 90 dias já
+            # limita naturalmente o volume (plateau ao atingir o regime permanente). Se um dia
+            # esta leitura passar de ~5s, trocar por `ORDER BY scanned_at DESC LIMIT N` (o índice
+            # `idx_scans_date` já cobre) para amostrar os mais RECENTES de forma barata.
             cur.execute(
                 "SELECT checks_json->'privacy' AS pj FROM scans s "
                 "WHERE checks_json ? 'privacy' AND checks_json->'privacy' IS NOT NULL "
-                "  AND scanned_at > NOW() - INTERVAL '90 days' LIMIT 20000")
+                "  AND scanned_at > NOW() - INTERVAL '90 days'")
             by_id: Dict[str, Dict[str, int]] = {}
             total = 0
             score_sum = 0
