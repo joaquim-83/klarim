@@ -55,10 +55,12 @@ test('gradeColor / lgpdGradeColor', () => {
 })
 
 // --- statusMeta --- //
-test('statusMeta: pass/fail/warn', () => {
+test('statusMeta: pass/fail/warn/info', () => {
   assert.equal(statusMeta('pass').color, SCORE_GREEN)
   assert.equal(statusMeta('fail').color, SCORE_RED)
   assert.equal(statusMeta('warn').color, SCORE_YELLOW)
+  // KL-164: header informativo (X-XSS-Protection) → neutro, não é falha.
+  assert.equal(statusMeta('info').label, 'Informativo')
 })
 
 // --- groupTechByCategory --- //

@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import re
 from typing import Any, Dict, List, Optional, Tuple
+from urllib.parse import urljoin, urlparse
 
 # Disclaimer legal obrigatório (regra inviolável KL-44 P5) — reexposto pela API/UI.
 PRIVACY_DISCLAIMER = (
@@ -204,6 +205,114 @@ def check_form_security_headers(html: str, headers: Dict[str, str]) -> Dict[str,
 
 
 # --------------------------------------------------------------------------- #
+# KL-164 — DSAR/DPO em MÚLTIPLAS páginas (não só a homepage)
+# --------------------------------------------------------------------------- #
+# Muitos sites (incluindo o klarim.net) têm o canal de direitos e o Encarregado em
+# páginas dedicadas (/privacidade, /lgpd), não na homepage. Os dois indicadores passam
+# a procurar também nessas páginas — buscadas SÓ quando a homepage falha, com teto e
+# early-exit (passivo, rate-limited pela `base.fetch`; fail-open).
+
+# Ordenadas por valor (privacidade/lgpd primeiro → o klarim.net resolve em 1-2 fetches).
+_DSAR_EXTRA_PATHS = ("privacidade", "lgpd", "politica-de-privacidade", "contato", "direitos")
+_DPO_EXTRA_PATHS = ("privacidade", "politica-de-privacidade", "sobre", "contato")
+# Vocabulário de links (href/texto) da homepage que apontam para um canal de direitos/DPO.
+_RIGHTS_LINK_HINTS = ("direitos", "lgpd", "titular", "dsar", "exercer", "encarregado",
+                      "proteção de dados", "protecao de dados", "privacidade")
+# Teto de páginas extras buscadas por scan (bounded — não estoura o tempo do scan).
+_PRIVACY_EXTRA_MAX = 6
+# Teto de links do footer (evidência específica do site) considerados por scan.
+_PRIVACY_FOOTER_MAX = 3
+
+
+def _dsar_signal(html: str, links, path: str = "") -> bool:
+    """True se a página evidencia um canal de direitos do titular. Sinais: link/texto de
+    direitos (`_DSAR_*`), e-mail de privacidade/DPO, ou `<form>` numa página DEDICADA a
+    direitos (evita falso-positivo de um form genérico de /contato)."""
+    if _link_hit(links, _DSAR_PATHS, _DSAR_TEXTS):
+        return True
+    low = (html or "").lower()
+    if any(t in low for t in _DSAR_TEXTS):
+        return True
+    if re.search(r'mailto:[^"\'>\s]*(dpo|privacidade|lgpd|encarregado|protecao)', low):
+        return True
+    p = (path or "").lower().strip("/")
+    if "<form" in low and any(k in p for k in ("lgpd", "direitos", "dsar", "titular")):
+        return True
+    return False
+
+
+def _dpo_signal(html: str) -> bool:
+    """True se a página menciona o Encarregado/DPO (mesmo vocabulário do check homepage)."""
+    low = (html or "").lower()
+    return any(t in low for t in _DPO_TEXTS)
+
+
+def _privacy_candidate_urls(base_url: str, links, need_dsar: bool, need_dpo: bool,
+                            max_pages: int = _PRIVACY_EXTRA_MAX) -> List[str]:
+    """URLs internas a sondar quando a homepage falha DSAR/DPO (puro/testável). Une os paths
+    fixos com os links da homepage cujo href/texto sugere direitos/DPO; só mesma origem;
+    dedupe preservando ordem; teto `max_pages`."""
+    origin = urlparse(base_url or "")
+    urls: List[str] = []
+    seen = set()
+
+    # Links do footer que apontam para direitos/DPO vêm PRIMEIRO — são a evidência específica
+    # do próprio site (mais provável de acertar que um path adivinhado), só mesma origem.
+    footer = 0
+    for href, text in links or []:
+        if footer >= _PRIVACY_FOOTER_MAX:
+            break
+        hay = f"{href} {text}".lower()
+        if not any(h in hay for h in _RIGHTS_LINK_HINTS):
+            continue
+        pu = urlparse(urljoin(base_url, href))
+        if pu.scheme not in ("http", "https") or pu.netloc != origin.netloc:
+            continue
+        u = pu._replace(fragment="", query="").geturl()
+        if u not in seen:
+            seen.add(u)
+            urls.append(u)
+            footer += 1
+
+    # Depois, os paths fixos de maior valor (privacidade/lgpd primeiro).
+    paths: List[str] = []
+    if need_dsar:
+        paths += list(_DSAR_EXTRA_PATHS)
+    if need_dpo:
+        paths += list(_DPO_EXTRA_PATHS)
+    for p in paths:
+        u = urljoin(base_url, p)
+        if u not in seen:
+            seen.add(u)
+            urls.append(u)
+    return urls[:max_pages]
+
+
+def augment_privacy_checks(checks: List[Dict[str, Any]],
+                           pages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Reavalia `dsar_channel`/`dpo_info` contra páginas extras JÁ buscadas (puro/testável).
+    `pages`: lista de ``{path, html, links?}``. Muta `checks` in-place (só faz upgrade
+    FAIL→PASS; nunca rebaixa PASS→FAIL) e devolve a lista. O chamador recomputa o score."""
+    idx = {c["id"]: c for c in checks}
+    dsar = idx.get("dsar_channel")
+    dpo = idx.get("dpo_info")
+    for pg in pages:
+        html = pg.get("html") or ""
+        links = pg.get("links")
+        if links is None:
+            links = extract_links(html)
+        path = pg.get("path") or ""
+        where = path or "página interna"
+        if dsar is not None and dsar["status"] != "PASS" and _dsar_signal(html, links, path):
+            dsar["status"] = "PASS"
+            dsar["evidence"] = f"Canal de direitos encontrado em {where}."
+        if dpo is not None and dpo["status"] != "PASS" and _dpo_signal(html):
+            dpo["status"] = "PASS"
+            dpo["evidence"] = f"Encarregado (DPO) mencionado em {where}."
+    return checks
+
+
+# --------------------------------------------------------------------------- #
 # Orquestração
 # --------------------------------------------------------------------------- #
 
@@ -227,8 +336,10 @@ def analyze(html: str, headers: Dict[str, str], set_cookies: List[str],
 
 
 async def scan_privacy(url: str) -> Optional[Dict[str, Any]]:
-    """Um único GET passivo (rate-limited pela `base.fetch`) → indicadores. None se falhar
-    (fail-open: privacidade nunca derruba o scan de segurança)."""
+    """GET passivo da homepage → 8 indicadores. KL-164: se DSAR/DPO falham na homepage,
+    sonda páginas internas (/privacidade, /lgpd, /contato, /sobre, /direitos + links do
+    footer) — bounded (`_PRIVACY_EXTRA_MAX`), com early-exit e fail-open. Tudo rate-limited
+    pela `base.fetch`. None se a homepage falhar (privacidade nunca derruba o scan)."""
     from .checks import base
     try:
         resp = await base.fetch(url, method="GET")
@@ -238,7 +349,34 @@ async def scan_privacy(url: str) -> Optional[Dict[str, Any]]:
         except Exception:  # noqa: BLE001
             sc = resp.headers.get("set-cookie")
             set_cookies = [sc] if sc else []
-        return analyze(html, dict(resp.headers), set_cookies, str(resp.url) or url)
+        base_url = str(resp.url) or url
+        result = analyze(html, dict(resp.headers), set_cookies, base_url)
     except Exception as exc:  # noqa: BLE001 - privacidade é best-effort
         print(f"[privacy] análise falhou {url}: {exc!r}", flush=True)
         return None
+
+    # KL-164 — DSAR/DPO em páginas internas (só quando a homepage falhou).
+    checks = result["checks"]
+    idx = {c["id"]: c for c in checks}
+    need_dsar = idx.get("dsar_channel", {}).get("status") != "PASS"
+    need_dpo = idx.get("dpo_info", {}).get("status") != "PASS"
+    if need_dsar or need_dpo:
+        try:
+            links = extract_links(html)
+            for u in _privacy_candidate_urls(base_url, links, need_dsar, need_dpo):
+                if not (need_dsar or need_dpo):
+                    break
+                try:
+                    r2 = await base.fetch(u, method="GET")
+                except Exception:  # noqa: BLE001 - página extra é best-effort
+                    continue
+                if r2.status_code >= 400 or not base.looks_like_html(r2):
+                    continue
+                page = {"path": urlparse(str(r2.url)).path or u, "html": r2.text}
+                augment_privacy_checks(checks, [page])
+                need_dsar = idx["dsar_channel"]["status"] != "PASS"
+                need_dpo = idx["dpo_info"]["status"] != "PASS"
+            result["score"] = sum(1 for c in checks if c["status"] == "PASS")
+        except Exception as exc:  # noqa: BLE001 - augmentação nunca derruba o resultado base
+            print(f"[privacy] multipágina falhou {url}: {exc!r}", flush=True)
+    return result

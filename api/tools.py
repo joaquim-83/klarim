@@ -322,22 +322,25 @@ def build_ssl_response(domain: str, info: Optional[Dict[str, Any]]) -> Dict[str,
 # Headers — builder puro
 # --------------------------------------------------------------------------- #
 
-# (nome canônico, chave lowercase, importância, explicação em PT simples).
-_SECURITY_HEADERS: Tuple[Tuple[str, str, str, str], ...] = (
+# (nome canônico, chave lowercase, importância, explicação em PT simples, informational).
+# KL-164: `informational=True` NÃO conta no score (header legado/deprecado — X-XSS-Protection foi
+# substituído pelo CSP e sua ausência não é uma falha). É exibido como informativo, não como FAIL.
+_SECURITY_HEADERS: Tuple[Tuple[str, str, str, str, bool], ...] = (
     ("Content-Security-Policy", "content-security-policy", "alta",
-     "Define quais recursos podem ser carregados. Previne XSS e injeção de código."),
+     "Define quais recursos podem ser carregados. Previne XSS e injeção de código.", False),
     ("Strict-Transport-Security", "strict-transport-security", "alta",
-     "Força HTTPS. Protege contra ataques de downgrade."),
+     "Força HTTPS. Protege contra ataques de downgrade.", False),
     ("X-Content-Type-Options", "x-content-type-options", "média",
-     "Impede que o navegador interprete arquivos com tipo diferente do declarado."),
+     "Impede que o navegador interprete arquivos com tipo diferente do declarado.", False),
     ("X-Frame-Options", "x-frame-options", "alta",
-     "Impede que seu site seja embutido em iframes de terceiros (clickjacking)."),
+     "Impede que seu site seja embutido em iframes de terceiros (clickjacking).", False),
     ("Referrer-Policy", "referrer-policy", "média",
-     "Controla quais informações de origem são enviadas ao navegar para outros sites."),
+     "Controla quais informações de origem são enviadas ao navegar para outros sites.", False),
     ("Permissions-Policy", "permissions-policy", "média",
-     "Restringe o acesso a recursos do navegador (câmera, microfone, geolocalização)."),
-    ("X-XSS-Protection", "x-xss-protection", "baixa",
-     "Filtro legado de XSS. Já substituído pelo Content-Security-Policy nos navegadores modernos."),
+     "Restringe o acesso a recursos do navegador (câmera, microfone, geolocalização).", False),
+    ("X-XSS-Protection", "x-xss-protection", "informativo",
+     "Header legado, deprecado e substituído pelo Content-Security-Policy nos navegadores "
+     "modernos. Sua ausência NÃO conta como falha.", True),
 )
 
 
@@ -345,17 +348,22 @@ def build_headers_response(domain: str, headers: Dict[str, str]) -> Dict[str, An
     h = {str(k).lower(): v for k, v in (headers or {}).items()}
     out: List[Dict[str, Any]] = []
     present_count = 0
-    for name, key, importance, explanation in _SECURITY_HEADERS:
+    scored_total = 0
+    for name, key, importance, explanation, informational in _SECURITY_HEADERS:
         value = h.get(key)
         present = value is not None
-        if present:
-            present_count += 1
+        if not informational:                      # KL-164: header informativo não pontua
+            scored_total += 1
+            if present:
+                present_count += 1
         entry: Dict[str, Any] = {"name": name, "present": present,
                                  "importance": importance, "explanation": explanation}
+        if informational:
+            entry["informational"] = True
         if present:
             entry["value"] = str(value)
         out.append(entry)
-    return {"domain": domain, "score": f"{present_count}/{len(_SECURITY_HEADERS)}",
+    return {"domain": domain, "score": f"{present_count}/{scored_total}",
             "headers": out, "context": _CONTEXT["headers"]}
 
 

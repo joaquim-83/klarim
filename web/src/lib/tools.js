@@ -93,11 +93,12 @@ export function lgpdGradeColor(grade) {
   return SCORE_RED;
 }
 
-// Ícone/cor de um status de check ('pass'/'fail'/'warn').
+// Ícone/cor de um status de check ('pass'/'fail'/'warn'/'info').
 export function statusMeta(status) {
   const s = String(status || '').toLowerCase();
   if (s === 'pass') return { icon: '✓', color: SCORE_GREEN, label: 'OK' };
   if (s === 'warn') return { icon: '!', color: SCORE_YELLOW, label: 'Atenção' };
+  if (s === 'info') return { icon: 'ℹ', color: SCORE_GRAY, label: 'Informativo' };
   return { icon: '✕', color: SCORE_RED, label: 'Faltando' };
 }
 

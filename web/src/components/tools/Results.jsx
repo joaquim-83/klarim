@@ -93,7 +93,8 @@ export function SslResult({ data }) {
 }
 
 // --------------------------------------------------------------------------- //
-const IMPORTANCE_COLOR = { alta: '#ef4444', média: '#eab308', media: '#eab308', baixa: '#94a3b8' };
+const IMPORTANCE_COLOR = { alta: '#ef4444', média: '#eab308', media: '#eab308',
+  baixa: '#94a3b8', informativo: '#94a3b8' };
 
 export function HeadersResult({ data }) {
   return (
@@ -107,7 +108,8 @@ export function HeadersResult({ data }) {
       </div>
       <ul class="mt-4">
         {(data.headers || []).map((h, i) => (
-          <StatusRow key={i} status={h.present ? 'pass' : 'fail'} name={
+          // KL-164: header informativo (X-XSS-Protection) → status neutro, não conta como falha.
+          <StatusRow key={i} status={h.informational ? 'info' : (h.present ? 'pass' : 'fail')} name={
             <span class="flex flex-wrap items-center gap-2">
               <span>{h.name}</span>
               <span class="rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide"

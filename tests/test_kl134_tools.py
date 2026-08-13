@@ -203,11 +203,14 @@ def test_headers_ok(client, monkeypatch):
     monkeypatch.setattr(t._base, "fetch", _fetch)
     d = client.get("/tools/headers", params={"url": "example.com"}).json()
     assert d["domain"] == "example.com"
-    assert d["score"] == "3/7"
+    # KL-164: X-XSS-Protection é informativo e NÃO pontua → denominador 6 (não 7).
+    assert d["score"] == "3/6"
     hsts = next(h for h in d["headers"] if h["name"] == "Strict-Transport-Security")
     assert hsts["present"] is True and hsts["value"].startswith("max-age")
     csp = next(h for h in d["headers"] if h["name"] == "Content-Security-Policy")
     assert csp["present"] is False and csp["importance"] == "alta" and csp["explanation"]
+    xxp = next(h for h in d["headers"] if h["name"] == "X-XSS-Protection")
+    assert xxp.get("informational") is True and xxp["importance"] == "informativo"
 
 
 def test_headers_connection_error_502(client, monkeypatch):
