@@ -141,6 +141,9 @@ class FakeStore:
     async def domain_has_bounce(self, domain):  # KL-85
         return False
 
+    async def recently_alerted_emails(self, emails, days=90):  # KL-167
+        return set(getattr(self, "_recent_emails", set()))
+
     async def log_alert(self, target_id, contact_email, score, semaphore, fail_count,
                         email_id, status="sent"):
         self.logged.append({"target_id": target_id, "status": status, "email_id": email_id})
@@ -222,19 +225,18 @@ def test_run_cycle_sends_all_individually():
     assert all(l["status"] == "sent" for l in store.logged)
 
 
-def test_run_cycle_rotates_between_senders(monkeypatch):
-    # KL-91: 4 alvos → round-robin alterna os 2 remetentes cold (2 e 2).
+def test_run_cycle_all_from_consolidated_sender(monkeypatch):
+    # KL-167: cold consolidado → todos os alertas saem de klarimscan.com (sem rotação).
     monkeypatch.delenv("ALERT_SENDER_EMAILS", raising=False)
     store = FakeStore(eligible=[_target(i) for i in range(1, 5)])
-    sent = []
     w = _worker(store)
     fm = FakeMailer()
     w._mailer = lambda: fm  # noqa: E731
     stats = asyncio.run(w.run_cycle())
     froms = [e["from"] for e in fm.sent]
     assert stats["sent"] == 4
-    assert sum("alertas.klarim.net" in f for f in froms) == 2
-    assert sum("aviso.klarim.net" in f for f in froms) == 2
+    assert all("klarimscan.com" in f for f in froms)
+    assert not any("alertas.klarim.net" in f or "aviso.klarim.net" in f for f in froms)
 
 
 # --- controle centralizado KL-32 ------------------------------------------- #
@@ -292,18 +294,18 @@ def test_run_cycle_sends_up_to_cycle_cap():
 
 
 def test_run_cycle_respects_sender_daily_limit():
-    # 2 remetentes × limite 3 = 6 envios máx no dia; 10 elegíveis → só 6 saem.
-    store = FakeStore(eligible=[_target(i) for i in range(1, 11)])
+    # KL-167: remetente único (klarimscan.com) × limite 3 = 3 envios máx no dia; 10 elegíveis → 3.
+    store = FakeStore(eligible=[_target(i, email=f"p{i}@x{i}.com.br") for i in range(1, 11)])
     w = _worker(store)
     w.sender_daily_limit = 3
     stats = asyncio.run(w.run_cycle())
-    assert stats["sent"] == 6 and len(store.alerted) == 6
+    assert stats["sent"] == 3 and len(store.alerted) == 3
 
 
 def test_run_cycle_skips_when_senders_exhausted():
-    # ambos os remetentes já bateram o limite hoje → ciclo pulado.
+    # KL-167: o remetente único já bateu o limite hoje → ciclo pulado.
     store = FakeStore(eligible=[_target(1)])
-    store._sent_by_domain = {"alertas.klarim.net": 3, "aviso.klarim.net": 3}
+    store._sent_by_domain = {"klarimscan.com": 3}
     w = _worker(store)
     w.sender_daily_limit = 3
     stats = asyncio.run(w.run_cycle())
@@ -312,19 +314,19 @@ def test_run_cycle_skips_when_senders_exhausted():
 
 
 def test_run_cycle_pauses_high_bounce_sender():
-    # alertas.klarim.net com 12% de bounce (amostra 100) → pausado; aviso continua.
-    store = FakeStore(eligible=[_target(i) for i in range(1, 5)])
+    # KL-167: klarimscan.com com 12% hard bounce → pausado; sendo o único, o ciclo não envia
+    # (proteção da reputação: melhor parar que torrar o único domínio cold).
+    store = FakeStore(eligible=[_target(i, email=f"p{i}@x{i}.com.br") for i in range(1, 5)])
     store._health_by_domain = {
         # KL-108: hard bounce é o que pausa (12% hard > 5%); soft é ignorado.
-        "alertas.klarim.net": {"total": 100, "hard_bounced": 12, "soft_bounced": 0, "complained": 0},
-        "aviso.klarim.net": {"total": 100, "hard_bounced": 1, "soft_bounced": 0, "complained": 0}}
+        "klarimscan.com": {"total": 100, "hard_bounced": 12, "soft_bounced": 0, "complained": 0}}
     w = _worker(store)
     w.sender_max_bounce_rate = 5.0
     fm = FakeMailer()
     w._mailer = lambda: fm  # noqa: E731
     stats = asyncio.run(w.run_cycle())
-    assert stats["senders_paused"] == ["alertas.klarim.net"]
-    assert all("aviso.klarim.net" in e["from"] for e in fm.sent)  # só o saudável envia
+    assert stats["senders_paused"] == ["klarimscan.com"]
+    assert stats["sent"] == 0 and fm.sent == []  # único remetente pausado → nada sai
 
 
 def test_run_cycle_monthly_limit_skips_when_full():
@@ -443,26 +445,58 @@ def test_apply_scoring_stores_and_does_not_filter(monkeypatch):
     assert len(targets) == 1 and targets[0]["_alert_score"] == 5 and avg == 5
 
 
-def test_run_cycle_personal_before_generic_real_scoring():
-    # KL-146: com o scoring REAL, e-mail pessoal é enviado ANTES do genérico (fila ordena por tipo),
-    # e TODOS são enviados (volume inalterado — KL-145: envio = sintaxe+MX+blocklist, não filtra).
+def test_run_cycle_skips_generic_emails():
+    # KL-167: caixas genéricas (contato@/comercial@) NÃO recebem mais alerta cold (bounce alto).
+    # Só o e-mail pessoal (joana@) é enviado; o resto conta como blocked_generic.
     def _t(tid, email):
         return {"id": tid, "url": f"https://s{tid}.com.br", "domain": f"s{tid}.com.br",
                 "contact_email": email, "last_scan_id": 100 + tid, "last_scan_score": 70,
                 "scan_semaphore": "amarelo", "scan_fail_count": 2,
                 "scan_checks": {"results": [{"status": "FAIL", "severity": "ALTA"}]}}
-    # mesmo domínio/score p/ cada alvo → só o TIPO de e-mail difere.
     store = FakeStore(eligible=[
-        _t(1, "contato@s1.com.br"),     # high-bounce → 30+10+20-10 = 50
-        _t(2, "joana@s2.com.br"),       # pessoal    → 30+10+20+15 = 75
-        _t(3, "comercial@s3.com.br"),   # neutro     → 30+10+20+0  = 60
+        _t(1, "contato@s1.com.br"),     # genérico → filtrado
+        _t(2, "joana@s2.com.br"),       # pessoal  → enviado
+        _t(3, "comercial@s3.com.br"),   # genérico → filtrado
     ])
     w = _worker(store)
     fm = FakeMailer()
     w._mailer = lambda: fm  # noqa: E731
     stats = asyncio.run(w.run_cycle())
-    assert stats["sent"] == 3                              # volume inalterado (todos enviados)
-    assert [e["target_id"] for e in fm.sent] == [2, 3, 1]  # pessoal(75) → neutro(60) → contato(50)
+    assert stats["sent"] == 1
+    assert [e["target_id"] for e in fm.sent] == [2]
+    assert stats["verification"]["blocked_generic"] == 2
+
+
+def test_run_cycle_skips_recently_alerted_email():
+    # KL-167: e-mail alertado nos últimos 90 dias (em qualquer alvo) é pulado (intervalo mínimo).
+    store = FakeStore(eligible=[_target(1, email="ana@a.com.br"),
+                                _target(2, email="bruno@b.com.br")])
+    store._recent_emails = {"ana@a.com.br"}   # ana já recebeu alerta < 90d
+    w = _worker(store)
+    fm = FakeMailer()
+    w._mailer = lambda: fm  # noqa: E731
+    stats = asyncio.run(w.run_cycle())
+    assert stats["sent"] == 1 and [e["target_id"] for e in fm.sent] == [2]
+    assert stats["verification"]["blocked_recent_email"] == 1
+
+
+def test_run_cycle_prioritizes_low_score_sites():
+    # KL-167: sites com score de segurança < 70 (urgência real) vão primeiro; 85+ por último.
+    def _t(tid, score):
+        return {"id": tid, "url": f"https://s{tid}.com.br", "domain": f"s{tid}.com.br",
+                "contact_email": f"dono{tid}@s{tid}.com.br", "last_scan_id": 100 + tid,
+                "last_scan_score": score, "scan_semaphore": "amarelo", "scan_fail_count": 2,
+                "scan_checks": {"results": [{"status": "FAIL", "severity": "ALTA"}]}}
+    store = FakeStore(eligible=[_t(1, 95), _t(2, 45), _t(3, 80), _t(4, 60)])
+    w = _worker(store)
+    fm = FakeMailer()
+    w._mailer = lambda: fm  # noqa: E731
+    stats = asyncio.run(w.run_cycle())
+    assert stats["sent"] == 4
+    order = [e["target_id"] for e in fm.sent]
+    # urgentes (<70): t2(45), t4(60) primeiro; depois 70-84: t3(80); por último 85+: t1(95).
+    assert order.index(2) < order.index(3) < order.index(1)
+    assert order.index(4) < order.index(3) < order.index(1)
 
 
 def test_run_cycle_isolates_bad_email():

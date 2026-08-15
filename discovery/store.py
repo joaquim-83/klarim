@@ -7121,10 +7121,13 @@ class TargetStore:
 
     # KL-31: também elegíveis os sites com score 100 verde (0 falhas) — recebem o
     # convite de análise completa gratuita, não o alerta.
+    # KL-167: janela de re-alerta por ALVO subiu de 30 → 90 dias (reduz fadiga/complaints e
+    # protege a reputação do domínio cold). O guard por E-MAIL (mesmo e-mail em alvos
+    # diferentes) é aplicado no worker via `recently_alerted_emails`.
     _ALERT_ELIGIBLE_WHERE = (
         "t.status = 'scanned' AND t.contact_email IS NOT NULL "
         "AND (s.fail_count > 0 OR (s.score = 100 AND s.semaphore = 'verde')) "
-        "AND (t.last_alert_at IS NULL OR t.last_alert_at < NOW() - INTERVAL '30 days') "
+        "AND (t.last_alert_at IS NULL OR t.last_alert_at < NOW() - INTERVAL '90 days') "
         # KL-94: não alerta site inacessível (em falha de gate) nem sem score — a vigília (KL-44 P2)
         # cobre uptime separadamente. Um site que voltou tem gate_fail_count zerado (reset_gate_failure).
         "AND COALESCE(t.gate_fail_count, 0) = 0 AND t.last_scan_score IS NOT NULL")
@@ -7496,6 +7499,26 @@ class TargetStore:
                 (str(hours),),
             )
             return int(cur.fetchone()[0])
+
+        return await asyncio.to_thread(self._run, _fn)
+
+    async def recently_alerted_emails(self, emails: List[str], days: int = 90) -> set:
+        """KL-167 — dentre `emails`, os que RECEBERAM um alerta cold (`alert_log`, status
+        'sent') nos últimos `days` dias. O worker usa para garantir o intervalo mínimo de
+        re-alerta POR E-MAIL (mesmo e-mail em alvos diferentes) — complementa a janela por
+        alvo do `_ALERT_ELIGIBLE_WHERE`. Uma única query (ANY), e-mails normalizados (lower)."""
+        norm = sorted({(e or "").strip().lower() for e in (emails or []) if (e or "").strip()})
+        if not norm:
+            return set()
+
+        def _fn(cur):
+            cur.execute(
+                "SELECT DISTINCT lower(contact_email) FROM alert_log "
+                "WHERE status = 'sent' AND lower(contact_email) = ANY(%s) "
+                "AND sent_at > NOW() - (%s || ' days')::interval",
+                (norm, str(int(days))),
+            )
+            return {r[0] for r in cur.fetchall()}
 
         return await asyncio.to_thread(self._run, _fn)
 

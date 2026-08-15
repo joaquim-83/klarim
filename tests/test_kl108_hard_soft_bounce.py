@@ -86,16 +86,17 @@ def test_email_health_by_domain_zero_total_is_safe():
 
 def test_circuit_breaker_soft_only_stays_active():
     # 4% hard + 10% soft → NÃO pausa (hard < 5%); o combinado (14%) é irrelevante.
-    s = c.load_senders({})
-    by_domain = {"alertas.klarim.net": {"total": 100, "hard_bounced": 4, "soft_bounced": 10}}
+    s = c.load_senders({"ALERT_SENDER_EMAILS": "scan@a.example.com"})
+    by_domain = {"a.example.com": {"total": 100, "hard_bounced": 4, "soft_bounced": 10}}
     paused = c.flag_high_bounce(s, by_domain, max_rate=5.0, min_sample=20)
     assert paused == [] and s[0].status == "active"
 
 
 def test_circuit_breaker_hard_pauses():
-    # 6% hard + 0% soft → PAUSA.
-    s = c.load_senders({})
-    by_domain = {"alertas.klarim.net": {"total": 100, "hard_bounced": 6, "soft_bounced": 0},
-                 "aviso.klarim.net": {"total": 100, "hard_bounced": 0, "soft_bounced": 0}}
+    # 6% hard + 0% soft → PAUSA. KL-167: 2 remetentes de teste (a máquina do breaker segue
+    # válida mesmo com a produção consolidada num só domínio cold).
+    s = c.load_senders({"ALERT_SENDER_EMAILS": "scan@a.example.com, scan@b.example.com"})
+    by_domain = {"a.example.com": {"total": 100, "hard_bounced": 6, "soft_bounced": 0},
+                 "b.example.com": {"total": 100, "hard_bounced": 0, "soft_bounced": 0}}
     paused = c.flag_high_bounce(s, by_domain, max_rate=5.0, min_sample=20)
-    assert paused == [("alertas.klarim.net", 6.0)] and s[0].status == "paused"
+    assert paused == [("a.example.com", 6.0)] and s[0].status == "paused"

@@ -104,6 +104,24 @@ def _domain_of_from(from_str: Any) -> str:
     return s.rsplit("@", 1)[-1].strip().lower() if "@" in s else ""
 
 
+# KL-167 — domínios cold APOSENTADOS (consolidação em klarimscan.com). Um `.env` legado que
+# ainda aponte `ALERT_FROM_EMAIL`/`PROFILE_VIEW_FROM_EMAIL` para esses domínios é ignorado
+# (cai no default consolidado) → nenhum envio novo sai deles. Espelha
+# `notifier.cold_alert.RETIRED_SENDER_DOMAINS` (aqui local p/ evitar import circular no boot).
+_RETIRED_COLD_DOMAINS = frozenset({
+    "klarim.net", "alertas.klarim.net", "aviso.klarim.net", "perfil.klarim.net",
+})
+
+
+def _cold_from_email(env_value: Optional[str], default: str) -> str:
+    """E-mail de remetente COLD: usa o env, mas descarta valor vazio ou de domínio
+    aposentado (KL-167) → default consolidado em `klarimscan.com`."""
+    email = (env_value or "").strip()
+    if not email or _domain_of_from(email) in _RETIRED_COLD_DOMAINS:
+        return default
+    return email
+
+
 def _first_recipient(to: Any) -> str:
     """Normaliza o destinatário (o Resend aceita str ou lista) → primeiro e-mail."""
     if isinstance(to, (list, tuple)):
@@ -444,26 +462,39 @@ class KlarimMailer:
         self._store = store
 
     def _proactive_from(self) -> str:
-        """Remetente dos e-mails **PROATIVOS** (cold: alerta + perfil consultado), de
-        `ALERT_FROM_EMAIL`/`ALERT_FROM_NAME`. **2026-07-20:** migrado de
-        `alerta@klarimscan.com` → `alerta@klarim.net` — o warmup do klarimscan.com falhou
-        (alertas no spam); klarim.net é aged e entrega na inbox. **Fail-safe:** sem a var,
-        cai para `self.from_address` (o remetente normal) — nunca quebra. Lido do env a cada
-        envio, então a troca do `.env` vale ao recriar o container (sem rebuild)."""
-        email = (os.environ.get("ALERT_FROM_EMAIL") or "").strip()
-        if not email:
-            return self.from_address
+        """Remetente dos e-mails **COLD** (alerta proativo de primeiro contato), de
+        `ALERT_FROM_EMAIL`/`ALERT_FROM_NAME`. **KL-167:** todo cold sai de `klarimscan.com`
+        (default `scan@klarimscan.com`) — domínio dedicado, isolado do `klarim.net`
+        transacional. Se o `.env` ainda apontar para um domínio APOSENTADO (klarim.net ou os
+        subdomínios cold antigos), o valor é ignorado e cai no default consolidado (guard de
+        `_cold_from_domain`). Lido do env a cada envio → a troca do `.env` vale ao recriar o
+        container (sem rebuild)."""
+        email = _cold_from_email(os.environ.get("ALERT_FROM_EMAIL"), "scan@klarimscan.com")
         name = (os.environ.get("ALERT_FROM_NAME") or "Klarim").strip()
-        return f"{name} <{email}>"
+        return f"{name} <{email}>" if name else email
 
     def _profile_view_from(self) -> str:
-        """KL-101 — remetente DEDICADO do `profile_view` (aviso 'perfil consultado'), o último
-        cold que ainda saía por `klarim.net` (via `_proactive_from`, ~15k/sem). Isolado em
-        `notifica@perfil.klarim.net` (`PROFILE_VIEW_FROM_EMAIL`/`_NAME`) para o `klarim.net`
-        ficar 100% transacional. Subdomínio próprio (NÃO rotaciona com os cold alerts do KL-91,
-        cujo warmup a 100/dia seria destruído por este volume). Lido do env a cada envio."""
-        email = (os.environ.get("PROFILE_VIEW_FROM_EMAIL") or "notifica@perfil.klarim.net").strip()
+        """KL-101 → KL-167 — remetente do `profile_view` (aviso 'perfil consultado'). É COLD
+        (primeiro contato), então foi consolidado em `klarimscan.com` (default
+        `notifica@klarimscan.com`, `PROFILE_VIEW_FROM_EMAIL`/`_NAME`) junto com os alertas —
+        antes saía por `perfil.klarim.net` (aposentado). Se o `.env` ainda apontar para um
+        domínio aposentado, cai no default. Lido do env a cada envio."""
+        email = _cold_from_email(os.environ.get("PROFILE_VIEW_FROM_EMAIL"),
+                                 "notifica@klarimscan.com")
         name = (os.environ.get("PROFILE_VIEW_FROM_NAME") or "Klarim").strip()
+        return f"{name} <{email}>" if name else email
+
+    def _bulletin_from(self) -> str:
+        """KL-167 — remetente do BOLETIM ao dono (KL-44 P3). O boletim vai a quem TEM conta/
+        opt-in (relação já existente) → é **transacional**, fica no `klarim.net` (default
+        `alerta@klarim.net`, `BULLETIN_FROM_EMAIL`/`_NAME`), NÃO no cold `klarimscan.com`.
+        Decoplado do `ALERT_FROM_EMAIL` (que agora é cold) para a mudança do cold não arrastar
+        o boletim para o domínio de spam. Guard: nunca cai num subdomínio cold aposentado."""
+        email = (os.environ.get("BULLETIN_FROM_EMAIL") or "").strip()
+        dom = _domain_of_from(email)
+        if not email or dom in _RETIRED_COLD_DOMAINS:  # aposentado/vazio → mailbox transacional
+            email = "alerta@klarim.net"
+        name = (os.environ.get("BULLETIN_FROM_NAME") or "Klarim").strip()
         return f"{name} <{email}>" if name else email
 
     # ----- log unificado + blocklist (KL-62) ------------------------------- #
@@ -1131,10 +1162,13 @@ class KlarimMailer:
 
     async def send_bulletin_owner(self, to_email: str, domain: str, subject: str,
                                   text: str, target_id: Optional[int] = None) -> Dict[str, Any]:
-        """Boletim de segurança ao DONO (KL-44 P3). Plain text, **proativo** (klarimscan.com),
-        respeita a blocklist, registrado no email_log (`bulletin`)."""
+        """Boletim de segurança ao DONO (KL-44 P3). Plain text, respeita a blocklist,
+        registrado no email_log (`bulletin`). **KL-167:** o boletim vai a quem tem conta/opt-in
+        (relação já existente) → sai do `klarim.net` transacional (`_bulletin_from`,
+        `alerta@klarim.net`), NÃO do cold `klarimscan.com`. Isolamento de reputação: o volume
+        cold não contamina o domínio que entrega aos clientes."""
         return await self._send({
-            "from": self._proactive_from(), "to": [to_email],
+            "from": self._bulletin_from(), "to": [to_email],
             "subject": subject, "text": text,
         }, email_type="bulletin", target_id=target_id, domain=domain, source="bulletin_worker")
 

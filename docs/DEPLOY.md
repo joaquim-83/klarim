@@ -141,8 +141,11 @@ R$49 (4900). **Nenhum dado de cartão/PIX é armazenado.**
 |---|---|
 | `RESEND_API_KEY` | chave send-only |
 | `RESEND_FROM` | remetente transacional (`Klarim <klarim@klarim.net>` — migrado de `seguranca@` em 2026-07-21; a palavra "seguranca" elevava o spam score, confirmação caía no spam) |
-| `ALERT_FROM_EMAIL` / `ALERT_FROM_NAME` | remetente proativo legado (`alerta@klarim.net`) — hoje só **profile_view/bulletin** (o alerta cold migrou para a rotação KL-91) |
-| `ALERT_SENDER_EMAILS` | **KL-91** — CSV dos remetentes cold rotacionados (default `scan@alertas.klarim.net,scan@aviso.klarim.net`; verificados no Resend). `klarim.net` cru é ignorado (isolamento do transacional) |
+| `ALERT_FROM_EMAIL` / `ALERT_FROM_NAME` | **KL-167** — remetente do **alerta cold** (`_proactive_from`, default `scan@klarimscan.com`). Domínio aposentado (alertas./aviso./perfil.klarim.net) é ignorado → cai no default consolidado |
+| `BULLETIN_FROM_EMAIL` / `BULLETIN_FROM_NAME` | **KL-167** — remetente do **boletim** ao dono (`_bulletin_from`, default `alerta@klarim.net`). É transacional (quem tem conta) → fica em `klarim.net`, desacoplado do cold |
+| `ALERT_SENDER_EMAILS` | **KL-91 → KL-167** — CSV dos remetentes cold (default `scan@klarimscan.com`; **1 único domínio**, sem rotação). `RETIRED_SENDER_DOMAINS` (klarim.net + alertas./aviso./perfil.klarim.net) são SEMPRE descartados; se o env só tiver aposentados, cai no default |
+| `ALERT_SKIP_GENERIC` | **KL-167** — pula alertas p/ caixas genéricas (contato@/atendimento@/sac@/info@/comercial@/vendas@; default `true`; editável no painel) |
+| `ALERT_REALERT_MIN_DAYS` | **KL-167** — intervalo mínimo (dias) entre alertas para o MESMO e-mail (default `90`; editável no painel) |
 | `ALERT_SENDER_DAILY_LIMIT` | **KL-91** — limite diário POR remetente cold (warmup: 100→250→500→750; editável no painel) |
 | `ALERT_SEND_INTERVAL_MIN` / `ALERT_SEND_INTERVAL_MAX` | **KL-91** — cooldown randômico entre envios individuais (default 30/60s; 0/0 em dev) |
 | `ALERT_SENDER_MAX_BOUNCE_RATE` | **KL-91 · KL-108 · KL-122** — circuit breaker: pausa o remetente cujo **HARD bounce rate** passa disto (default **5.0%** no código; **valor operacional atual = 10** no `.env` da VM, amostra ≥`ALERT_SENDER_BOUNCE_MIN_SAMPLE`). **KL-108:** opera sobre **hard-only** — soft bounces (transitórios) não contam. |
@@ -152,8 +155,8 @@ R$49 (4900). **Nenhum dado de cartão/PIX é armazenado.**
 | `REOON_MAX_CONCURRENCY` | **KL-110** — máx de chamadas simultâneas à Reoon (default 5; restrição da API). Só afeta o enriquecimento em background (KL-145) |
 | ~~`EMAIL_VERIFY_ENABLED`~~ / ~~`EMAIL_VERIFY_MAX_PER_CYCLE`~~ / ~~`EMAIL_VERIFY_TTL_DAYS`~~ | **REMOVIDAS no KL-145** — a verificação Reoon saiu do fluxo de envio; essas vars não têm mais efeito no alert worker (ignoradas se presentes no `.env`) |
 | ~~`ALERT_ROLE_PENALTY`~~ | **KL-136 → SUPERADA no KL-146** — a penalidade única de prefixo role-based (-5) foi substituída pelo **fator de tipo de e-mail** (`_email_type_factor`, hardcoded no `alert_scoring.py`): pessoal +15 · genérico neutro 0 · medium-bounce (`atendimento`/`sac`) -5 · high-bounce (`contato`) -10. NÃO é mais editável por env (ignorada se presente no `.env`); só ORDENA a fila (KL-145: envio = sintaxe+MX+blocklist, não filtra) |
-| `PROFILE_VIEW_FROM_EMAIL` / `PROFILE_VIEW_FROM_NAME` | **KL-101** — remetente dedicado do aviso "perfil consultado" (default `notifica@perfil.klarim.net`). ⚠️ o subdomínio precisa estar **verificado no Resend** antes do deploy |
-| `PROFILE_VIEW_DAILY_LIMIT` | **KL-101** — teto diário de warmup do `perfil.klarim.net` (default 200; editável no painel) |
+| `PROFILE_VIEW_FROM_EMAIL` / `PROFILE_VIEW_FROM_NAME` | **KL-101 → KL-167** — remetente do aviso "perfil consultado" (default `notifica@klarimscan.com`; é cold → consolidado com os alertas, era `perfil.klarim.net`). Domínio aposentado no env é ignorado |
+| `PROFILE_VIEW_DAILY_LIMIT` | **KL-101** — teto diário de avisos "perfil consultado" (default 200; editável no painel) |
 | `DRY_RUN_EMAIL` | dev — `true` faz o `KlarimMailer._send_sync` simular (não fala com o Resend), mas grava `email_log` |
 | `RESEND_WEBHOOK_SECRET` | webhook Resend (Svix, bounce/complaint) |
 | `UNSUBSCRIBE_SECRET` | HMAC do link de descadastro (`openssl rand -hex 32`) |
@@ -168,7 +171,7 @@ Os knobs de outreach ajustados na VM (podem divergir do default do código). **O
 | `ALERT_SENDER_DAILY_LIMIT` | **500** | 100 | Teto POR sender cold/dia (warmup 100→250→500→750). Editável no painel (`admin_settings` > env). |
 | `ALERT_SENDER_MAX_BOUNCE_RATE` | **10** | 5.0 | % de **hard** bounce (KL-108) que pausa um sender. Baixar p/ 5 quando as listas estiverem limpas. |
 | `ALERT_ROLE_PENALTY` | **-5** | -5 (KL-136) | Penalidade de lead scoring p/ prefixo role-based (`contato@`…). KL-137: o score só ORDENA (não filtra) — afeta só a ORDEM de envio. |
-| `PROFILE_VIEW_DAILY_LIMIT` | **500** | 200 | Teto diário de avisos "perfil consultado" (`perfil.klarim.net`, KL-101). Editável no painel. |
+| `PROFILE_VIEW_DAILY_LIMIT` | **500** | 200 | Teto diário de avisos "perfil consultado" (`notifica@klarimscan.com`, KL-101/KL-167). Editável no painel. |
 
 > **KL-145 — Reoon FORA do fluxo de envio:** a decisão de envio é local (`is_safe_to_send`: sintaxe
 > + MX + blocklist), sem chamada à API Reoon. As vars `EMAIL_VERIFY_MAX_PER_CYCLE`/

@@ -49,8 +49,16 @@ def test_proactive_from_uses_env(monkeypatch):
 
 
 def test_proactive_from_fallback(monkeypatch):
+    # KL-167: sem env, o cold cai no domínio consolidado klarimscan.com (não no transacional).
     monkeypatch.delenv("ALERT_FROM_EMAIL", raising=False)
-    assert _mailer()._proactive_from() == _NORMAL  # cai para o remetente normal
+    assert _mailer()._proactive_from() == "Klarim <scan@klarimscan.com>"
+
+
+def test_proactive_from_drops_retired_domain(monkeypatch):
+    # KL-167: um .env legado apontando p/ subdomínio cold aposentado é ignorado → klarimscan.com.
+    monkeypatch.setenv("ALERT_FROM_EMAIL", "scan@alertas.klarim.net")
+    monkeypatch.delenv("ALERT_FROM_NAME", raising=False)
+    assert _mailer()._proactive_from() == "Klarim <scan@klarimscan.com>"
 
 
 # --- remetente por tipo ----------------------------------------------------- #
@@ -63,28 +71,44 @@ def test_alert_uses_proactive_sender(monkeypatch):
 
 
 def test_alert_fallback_when_unset(monkeypatch):
+    # KL-167: alerta cold sem env → domínio consolidado klarimscan.com.
     monkeypatch.delenv("ALERT_FROM_EMAIL", raising=False)
+    monkeypatch.delenv("ALERT_FROM_NAME", raising=False)
     params = _mailer()._alert_params("dono@x.com", "https://x.com.br", 50, "amarelo", 3, {})
-    assert params["from"] == _NORMAL
+    assert params["from"] == "Klarim <scan@klarimscan.com>"
 
 
 @pytest.mark.asyncio
-async def test_profile_view_uses_dedicated_perfil_sender(monkeypatch):
-    # KL-101: profile_view saiu do _proactive_from (klarim.net) → subdomínio perfil.klarim.net.
-    monkeypatch.setenv("ALERT_FROM_EMAIL", "alerta@klarimscan.com")   # ignorado no profile_view
+async def test_profile_view_uses_consolidated_cold_sender(monkeypatch):
+    # KL-167: profile_view é cold (primeiro contato) → consolidado em klarimscan.com.
     monkeypatch.delenv("PROFILE_VIEW_FROM_EMAIL", raising=False)
     monkeypatch.delenv("PROFILE_VIEW_FROM_NAME", raising=False)
     mailer = _mailer()
     cap = _capture(mailer)
     await mailer.send_profile_view("dono@x.com", "x.com.br", 70, "amarelo", "https://k/cta", target_id=12)
-    assert cap["params"]["from"] == "Klarim <notifica@perfil.klarim.net>"
+    assert cap["params"]["from"] == "Klarim <notifica@klarimscan.com>"
     assert "https://klarim.net/a/12" in cap["params"]["text"]   # KL-138: link curto (text/plain)
 
 
 def test_profile_view_from_env_override(monkeypatch):
-    monkeypatch.setenv("PROFILE_VIEW_FROM_EMAIL", "avisos@perfil.klarim.net")
+    monkeypatch.setenv("PROFILE_VIEW_FROM_EMAIL", "avisos@klarimscan.com")
     monkeypatch.setenv("PROFILE_VIEW_FROM_NAME", "Klarim Avisos")
-    assert _mailer()._profile_view_from() == "Klarim Avisos <avisos@perfil.klarim.net>"
+    assert _mailer()._profile_view_from() == "Klarim Avisos <avisos@klarimscan.com>"
+
+
+def test_profile_view_drops_retired_domain(monkeypatch):
+    # KL-167: env legado (perfil.klarim.net) é ignorado → notifica@klarimscan.com.
+    monkeypatch.setenv("PROFILE_VIEW_FROM_EMAIL", "notifica@perfil.klarim.net")
+    monkeypatch.delenv("PROFILE_VIEW_FROM_NAME", raising=False)
+    assert _mailer()._profile_view_from() == "Klarim <notifica@klarimscan.com>"
+
+
+def test_bulletin_from_stays_transactional(monkeypatch):
+    # KL-167: o boletim vai a quem tem conta → fica no klarim.net (não no cold klarimscan.com).
+    monkeypatch.setenv("ALERT_FROM_EMAIL", "scan@klarimscan.com")   # cold; NÃO afeta o boletim
+    monkeypatch.delenv("BULLETIN_FROM_EMAIL", raising=False)
+    monkeypatch.delenv("BULLETIN_FROM_NAME", raising=False)
+    assert _mailer()._bulletin_from() == "Klarim <alerta@klarim.net>"
 
 
 @pytest.mark.asyncio

@@ -104,14 +104,15 @@ def test_send_alert_score100_is_plain_text(monkeypatch):
 
 
 def test_send_profile_view_is_plain_text(monkeypatch):
-    # KL-101: remetente dedicado perfil.klarim.net, texto puro sem links, opt-out por resposta.
+    # KL-101 → KL-167: profile_view é cold → consolidado em klarimscan.com; texto puro sem links.
     monkeypatch.delenv("PROFILE_VIEW_FROM_EMAIL", raising=False)
+    monkeypatch.delenv("PROFILE_VIEW_FROM_NAME", raising=False)
     captured = _capture_send(monkeypatch)
     m = KlarimMailer("re_fake")
     asyncio.run(m.send_profile_view("d@e.com", "hotelparaiso.com.br", 65, "amarelo",
                                     "https://klarim.net/site/hotelparaiso.com.br", target_id=88))
     assert "html" not in captured and "text" in captured               # continua text/plain
-    assert captured["from"] == "Klarim <notifica@perfil.klarim.net>"   # subdomínio dedicado
+    assert captured["from"] == "Klarim <notifica@klarimscan.com>"      # cold consolidado (KL-167)
     assert captured["subject"] == "hotelparaiso.com.br foi consultado na Klarim"
     assert "https://klarim.net/a/88" in captured["text"]               # KL-138: link curto
     assert captured["headers"]["List-Unsubscribe"] == "<mailto:scan@klarim.net?subject=remover>"

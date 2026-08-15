@@ -84,16 +84,17 @@ Python 3.12 / **FastAPI** + **PostgreSQL 16** + **Redis** + **Astro 7** (SSR, No
 
 ## 4. E-mail (reputação)
 
-### Mapa de remetentes (`klarim.net` = 100% transacional, zero cold)
+### Mapa de remetentes — 2 DOMÍNIOS (KL-167): `klarim.net` transacional · `klarimscan.com` cold
+Consolidação de 5 domínios → 2 (o volume fracionado não construía reputação; `alertas.`/`aviso.`/`perfil.klarim.net` estavam com hard bounce > 5% = território de blacklist). **Regra:** quem JÁ tem relação (conta/opt-in/transação) → `klarim.net`; primeiro contato (cold) → `klarimscan.com`. Se `klarimscan.com` cair no spam, **não** contamina o `klarim.net`.
 | Remetente | Domínio | Tipo |
 |---|---|---|
-| `klarim@klarim.net` (`RESEND_FROM`) | klarim.net | Transacional (confirmação, boas-vindas, boletim, vigília, magic link, KYC/gate, LGPD*) |
-| `scan@alertas.klarim.net` / `scan@aviso.klarim.net` (`ALERT_SENDER_EMAILS`) | alertas./aviso. | Cold alert (rotação round-robin) |
-| `notifica@perfil.klarim.net` (`PROFILE_VIEW_FROM_EMAIL`) | perfil. | Aviso "perfil consultado" |
-| `alerta@klarim.net` (`ALERT_FROM_EMAIL`, `_proactive_from`) | klarim.net | Bulletin proativo (a quem tem conta/opt-in) |
+| `klarim@klarim.net` (`RESEND_FROM`) | klarim.net | Transacional (confirmação, boas-vindas, vigília, magic link, KYC/gate, LGPD*) |
+| `alerta@klarim.net` (`_bulletin_from`, `BULLETIN_FROM_EMAIL`) | klarim.net | **Boletim** ao dono (tem conta/opt-in → transacional, KL-167 desacoplou do cold) |
 | `privacidade@klarim.net` (`LGPD_FROM_EMAIL`) | klarim.net | Confirmação de solicitação LGPD |
+| `scan@klarimscan.com` (`ALERT_SENDER_EMAILS`/`ALERT_FROM_EMAIL`, `_proactive_from`) | klarimscan.com | **Cold alert** (primeiro contato; UM único domínio, sem rotação) |
+| `notifica@klarimscan.com` (`PROFILE_VIEW_FROM_EMAIL`, `_profile_view_from`) | klarimscan.com | Aviso "perfil consultado" (cold) |
 
-*Transacional migrou de `seguranca@` → `klarim@` (a palavra "seguranca" é keyword de phishing). Os `_from` são lidos do env a cada envio → troca do `.env` vale ao **recriar o container**.
+*Transacional migrou de `seguranca@` → `klarim@` (a palavra "seguranca" é keyword de phishing). Os `_from` são lidos do env a cada envio → troca do `.env` vale ao **recriar o container**. **Domínios cold APOSENTADOS** (`alertas.`/`aviso.`/`perfil.klarim.net` + `klarim.net` cru): `notifier.cold_alert.RETIRED_SENDER_DOMAINS` + `email_client._RETIRED_COLD_DOMAINS` os descartam SEMPRE — um `.env` legado que ainda os aponte cai no default consolidado (klarimscan.com), nunca envia por eles. Ficam no DNS (respostas pendentes). No Resend, `klarimscan.com` já verificado (SPF+DKIM).
 
 ### Regra de envio ATUAL (KL-145 — Reoon FORA do fluxo de envio)
 `is_safe_to_send(email, redis, store)` = **3 filtros LOCAIS**: (1) sintaxe válida, (2) domínio tem MX (cache Redis 24h, respeita `ALERT_VALIDATE_MX`, **fail-open**), (3) não está na blocklist. **Tudo que passa → ENVIA.** O status Reoon (`unknown`/`catch_all`/`safe`/…) e `email_verified` **NÃO decidem envio**. A **blocklist aprendente** (cada bounce, via webhook Resend → `email_blocklist`) aprende quem não recebe. **O lead_score NÃO decide envio — só ORDENA a fila.** `_verify_and_filter` (alert worker) aplica os 3 filtros; stats do ciclo: `eligible/valid_syntax/has_mx/not_blocklisted/blocked_*/errors`. O Reoon fica no `email_verifier` (`verify_reoon`/`verify_local`/cache) só como **enriquecimento em background** (scripts `cleanup_email_backlog.py` + saldo no `/system/status`) — NUNCA no alert worker. Toda a regra binária por-status e os gates/trust dos KL-108..KL-137 são **históricos**.
@@ -101,16 +102,17 @@ Python 3.12 / **FastAPI** + **PostgreSQL 16** + **Redis** + **Astro 7** (SSR, No
 ### Cold alerts (a quem NÃO tem conta)
 - Módulo `notifier/cold_alert.py` + `alert_worker`. **Texto puro (text/plain, NUNCA HTML)** com **UM link CURTO** `klarim.net/a/{target_id}` (`report_link`) → API redireciona 302 p/ `/site/{domain}` e registra o clique server-side (`email_clicks`, IP mascarado /24). Sem UTM.
 - 3 variantes (informativa/setorial/educativa); opt-out **por resposta** ("responda com remover") + `List-Unsubscribe` (mailto + https one-click `/remover?token=`, RFC 8058).
-- **Rotação round-robin** entre `alertas.klarim.net` e `aviso.klarim.net` (`load_senders` descarta `klarim.net` cru). Envio **individual** com **cooldown 30-60s** (`ALERT_SEND_INTERVAL_MIN/MAX`) + **limite diário POR remetente** (`ALERT_SENDER_DAILY_LIMIT`, warmup 100→750; editável no painel).
-- **Circuit breaker por remetente:** só **HARD bounce** > 5% (`ALERT_SENDER_MAX_BOUNCE_RATE`) com amostra ≥100 (`ALERT_SENDER_BOUNCE_MIN_SAMPLE`) sobre janela móvel de 7 dias (`email_health_by_domain(days=7)`) → remetente **pausado** no ciclo (o outro continua). **Soft bounce** (transitório: caixa cheia, `delivery_delayed`) é medido/logado como `soft_bounced` mas **NUNCA pausa**. `email_health_by_domain` devolve `hard_bounced`/`soft_bounced` separados; `bounce_rate`=hard-only. Safety net GLOBAL do KL-24 (`_check_bounce_health`→`email_health()`, all-time 8%) é query separada, inalterada.
+- **Remetente único `scan@klarimscan.com` (KL-167 — sem rotação):** `load_senders` descarta os domínios de `RETIRED_SENDER_DOMAINS` (klarim.net + alertas./aviso./perfil.klarim.net) e cai no default consolidado se o env só tiver aposentados (nunca fica sem remetente). A máquina de rotação (`pick_sender`) segue no código (aceita >1 mailbox em klarimscan.com no futuro), mas em produção é 1 domínio. Envio **individual** com **cooldown 30-60s** (`ALERT_SEND_INTERVAL_MIN/MAX`) + **limite diário POR remetente** (`ALERT_SENDER_DAILY_LIMIT`, warmup; editável no painel).
+- **Circuit breaker por remetente:** só **HARD bounce** > 5% (`ALERT_SENDER_MAX_BOUNCE_RATE`) com amostra ≥100 (`ALERT_SENDER_BOUNCE_MIN_SAMPLE`) sobre janela móvel de 7 dias (`email_health_by_domain(days=7)`) → remetente **pausado** no ciclo. Com 1 só remetente, pausar = ciclo não envia (proteção: melhor parar que torrar o único domínio cold; o safety net global de 8% do KL-24 também vale). **Soft bounce** (transitório) é medido/logado como `soft_bounced` mas **NUNCA pausa**. `email_health_by_domain` devolve `hard_bounced`/`soft_bounced` separados; `bounce_rate`=hard-only.
+- **Targeting (KL-167) — 2 filtros novos no `_verify_and_filter` + 1 ordenação:** (1) **pula caixas genéricas** (`ALERT_SKIP_GENERIC`, default on) `contato@`/`atendimento@`/`sac@`/`info@`/`comercial@`/`vendas@` (`alert_scoring.is_generic_alert_email`; bounce 8,7% vs 3,6% pessoais) → `blocked_generic`; (2) **intervalo mínimo por E-MAIL** (`ALERT_REALERT_MIN_DAYS`, default 90) via `store.recently_alerted_emails` — complementa a janela POR ALVO de `_ALERT_ELIGIBLE_WHERE` (subiu 30→90d) → `blocked_recent_email`; (3) **ordena por urgência**: `_urgency_bucket` põe score `<70` primeiro, `85+` por último (sort estável preserva a ordem por lead score dentro da faixa). Stats do ciclo: `KL-167[bloq_genérico / bloq_realerta90d]`.
 
 ### Profile_view ("perfil consultado")
-- Remetente dedicado `notifica@perfil.klarim.net` (`_profile_view_from`; **não rotaciona** com os cold alerts — o volume destruiria o warmup deles). **Texto puro SEM links** (`build_profile_view_text(domain, target_id)` → link curto `/a/{id}`), opt-out por resposta.
+- **KL-167:** é cold (primeiro contato) → remetente `notifica@klarimscan.com` (`_profile_view_from`), consolidado com os cold alerts (era `perfil.klarim.net`, aposentado). **Texto puro SEM links** (`build_profile_view_text(domain, target_id)` → link curto `/a/{id}`), opt-out por resposta.
 - Volume: dedup por dono **1/dia** (`notify_owner:{email}` Redis) + dedup por domínio/24h + teto diário `PROFILE_VIEW_DAILY_LIMIT` (editável no painel).
 - Gatilho: nasce do **evento `profile_view` HUMANO-verificado** (`track.js`→`/api/events`→`_profile_view_notify`), **não** do SSR (KL-64: o SSR gerava ~7k e-mails/dia de bots).
 
 ### Lead scoring (só ORDENA a fila — `discovery/alert_scoring.py::calculate_alert_score`, PURO)
-Sinais: +30 e-mail no domínio · +10 corporativo · +20/+10/+5 por faixa de score (50-85/40-49/>85) · **tipo de e-mail** (`_email_type_factor`): pessoal **+15** · genérico neutro 0 · medium-bounce (`atendimento`/`sac`) -5 · high-bounce (`contato`) -10 · -10 descartado/score<40 · -40 domínio com bounce (só domínio próprio/corporativo; provedores gmail/outlook NÃO penalizam). Grava `targets.alert_quality_score` para TODOS (NUNCA impede scan/envio). O `run_cycle` ordena por score DESC (pessoais antes de genéricos → a blocklist aprende com os genéricos antes de mandar muito).
+Sinais: +30 e-mail no domínio · +10 corporativo · +20/+10/+5 por faixa de score (50-85/40-49/>85) · **tipo de e-mail** (`_email_type_factor`): pessoal **+15** · genérico neutro 0 · medium-bounce (`atendimento`/`sac`) -5 · high-bounce (`contato`) -10 · -10 descartado/score<40 · -40 domínio com bounce (só domínio próprio/corporativo; provedores gmail/outlook NÃO penalizam). Grava `targets.alert_quality_score` para TODOS (NUNCA impede scan). O `run_cycle` ordena por score DESC e depois por urgência (KL-167). **⚠️ KL-167 mudou o KL-146:** genéricos não só descem na fila — os `contato@`/`atendimento@`/`sac@`/`info@`/`comercial@`/`vendas@` **não recebem mais alerta** (filtro em `is_generic_alert_email`); o `_email_type_factor` segue só reordenando os demais.
 
 ### Outras regras de e-mail
 - **Bounce webhook `/webhooks/resend`:** permanente → `bounced` + descarta alvo + blocklist; transitório → `soft_bounced` (rastreia, não descarta). `email_log.status` é texto livre.
@@ -249,7 +251,7 @@ docker compose -f docker-compose.dev.yml exec api python -m scripts.seed_dev
 - Testes: **~2317 pytest** + **~221 node --test** (`npm run test:unit`).
 - Workers: **5/5 ativos** (discovery, alert, scan, vigília, rescan) + VendorMonitor.
 - Scan rate 200/h · responses brutos no GCS `gs://klarim-raw`.
-- E-mail: cold com rotação `alertas./aviso.klarim.net`, regra de envio = 3 filtros locais (KL-145), blocklist aprendente.
+- E-mail: **2 domínios (KL-167)** — cold em `klarimscan.com` (único, sem rotação), transacional/boletim/LGPD em `klarim.net`; regra de envio = 3 filtros locais (KL-145) + pula genéricos + intervalo 90d/e-mail; blocklist aprendente.
 - MCP tools: **~80**. Analytics admin: aba "Visão geral" **desativada** (ver §9); 1ª aba = "Comportamento".
 - Security Gate: produto vivo (§9). Blog, LGPD (`/lgpd`), sitemap dinâmico ativos.
 
@@ -360,6 +362,7 @@ Scanner de EXPOSIÇÃO/config pós-deploy (**passivo — GET/HEAD/DNS/handshake 
 - **KL-161** conformidade LGPD (/lgpd, DPO, ROPA) · **KL-163** PDF de run do Gate + endereço estruturado KYC · **KL-26** cobertura de testes transversais
 - **KL-134** micro-ferramentas SEO ✅ (P1 backend: 5 tools públicas `/api/tools/*` + rate limiter + stats; P2 frontend: `/ferramentas/*` landing pages + nav + FAQ Schema.org)
 - **KL-165** tech detector same-origin + 2+ sinais (fix falso positivo WordPress por refs cross-origin — caso telecomsip.com.br; remove `cdn.shopify.com` embed-prone)
+- **KL-167** consolida e-mail em 2 domínios (klarim.net transacional + klarimscan.com cold, sem rotação) + targeting (pula genéricos, intervalo 90d/e-mail, foco em score<70) — resolve spam
 
 Histórico completo em **`docs/HISTORY.md`**; deploys em **`claude/DEPLOY_HISTORY.md`**; relatórios em `claude/reports/`.
 

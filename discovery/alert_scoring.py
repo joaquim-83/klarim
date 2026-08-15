@@ -79,6 +79,33 @@ def _email_type_factor(email: Optional[str]) -> int:
     return 15                                          # não é genérico conhecido → provável pessoal
 
 
+# KL-167 — caixas genéricas que NÃO recebem MAIS alerta cold (mudança do KL-146, que só
+# reordenava): bounce 8,7% (genéricos) vs 3,6% (pessoais). Filtradas no alert worker antes do
+# envio, para proteger a reputação do domínio cold consolidado (klarimscan.com). Lista do card:
+# contato/atendimento/sac/info/comercial/vendas. Reforça o sinal negativo do `_email_type_factor`.
+GENERIC_ALERT_SKIP_PREFIXES = (
+    "contato", "atendimento", "sac", "info", "comercial", "vendas",
+)
+# Fronteira de palavra p/ o "começa com" do card sem overmatch: `sac2@`/`sac.loja@` casam;
+# `sacha@`/`informatica@`/`vendasparceladas`… NÃO (o prefixo tem de terminar em separador/dígito).
+_GENERIC_BOUNDARY = "0123456789.-_+"
+
+
+def is_generic_alert_email(email: Optional[str]) -> bool:
+    """KL-167 — True se o e-mail é uma caixa genérica que não deve receber alerta cold.
+
+    Casa quando o local-part É um dos prefixos genéricos, ou começa com ele seguido de uma
+    fronteira de palavra (dígito/`.`/`-`/`_`/`+`). Evita o overmatch de um `startswith` puro
+    (não pega `sacha@`, `informatica@`). Pura/testável."""
+    local, _ = _email_parts(email or "")
+    if not local:
+        return False
+    for p in GENERIC_ALERT_SKIP_PREFIXES:
+        if local == p or (local.startswith(p) and local[len(p)] in _GENERIC_BOUNDARY):
+            return True
+    return False
+
+
 # Nome do sinal no breakdown, por valor do fator (transparência no detalhe admin).
 _EMAIL_TYPE_SIGNAL = {
     15: "email_type_personal",

@@ -25,26 +25,31 @@ _SECRET = "s" * 40
 # Circuit breaker hard/soft (KL-108)
 # --------------------------------------------------------------------------- #
 
+# KL-167 — 2 remetentes de teste (a máquina do breaker/rotação segue válida mesmo com a
+# produção consolidada num só domínio cold, klarimscan.com).
+_TWO_ENV = {"ALERT_SENDER_EMAILS": "scan@a.example.com, scan@b.example.com"}
+
+
 def test_breaker_pauses_on_hard_over_threshold():
-    s = cold_alert.load_senders({})
-    by = {"alertas.klarim.net": {"total": 100, "hard_bounced": 6, "soft_bounced": 10},
-          "aviso.klarim.net": {"total": 100, "hard_bounced": 1, "soft_bounced": 0}}
+    s = cold_alert.load_senders(_TWO_ENV)
+    by = {"a.example.com": {"total": 100, "hard_bounced": 6, "soft_bounced": 10},
+          "b.example.com": {"total": 100, "hard_bounced": 1, "soft_bounced": 0}}
     paused = cold_alert.flag_high_bounce(s, by, max_rate=5.0, min_sample=20)
-    assert paused == [("alertas.klarim.net", 6.0)]  # hard 6% > 5% → pausa (soft irrelevante)
+    assert paused == [("a.example.com", 6.0)]  # hard 6% > 5% → pausa (soft irrelevante)
 
 
 def test_breaker_ignores_high_soft():
-    s = cold_alert.load_senders({})
-    by = {"alertas.klarim.net": {"total": 100, "hard_bounced": 3, "soft_bounced": 15},
-          "aviso.klarim.net": {"total": 100, "hard_bounced": 0, "soft_bounced": 0}}
+    s = cold_alert.load_senders(_TWO_ENV)
+    by = {"a.example.com": {"total": 100, "hard_bounced": 3, "soft_bounced": 15},
+          "b.example.com": {"total": 100, "hard_bounced": 0, "soft_bounced": 0}}
     paused = cold_alert.flag_high_bounce(s, by, max_rate=5.0, min_sample=20)
     assert paused == []  # hard 3% < 5% → NÃO pausa apesar do soft 15%
 
 
 def test_breaker_reads_hard_not_combined():
     # Combinado seria 4+8=12% (>5%); hard sozinho é 4% (<5%) → não pausa.
-    s = cold_alert.load_senders({})
-    by = {"alertas.klarim.net": {"total": 100, "hard_bounced": 4, "soft_bounced": 8}}
+    s = cold_alert.load_senders(_TWO_ENV)
+    by = {"a.example.com": {"total": 100, "hard_bounced": 4, "soft_bounced": 8}}
     assert cold_alert.flag_high_bounce(s, by, max_rate=5.0, min_sample=20) == []
 
 
@@ -129,8 +134,8 @@ def test_unsubscribe_token_rejects_tamper():
 # --------------------------------------------------------------------------- #
 
 def test_rotation_alternates_between_two_active():
-    s = cold_alert.load_senders({})
-    counts = {"alertas.klarim.net": 0, "aviso.klarim.net": 0}
+    s = cold_alert.load_senders(_TWO_ENV)
+    counts = {"a.example.com": 0, "b.example.com": 0}
     first = cold_alert.pick_sender(s, counts, 100)
     counts[first.from_domain] += 1
     second = cold_alert.pick_sender(s, counts, 100)
@@ -138,15 +143,15 @@ def test_rotation_alternates_between_two_active():
 
 
 def test_rotation_uses_only_active_when_one_paused():
-    s = cold_alert.load_senders({})
+    s = cold_alert.load_senders(_TWO_ENV)
     s[0].status = "paused"
-    got = cold_alert.pick_sender(s, {"alertas.klarim.net": 0, "aviso.klarim.net": 5}, 100)
-    assert got.from_domain == "aviso.klarim.net"  # o ativo, mesmo com mais volume
+    got = cold_alert.pick_sender(s, {"a.example.com": 0, "b.example.com": 5}, 100)
+    assert got.from_domain == "b.example.com"  # o ativo, mesmo com mais volume
 
 
 def test_rotation_none_when_all_at_daily_limit():
-    s = cold_alert.load_senders({})
-    counts = {"alertas.klarim.net": 100, "aviso.klarim.net": 100}
+    s = cold_alert.load_senders(_TWO_ENV)
+    counts = {"a.example.com": 100, "b.example.com": 100}
     assert cold_alert.pick_sender(s, counts, 100) is None  # ninguém disponível
 
 

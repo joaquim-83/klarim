@@ -1,16 +1,18 @@
 """Alert Worker — dispara o alerta cold gratuito por e-mail para alvos escaneados.
 
 Elegibilidade: status='scanned', com FALHAS, com e-mail, sem alerta nos últimos
-30 dias, não 'unsubscribed'.
+90 dias (KL-167), não 'unsubscribed'.
 
-Envio COLD (KL-91): cada ciclo escolhe, por e-mail, um dos remetentes rotacionados
-(`notifier.cold_alert.pick_sender` — round-robin pelo de menor volume no dia; ver
-`docs/ARCHITECTURE.md`), renderiza uma das 3 variantes de **texto puro sem links** e
-envia INDIVIDUALMENTE (não mais em batch) via `KlarimMailer.send_cold_alert`, com
-**cooldown 30-60s** entre e-mails. Tetos: **limite diário POR remetente**
-(`ALERT_SENDER_DAILY_LIMIT`, warmup), o `ALERT_DAILY_LIMIT` global e a **cota mensal**
-(`ALERT_MONTHLY_LIMIT`, compartilhada com a evolução do Re-scan). Circuit breaker por
-remetente pausa quem passar de `ALERT_SENDER_MAX_BOUNCE_RATE` (amostra ≥20).
+Envio COLD (KL-91 · consolidado no KL-167): todo alerta sai de UM único domínio dedicado
+(`scan@klarimscan.com`, `notifier.cold_alert`), renderiza uma das 3 variantes de **texto
+puro** e envia INDIVIDUALMENTE via `KlarimMailer.send_cold_alert`, com **cooldown 30-60s**.
+Tetos: **limite diário POR remetente** (`ALERT_SENDER_DAILY_LIMIT`, warmup), o
+`ALERT_DAILY_LIMIT` global e a **cota mensal** (`ALERT_MONTHLY_LIMIT`, compartilhada com o
+Re-scan). Circuit breaker pausa o remetente que passar de `ALERT_SENDER_MAX_BOUNCE_RATE`.
+
+Targeting (KL-167): `_verify_and_filter` pula caixas genéricas (`ALERT_SKIP_GENERIC`) e
+e-mails alertados nos últimos `ALERT_REALERT_MIN_DAYS` (90) dias; `run_cycle` prioriza os
+sites de score BAIXO (`_urgency_bucket`: <70 primeiro, 85+ por último).
 """
 
 from __future__ import annotations
@@ -34,6 +36,7 @@ from notifier import email_verifier
 from .store import get_target_store
 from .heartbeat import publish_heartbeat
 from .contact import email_mx_status, _clean_email
+from . import alert_scoring
 from .alert_scoring import FREE_EMAIL_DOMAINS, calculate_alert_score
 from . import worker_control
 
@@ -52,6 +55,22 @@ _BONUS_TOKEN_TTL = 30 * 86400  # 30 dias — o e-mail de score 100 pode ser clic
 
 def _is_score100(score, semaphore) -> bool:
     return score == 100 and (str(semaphore or "").lower() == "verde")
+
+
+def _urgency_bucket(target: Dict[str, Any]) -> int:
+    """KL-167 — faixa de urgência pelo score de segurança (menor = mais urgente = enviado
+    primeiro): 0 = score < 70 (urgência real), 1 = 70-84, 2 = 85+ / sem score (não precisa de
+    alerta urgente; inclui o convite de score 100). Só ORDENA — não filtra."""
+    sc = target.get("last_scan_score")
+    if sc is None:
+        sc = target.get("scan_score")
+    if sc is None:
+        return 2
+    if sc < 70:
+        return 0
+    if sc < 85:
+        return 1
+    return 2
 
 
 def bonus_scan_token(email: str, url: str) -> str:
@@ -184,6 +203,11 @@ async def send_alert_for_target(store, mailer: KlarimMailer, target: Dict[str, A
 
 
 class AlertWorker:
+    # KL-167 — defaults de classe (aplicam a instâncias construídas via __new__, ex.: testes):
+    # pular caixas genéricas + intervalo mínimo de re-alerta por e-mail (90 dias).
+    skip_generic = True
+    realert_min_days = 90
+
     def __init__(self) -> None:
         # Batch sending (KL-23 / Resend Pro).
         self.batch_size = int(os.environ.get("ALERT_BATCH_SIZE", "50"))
@@ -211,6 +235,10 @@ class AlertWorker:
         self.sender_max_bounce_rate = float(os.environ.get("ALERT_SENDER_MAX_BOUNCE_RATE", "5.0"))
         self.sender_bounce_min_sample = int(os.environ.get(
             "ALERT_SENDER_BOUNCE_MIN_SAMPLE", str(cold_alert.DEFAULT_BOUNCE_MIN_SAMPLE)))
+        # KL-167 — targeting: pular caixas genéricas (contato@/atendimento@/…) e garantir
+        # intervalo mínimo de re-alerta POR E-MAIL (mesmo e-mail em alvos diferentes).
+        self.skip_generic = os.environ.get("ALERT_SKIP_GENERIC", "true").lower() != "false"
+        self.realert_min_days = int(os.environ.get("ALERT_REALERT_MIN_DAYS", "90"))
         # KL-145 — a verificação Reoon Power SAIU do fluxo de envio (travava o volume em 2-8/ciclo).
         # A decisão de envio agora é local (sintaxe + MX + blocklist, ver `_verify_and_filter`). O
         # `email_verifier` mantém a Reoon só p/ enriquecimento em background (scripts). `validate_mx`
@@ -236,6 +264,10 @@ class AlertWorker:
             # KL-91 — limite diário por remetente (knob do warmup, editável no painel).
             self.sender_daily_limit = int(
                 await g("ALERT_SENDER_DAILY_LIMIT", self.sender_daily_limit))
+            # KL-167 — targeting editável ao vivo (pular genéricos + intervalo por e-mail).
+            self.skip_generic = str(
+                await g("ALERT_SKIP_GENERIC", str(self.skip_generic))).lower() not in ("false", "0")
+            self.realert_min_days = int(await g("ALERT_REALERT_MIN_DAYS", self.realert_min_days))
         except Exception as exc:  # noqa: BLE001
             print(f"[alert] reload settings falhou (mantém atual): {exc!r}", flush=True)
 
@@ -397,14 +429,37 @@ class AlertWorker:
         eligible/valid_syntax/has_mx/not_blocklisted + blocked_syntax/blocked_mx/blocked_blocklist."""
         stats = {"eligible": len(targets), "valid_syntax": 0, "has_mx": 0,
                  "not_blocklisted": 0, "blocked_syntax": 0, "blocked_mx": 0,
-                 "blocked_blocklist": 0, "errors": 0}
+                 "blocked_blocklist": 0, "blocked_generic": 0, "blocked_recent_email": 0,
+                 "errors": 0}
         redis = await self._redis_client() if self.validate_mx else None
+
+        # KL-167 — intervalo mínimo de re-alerta POR E-MAIL: pré-consulta (1 query) quais dos
+        # e-mails candidatos já receberam alerta nos últimos `realert_min_days` dias.
+        recent_emails: set = set()
+        if targets and self.realert_min_days > 0:
+            try:
+                cand = [(t.get("contact_email") or "").strip().lower() for t in targets]
+                recent_emails = await self.store.recently_alerted_emails(
+                    [e for e in cand if e], self.realert_min_days)
+            except Exception as exc:  # noqa: BLE001 - fail-open: sem histórico, não bloqueia
+                print(f"[alert] recently_alerted_emails falhou (segue): {exc!r}", flush=True)
 
         sendable = []
         for t in targets:
             email = (t.get("contact_email") or "").strip().lower()
             if not email:
                 stats["errors"] += 1
+                continue
+
+            # Filtro 0a (KL-167) — pula caixas genéricas (contato@/atendimento@/sac@/info@/
+            # comercial@/vendas@): bounce 8,7% vs 3,6% dos pessoais → protege a reputação cold.
+            if self.skip_generic and alert_scoring.is_generic_alert_email(email):
+                stats["blocked_generic"] += 1
+                continue
+
+            # Filtro 0b (KL-167) — intervalo mínimo por e-mail (mesmo e-mail em outro alvo).
+            if email in recent_emails:
+                stats["blocked_recent_email"] += 1
                 continue
 
             # Filtro 1 — sintaxe válida.
@@ -556,6 +611,10 @@ class AlertWorker:
         stats["avg_alert_score"] = avg_score
         # Melhores leads primeiro: dado o send_cap, envia os de MAIOR score (mais provável clique).
         targets.sort(key=lambda t: t.get("_alert_score", 0), reverse=True)
+        # KL-167 — foco em urgência REAL: sites com score de segurança BAIXO primeiro (sort estável
+        # preserva a ordem por lead score dentro de cada faixa). Sites 85+ não precisam de alerta
+        # urgente → vão ao fim. Bucket: <70 (urgente) < 70-84 < 85+ (inclui o convite score 100).
+        targets.sort(key=_urgency_bucket)
 
         # KL-145 — filtro de envio LOCAL (sintaxe + MX + blocklist), sem Reoon. Substitui a
         # verificação Power que travava o volume; a blocklist aprendente (webhook de bounce) é o
@@ -653,7 +712,9 @@ class AlertWorker:
               f"KL-145[sintaxe={v.get('valid_syntax', 0)} mx={v.get('has_mx', 0)} "
               f"sem_blocklist={v.get('not_blocklisted', 0)} "
               f"bloq_sintaxe={v.get('blocked_syntax', 0)} bloq_mx={v.get('blocked_mx', 0)} "
-              f"bloq_blocklist={v.get('blocked_blocklist', 0)}] "
+              f"bloq_blocklist={v.get('blocked_blocklist', 0)} "
+              f"KL-167[bloq_genérico={v.get('blocked_generic', 0)} "
+              f"bloq_realerta90d={v.get('blocked_recent_email', 0)}]] "
               f"adiados={stats['skipped']} erros={stats['errors']} | "
               f"mês {sent_month + stats['sent']}/{self.monthly_limit}", flush=True)
         return stats

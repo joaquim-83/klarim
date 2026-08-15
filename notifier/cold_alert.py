@@ -9,9 +9,13 @@ envio por um único domínio recém-criado). A correção:
      cada variante agora inclui UM link — o perfil público do site
      (`klarim.net/site/{domain}?utm_source=alerta&utm_medium=email`, `report_link`) — depois
      da mensagem do score, antes da assinatura. O 'sem links' do KL-91 gerava quase zero visitas.
-  2. **Rotação round-robin** entre `alertas.klarim.net` e `aviso.klarim.net` (ambos
-     verificados no Resend — DKIM/SPF/DMARC). O domínio principal `klarim.net` fica
-     EXCLUSIVO do transacional (isolamento de reputação, ver `docs/ARCHITECTURE.md`).
+  2. **KL-167 (consolidação):** todo cold outreach sai de UM único domínio dedicado,
+     `klarimscan.com` (verificado no Resend — DKIM/SPF/DMARC). Antes o volume era
+     fracionado em `alertas.klarim.net` + `aviso.klarim.net` (+ `perfil.klarim.net` no
+     profile_view) — nenhum com reputação suficiente (hard bounce > 5%, território de
+     blacklist). Concentrar num só domínio constrói reputação e, se `klarimscan.com` for
+     para spam, NÃO contamina o `klarim.net` (transacional). O `klarim.net` e os 3
+     subdomínios cold antigos ficam APOSENTADOS para envio (`RETIRED_SENDER_DOMAINS`).
 
 Tudo aqui é **puro/testável** (sem I/O): o `alert_worker` chama `load_senders`,
 `pick_sender`, `flag_high_bounce`, `choose_variant` e `build_cold_email`. O envio em
@@ -25,13 +29,25 @@ import random
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
-# Subdomínios verificados no Resend (Cloudflare, sa-east-1, DKIM verified). O domínio
-# principal (klarim.net) NÃO entra aqui — é do transacional. Sobrescrevível via env
-# `ALERT_SENDER_EMAILS` (CSV) para adicionar/trocar remetentes sem redeploy de código.
+# KL-167 — domínio ÚNICO de cold outreach (verificado no Resend, DKIM/SPF/DMARC).
+# Sobrescrevível via env `ALERT_SENDER_EMAILS` (CSV), mas os domínios aposentados abaixo
+# são SEMPRE descartados (mesmo se o `.env` da VM ainda os listar).
 DEFAULT_SENDER_EMAILS: Tuple[str, ...] = (
-    "scan@alertas.klarim.net",
-    "scan@aviso.klarim.net",
+    "scan@klarimscan.com",
 )
+
+# Domínios que NÃO enviam mais cold (isolamento de reputação, KL-167):
+# - `klarim.net` é exclusivo do transacional (regra histórica de isolamento);
+# - `alertas.`/`aviso.`/`perfil.klarim.net` foram consolidados em `klarimscan.com`
+#   (hard bounce > 5% — território de blacklist). Ficam no DNS (respostas pendentes),
+#   mas nenhum envio novo sai deles. Descartados em `load_senders` e nos remetentes cold
+#   do `email_client` (`_proactive_from`/`_profile_view_from`).
+RETIRED_SENDER_DOMAINS = frozenset({
+    "klarim.net",
+    "alertas.klarim.net",
+    "aviso.klarim.net",
+    "perfil.klarim.net",
+})
 
 # Nome de exibição do remetente (De: "Klarim <scan@…>"). Reduz cara de spam vs. só o
 # e-mail cru, mantendo o tom institucional da assinatura.
@@ -70,23 +86,34 @@ def _domain_of(email: str) -> str:
     return (email or "").rsplit("@", 1)[-1].strip().lower()
 
 
+def _build_senders(emails: Sequence[str], seen: set) -> List[Sender]:
+    """Constrói Senders deduplicando por domínio e descartando os aposentados (KL-167)."""
+    out: List[Sender] = []
+    for e in emails:
+        dom = _domain_of(e)
+        if not dom or "@" not in e or dom in RETIRED_SENDER_DOMAINS or dom in seen:
+            continue  # isolamento: klarim.net + subdomínios cold antigos não enviam; sem dupes
+        seen.add(dom)
+        out.append(Sender(name=dom.split(".")[0], email=e, from_domain=dom))
+    return out
+
+
 def load_senders(env: Optional[Dict[str, str]] = None) -> List[Sender]:
     """Constrói a lista de remetentes cold a partir do env (fail-safe → defaults).
 
-    `ALERT_SENDER_EMAILS` é um CSV de e-mails; vazio/ausente → `DEFAULT_SENDER_EMAILS`.
-    Nunca inclui `klarim.net` cru (guard de isolamento): um e-mail cujo domínio seja
-    exatamente `klarim.net` é descartado (o transacional não rotaciona)."""
+    `ALERT_SENDER_EMAILS` é um CSV de e-mails; vazio/ausente → `DEFAULT_SENDER_EMAILS`
+    (`scan@klarimscan.com`). **KL-167:** os domínios em `RETIRED_SENDER_DOMAINS`
+    (`klarim.net` + `alertas.`/`aviso.`/`perfil.klarim.net`) são SEMPRE descartados — mesmo
+    se o `.env` da VM ainda os listar. Se, após o descarte, sobrar zero remetente (o env só
+    tinha domínios aposentados), cai no `DEFAULT_SENDER_EMAILS` consolidado (klarimscan.com),
+    para o cold nunca ficar sem remetente por causa de env legado."""
     src = env if env is not None else os.environ
     raw = (src.get("ALERT_SENDER_EMAILS") or "").strip()
     emails = [e.strip() for e in raw.split(",") if e.strip()] or list(DEFAULT_SENDER_EMAILS)
-    senders: List[Sender] = []
-    seen = set()
-    for e in emails:
-        dom = _domain_of(e)
-        if not dom or "@" not in e or dom == "klarim.net" or dom in seen:
-            continue  # isolamento: klarim.net é só transacional; sem duplicatas
-        seen.add(dom)
-        senders.append(Sender(name=dom.split(".")[0], email=e, from_domain=dom))
+    seen: set = set()
+    senders = _build_senders(emails, seen)
+    if not senders:  # env só listava domínios aposentados → default consolidado
+        senders = _build_senders(DEFAULT_SENDER_EMAILS, seen)
     return senders
 
 

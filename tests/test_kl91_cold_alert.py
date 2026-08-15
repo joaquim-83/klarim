@@ -98,26 +98,40 @@ def test_choose_variant_without_sector_never_2():
 # load_senders — defaults, env, guard de isolamento, dedup
 # --------------------------------------------------------------------------- #
 
+def _two():
+    """KL-167 — 2 remetentes de TESTE (não-aposentados) p/ exercitar a rotação/breaker, cuja
+    MÁQUINA continua válida mesmo com a produção consolidada num só domínio (klarimscan.com)."""
+    return c.load_senders({"ALERT_SENDER_EMAILS": "scan@a.example.com, scan@b.example.com"})
+
+
 def test_load_senders_defaults():
+    # KL-167 — cold consolidado num único domínio dedicado.
     s = c.load_senders({})
-    assert [x.from_domain for x in s] == ["alertas.klarim.net", "aviso.klarim.net"]
-    assert s[0].from_address == "Klarim <scan@alertas.klarim.net>"
+    assert [x.from_domain for x in s] == ["klarimscan.com"]
+    assert s[0].from_address == "Klarim <scan@klarimscan.com>"
 
 
 def test_load_senders_env_override():
-    s = c.load_senders({"ALERT_SENDER_EMAILS": "a@um.klarim.net, b@dois.klarim.net"})
-    assert [x.from_domain for x in s] == ["um.klarim.net", "dois.klarim.net"]
+    s = c.load_senders({"ALERT_SENDER_EMAILS": "a@um.example.com, b@dois.example.com"})
+    assert [x.from_domain for x in s] == ["um.example.com", "dois.example.com"]
 
 
-def test_load_senders_isolation_drops_transactional_domain():
-    # klarim.net cru é do transacional → nunca entra na rotação cold.
-    s = c.load_senders({"ALERT_SENDER_EMAILS": "scan@klarim.net, scan@aviso.klarim.net"})
-    assert [x.from_domain for x in s] == ["aviso.klarim.net"]
+def test_load_senders_drops_retired_domains():
+    # KL-167: klarim.net + subdomínios cold antigos (alertas/aviso/perfil) são descartados.
+    s = c.load_senders({"ALERT_SENDER_EMAILS":
+                        "scan@klarim.net, scan@aviso.klarim.net, scan@novo.example.com"})
+    assert [x.from_domain for x in s] == ["novo.example.com"]
+
+
+def test_load_senders_retired_only_falls_back_to_default():
+    # env só com domínios aposentados → cai no default consolidado (klarimscan.com), nunca vazio.
+    s = c.load_senders({"ALERT_SENDER_EMAILS": "scan@alertas.klarim.net, scan@aviso.klarim.net"})
+    assert [x.from_domain for x in s] == ["klarimscan.com"]
 
 
 def test_load_senders_dedup():
-    s = c.load_senders({"ALERT_SENDER_EMAILS": "a@x.klarim.net, b@x.klarim.net"})
-    assert [x.from_domain for x in s] == ["x.klarim.net"]
+    s = c.load_senders({"ALERT_SENDER_EMAILS": "a@x.example.com, b@x.example.com"})
+    assert [x.from_domain for x in s] == ["x.example.com"]
 
 
 # --------------------------------------------------------------------------- #
@@ -125,21 +139,21 @@ def test_load_senders_dedup():
 # --------------------------------------------------------------------------- #
 
 def test_pick_sender_least_used():
-    s = c.load_senders({})
-    got = c.pick_sender(s, {"alertas.klarim.net": 5, "aviso.klarim.net": 2}, 100)
-    assert got.from_domain == "aviso.klarim.net"  # o de menor contagem
+    s = _two()
+    got = c.pick_sender(s, {"a.example.com": 5, "b.example.com": 2}, 100)
+    assert got.from_domain == "b.example.com"  # o de menor contagem
 
 
 def test_pick_sender_none_when_all_at_limit():
-    s = c.load_senders({})
-    assert c.pick_sender(s, {"alertas.klarim.net": 100, "aviso.klarim.net": 100}, 100) is None
+    s = _two()
+    assert c.pick_sender(s, {"a.example.com": 100, "b.example.com": 100}, 100) is None
 
 
 def test_pick_sender_skips_paused():
-    s = c.load_senders({})
+    s = _two()
     s[0].status = "paused"
-    got = c.pick_sender(s, {"alertas.klarim.net": 0, "aviso.klarim.net": 50}, 100)
-    assert got.from_domain == "aviso.klarim.net"  # o ativo, mesmo com mais volume
+    got = c.pick_sender(s, {"a.example.com": 0, "b.example.com": 50}, 100)
+    assert got.from_domain == "b.example.com"  # o ativo, mesmo com mais volume
 
 
 # --------------------------------------------------------------------------- #
@@ -147,17 +161,17 @@ def test_pick_sender_skips_paused():
 # --------------------------------------------------------------------------- #
 
 def test_flag_high_bounce_pauses_over_threshold():
-    s = c.load_senders({})
-    by_domain = {"alertas.klarim.net": {"total": 100, "hard_bounced": 8, "soft_bounced": 0},
-                 "aviso.klarim.net": {"total": 100, "hard_bounced": 2, "soft_bounced": 0}}
+    s = _two()
+    by_domain = {"a.example.com": {"total": 100, "hard_bounced": 8, "soft_bounced": 0},
+                 "b.example.com": {"total": 100, "hard_bounced": 2, "soft_bounced": 0}}
     paused = c.flag_high_bounce(s, by_domain, max_rate=5.0, min_sample=20)
-    assert paused == [("alertas.klarim.net", 8.0)]
+    assert paused == [("a.example.com", 8.0)]
     assert s[0].status == "paused" and s[1].status == "active"
 
 
 def test_flag_high_bounce_respects_min_sample():
-    s = c.load_senders({})
-    by_domain = {"alertas.klarim.net": {"total": 5, "hard_bounced": 3, "soft_bounced": 0}}  # 60% mas amostra 5
+    s = _two()
+    by_domain = {"a.example.com": {"total": 5, "hard_bounced": 3, "soft_bounced": 0}}  # 60% mas amostra 5
     paused = c.flag_high_bounce(s, by_domain, max_rate=5.0, min_sample=20)
     assert paused == [] and s[0].status == "active"
 
@@ -169,29 +183,29 @@ def test_flag_high_bounce_respects_min_sample():
 def test_flag_high_bounce_soft_alone_does_not_pause():
     # 4% hard + 10% soft (14% combinado) → NÃO pausa (hard < 5%). Era o bug: o
     # combinado passava do threshold e derrubava remetente saudável.
-    s = c.load_senders({})
-    by_domain = {"alertas.klarim.net": {"total": 100, "hard_bounced": 4, "soft_bounced": 10},
-                 "aviso.klarim.net": {"total": 100, "hard_bounced": 0, "soft_bounced": 0}}
+    s = _two()
+    by_domain = {"a.example.com": {"total": 100, "hard_bounced": 4, "soft_bounced": 10},
+                 "b.example.com": {"total": 100, "hard_bounced": 0, "soft_bounced": 0}}
     paused = c.flag_high_bounce(s, by_domain, max_rate=5.0, min_sample=20)
     assert paused == [] and s[0].status == "active"
 
 
 def test_flag_high_bounce_hard_alone_pauses():
     # 6% hard + 0% soft → PAUSA (hard > 5%).
-    s = c.load_senders({})
-    by_domain = {"alertas.klarim.net": {"total": 100, "hard_bounced": 6, "soft_bounced": 0},
-                 "aviso.klarim.net": {"total": 100, "hard_bounced": 0, "soft_bounced": 0}}
+    s = _two()
+    by_domain = {"a.example.com": {"total": 100, "hard_bounced": 6, "soft_bounced": 0},
+                 "b.example.com": {"total": 100, "hard_bounced": 0, "soft_bounced": 0}}
     paused = c.flag_high_bounce(s, by_domain, max_rate=5.0, min_sample=20)
-    assert paused == [("alertas.klarim.net", 6.0)] and s[0].status == "paused"
+    assert paused == [("a.example.com", 6.0)] and s[0].status == "paused"
 
 
 def test_flag_high_bounce_hard_over_soft_irrelevant():
     # 6% hard + 5% soft → PAUSA por hard; o soft é irrelevante p/ a decisão.
-    s = c.load_senders({})
-    by_domain = {"alertas.klarim.net": {"total": 100, "hard_bounced": 6, "soft_bounced": 5},
-                 "aviso.klarim.net": {"total": 100, "hard_bounced": 0, "soft_bounced": 0}}
+    s = _two()
+    by_domain = {"a.example.com": {"total": 100, "hard_bounced": 6, "soft_bounced": 5},
+                 "b.example.com": {"total": 100, "hard_bounced": 0, "soft_bounced": 0}}
     paused = c.flag_high_bounce(s, by_domain, max_rate=5.0, min_sample=20)
-    assert paused == [("alertas.klarim.net", 6.0)] and s[0].status == "paused"
+    assert paused == [("a.example.com", 6.0)] and s[0].status == "paused"
 
 
 def test_flag_high_bounce_perfil_case_stays_active():
@@ -211,19 +225,19 @@ def test_default_min_sample_is_100():
 
 def test_flag_high_bounce_warmup_not_paused_below_100():
     # 50 envios, 5 hard bounces (10%) — acima do rate, mas amostra insuficiente → NÃO pausa (default 100).
-    s = c.load_senders({})
-    by_domain = {"alertas.klarim.net": {"total": 50, "hard_bounced": 5, "soft_bounced": 0}}
+    s = _two()
+    by_domain = {"a.example.com": {"total": 50, "hard_bounced": 5, "soft_bounced": 0}}
     paused = c.flag_high_bounce(s, by_domain, max_rate=5.0)   # min_sample = default (100)
     assert paused == [] and s[0].status == "active"
 
 
 def test_flag_high_bounce_pauses_at_full_sample():
     # 100 envios, 6 hard bounces (6%) — amostra atingida E acima de 5% → pausa.
-    s = c.load_senders({})
-    by_domain = {"alertas.klarim.net": {"total": 100, "hard_bounced": 6, "soft_bounced": 0},
-                 "aviso.klarim.net": {"total": 100, "hard_bounced": 4, "soft_bounced": 0}}
+    s = _two()
+    by_domain = {"a.example.com": {"total": 100, "hard_bounced": 6, "soft_bounced": 0},
+                 "b.example.com": {"total": 100, "hard_bounced": 4, "soft_bounced": 0}}
     paused = c.flag_high_bounce(s, by_domain, max_rate=5.0)   # default 100
-    assert paused == [("alertas.klarim.net", 6.0)]
+    assert paused == [("a.example.com", 6.0)]
     assert s[0].status == "paused" and s[1].status == "active"
 
 
@@ -260,18 +274,18 @@ async def test_send_cold_alert_is_plain_text_with_opt_out(monkeypatch):
     captured = {}
     monkeypatch.setattr(m, "_send_sync", lambda params: captured.update(params) or {"email_id": "e1"})
     res = await m.send_cold_alert(
-        to_email="dono@hotelx.com.br", from_address="Klarim <scan@alertas.klarim.net>",
+        to_email="dono@hotelx.com.br", from_address="Klarim <scan@klarimscan.com>",
         subject="hotelx.com.br - análise de segurança disponível",
         text="Olá,\n\nO site hotelx.com.br ... klarim.net.\n\n--\nKlarim\nklarim.net",
         template_variant=1, target_id=7, domain="hotelx.com.br")
     assert res["email_id"] == "e1"
     assert "html" not in captured and "text" in captured          # texto puro
-    assert captured["from"] == "Klarim <scan@alertas.klarim.net>"  # remetente cold
+    assert captured["from"] == "Klarim <scan@klarimscan.com>"      # remetente cold (KL-167)
     assert captured["reply_to"] == "scan@klarim.net"               # opt-out por resposta
     assert captured["headers"]["List-Unsubscribe"] == "<mailto:scan@klarim.net?subject=remover>"
     # log com variante + domínio de envio
     log = store.logged[-1]
-    assert log["template_variant"] == 1 and log["from_domain"] == "alertas.klarim.net"
+    assert log["template_variant"] == 1 and log["from_domain"] == "klarimscan.com"
     assert log["email_type"] == "alert" and log["status"] == "sent"
 
 
@@ -285,7 +299,7 @@ async def test_send_cold_alert_respects_blocklist(monkeypatch):
     m = KlarimMailer("re_x", store=store)
     monkeypatch.setattr(m, "_is_blocked", _blocked)
     res = await m.send_cold_alert(
-        to_email="blocked@x.com", from_address="Klarim <scan@aviso.klarim.net>",
+        to_email="blocked@x.com", from_address="Klarim <scan@klarimscan.com>",
         subject="s", text="t", template_variant=3)
     assert res.get("blocked") is True and res["email_id"] is None
     assert store.logged[-1]["status"] == "blocked"

@@ -19,12 +19,13 @@ def _run(coro):
 # --- remetente + template ---------------------------------------------------- #
 
 def test_profile_view_from_default_and_override(monkeypatch):
+    # KL-167: profile_view (cold) consolidado em klarimscan.com (era perfil.klarim.net).
     monkeypatch.delenv("PROFILE_VIEW_FROM_EMAIL", raising=False)
     monkeypatch.delenv("PROFILE_VIEW_FROM_NAME", raising=False)
     assert KlarimMailer("re_x", "Klarim <klarim@klarim.net>")._profile_view_from() \
-        == "Klarim <notifica@perfil.klarim.net>"
-    monkeypatch.setenv("PROFILE_VIEW_FROM_EMAIL", "avisos@perfil.klarim.net")
-    assert "avisos@perfil.klarim.net" in KlarimMailer("re_x")._profile_view_from()
+        == "Klarim <notifica@klarimscan.com>"
+    monkeypatch.setenv("PROFILE_VIEW_FROM_EMAIL", "avisos@klarimscan.com")
+    assert "avisos@klarimscan.com" in KlarimMailer("re_x")._profile_view_from()
 
 
 def test_profile_view_text_has_report_link():
