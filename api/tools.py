@@ -563,7 +563,8 @@ async def _tech_io(norm_url: str, host: str) -> Dict[str, Any]:
     ns = await asyncio.to_thread(_dns.resolve_ns, host, 5.0)
     txt = await asyncio.to_thread(_dns.resolve_txt, host, 5.0)
     dns = {"mx": mx or [], "ns": ns or [], "txt": txt or []}
-    return _tech.detect_tech_stack(headers, html, dns, {})
+    # KL-165: passa o host p/ validar a evidência de plataforma como same-origin.
+    return _tech.detect_tech_stack(headers, html, dns, {}, domain=host)
 
 
 async def _email_io(domain: str):

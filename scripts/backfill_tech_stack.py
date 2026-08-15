@@ -59,7 +59,8 @@ async def _process_blob(store, blob, dry_run: bool) -> dict | None:
         from scanner.tech_detector import detect_tech_stack
         result = detect_tech_stack(
             headers=payload.get("headers") or {}, html=payload.get("html") or "",
-            dns=payload.get("dns") or {}, ssl=payload.get("ssl") or {})
+            dns=payload.get("dns") or {}, ssl=payload.get("ssl") or {},
+            domain=payload.get("domain"))  # KL-165: same-origin da plataforma
         techs = len(result.get("technologies") or [])
         print(f"[dry-run] scan {scan_id} | {domain} | techs={techs} "
               f"email={result.get('email_provider')} status={result.get('site_status')}",

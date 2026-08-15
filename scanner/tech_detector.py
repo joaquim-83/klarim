@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import re
 from typing import Dict, List, Optional
+from urllib.parse import urlparse
 
 # --------------------------------------------------------------------------- #
 # Grupo 1 — Headers HTTP
@@ -54,7 +55,9 @@ HEADER_PATTERNS: Dict[str, List[tuple]] = {
 # Cookies (header ``set-cookie``): a presença do nome do cookie denuncia a stack.
 COOKIE_PATTERNS: List[tuple] = [
     (r"PHPSESSID", "php", "hosting", "backend"),
-    (r"_shopify_s", "shopify", "ecommerce", "platform"),
+    # Cookie same-origin da família Shopify (_shopify_y/_shopify_s/_shopify_country/…):
+    # substitui o marcador cross-origin `cdn.shopify.com` (removido no KL-165, era embed-prone).
+    (r"_shopify_", "shopify", "ecommerce", "platform"),
     (r"wp_settings", "wordpress", "cms", "platform"),
     (r"laravel_session", "laravel", "hosting", "framework"),
     (r"connect\.sid", "express", "hosting", "backend"),
@@ -100,12 +103,16 @@ SCRIPT_PATTERNS: List[tuple] = [
     (r"intercom\.io", "intercom", "chat", None, None),
     (r"api\.whatsapp\.com|wa\.me", "whatsapp_widget", "chat", None, None),
     # E-commerce
-    (r"cdn\.shopify\.com", "shopify", "ecommerce", "platform", None),
+    #   ⚠️ Shopify saiu daqui (KL-165): `cdn.shopify.com` é carregado cross-origin por
+    #   embeds de "buy button" em sites que NÃO são Shopify → falso positivo. A detecção
+    #   passou para sinais same-origin (header `x-shopify-stage`, cookie `_shopify_*`).
     (r"nuvemshop\.com\.br|lojaintegrada", "nuvemshop", "ecommerce", "platform", None),
     (r"vtex\.(com|io)", "vtex", "ecommerce", "platform", None),
     (r"woocommerce|wc-ajax", "woocommerce", "ecommerce", "plugin", None),
     # CMS
-    (r"wp-content|wp-includes", "wordpress", "cms", "platform", None),
+    #   ⚠️ WordPress saiu daqui (KL-165): `wp-content`/`wp-includes` são substrings de URLs
+    #   de terceiros (i0.wp.com/Jetpack Photon, logos, embeds) → falso positivo (ex.: o caso
+    #   real telecomsip.com.br). A detecção passou para `_detect_platforms` (same-origin + 2+).
     (r"joomla", "joomla", "cms", "platform", None),
     (r"webflow\.com", "webflow", "cms", "platform", None),
     # Segurança
@@ -253,6 +260,73 @@ def _registrable_domain(host: str) -> str:
 
 
 # --------------------------------------------------------------------------- #
+# KL-165 — verificação same-origin de evidência de plataforma
+# --------------------------------------------------------------------------- #
+# O fingerprint de plataforma (WordPress, Shopify, …) só pode vir de recursos do PRÓPRIO
+# domínio analisado. Uma URL `wp-content` hospedada em i0.wp.com ou 1000logos.net é
+# evidência do domínio DELES, não do alvo — contá-la gera o falso positivo que motivou o
+# card (telecomsip.com.br classificado como WordPress por refs cross-origin + honeypot).
+
+def _host_of(url: str) -> Optional[str]:
+    """Hostname (lower) de uma URL de recurso do HTML. ``None`` = URL relativa
+    (``/wp-content/…``, ``#frag``, ``data:``…) → same-origin por definição."""
+    u = (url or "").strip()
+    if not u:
+        return None
+    low = u.lower()
+    if low.startswith(("data:", "mailto:", "tel:", "javascript:", "#", "about:", "blob:")):
+        return None
+    if u.startswith("//"):            # protocol-relative → tem host
+        u = "http:" + u
+    elif "://" not in u:             # relativa (sem esquema nem host) → same-origin
+        return None
+    try:
+        return (urlparse(u).hostname or "").lower() or None
+    except ValueError:
+        return None
+
+
+def is_same_origin(found_url: str, target_domain: str) -> bool:
+    """A URL encontrada no HTML pertence ao mesmo domínio (ou subdomínio) do alvo? (KL-165)
+
+    URLs relativas (sem host) são same-origin. A comparação é pelo domínio registrável
+    (eTLD+1), de modo que apex/``www``/subdomínios do alvo contem como same-origin e
+    evidência de domínios de terceiros (CDN, logos, embeds) seja descartada. Sem
+    ``target_domain`` não há como confirmar a origem de uma URL absoluta → ``False``.
+    """
+    host = _host_of(found_url)
+    if host is None:                 # relativa → mesma origem
+        return True
+    base = _registrable_domain(target_domain or "")
+    if not base:
+        return False
+    return host == base or host.endswith("." + base)
+
+
+# Extrai URLs de recursos do HTML (atributos que carregam recursos + ``url()`` do CSS).
+_RESOURCE_URL_RE = re.compile(
+    r'''(?:src|href|data-src|data-href|content|poster|action)\s*=\s*["']([^"'>\s]+)'''
+    r'''|url\(\s*["']?([^"')\s]+)''', re.I)
+
+
+def _extract_urls(html: str) -> List[str]:
+    """URLs de recurso referenciadas no HTML (para checagem de same-origin)."""
+    out: List[str] = []
+    for m in _RESOURCE_URL_RE.finditer(html or ""):
+        u = m.group(1) or m.group(2)
+        if u:
+            out.append(u)
+    return out
+
+
+def _same_origin_url_blob(html: str, domain: Optional[str]) -> str:
+    """Concatena (‘\\n’) só as URLs de recurso que são same-origin ao alvo. Marcadores de
+    plataforma baseados em URL são procurados AQUI — nunca no HTML cru — para não contar
+    evidência de terceiros."""
+    return "\n".join(u for u in _extract_urls(html) if is_same_origin(u, domain))
+
+
+# --------------------------------------------------------------------------- #
 # Helpers puros
 # --------------------------------------------------------------------------- #
 
@@ -347,6 +421,79 @@ def _detect_meta(html: str, acc: Dict[str, dict], platforms: set) -> None:
             platforms.add("google")
         elif key == "fb_verification":
             platforms.add("facebook")
+
+
+# --------------------------------------------------------------------------- #
+# KL-165 — detecção de plataforma com same-origin + múltiplos sinais
+# --------------------------------------------------------------------------- #
+# Plataformas cujo fingerprint vem de URL/markup exigem verificação same-origin (evidência
+# de terceiros NÃO conta) e ``min_signals`` sinais. Um sinal FORTE (generator, cookie ou
+# header — inerentemente same-origin, servido pela própria origem) classifica sozinho. Os
+# marcadores de ``url_markers`` são procurados só nas URLs same-origin da página; os de
+# ``markup_markers`` são procurados no HTML (são markup da própria origem, não URLs de CDN).
+
+_GENERATOR_RE = re.compile(
+    r'<meta\s+name=["\']generator["\']\s+content=["\']([^"\']+)["\']', re.I)
+
+_PLATFORM_SPECS: List[dict] = [
+    {
+        # WordPress: exige 2+ sinais (o /wp-admin 200 sozinho pode ser honeypot/SPA; uma ref
+        # cross-origin wp-content não conta). Generator/cookie autoritativos bastam sozinhos.
+        "name": "wordpress", "category": "cms", "subcategory": "platform", "min_signals": 2,
+        "generator": "wordpress",
+        "cookie_markers": [r"wp[-_]settings", r"wordpress_logged_in", r"wp-postpass"],
+        "header_markers": [],
+        # URLs same-origin distintas (evita contar 2× o mesmo /wp-content).
+        "url_markers": [r"/wp-content/", r"/wp-includes/", r"wp-emoji-release", r"/wp-json"],
+        # Markup da própria origem (classes Gutenberg) — não é URL de terceiro.
+        "markup_markers": [r"\bwp-block-[a-z]"],
+    },
+]
+
+
+def _count_platform_signals(spec: dict, html: str, headers: Dict[str, str],
+                            cookies: str, same_origin_blob: str) -> tuple:
+    """Conta os sinais same-origin de uma plataforma. Retorna ``(fortes, fracos)``."""
+    strong = 0
+    weak = 0
+    gen = spec.get("generator")
+    if gen:
+        m = _GENERATOR_RE.search(html)
+        if m and gen in m.group(1).lower():
+            strong += 1
+    for rx in spec.get("cookie_markers", []):
+        if cookies and re.search(rx, cookies, re.I):
+            strong += 1
+            break
+    for hname, rx in spec.get("header_markers", []):
+        val = headers.get(hname)
+        if val and re.search(rx, val, re.I):
+            strong += 1
+            break
+    for rx in spec.get("url_markers", []):
+        if re.search(rx, same_origin_blob, re.I):
+            weak += 1
+    for rx in spec.get("markup_markers", []):
+        if re.search(rx, html, re.I):
+            weak += 1
+    return strong, weak
+
+
+def _detect_platforms(html: str, headers: Dict[str, str], domain: Optional[str],
+                      acc: Dict[str, dict]) -> None:
+    """Classifica plataformas (KL-165) exigindo evidência same-origin. Marcadores em URL só
+    contam se a URL for do próprio domínio; ``min_signals`` evita classificar por 1 sinal
+    fraco isolado. Um sinal forte (generator/cookie/header) basta."""
+    if not html:
+        return
+    cookies = headers.get("set-cookie") or ""
+    same_origin_blob = _same_origin_url_blob(html, domain)
+    for spec in _PLATFORM_SPECS:
+        strong, weak = _count_platform_signals(spec, html, headers, cookies, same_origin_blob)
+        total = strong + weak
+        if total >= 1 and (strong >= 1 or total >= spec["min_signals"]):
+            _add_tech(acc, spec["name"], spec["category"], spec["subcategory"],
+                      None, "platform", confidence=0.95)
 
 
 def _match_substring(value: str, table: List[tuple]) -> Optional[str]:
@@ -565,8 +712,14 @@ def _schema_types(html: str) -> List[str]:
 # API pública do módulo
 # --------------------------------------------------------------------------- #
 
-def detect_tech_stack(headers: dict, html: str, dns: dict, ssl: dict) -> dict:
+def detect_tech_stack(headers: dict, html: str, dns: dict, ssl: dict,
+                      domain: Optional[str] = None) -> dict:
     """Detecta o tech stack a partir do response bruto (função pura, sem I/O).
+
+    ``domain`` (KL-165) é o domínio analisado. Quando informado, a evidência de plataforma
+    baseada em URL (WordPress, Shopify, …) é validada como **same-origin** — refs de
+    terceiros (CDN/logos/embeds) são ignoradas. Sem ``domain``, marcadores de URL absoluta
+    não são confiáveis e não classificam (só as URLs relativas contam como same-origin).
 
     Retorna ``{technologies, email_provider, dns_provider, related_domains,
     site_status, site_type, site_type_signals, verified_platforms, company_name,
@@ -590,6 +743,8 @@ def detect_tech_stack(headers: dict, html: str, dns: dict, ssl: dict) -> dict:
     _detect_cookies(headers, acc)
     _detect_scripts(html, acc)
     _detect_meta(html, acc, platforms)
+    # KL-165: plataforma (WordPress/Shopify/…) exige evidência same-origin + múltiplos sinais.
+    _detect_platforms(html, headers, domain, acc)
     email_provider, dns_provider = _detect_dns(dns or {}, acc, platforms)
     related_domains, company_name = _detect_ssl(ssl or {}, acc)
     technologies = list(acc.values())

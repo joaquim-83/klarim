@@ -53,6 +53,18 @@ Na dúvida, trate o alvo como site de terceiro que só autorizou olhar o que é 
   Cloudflare** (`klarim-allow-cf-https` v4/v6; sem 0.0.0.0/0) — impede bater direto no IP e
   **forjar** o `CF-Connecting-IP` p/ escapar do rate limit. Porta `80` aberta (ACME + redirect).
   SSH (`22`) inalterado. Ranges do CF mudam raramente → atualizar as 2 regras se necessário.
+- **Atribuição same-origin no tech detector (KL-165):** o fingerprint de plataforma
+  (WordPress/Shopify/…) **só conta evidência do próprio domínio**. Antes, `wp-content`/
+  `wp-includes` eram procurados no HTML cru → um site que só **embeda** logos/imagens de
+  terceiros (i0.wp.com/Jetpack Photon, `1000logos.net`) era rotulado WordPress (falso
+  positivo real: `telecomsip.com.br`). Agora `scanner/tech_detector.py::is_same_origin`
+  (compara pelo eTLD+1; relativas contam) descarta refs cross-origin, e **WordPress exige
+  2+ sinais same-origin** (`_detect_platforms`) — um único `/wp-admin` 200 (que pode ser
+  **honeypot** de defesa, exatamente o caso) ou uma ref externa não classificam. O detector
+  é passivo/PURO: **não sonda** `/wp-admin` nem `/wp-json` (nenhum request extra). `cdn.shopify.com`
+  (carregado por *buy-button embeds* em sites não-Shopify) saiu do fingerprint → Shopify vem
+  só de header/cookie same-origin. Empresas de segurança sondam a plataforma com honeypots
+  desse tipo — a atribuição precisa ser à prova de evidência forjada de terceiros.
 - **Criação de conta (KL-82 S2 + KL-85):** `POST /account/signup` = **3/h & 5/dia por IP**
   (`CF-Connecting-IP`) + **blocklist de e-mails descartáveis** (`api/disposable_emails.py`, 400;
   só no signup, não afeta o scan anônimo). Conta nasce `email_confirmed=false`; confirma por

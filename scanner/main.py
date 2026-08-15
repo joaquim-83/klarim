@@ -31,10 +31,14 @@ SCAN_QUEUE = os.environ.get("KLARIM_SCAN_QUEUE", "klarim:scan_queue")
 REPORT_PREFIX = os.environ.get("KLARIM_REPORT_PREFIX", "klarim:report:")
 
 
-async def persist_tech_detection(store, target_id, scan_id, response_data: dict) -> dict:
+async def persist_tech_detection(store, target_id, scan_id, response_data: dict,
+                                 domain: str = None) -> dict:
     """Detecta e grava o tech stack de um scan (KL-75) a partir do response bruto já em
     memória (headers/html/dns/ssl — sem request extra). **Resiliente:** qualquer erro é
     logado e engolido; o scan já está persistido. Retorna o resultado da detecção (ou {}).
+
+    ``domain`` (KL-165) habilita a checagem same-origin da evidência de plataforma. O scan
+    worker passa explicitamente; o backfill reusa o ``domain`` do próprio payload arquivado.
 
     Compartilhado pelo scan worker e pelo backfill (`scripts/backfill_tech_stack.py`) para
     que os dois usem exatamente a mesma lógica de detecção/gravação.
@@ -49,6 +53,7 @@ async def persist_tech_detection(store, target_id, scan_id, response_data: dict)
             html=response_data.get("html") or "",
             dns=response_data.get("dns") or {},
             ssl=response_data.get("ssl") or {},
+            domain=domain or response_data.get("domain"),
         )
         if result.get("technologies"):
             await store.save_tech_stack(target_id, scan_id, result["technologies"])
@@ -147,12 +152,14 @@ async def _persist_scan_report(store, cache, client, report, url: str,
             raw = await enrich_profile(store, target_id, url, s.score if s else None,
                                        capture_raw=True)
             if scan_id is not None and raw is not None:
-                # KL-75: tech stack do MESMO response (após enrich, antes do GCS).
-                await persist_tech_detection(store, target_id, scan_id, raw)
-                from scanner.gcs_archive import archive_scan_response
                 from scanner.checks.base import domain_of
+                dom = domain_of(url)
+                # KL-75: tech stack do MESMO response (após enrich, antes do GCS).
+                # KL-165: passa o domínio p/ validar plataforma same-origin.
+                await persist_tech_detection(store, target_id, scan_id, raw, domain=dom)
+                from scanner.gcs_archive import archive_scan_response
                 await archive_scan_response(
-                    scan_id, target_id, url, domain_of(url), raw, redis=client)
+                    scan_id, target_id, url, dom, raw, redis=client)
         print(f"[klarim-worker] {url} -> score {s.score if s else 'n/a'}"
               f"{' (target ' + str(target_id) + ')' if target_id else ''}", flush=True)
     elif st == "unreachable":
