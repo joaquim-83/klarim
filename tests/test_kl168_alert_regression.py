@@ -1,10 +1,11 @@
-"""KL-168 — fix da regressão do KL-167 no alert worker.
+"""KL-168 — fix da regressão do KL-167 no alert worker (parte MX/90d ainda vigente).
 
-Três eixos:
-  1. Filtro de genéricos OPT-IN (default FALSE) + lista reduzida a contato@/sac@.
-  2. blocked_mx: `email_mx_status` cru p/ logging; NoAnswer vira 'unknown' (fail-open); só
+⚠️ O eixo "filtro de genéricos" do KL-168 foi SUPERADO pelo KL-169 (genéricos deixaram de ser
+filtrados — passam a ser só priorizados; ver `test_kl169_email_priority.py`). Restam aqui os dois
+eixos ainda vigentes:
+  1. blocked_mx: `email_mx_status` cru p/ logging; NoAnswer vira 'unknown' (fail-open); só
      'no_mx' definitivo (NXDOMAIN/NULL-MX) bloqueia.
-  3. Intervalo de 90 dias: e-mail nunca alertado (fora do set de `recently_alerted_emails`) passa.
+  2. Intervalo de 90 dias: e-mail nunca alertado (fora do set de `recently_alerted_emails`) passa.
 
 Offline: DNS mockado, store falso.
 """
@@ -16,31 +17,6 @@ import pytest
 
 from notifier import email_verifier as ev
 from discovery.alert_worker import AlertWorker
-from discovery.alert_scoring import GENERIC_ALERT_SKIP_PREFIXES
-
-
-# --------------------------------------------------------------------------- #
-# Fix 1 — filtro de genéricos: default OFF + lista de 2
-# --------------------------------------------------------------------------- #
-
-def test_skip_generic_default_is_false(monkeypatch):
-    # Instância nova (env limpo) → o filtro nasce DESLIGADO (opt-in).
-    monkeypatch.delenv("ALERT_SKIP_GENERIC", raising=False)
-    w = AlertWorker()
-    assert w.skip_generic is False
-
-
-def test_skip_generic_env_true_turns_on(monkeypatch):
-    monkeypatch.setenv("ALERT_SKIP_GENERIC", "true")
-    assert AlertWorker().skip_generic is True
-    monkeypatch.setenv("ALERT_SKIP_GENERIC", "1")
-    assert AlertWorker().skip_generic is True
-    monkeypatch.setenv("ALERT_SKIP_GENERIC", "false")
-    assert AlertWorker().skip_generic is False
-
-
-def test_skip_list_is_two_worst_prefixes():
-    assert GENERIC_ALERT_SKIP_PREFIXES == ("contato", "sac")
 
 
 # --------------------------------------------------------------------------- #
@@ -111,7 +87,6 @@ def _mk_worker(store, validate_mx=True):
     w.store = store
     w._redis = False
     w.validate_mx = validate_mx
-    w.skip_generic = False
     w.realert_min_days = 90
     return w
 

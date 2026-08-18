@@ -7137,8 +7137,15 @@ class TargetStore:
     # mas via tabela dedicada (`email_blocklist`), não via status de verificação.
 
     async def get_eligible_targets_for_alert(self, limit: int = 50) -> List[Dict[str, Any]]:
-        """Alvos escaneados com e-mail, sem alerta nos últimos 30d: com FALHAS
-        (alerta) ou score 100 verde (convite de scan completo gratuito, KL-31)."""
+        """Alvos escaneados com e-mail, sem alerta nos últimos 90d: com FALHAS
+        (alerta) ou score 100 verde (convite de scan completo gratuito, KL-31).
+
+        KL-169 — PRIORIZAÇÃO por tipo de e-mail na SELEÇÃO (não só no score): pessoais primeiro,
+        genéricos (contato@/sac@/info@/…) como FALLBACK. Como o ciclo busca só `limit` candidatos
+        (fetch_cap 200) de um pool de milhares, o ORDER BY é o que decide QUEM entra: se os pessoais
+        ficassem no fim, seriam truncados e o ciclo mandaria só genérico (25% de bounce, KL-168).
+        Genéricos NUNCA são bloqueados — só entram quando os pessoais não preenchem o `limit`."""
+        from discovery.alert_scoring import GENERIC_PREFIX_SQL_REGEX
         def _fn(cur):
             cur.execute(
                 f"""
@@ -7147,16 +7154,17 @@ class TargetStore:
                 FROM targets t
                 JOIN scans s ON t.last_scan_id = s.id
                 WHERE {self._ALERT_ELIGIBLE_WHERE}
-                -- KL (fix 2026-07-23): os leads de MAIOR qualidade primeiro — e-mail no
-                -- domínio do site (sinal +30 do lead scoring KL-85). Antes era só
-                -- last_scan_at ASC, que jogava os leads bons (e-mail casando o domínio) para
-                -- o fim da fila; a frente (mais antiga) era e-mail genérico que não passa do
-                -- threshold → o ciclo relia os mesmos 32 e mandava 0 (livelock).
-                ORDER BY (lower(t.domain) = split_part(lower(t.contact_email), '@', 2)) DESC,
+                -- KL-169: (1) pessoais (0) antes de genéricos (1) — garante que os pessoais entram
+                -- no fetch_cap; (2) piores scores de segurança primeiro (urgência real); (3) e-mail
+                -- no domínio do site (lead de maior qualidade, +30 do KL-85) como desempate; (4)
+                -- last_scan_at ASC = desempate estável (fix livelock 2026-07-23).
+                ORDER BY CASE WHEN t.contact_email ~* %s THEN 1 ELSE 0 END ASC,
+                         t.last_scan_score ASC,
+                         (lower(t.domain) = split_part(lower(t.contact_email), '@', 2)) DESC,
                          t.last_scan_at ASC
                 LIMIT %s
                 """,
-                (limit,),
+                (GENERIC_PREFIX_SQL_REGEX, limit),
             )
             return self._rows_to_dicts(cur)
 

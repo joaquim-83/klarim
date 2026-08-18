@@ -79,34 +79,41 @@ def _email_type_factor(email: Optional[str]) -> int:
     return 15                                          # não é genérico conhecido → provável pessoal
 
 
-# KL-168 — REGRESSÃO do KL-167: a lista expandida (contato/atendimento/sac/info/comercial/vendas)
-# cobria ~39% dos e-mails elegíveis da base BR (contato@/sac@/info@ SÃO o e-mail principal de muitos
-# negócios daqui — não descartáveis como em mercados com e-mail pessoal do dono). Com o filtro LIGADO
-# por default, o worker esvaziava os poucos pessoais nos primeiros ciclos e parava (97% blocked_generic).
-# Fix: o filtro passa a ser OPT-IN (`ALERT_SKIP_GENERIC` default FALSE no alert_worker) e, quando
-# ligado, filtra só os DOIS piores por bounce (contato@ 8,7% e sac@). O `_email_type_factor` acima
-# segue REORDENANDO os demais genéricos (KL-146) sem bloquear ninguém.
-GENERIC_ALERT_SKIP_PREFIXES = (
-    "contato", "sac",
-)
-# Fronteira de palavra p/ o "começa com" do card sem overmatch: `sac2@`/`sac.loja@` casam;
-# `sacha@`/`informatica@`/`vendasparceladas`… NÃO (o prefixo tem de terminar em separador/dígito).
-_GENERIC_BOUNDARY = "0123456789.-_+"
+# KL-169 — CLASSIFICAÇÃO, não filtro. Histórico das 3 tentativas que falharam: KL-146 priorizou só
+# no score (não na SELEÇÃO de candidatos); KL-167 FILTROU genéricos (bloqueou 97% do pool BR → o
+# pipeline parou); KL-168 DESLIGOU o filtro (genéricos voltaram → 25% de bounce). A regra correta
+# não é filtrar nem bloquear — é PRIORIZAR: pessoais primeiro, genéricos como FALLBACK (só entram na
+# fila quando não há pessoal suficiente). Genéricos NUNCA são bloqueados; a query de elegibilidade
+# ordena pessoais antes (ver `store.get_eligible_targets_for_alert`) e os stats contam separado
+# (sent_personal/sent_generic). `contato@`/`sac@`/`info@` são o e-mail principal de muitas PMEs BR.
+GENERIC_PREFIXES = ("contato", "sac", "info", "comercial", "vendas", "atendimento", "suporte")
+# Fronteira de palavra p/ o "começa com" sem overmatch: `sac2@`/`sac.loja@`/`contato@` casam;
+# `sacha@`/`informatica@`/`vendasparceladas`… NÃO (o prefixo tem de terminar em separador/dígito/@).
+_GENERIC_BOUNDARY = "0123456789.-_+@"
 
 
-def is_generic_alert_email(email: Optional[str]) -> bool:
-    """KL-167 — True se o e-mail é uma caixa genérica que não deve receber alerta cold.
+def is_generic_email(email: Optional[str]) -> bool:
+    """KL-169 — CLASSIFICA (nunca filtra) se o e-mail é uma caixa genérica de negócio
+    (contato@/sac@/info@/comercial@/vendas@/atendimento@/suporte@). Uso: só ORDENAR a fila (pessoais
+    primeiro) e o breakdown de stats (sent_personal/sent_generic) — NUNCA bloqueia envio.
 
-    Casa quando o local-part É um dos prefixos genéricos, ou começa com ele seguido de uma
-    fronteira de palavra (dígito/`.`/`-`/`_`/`+`). Evita o overmatch de um `startswith` puro
-    (não pega `sacha@`, `informatica@`). Pura/testável."""
+    Casa quando o local-part É um dos prefixos, ou começa com ele seguido de uma fronteira de
+    palavra (dígito/`.`/`-`/`_`/`+`/`@`). Evita o overmatch de um `startswith` puro (não pega
+    `sacha@`, `informatica@`). Pura/testável — espelha o `GENERIC_PREFIX_SQL_REGEX` do ORDER BY."""
     local, _ = _email_parts(email or "")
     if not local:
         return False
-    for p in GENERIC_ALERT_SKIP_PREFIXES:
+    for p in GENERIC_PREFIXES:
         if local == p or (local.startswith(p) and local[len(p)] in _GENERIC_BOUNDARY):
             return True
     return False
+
+
+# SQL — regex de alternação (MESMA lista/fronteira que `is_generic_email`) para o `ORDER BY` da
+# query de elegibilidade (`store.py`): genérico = prioridade BAIXA (1), pessoal = ALTA (0). A
+# fronteira `[0-9._+@-]` reflete o `_GENERIC_BOUNDARY` (dígitos + `.` `_` `+` `@` `-`). Constante de
+# prefixos conhecidos (nunca input do usuário) → seguro interpolar/parametrizar no SQL.
+GENERIC_PREFIX_SQL_REGEX = "^(" + "|".join(GENERIC_PREFIXES) + ")[0-9._+@-]"
 
 
 # Nome do sinal no breakdown, por valor do fator (transparência no detalhe admin).

@@ -1,8 +1,9 @@
 """KL-167 — consolidação de e-mail em 2 domínios (klarim.net transacional + klarimscan.com
 cold) + targeting (pular genéricos, intervalo 90d por e-mail, foco em score baixo).
 
-Cobre a lógica PURA nova: `is_generic_alert_email`, `_urgency_bucket`, a consolidação dos
-remetentes cold (`cold_alert` + `email_client`) e os guards de domínio aposentado. Offline.
+Cobre a lógica PURA nova: `is_generic_email` (KL-169 — classifica, não filtra), `_urgency_bucket`,
+a consolidação dos remetentes cold (`cold_alert` + `email_client`) e os guards de domínio
+aposentado. Offline.
 """
 
 from __future__ import annotations
@@ -11,39 +12,40 @@ import pytest
 
 from notifier import cold_alert as c
 from notifier.email_client import KlarimMailer
-from discovery.alert_scoring import is_generic_alert_email, GENERIC_ALERT_SKIP_PREFIXES
+from discovery.alert_scoring import is_generic_email, GENERIC_PREFIXES
 from discovery.alert_worker import _urgency_bucket
 
 
 # --------------------------------------------------------------------------- #
-# is_generic_alert_email — genéricos pulados; pessoais preservados (sem overmatch)
+# is_generic_email (KL-169) — CLASSIFICA (não filtra); genéricos p/ ordenação/stats
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.parametrize("email", [
-    "contato@empresa.com.br", "sac@loja.com.br",
-    "sac2@loja.com.br", "contato.rh@empresa.com.br",
+    "contato@empresa.com.br", "sac@loja.com.br", "info@site.com",
+    "comercial@y.com.br", "vendas@z.com.br", "atendimento@x.com", "suporte@w.com.br",
+    "sac2@loja.com.br", "contato.rh@empresa.com.br", "vendas-sp@z.com.br",
     "CONTATO@Empresa.com.br",   # case-insensitive
 ])
-def test_generic_emails_are_skipped(email):
-    # KL-168: a lista reduziu para só os DOIS piores por bounce (contato@ / sac@).
-    assert is_generic_alert_email(email) is True
+def test_generic_emails_are_classified(email):
+    # KL-169: 7 prefixos genéricos de negócio (classificados p/ prioridade, NUNCA bloqueados).
+    assert is_generic_email(email) is True
 
 
 @pytest.mark.parametrize("email", [
     "joana@empresa.com.br", "sacha@x.com",          # 'sac' é prefixo mas 'sacha' não casa
     "informatica@y.com.br", "informacoes@z.com",    # 'info...' sem fronteira → não casa
     "vendaval@x.com.br",                            # 'vendas' vs 'vendaval' → não casa
+    "suportex@x.com",                               # 'suporte' vs 'suportex' → não casa
     "joao.silva@empresa.com.br", "", "sem-arroba",
-    # KL-168 — saíram da lista (na base BR são o e-mail principal do negócio, não descartáveis):
-    "atendimento@x.com", "info@site.com", "comercial@y.com.br", "vendas@z.com.br",
 ])
-def test_personal_emails_are_not_skipped(email):
-    assert is_generic_alert_email(email) is False
+def test_personal_emails_are_not_classified(email):
+    assert is_generic_email(email) is False
 
 
-def test_skip_list_matches_card():
-    # KL-168 — reduzida de 6 → 2 prefixos (os de maior bounce).
-    assert set(GENERIC_ALERT_SKIP_PREFIXES) == {"contato", "sac"}
+def test_generic_prefixes_match_card():
+    # KL-169 — 7 prefixos genéricos de negócio da base BR.
+    assert set(GENERIC_PREFIXES) == {
+        "contato", "sac", "info", "comercial", "vendas", "atendimento", "suporte"}
 
 
 # --------------------------------------------------------------------------- #

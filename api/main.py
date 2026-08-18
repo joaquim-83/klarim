@@ -7339,7 +7339,6 @@ _CONFIG_PARAMS: Dict[str, Dict[str, Any]] = {
     "ALERT_MONTHLY_LIMIT": {"label": "Cota mensal de e-mail", "default": "45000", "min": 1000, "max": 100000, "unit": "e-mails/mês"},
     "ALERT_DAILY_LIMIT": {"label": "Limite diário de alertas (warmup)", "default": "5000", "min": 0, "max": 50000, "unit": "e-mails/dia"},
     "ALERT_SENDER_DAILY_LIMIT": {"label": "Limite diário por remetente cold (KL-91)", "default": "100", "min": 0, "max": 5000, "unit": "e-mails/dia/remetente"},
-    "ALERT_SKIP_GENERIC": {"label": "Pular alertas p/ e-mails genéricos contato@/sac@ (opt-in, KL-168)", "default": "false", "type": "bool"},
     "ALERT_REALERT_MIN_DAYS": {"label": "Intervalo mínimo entre alertas ao mesmo e-mail (KL-167)", "default": "90", "min": 0, "max": 365, "unit": "dias"},
     "ALERT_FETCH_CAP": {"label": "Candidatos avaliados por ciclo de alerta", "default": "200", "min": 20, "max": 2000, "unit": "alvos/ciclo"},
     "PROFILE_VIEW_DAILY_LIMIT": {"label": "Teto diário de avisos 'perfil consultado' (KL-101 warmup)", "default": "200", "min": 0, "max": 20000, "unit": "e-mails/dia"},
