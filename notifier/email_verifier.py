@@ -128,46 +128,69 @@ def _validate_syntax(email: str) -> Optional[str]:
         return None
 
 
+# KL-168 — timeout da resolução MX configurável (era fixo em 5s). Um resolver lento no
+# container fazia a query estourar → 'unknown' (fail-open, ok), mas 10s dá folga p/ DNS BR lento.
+_MX_TIMEOUT = float(os.environ.get("ALERT_MX_TIMEOUT", "10"))
+
+
 def _resolve_mx_sync(domain: str) -> str:
-    """'ok' | 'no_mx' | 'unknown'. Nunca levanta (mesma semântica do discovery.contact)."""
+    """'ok' | 'no_mx' | 'unknown'. Nunca levanta (mesma semântica do discovery.contact).
+
+    KL-168: só NXDOMAIN (domínio não existe) é 'no_mx' definitivo. `NoAnswer` (domínio existe,
+    sem registro MX) vira 'unknown' — por RFC 5321 §5 o e-mail ainda pode ser entregue via o
+    registro A (implicit MX); tratá-lo como 'no_mx' gerava falso `blocked_mx` em domínios BR que
+    só publicam A. O fail-open (só 'no_mx' rejeita) preserva a intenção original do filtro."""
     try:
         import dns.resolver  # dnspython (já é dependência)
     except ImportError:
         return "unknown"
     try:
-        answers = dns.resolver.resolve(domain, "MX", lifetime=5)
+        answers = dns.resolver.resolve(domain, "MX", lifetime=_MX_TIMEOUT)
         # NULL MX (RFC 7505): um único registro "." significa "não recebe e-mail".
         hosts = [str(r.exchange).rstrip(".") for r in answers]
         if not hosts or hosts == [""]:
             return "no_mx"
         return "ok"
-    except (dns.resolver.NXDOMAIN, dns.resolver.NoAnswer):
-        return "no_mx"
+    except dns.resolver.NXDOMAIN:
+        return "no_mx"          # domínio não existe → e-mail bounca com certeza
+    except dns.resolver.NoAnswer:
+        return "unknown"        # existe mas sem MX → implicit MX (registro A); não bloqueia
     except Exception:  # noqa: BLE001 - timeout/NoNameservers → incerto, fail-open
         return "unknown"
 
 
-async def _has_mx(domain: str, redis=None) -> tuple[bool, bool]:
-    """(has_mx, cached). Cache Redis por domínio 24h. Fail-open: 'unknown' conta como has_mx
-    (não rejeita por falha de DNS/infra); só 'no_mx' definitivo rejeita."""
+async def _mx_lookup(domain: str, redis=None) -> tuple[bool, str, bool]:
+    """(has_mx, status, cached). status ∈ {'ok','no_mx','unknown'}. Cache Redis 24h/domínio.
+    Fail-open: 'unknown' (DNS incerto) conta como has_mx; só 'no_mx' definitivo rejeita.
+    KL-168: guarda/expõe o `status` cru p/ o diagnóstico do blocked_mx no alert worker."""
     if not domain:
-        return False, False
+        return False, "no_mx", False
     key = f"email_verify_mx:{domain}"
     if redis is not None:
         try:
             v = await redis.get(key)
             if v is not None:
-                return v == "1", True
+                # KL-168: cache agora guarda o status ('ok'/'no_mx'); aceita o legado "1"/"0".
+                if v in ("1", "ok"):
+                    return True, "ok", True
+                if v in ("0", "no_mx"):
+                    return False, "no_mx", True
         except Exception:  # noqa: BLE001
             pass
     status = await asyncio.to_thread(_resolve_mx_sync, domain)
     has = status != "no_mx"
     if redis is not None and status in ("ok", "no_mx"):  # não cacheia 'unknown' (transitório)
         try:
-            await redis.set(key, "1" if has else "0", ex=24 * 3600)
+            await redis.set(key, status, ex=24 * 3600)
         except Exception:  # noqa: BLE001
             pass
-    return has, False
+    return has, status, False
+
+
+async def _has_mx(domain: str, redis=None) -> tuple[bool, bool]:
+    """(has_mx, cached) — compat com `verify_local`. Semântica em `_mx_lookup`."""
+    has, _status, cached = await _mx_lookup(domain, redis)
+    return has, cached
 
 
 async def verify_local(email: str, redis=None) -> VerifyResult:
@@ -364,8 +387,25 @@ async def _email_has_mx(email: str, redis=None) -> bool:
     domain = _domain_of(_validate_syntax(email) or email)
     if not domain:
         return False
-    has, _ = await _has_mx(domain, redis)
+    has, _status, _ = await _mx_lookup(domain, redis)
     return has
+
+
+async def email_mx_status(email: str, redis=None) -> str:
+    """KL-168 — status MX cru p/ diagnóstico/logging: 'ok' | 'no_mx' | 'unknown' | 'invalid'.
+
+    Reusa o cache de `_mx_lookup` (uma resolução por domínio/24h). O alert worker usa para
+    explicar cada `blocked_mx` (qual domínio, e se o motivo é `no_mx` real ou DNS incerto) —
+    quando 100% dos que passam o filtro de genéricos caem em blocked_mx, o log revela se o
+    resolver do container está saudável ou se os domínios não têm mesmo MX."""
+    normalized = _validate_syntax(email)
+    if not normalized:
+        return "invalid"
+    domain = _domain_of(normalized)
+    if not domain:
+        return "invalid"
+    _has, status, _cached = await _mx_lookup(domain, redis)
+    return status
 
 
 async def _is_blocklisted(email: str, store) -> bool:

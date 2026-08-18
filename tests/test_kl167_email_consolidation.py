@@ -20,12 +20,12 @@ from discovery.alert_worker import _urgency_bucket
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.parametrize("email", [
-    "contato@empresa.com.br", "atendimento@x.com", "sac@loja.com.br",
-    "info@site.com", "comercial@y.com.br", "vendas@z.com.br",
-    "sac2@loja.com.br", "contato.rh@empresa.com.br", "vendas-sp@z.com.br",
+    "contato@empresa.com.br", "sac@loja.com.br",
+    "sac2@loja.com.br", "contato.rh@empresa.com.br",
     "CONTATO@Empresa.com.br",   # case-insensitive
 ])
 def test_generic_emails_are_skipped(email):
+    # KL-168: a lista reduziu para só os DOIS piores por bounce (contato@ / sac@).
     assert is_generic_alert_email(email) is True
 
 
@@ -34,14 +34,16 @@ def test_generic_emails_are_skipped(email):
     "informatica@y.com.br", "informacoes@z.com",    # 'info...' sem fronteira → não casa
     "vendaval@x.com.br",                            # 'vendas' vs 'vendaval' → não casa
     "joao.silva@empresa.com.br", "", "sem-arroba",
+    # KL-168 — saíram da lista (na base BR são o e-mail principal do negócio, não descartáveis):
+    "atendimento@x.com", "info@site.com", "comercial@y.com.br", "vendas@z.com.br",
 ])
 def test_personal_emails_are_not_skipped(email):
     assert is_generic_alert_email(email) is False
 
 
 def test_skip_list_matches_card():
-    assert set(GENERIC_ALERT_SKIP_PREFIXES) == {
-        "contato", "atendimento", "sac", "info", "comercial", "vendas"}
+    # KL-168 — reduzida de 6 → 2 prefixos (os de maior bounce).
+    assert set(GENERIC_ALERT_SKIP_PREFIXES) == {"contato", "sac"}
 
 
 # --------------------------------------------------------------------------- #

@@ -445,26 +445,45 @@ def test_apply_scoring_stores_and_does_not_filter(monkeypatch):
     assert len(targets) == 1 and targets[0]["_alert_score"] == 5 and avg == 5
 
 
-def test_run_cycle_skips_generic_emails():
-    # KL-167: caixas genéricas (contato@/comercial@) NÃO recebem mais alerta cold (bounce alto).
-    # Só o e-mail pessoal (joana@) é enviado; o resto conta como blocked_generic.
-    def _t(tid, email):
-        return {"id": tid, "url": f"https://s{tid}.com.br", "domain": f"s{tid}.com.br",
-                "contact_email": email, "last_scan_id": 100 + tid, "last_scan_score": 70,
-                "scan_semaphore": "amarelo", "scan_fail_count": 2,
-                "scan_checks": {"results": [{"status": "FAIL", "severity": "ALTA"}]}}
+def _t_generic(tid, email, score=70):
+    return {"id": tid, "url": f"https://s{tid}.com.br", "domain": f"s{tid}.com.br",
+            "contact_email": email, "last_scan_id": 100 + tid, "last_scan_score": score,
+            "scan_semaphore": "amarelo", "scan_fail_count": 2,
+            "scan_checks": {"results": [{"status": "FAIL", "severity": "ALTA"}]}}
+
+
+def test_run_cycle_skips_generic_emails_when_toggle_on():
+    # KL-168: com o filtro LIGADO (opt-in), só os 2 piores prefixos (contato@/sac@) são filtrados.
+    # comercial@ saiu da lista (KL-168) → passa. Só joana@ e comercial@ são enviados.
     store = FakeStore(eligible=[
-        _t(1, "contato@s1.com.br"),     # genérico → filtrado
-        _t(2, "joana@s2.com.br"),       # pessoal  → enviado
-        _t(3, "comercial@s3.com.br"),   # genérico → filtrado
+        _t_generic(1, "contato@s1.com.br"),     # genérico pior → filtrado
+        _t_generic(2, "joana@s2.com.br"),       # pessoal  → enviado
+        _t_generic(3, "sac@s3.com.br"),         # genérico pior → filtrado
+        _t_generic(4, "comercial@s4.com.br"),   # KL-168: saiu da lista → enviado
     ])
     w = _worker(store)
+    w.skip_generic = True   # reload usa str(self.skip_generic) como default → permanece True
     fm = FakeMailer()
     w._mailer = lambda: fm  # noqa: E731
     stats = asyncio.run(w.run_cycle())
-    assert stats["sent"] == 1
-    assert [e["target_id"] for e in fm.sent] == [2]
+    assert stats["sent"] == 2
+    assert {e["target_id"] for e in fm.sent} == {2, 4}
     assert stats["verification"]["blocked_generic"] == 2
+
+
+def test_run_cycle_default_does_not_skip_generics():
+    # KL-168: filtro de genéricos é OPT-IN (default FALSE) → contato@/sac@ passam e são enviados.
+    store = FakeStore(eligible=[
+        _t_generic(1, "contato@s1.com.br"),
+        _t_generic(2, "sac@s2.com.br"),
+        _t_generic(3, "joana@s3.com.br"),
+    ])
+    w = _worker(store)   # não seta skip_generic → default False
+    fm = FakeMailer()
+    w._mailer = lambda: fm  # noqa: E731
+    stats = asyncio.run(w.run_cycle())
+    assert stats["sent"] == 3
+    assert stats["verification"]["blocked_generic"] == 0
 
 
 def test_run_cycle_skips_recently_alerted_email():

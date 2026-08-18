@@ -79,12 +79,15 @@ def _email_type_factor(email: Optional[str]) -> int:
     return 15                                          # não é genérico conhecido → provável pessoal
 
 
-# KL-167 — caixas genéricas que NÃO recebem MAIS alerta cold (mudança do KL-146, que só
-# reordenava): bounce 8,7% (genéricos) vs 3,6% (pessoais). Filtradas no alert worker antes do
-# envio, para proteger a reputação do domínio cold consolidado (klarimscan.com). Lista do card:
-# contato/atendimento/sac/info/comercial/vendas. Reforça o sinal negativo do `_email_type_factor`.
+# KL-168 — REGRESSÃO do KL-167: a lista expandida (contato/atendimento/sac/info/comercial/vendas)
+# cobria ~39% dos e-mails elegíveis da base BR (contato@/sac@/info@ SÃO o e-mail principal de muitos
+# negócios daqui — não descartáveis como em mercados com e-mail pessoal do dono). Com o filtro LIGADO
+# por default, o worker esvaziava os poucos pessoais nos primeiros ciclos e parava (97% blocked_generic).
+# Fix: o filtro passa a ser OPT-IN (`ALERT_SKIP_GENERIC` default FALSE no alert_worker) e, quando
+# ligado, filtra só os DOIS piores por bounce (contato@ 8,7% e sac@). O `_email_type_factor` acima
+# segue REORDENANDO os demais genéricos (KL-146) sem bloquear ninguém.
 GENERIC_ALERT_SKIP_PREFIXES = (
-    "contato", "atendimento", "sac", "info", "comercial", "vendas",
+    "contato", "sac",
 )
 # Fronteira de palavra p/ o "começa com" do card sem overmatch: `sac2@`/`sac.loja@` casam;
 # `sacha@`/`informatica@`/`vendasparceladas`… NÃO (o prefixo tem de terminar em separador/dígito).

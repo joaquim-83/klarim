@@ -203,9 +203,11 @@ async def send_alert_for_target(store, mailer: KlarimMailer, target: Dict[str, A
 
 
 class AlertWorker:
-    # KL-167 — defaults de classe (aplicam a instâncias construídas via __new__, ex.: testes):
-    # pular caixas genéricas + intervalo mínimo de re-alerta por e-mail (90 dias).
-    skip_generic = True
+    # KL-167/KL-168 — defaults de classe (aplicam a instâncias construídas via __new__, ex.: testes).
+    # ⚠️ KL-168: `skip_generic` é OPT-IN (default FALSE). Ligado por default (KL-167) barrava 97% da
+    # base BR e travava os envios; agora só o operador liga no painel p/ testar. Intervalo mínimo de
+    # re-alerta por e-mail = 90 dias.
+    skip_generic = False
     realert_min_days = 90
 
     def __init__(self) -> None:
@@ -235,9 +237,10 @@ class AlertWorker:
         self.sender_max_bounce_rate = float(os.environ.get("ALERT_SENDER_MAX_BOUNCE_RATE", "5.0"))
         self.sender_bounce_min_sample = int(os.environ.get(
             "ALERT_SENDER_BOUNCE_MIN_SAMPLE", str(cold_alert.DEFAULT_BOUNCE_MIN_SAMPLE)))
-        # KL-167 — targeting: pular caixas genéricas (contato@/atendimento@/…) e garantir
+        # KL-167/KL-168 — targeting: pular caixas genéricas (só contato@/sac@ agora) e garantir
         # intervalo mínimo de re-alerta POR E-MAIL (mesmo e-mail em alvos diferentes).
-        self.skip_generic = os.environ.get("ALERT_SKIP_GENERIC", "true").lower() != "false"
+        # ⚠️ KL-168: default FALSE (opt-in). O operador liga via ALERT_SKIP_GENERIC no painel.
+        self.skip_generic = os.environ.get("ALERT_SKIP_GENERIC", "false").lower() in ("true", "1")
         self.realert_min_days = int(os.environ.get("ALERT_REALERT_MIN_DAYS", "90"))
         # KL-145 — a verificação Reoon Power SAIU do fluxo de envio (travava o volume em 2-8/ciclo).
         # A decisão de envio agora é local (sintaxe + MX + blocklist, ver `_verify_and_filter`). O
@@ -264,9 +267,11 @@ class AlertWorker:
             # KL-91 — limite diário por remetente (knob do warmup, editável no painel).
             self.sender_daily_limit = int(
                 await g("ALERT_SENDER_DAILY_LIMIT", self.sender_daily_limit))
-            # KL-167 — targeting editável ao vivo (pular genéricos + intervalo por e-mail).
+            # KL-167/KL-168 — targeting editável ao vivo (admin_settings > .env), relido a CADA
+            # ciclo (run_cycle chama _reload_settings no topo): o toggle do painel vale no ciclo
+            # seguinte, sem redeploy. `skip_generic` é opt-in (default FALSE); só "true"/"1" liga.
             self.skip_generic = str(
-                await g("ALERT_SKIP_GENERIC", str(self.skip_generic))).lower() not in ("false", "0")
+                await g("ALERT_SKIP_GENERIC", str(self.skip_generic))).lower() in ("true", "1")
             self.realert_min_days = int(await g("ALERT_REALERT_MIN_DAYS", self.realert_min_days))
         except Exception as exc:  # noqa: BLE001
             print(f"[alert] reload settings falhou (mantém atual): {exc!r}", flush=True)
@@ -468,10 +473,18 @@ class AlertWorker:
                 continue
             stats["valid_syntax"] += 1
 
-            # Filtro 2 — domínio tem MX (fail-open; só em produção — validate_mx).
-            if self.validate_mx and not await email_verifier._email_has_mx(email, redis):
-                stats["blocked_mx"] += 1
-                continue
+            # Filtro 2 — domínio tem MX (fail-open; só em produção — validate_mx). KL-168: usa o
+            # status CRU (`email_mx_status`) p/ LOGAR cada blocked_mx (domínio + motivo). Só 'no_mx'
+            # definitivo (NXDOMAIN/NULL-MX) bloqueia; 'unknown' (DNS lento/incerto) e 'ok' passam →
+            # quando 100% cai em blocked_mx o log revela se o resolver do container está saudável.
+            if self.validate_mx:
+                mx_status = await email_verifier.email_mx_status(email, redis)
+                if mx_status == "no_mx":
+                    domain = email.rsplit("@", 1)[-1]
+                    logger.warning("[alert] blocked_mx: %s (domínio=%s, status=%s)",
+                                   email_verifier._mask(email), domain, mx_status)
+                    stats["blocked_mx"] += 1
+                    continue
             stats["has_mx"] += 1
 
             # Filtro 3 — não está na blocklist aprendente (bounces via webhook).
